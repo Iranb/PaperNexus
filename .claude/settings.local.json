@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(jq \".sources[] | select\\(.sourceKey | contains\\(\"\"0ad425d8b60f50deea05\"\"\\)\\)\")",
+      "Bash(security find-generic-password:*)",
+      "Bash(node ./src/cli/index.js probe)",
+      "Bash(node -e \":*)",
+      "Bash(papernexus service:*)"
+    ]
+  }
+}

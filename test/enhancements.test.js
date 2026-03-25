@@ -1,0 +1,139 @@
+import test, { after, before } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const examplesRoot = path.join(__dirname, '..', 'examples');
+
+let sharedHome;
+let previousHome;
+let sharedModules;
+
+before(async () => {
+  sharedHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-enh-home-'));
+  previousHome = process.env.PAPERNEXUS_HOME;
+  process.env.PAPERNEXUS_HOME = sharedHome;
+  sharedModules = await Promise.all([
+    import('../src/core/ingestion/pipeline.js'),
+    import('../src/core/enhancements/worker.js'),
+    import('../src/storage/enhancement-store.js'),
+    import('../src/server/api.js'),
+    import('../src/storage/corpus-store.js')
+  ]);
+});
+
+after(async () => {
+  if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+  else process.env.PAPERNEXUS_HOME = previousHome;
+  await fs.rm(sharedHome, { recursive: true, force: true });
+});
+
+async function createTempCorpus() {
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-enh-corpus-'));
+
+  for (const fileName of [
+    'retrieval-augmented-experiment-planning.md',
+    'graph-augmented-literature-mapping.md'
+  ]) {
+    await fs.copyFile(
+      path.join(examplesRoot, fileName),
+      path.join(tempCorpusRoot, fileName)
+    );
+  }
+
+  return {
+    tempCorpusRoot,
+    ingestion: sharedModules[0],
+    worker: sharedModules[1],
+    enhancementStore: sharedModules[2],
+    api: sharedModules[3],
+    corpusStore: sharedModules[4]
+  };
+}
+
+async function cleanupTempCorpus(context) {
+  await fs.rm(context.tempCorpusRoot, { recursive: true, force: true });
+}
+
+test('analyzeCorpus enqueues theory/storyline enhancement jobs without blocking the base graph build', async () => {
+  const context = await createTempCorpus();
+
+  try {
+    const result = await context.ingestion.analyzeCorpus(context.tempCorpusRoot, {
+      name: 'enhancement-test',
+      force: true
+    });
+
+    assert.equal(result.meta.paperCount, 2);
+    assert.equal(result.enhancement?.queuedCount, 2);
+
+    const summary = await context.enhancementStore.summarizeEnhancements(context.tempCorpusRoot);
+    assert.equal(summary.queue.pending, 2);
+    assert.equal(summary.ready, 0);
+  } finally {
+    await cleanupTempCorpus(context);
+  }
+});
+
+test('enhancement worker materializes per-paper theory and storyline overlays', async () => {
+  const context = await createTempCorpus();
+
+  try {
+    await context.ingestion.analyzeCorpus(context.tempCorpusRoot, {
+      name: 'enhancement-worker-test',
+      force: true
+    });
+
+    const runResult = await context.worker.runEnhancementQueueUntilIdle(context.tempCorpusRoot, {
+      maxPasses: 8,
+      backfillLimit: 2
+    });
+    assert.equal(runResult.summary.queue.pending, 0);
+    assert.equal(runResult.summary.ready, 2);
+
+    const manifest = await context.corpusStore.loadSourceManifest(context.tempCorpusRoot);
+    const paperId = manifest.sources[0].paperId;
+    const payload = await context.enhancementStore.loadPaperEnhancement(context.tempCorpusRoot, paperId);
+
+    assert.ok(payload.overlay, 'expected an overlay to be written');
+    assert.ok(payload.overlay.overlays.theory.cards.length > 0, 'expected theory cards');
+    assert.ok(payload.overlay.overlays.storyline.beats.length >= 3, 'expected storyline beats');
+    assert.ok(payload.overlay.overlays.reflection.cards.length > 0, 'expected reflection cards');
+    assert.ok(payload.overlay.overlays.reflection.slots.innovations.length > 0, 'expected innovation cards');
+    assert.ok(payload.overlay.overlays.reflection.slots.experiments.length > 0, 'expected experiment cards');
+    assert.ok(payload.overlay.overlays.reflection.slots.outcomes.length > 0, 'expected outcome cards');
+    assert.ok(payload.overlay.overlays.reflection.slots.reflections.length > 0, 'expected reflection note cards');
+    assert.ok(payload.overlay.overlays.theory.supportNote.length > 0, 'expected theory support note');
+    assert.ok(Array.isArray(payload.overlay.overlays.storyline.missingBeats), 'expected missing beat tracking');
+
+    const summaryPayload = await context.api.enhancementSummaryPayload(context.tempCorpusRoot);
+    assert.ok(summaryPayload.enhancements.papers[0].reflection, 'expected reflection summary in enhancement index');
+  } finally {
+    await cleanupTempCorpus(context);
+  }
+});
+
+test('idle backfill can enqueue overlays for an existing corpus that skipped ingestion-time queueing', async () => {
+  const context = await createTempCorpus();
+
+  try {
+    await context.ingestion.analyzeCorpus(context.tempCorpusRoot, {
+      name: 'enhancement-backfill-test',
+      force: true,
+      enqueueEnhancements: false
+    });
+
+    const queued = await context.enhancementStore.enqueueEnhancementBackfill(context.tempCorpusRoot, {
+      limit: 2
+    });
+    assert.equal(queued.queuedCount, 2);
+
+    const summaryPayload = await context.api.enhancementSummaryPayload(context.tempCorpusRoot);
+    assert.equal(summaryPayload.enhancements.queue.pending, 2);
+  } finally {
+    await cleanupTempCorpus(context);
+  }
+});

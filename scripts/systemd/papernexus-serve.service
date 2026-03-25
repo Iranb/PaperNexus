@@ -1,0 +1,25 @@
+[Unit]
+Description=PaperNexus Web Server - Local research knowledge graph UI
+Documentation=https://github.com/papernexus/papernexus
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+Group=%GROUP%
+WorkingDirectory=%INSTALL_DIR%
+ExecStart=/usr/bin/node ./src/cli/index.js serve --host 0.0.0.0 --port 4821
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Environment
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

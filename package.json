@@ -1,0 +1,21 @@
+{
+  "name": "papernexus",
+  "version": "0.1.0",
+  "description": "Serverless knowledge graph framework for academic PDFs, inspired by GitNexus and powered by Marker.",
+  "type": "module",
+  "bin": {
+    "papernexus": "./src/cli/index.js"
+  },
+  "scripts": {
+    "analyze:examples": "node ./src/cli/index.js analyze ./examples --name sample-papers",
+    "test": "node --test",
+    "serve": "node ./src/cli/index.js serve",
+    "mcp": "node ./src/cli/index.js mcp"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "kuzu": "^0.11.3"
+  }
+}

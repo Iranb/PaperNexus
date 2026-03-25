@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PaperNexus</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-cluster">
+          <div class="brand-mark">◇</div>
+          <div class="brand-copy">
+            <div class="brand-title">PaperNexus</div>
+            <div class="brand-subtitle">Graph workspace for academic corpora</div>
+          </div>
+        </div>
+
+        <div class="topbar-center">
+          <div class="search-shell" id="search-shell">
+            <span class="search-icon">⌕</span>
+            <input id="global-search" type="text" placeholder="Search problems, methods, claims, limitations..." autocomplete="off" />
+            <kbd>⌘K</kbd>
+            <div class="search-results hidden" id="search-results"></div>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <div class="llm-shell" id="llm-shell">
+            <div class="llm-current" id="llm-current">
+              <span class="muted-label">LLM</span>
+              <span id="llm-current-label">Loading...</span>
+            </div>
+            <button class="action-button compact" id="llm-toggle-button">Switch</button>
+            <div class="llm-popover hidden" id="llm-popover">
+              <div class="llm-popover-header">
+                <strong>LLM Config</strong>
+                <span class="llm-popover-copy">Saved to config.json for future analyze/watch runs.</span>
+              </div>
+              <label class="llm-field">
+                <span>Provider</span>
+                <select id="llm-provider-select">
+                  <option value="ollama">Ollama</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Claude / Anthropic</option>
+                </select>
+              </label>
+              <label class="llm-field">
+                <span>Model</span>
+                <input id="llm-model-input" type="text" placeholder="gpt-4o-mini / claude-3-5-sonnet-latest / qwen2.5:0.5b" />
+              </label>
+              <div class="llm-actions">
+                <button class="action-button compact" id="llm-save-button">Save</button>
+              </div>
+            </div>
+          </div>
+          <div class="corpus-select-shell">
+            <label for="corpus-select" class="muted-label">Corpus</label>
+            <select id="corpus-select"></select>
+          </div>
+          <button class="action-button" id="backup-button">Backup</button>
+          <button class="action-button" id="refresh-button">Refresh</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="panel left-panel">
+          <section class="panel-section">
+            <div class="section-header">
+              <h2>Overview</h2>
+            </div>
+            <div id="overview-card" class="overview-card"></div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-header">
+              <h2>Visibility</h2>
+              <span class="section-chip">Research lenses</span>
+            </div>
+            <div id="filter-presets" class="preset-row"></div>
+            <div id="filter-summary" class="filter-summary"></div>
+            <div class="section-divider"></div>
+            <div id="node-filter-chips" class="chip-grid scrollable"></div>
+            <div class="section-divider"></div>
+            <div id="layer-filter-chips" class="chip-grid small scrollable short"></div>
+            <div class="section-divider"></div>
+            <div id="relation-filter-chips" class="chip-grid small scrollable tall"></div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-header">
+              <h2>Navigator</h2>
+              <div class="tab-row" id="navigator-tabs">
+                <button class="tab-button active" data-tab="problems">Problems</button>
+                <button class="tab-button" data-tab="papers">Papers</button>
+                <button class="tab-button" data-tab="claims">Claims</button>
+                <button class="tab-button" data-tab="findings">Findings</button>
+                <button class="tab-button" data-tab="methods">Methods</button>
+                <button class="tab-button" data-tab="benchmarks">Benchmarks</button>
+                <button class="tab-button" data-tab="limitations">Limitations</button>
+                <button class="tab-button" data-tab="assumptions">Assumptions</button>
+                <button class="tab-button" data-tab="evidences">Evidence</button>
+                <button class="tab-button" data-tab="datasets">Datasets</button>
+                <button class="tab-button" data-tab="metrics">Metrics</button>
+                <button class="tab-button" data-tab="futures">Future</button>
+              </div>
+            </div>
+            <div class="depth-control">
+              <label for="depth-range">Neighborhood depth</label>
+              <input id="depth-range" type="range" min="1" max="4" value="2" />
+              <span id="depth-value">2</span>
+            </div>
+            <div class="navigator-toolbar">
+              <div class="navigator-picker-shell" id="navigator-picker-shell">
+                <span class="navigator-picker-icon">⌕</span>
+                <input id="navigator-picker-input" type="text" placeholder="Filter problems..." autocomplete="off" />
+                <button class="navigator-picker-clear hidden" id="navigator-picker-clear" title="Clear navigator filter">×</button>
+                <div class="navigator-picker-results hidden" id="navigator-picker-results"></div>
+              </div>
+              <div id="navigator-meta" class="navigator-meta"></div>
+            </div>
+            <div id="navigator-list" class="navigator-list"></div>
+          </section>
+        </aside>
+
+        <section class="canvas-panel">
+          <div class="canvas-overlay">
+            <div class="canvas-badge" id="selection-badge">No node selected</div>
+            <div class="canvas-stats" id="canvas-stats"></div>
+          </div>
+
+          <div class="canvas-legend" id="canvas-legend"></div>
+          <div class="canvas-focus-card" id="canvas-focus-card"></div>
+
+          <canvas id="graph-canvas"></canvas>
+
+          <div class="canvas-controls">
+            <button class="icon-button" id="zoom-in-button" title="Zoom in">＋</button>
+            <button class="icon-button" id="zoom-out-button" title="Zoom out">－</button>
+            <button class="icon-button" id="fit-button" title="Fit to screen">⤢</button>
+            <button class="icon-button" id="focus-button" title="Focus selected node">◎</button>
+            <button class="icon-button" id="clear-button" title="Clear selection">×</button>
+          </div>
+
+          <div class="canvas-tooltip hidden" id="canvas-tooltip"></div>
+        </section>
+
+        <aside class="panel right-panel">
+          <div class="right-panel-header">
+            <div class="tab-row" id="detail-tabs">
+              <button class="tab-button active" data-tab="details">Details</button>
+              <button class="tab-button" data-tab="relations">Relations</button>
+              <button class="tab-button" data-tab="impact">Impact</button>
+            </div>
+          </div>
+          <div id="detail-panel" class="detail-panel"></div>
+        </aside>
+      </main>
+
+      <footer class="statusbar" id="statusbar"></footer>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

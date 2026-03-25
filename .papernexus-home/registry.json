@@ -1,0 +1,22 @@
+{
+  "corpora": [
+    {
+      "name": "cache-papers",
+      "rootPath": "/var/folders/ld/gwn4r9d963s5m3dbbjllj2l80000gn/T/papernexus-cache-corpus-Nc85D8",
+      "indexedAt": "2026-03-20T07:30:29.887Z",
+      "paperCount": 2
+    },
+    {
+      "name": "GCD",
+      "rootPath": "/Users/iranb/.papernexus/index-store",
+      "indexedAt": "2026-03-23T10:22:03.421Z",
+      "paperCount": 152
+    },
+    {
+      "name": "tmp",
+      "rootPath": "/var/folders/ld/gwn4r9d963s5m3dbbjllj2l80000gn/T/pn-corpus-r2ngMz",
+      "indexedAt": "2026-03-25T06:58:58.646Z",
+      "paperCount": 2
+    }
+  ]
+}
