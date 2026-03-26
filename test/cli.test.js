@@ -451,10 +451,15 @@ process.exit(0);
 
 test('CLI init creates a first-run config.json from interactive answers', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-init-'));
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-init-home-'));
 
   try {
-    const initRun = await spawnCli(['init'], {
+    const initRun = await spawnCli(['init', '--no-config=true'], {
       cwd: workspaceRoot,
+      env: {
+        ...process.env,
+        PAPERNEXUS_HOME: tempHome
+      },
       stdin: [
         './papers',
         'first-run-corpus',
@@ -470,7 +475,8 @@ test('CLI init creates a first-run config.json from interactive answers', async 
 
     assert.equal(initRun.code, 0, initRun.stderr);
     assert.match(initRun.stdout, /Saved PaperNexus config to/);
-    assert.match(initRun.stdout, /Next: run `papernexus analyze --force`/);
+    assert.match(initRun.stdout, /Next: run `papernexus analyze` to build the first index/);
+    assert.doesNotMatch(initRun.stdout, /Next: run `papernexus analyze --force`/);
     assert.match(initRun.stdout, /Step 1: Paper Sources/);
     assert.match(initRun.stdout, /Step 3: Index Directory/);
     assert.match(initRun.stdout, /stores its generated index data/i);
@@ -491,5 +497,106 @@ test('CLI init creates a first-run config.json from interactive answers', async 
     assert.equal(savedConfig.llm.apiKeySource, undefined);
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
   }
+});
+
+test('CLI warns that --force is for deliberate full rebuilds', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-force-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-force-corpus-'));
+
+  try {
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(tempCorpusRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const env = {
+      ...process.env,
+      PAPERNEXUS_HOME: tempHome
+    };
+
+    const analyzeRun = await execFileAsync('node', [
+      cliPath,
+      'analyze',
+      '--no-config=true',
+      tempCorpusRoot,
+      '--name',
+      'force-warning-test',
+      '--force'
+    ], {
+      cwd: projectRoot,
+      env
+    });
+
+    assert.match(
+      analyzeRun.stderr,
+      /Warning: `--force` is intended for deliberate full rebuilds/
+    );
+    assert.match(
+      analyzeRun.stderr,
+      /Prefer plain `papernexus analyze` or `--continue` for routine updates/
+    );
+  } finally {
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('CLI stage commands print a stage banner even when stdout is not a TTY', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-stage-banner-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-stage-banner-corpus-'));
+
+  try {
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(tempCorpusRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const env = {
+      ...process.env,
+      PAPERNEXUS_HOME: tempHome
+    };
+
+    await execFileAsync('node', [
+      cliPath,
+      'materialize',
+      '--no-config=true',
+      tempCorpusRoot,
+      '--name',
+      'stage-banner-test'
+    ], {
+      cwd: projectRoot,
+      env
+    });
+
+    const buildGraphRun = await execFileAsync('node', [
+      cliPath,
+      'stage3',
+      '--no-config=true',
+      tempCorpusRoot,
+      '--name',
+      'stage-banner-test'
+    ], {
+      cwd: projectRoot,
+      env
+    });
+
+    assert.match(buildGraphRun.stdout, /Stage 1\/1: Building graph structure/);
+    assert.match(buildGraphRun.stdout, /Built staged graph for "stage-banner-test"/);
+  } finally {
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('CLI stage command --help prints help text instead of executing the stage', async () => {
+  const helpRun = await execFileAsync('node', [cliPath, 'stage3', '--help'], {
+    cwd: projectRoot,
+    env: process.env
+  });
+
+  assert.match(helpRun.stdout, /PaperNexus/);
+  assert.match(helpRun.stdout, /papernexus stage3/);
+  assert.doesNotMatch(helpRun.stdout, /Stage 1\/1: Building graph structure/);
 });

@@ -363,8 +363,17 @@ function createBackupStamp() {
 
 export async function backupCorpus(target, options = {}) {
   const rootPath = await resolveCorpus(target);
-  const { meta } = await loadCorpus(rootPath);
-  const corpusDir = getCorpusDir(rootPath);
+  return backupExistingCorpusRoot(rootPath, options);
+}
+
+export async function backupExistingCorpusRoot(rootPath, options = {}) {
+  const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+  const hasIndexedCorpus = (await fileExists(metaPath)) && (await hasCorpusGraphStore(rootPath));
+  if (!hasIndexedCorpus) {
+    return null;
+  }
+
+  const meta = await loadCorpusMeta(rootPath);
   const backupRoot = path.resolve(options.backupDir || getCorpusBackupDir(rootPath));
   const backupLabel = `${slugify(meta.name || path.basename(rootPath))}-${createBackupStamp()}`;
   const backupPath = path.join(backupRoot, backupLabel);

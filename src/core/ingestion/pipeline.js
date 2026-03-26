@@ -19,6 +19,7 @@ import { collectFiles, fileExists, readText, withFileLock } from '../../lib/fs.j
 import { jaccardSimilarity, normalizeText, slugify, stableHash, titleCase, tokenizeWithoutStopwords, truncate, unique } from '../../lib/utils.js';
 import { createWatchTmpLogger } from '../../lib/watch-log.js';
 import {
+  backupExistingCorpusRoot,
   getCorpusLockPath,
   getCorpusPaths,
   getSemanticPaperSnapshotPath,
@@ -92,6 +93,11 @@ const BRAINSTORM_SCORE_THRESHOLDS = {
   [NODE_TYPES.DATASET]: 0.8,
   [NODE_TYPES.BENCHMARK]: 0.8
 };
+
+const NODE_LLM_CHECK_ENABLED = false;
+const SNAPSHOT_STATE_SIGNATURE_VERSION = 1;
+const SEMANTIC_LLM_SIGNATURE_VERSION = 1;
+const RELATION_LLM_SIGNATURE_VERSION = 1;
 
 const PROBLEM_SENTENCE_PATTERNS = [
   /\b(?:we|this paper|this work)\s+(?:study|address(?:es)?|tackle(?:s|d)?|focus(?:es)? on|investigate(?:s|d)?)\s+(.+?)(?:\.|,|;| while | by | with )/i,
@@ -288,9 +294,13 @@ function createQuietProgress() {
 
 function announceStage(options = {}, step, total, title, detail = '') {
   const quiet = Boolean(options.quiet);
-  if (quiet || !process.stdout.isTTY) return;
+  if (quiet) return;
   const suffix = detail ? ` - ${detail}` : '';
-  process.stdout.write(`\nStage ${step}/${total}: ${title}${suffix}\n`);
+  if (process.stdout.isTTY) {
+    process.stdout.write(`\nStage ${step}/${total}: ${title}${suffix}\n`);
+    return;
+  }
+  console.log(`Stage ${step}/${total}: ${title}${suffix}`);
 }
 
 function createRelationship(sourceId, targetId, type, properties = {}) {
@@ -1230,39 +1240,154 @@ function canAttemptLlmRelations(options = {}) {
   return Boolean(config.enabled && config.model);
 }
 
-function snapshotNeedsLlmRefresh(snapshot, options = {}, maxRetries = 3) {
-  if (!snapshot) return false;
+function createSemanticConfigSignature(options = {}) {
+  const plan = resolveSemanticExtractionPlan(options);
+  if (!plan.shouldAttempt || plan.requestedMode === 'heuristic-only') {
+    return `semantic:${SEMANTIC_LLM_SIGNATURE_VERSION}:disabled:${plan.requestedMode}`;
+  }
 
-  const retryCount = snapshot.llm?.retryCount || 0;
+  return JSON.stringify({
+    kind: 'semantic',
+    version: SEMANTIC_LLM_SIGNATURE_VERSION,
+    requestedMode: plan.requestedMode,
+    effectiveMode: plan.effectiveMode,
+    provider: plan.config?.provider || 'disabled',
+    model: plan.config?.model || '',
+    baseUrl: plan.config?.baseUrl || ''
+  });
+}
+
+function createRelationConfigSignature(options = {}) {
+  if (!canAttemptLlmRelations(options)) {
+    return `relations:${RELATION_LLM_SIGNATURE_VERSION}:disabled`;
+  }
+
+  const config = resolveOllamaConfig(options);
+  return JSON.stringify({
+    kind: 'relations',
+    version: RELATION_LLM_SIGNATURE_VERSION,
+    provider: config.provider || 'disabled',
+    model: config.model || '',
+    baseUrl: config.baseUrl || ''
+  });
+}
+
+function serializeSnapshotSlotEntries(entries = []) {
+  return (entries || [])
+    .map((entry) => ({
+      name: String(entry?.name || entry?.text || '').trim(),
+      evidenceText: String(entry?.evidenceText || entry?.text || '').trim(),
+      sectionHeading: String(entry?.sectionHeading || '').trim(),
+      sectionRole: String(entry?.sectionRole || '').trim(),
+      confidence: Number.isFinite(Number(entry?.confidence)) ? Number(entry.confidence) : null
+    }))
+    .filter((entry) => entry.name || entry.evidenceText)
+    .sort((left, right) => `${left.name}:${left.evidenceText}`.localeCompare(`${right.name}:${right.evidenceText}`));
+}
+
+function serializeSnapshotRelations(relations = []) {
+  return (relations || [])
+    .map((relation) => ({
+      type: String(relation?.type || '').trim(),
+      sourceType: String(relation?.sourceType || '').trim(),
+      sourceName: String(relation?.sourceName || '').trim(),
+      targetType: String(relation?.targetType || '').trim(),
+      targetName: String(relation?.targetName || '').trim(),
+      evidenceText: String(relation?.evidenceText || '').trim()
+    }))
+    .filter((relation) => relation.type && relation.sourceName && relation.targetName)
+    .sort((left, right) => (
+      `${left.type}:${left.sourceType}:${left.sourceName}:${left.targetType}:${left.targetName}`
+    ).localeCompare(
+      `${right.type}:${right.sourceType}:${right.sourceName}:${right.targetType}:${right.targetName}`
+    ));
+}
+
+function createSemanticPaperSnapshotStateSignature(semanticPaper = {}) {
+  return stableHash(JSON.stringify({
+    version: SNAPSHOT_STATE_SIGNATURE_VERSION,
+    paperId: semanticPaper.paperId || '',
+    sourceFingerprint: semanticPaper.sourceFingerprint || '',
+    semanticConfigSignature: semanticPaper.llmSemanticObjects?.configSignature || semanticPaper.llm?.semanticConfigSignature || null,
+    relationConfigSignature: semanticPaper.llm?.relationConfigSignature || null,
+    semanticObjects: {
+      problems: serializeSnapshotSlotEntries(semanticPaper.problems),
+      methods: serializeSnapshotSlotEntries(semanticPaper.methods),
+      claims: serializeSnapshotSlotEntries(semanticPaper.claims),
+      findings: serializeSnapshotSlotEntries(semanticPaper.findings),
+      researchGoals: serializeSnapshotSlotEntries(semanticPaper.researchGoals),
+      limitations: serializeSnapshotSlotEntries(semanticPaper.limitations),
+      assumptions: serializeSnapshotSlotEntries(semanticPaper.assumptions),
+      evidences: serializeSnapshotSlotEntries(semanticPaper.evidences),
+      futureDirections: serializeSnapshotSlotEntries(semanticPaper.futureDirections),
+      benchmarks: serializeSnapshotSlotEntries(semanticPaper.benchmarks),
+      datasets: serializeSnapshotSlotEntries(semanticPaper.datasets),
+      metrics: serializeSnapshotSlotEntries(semanticPaper.metrics)
+    },
+    relations: serializeSnapshotRelations(semanticPaper.llmRelations),
+    llm: {
+      provider: semanticPaper.llm?.provider || 'disabled',
+      relationCount: Number(semanticPaper.llm?.relationCount || 0),
+      semanticExtractionMode: semanticPaper.llm?.semanticExtractionMode || 'heuristic-only',
+      semanticExtractionModeEffective: semanticPaper.llm?.semanticExtractionModeEffective || 'heuristic-only',
+      semanticExtractionAttempted: Boolean(semanticPaper.llm?.semanticExtractionAttempted),
+      semanticExtractionParticipated: Boolean(semanticPaper.llm?.semanticExtractionParticipated),
+      semanticExtractionParticipationReason: semanticPaper.llm?.semanticExtractionParticipationReason || null,
+      semanticObjectCount: Number(semanticPaper.llm?.semanticObjectCount || 0),
+      error: semanticPaper.llm?.error || null
+    }
+  }), 20);
+}
+
+function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
+  if (!snapshot) {
+    return {
+      semanticRequired: false,
+      relationRequired: false,
+      anyRequired: false
+    };
+  }
+
+  const semanticRetryCount = snapshot.llm?.semanticRetryCount ?? snapshot.llm?.retryCount ?? 0;
+  const relationRetryCount = snapshot.llm?.relationRetryCount ?? snapshot.llm?.retryCount ?? 0;
   const semanticPlan = resolveSemanticExtractionPlan(options);
   const semanticSummary = summarizePaperSemanticExtraction(snapshot, semanticPlan.requestedMode);
-  const snapshotRequestedMode = normalizeSemanticExtractionMode(
-    snapshot.llmSemanticObjects?.requestedMode
-    || snapshot.llm?.semanticExtractionMode
-    || 'heuristic-only'
-  );
+  const currentSemanticSignature = createSemanticConfigSignature(options);
+  const snapshotSemanticSignature = snapshot.llmSemanticObjects?.configSignature
+    || snapshot.llm?.semanticConfigSignature
+    || null;
   const semanticConfiguredNow = semanticPlan.shouldAttempt && semanticPlan.requestedMode !== 'heuristic-only';
   const semanticMissingForCurrentConfig = semanticConfiguredNow
-    && snapshotRequestedMode !== semanticPlan.requestedMode;
-  const semanticRetryableFailure = semanticPlan.shouldAttempt
-    && semanticPlan.requestedMode !== 'heuristic-only'
-    && retryCount < maxRetries
+    && snapshotSemanticSignature !== currentSemanticSignature;
+  const semanticRetryableFailure = semanticConfiguredNow
+    && semanticRetryCount < maxRetries
     && !semanticSummary.participated
     && ['request-failed', 'llm-unconfigured'].includes(semanticSummary.reason);
 
   const relationConfiguredNow = canAttemptLlmRelations(options);
-  const relationPreviouslyAttempted = Boolean(
-    (snapshot.llm?.provider && snapshot.llm.provider !== 'disabled')
-    || snapshot.llm?.error
-    || Number(snapshot.llm?.relationCount || 0) > 0
-  );
-  const relationMissingForCurrentConfig = relationConfiguredNow && !relationPreviouslyAttempted;
+  const currentRelationSignature = createRelationConfigSignature(options);
+  const snapshotRelationSignature = snapshot.llm?.relationConfigSignature || null;
+  const relationPreviouslyAttemptedForCurrentConfig = relationConfiguredNow
+    && snapshotRelationSignature === currentRelationSignature;
+  const relationMissingForCurrentConfig = relationConfiguredNow && !relationPreviouslyAttemptedForCurrentConfig;
   const relationRetryableFailure = relationConfiguredNow
-    && retryCount < maxRetries
+    && relationRetryCount < maxRetries
+    && relationPreviouslyAttemptedForCurrentConfig
     && Boolean(snapshot.llm?.error)
     && Number(snapshot.llm?.relationCount || 0) === 0;
 
-  return semanticMissingForCurrentConfig || semanticRetryableFailure || relationMissingForCurrentConfig || relationRetryableFailure;
+  const semanticRequired = semanticMissingForCurrentConfig || semanticRetryableFailure;
+  const relationRequired = relationMissingForCurrentConfig || relationRetryableFailure;
+
+  return {
+    semanticRequired,
+    relationRequired,
+    anyRequired: semanticRequired || relationRequired
+  };
+}
+
+function snapshotNeedsLlmRefresh(snapshot, options = {}, maxRetries = 3) {
+  return summarizeLlmRefreshState(snapshot, options, maxRetries).anyRequired;
 }
 
 function applySemanticObjectInference(semanticPaper, semanticObjects, semanticExtractionPlan) {
@@ -1290,7 +1415,7 @@ function applySemanticObjectInference(semanticPaper, semanticObjects, semanticEx
   };
 }
 
-function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, inference, semanticExtractionPlan, semanticExtractionMode, semanticObjectCount) {
+function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, inference, semanticExtractionPlan, semanticExtractionMode, semanticObjectCount, options = {}) {
   if (inference.relations.length || inference.findings.length || inference.benchmarks.length || inference.researchGoals.length) {
     semanticPaper.benchmarks = mergeSemanticSlots(semanticPaper.benchmarks, inference.benchmarks, 8);
     semanticPaper.findings = mergeSemanticSlots(semanticPaper.findings, inference.findings, 8);
@@ -1301,6 +1426,8 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
     provider: inference.provider !== 'disabled' ? inference.provider : semanticObjects.provider,
     error: inference.error || semanticObjects.error,
     relationCount: inference.relations.length,
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: createRelationConfigSignature(options),
     semanticExtractionMode: semanticExtractionPlan.requestedMode,
     semanticExtractionModeEffective: semanticExtractionMode,
     semanticExtractionAttempted: semanticObjects.attempted,
@@ -1313,6 +1440,7 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
     mode: semanticExtractionMode,
     requestedMode: semanticExtractionPlan.requestedMode,
     effectiveMode: semanticExtractionMode,
+    configSignature: createSemanticConfigSignature(options),
     attempted: semanticObjects.attempted,
     participated: semanticObjects.participated,
     reason: semanticObjects.reason,
@@ -1336,8 +1464,16 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
 }
 
 async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources, options = {}) {
-  const pending = materializedSources.filter((record) => record.parsedPaper && record.semanticPaper);
-  if (!pending.length) return;
+  const records = materializedSources.filter((record) => record.semanticPaper);
+  const semanticPending = records.filter((record) => record.parsedPaper && record.sourceState.llmRefreshState?.semanticRequired);
+  const relationPending = records.filter((record) => record.parsedPaper && record.sourceState.llmRefreshState?.relationRequired);
+  if (!semanticPending.length && !relationPending.length) {
+    for (const record of records) {
+      applySemanticAdmissionPolicy(record.semanticPaper);
+      await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+    }
+    return;
+  }
 
   const quiet = Boolean(options.quiet);
   announceStage(
@@ -1348,77 +1484,114 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
     options.llmStageDetail || 'semantic objects and relation extraction'
   );
   const semanticExtractionPlan = resolveSemanticExtractionPlan(options);
-  const semanticProgress = quiet ? createQuietProgress() : createProgressBar(pending.length, { prefix: 'Semantic extraction' });
-  semanticProgress.start();
-  const formatBatchLabel = (event = {}) => {
+  const formatBatchLabel = (event = {}, total) => {
     const batchNumber = Math.max(1, Number(event.batchNumber || 0));
     const totalBatches = Math.max(1, Number(event.totalBatches || 0));
-    const completed = Math.min(Number(event.completed || 0), pending.length);
-    return `batch ${batchNumber}/${totalBatches}, ${completed}/${pending.length} papers completed`;
+    const completed = Math.min(Number(event.completed || 0), total);
+    return `batch ${batchNumber}/${totalBatches}, ${completed}/${total} papers completed`;
   };
-  const semanticBatchResults = await inferPaperSemanticObjectsBatch(
-    pending.map((record) => ({
-      id: record.sourceState.sourceKey,
-      parsedPaper: record.parsedPaper,
-      semanticPaper: record.semanticPaper
-    })),
-    {
-      ...options,
-      onBatchComplete(event = {}) {
-        semanticProgress.update(
-          Math.min(Number(event.completed || 0), pending.length),
-          formatBatchLabel(event)
-        );
-      }
-    }
-  );
+  const semanticConfigSignature = createSemanticConfigSignature(options);
+  const relationConfigSignature = createRelationConfigSignature(options);
 
-  for (let index = 0; index < pending.length; index += 1) {
-    const record = pending[index];
-    const semanticObjects = semanticBatchResults[index];
-    const { semanticExtractionMode, semanticObjectCount } = applySemanticObjectInference(
-      record.semanticPaper,
-      semanticObjects,
-      semanticExtractionPlan
+  if (semanticPending.length) {
+    const semanticProgress = quiet ? createQuietProgress() : createProgressBar(semanticPending.length, { prefix: 'Semantic extraction' });
+    semanticProgress.start();
+    const semanticBatchResults = await inferPaperSemanticObjectsBatch(
+      semanticPending.map((record) => ({
+        id: record.sourceState.sourceKey,
+        parsedPaper: record.parsedPaper,
+        semanticPaper: record.semanticPaper
+      })),
+      {
+        ...options,
+        onBatchComplete(event = {}) {
+          semanticProgress.update(
+            Math.min(Number(event.completed || 0), semanticPending.length),
+            formatBatchLabel(event, semanticPending.length)
+          );
+        }
+      }
     );
-    record.semanticExtractionMode = semanticExtractionMode;
-    record.semanticObjectCount = semanticObjectCount;
-    record.semanticObjects = semanticObjects;
+
+    for (let index = 0; index < semanticPending.length; index += 1) {
+      const record = semanticPending[index];
+      const semanticObjects = semanticBatchResults[index];
+      const { semanticExtractionMode, semanticObjectCount } = applySemanticObjectInference(
+        record.semanticPaper,
+        semanticObjects,
+        semanticExtractionPlan
+      );
+      const previousLlm = record.semanticPaper.llm || {};
+      const semanticFailed = Boolean(semanticObjects.error) && !semanticObjects.participated;
+      record.semanticPaper.llm = {
+        ...previousLlm,
+        provider: previousLlm.provider && previousLlm.provider !== 'disabled'
+          ? previousLlm.provider
+          : semanticObjects.provider,
+        semanticConfigSignature,
+        semanticExtractionMode: semanticExtractionPlan.requestedMode,
+        semanticExtractionModeEffective: semanticExtractionMode,
+        semanticExtractionAttempted: semanticObjects.attempted,
+        semanticExtractionParticipated: semanticObjects.participated,
+        semanticExtractionParticipationReason: semanticObjects.reason,
+        semanticObjectCount,
+        semanticRetryCount: semanticFailed ? Number(previousLlm.semanticRetryCount || 0) + 1 : 0
+      };
+      record.semanticPaper.llmSemanticObjects = {
+        ...semanticObjects,
+        configSignature: semanticConfigSignature
+      };
+    }
+    semanticProgress.done();
   }
-  semanticProgress.done();
 
-  const relationProgress = quiet ? createQuietProgress() : createProgressBar(pending.length, { prefix: 'Relation extraction' });
-  relationProgress.start();
-  const relationBatchResults = await inferPaperResearchSemanticsBatch(
-    pending.map((record) => ({
-      id: record.sourceState.sourceKey,
-      parsedPaper: record.parsedPaper,
-      semanticPaper: record.semanticPaper
-    })),
-    {
-      ...options,
-      onBatchComplete(event = {}) {
-        relationProgress.update(
-          Math.min(Number(event.completed || 0), pending.length),
-          formatBatchLabel(event)
-        );
+  if (relationPending.length) {
+    const relationProgress = quiet ? createQuietProgress() : createProgressBar(relationPending.length, { prefix: 'Relation extraction' });
+    relationProgress.start();
+    const relationBatchResults = await inferPaperResearchSemanticsBatch(
+      relationPending.map((record) => ({
+        id: record.sourceState.sourceKey,
+        parsedPaper: record.parsedPaper,
+        semanticPaper: record.semanticPaper
+      })),
+      {
+        ...options,
+        onBatchComplete(event = {}) {
+          relationProgress.update(
+            Math.min(Number(event.completed || 0), relationPending.length),
+            formatBatchLabel(event, relationPending.length)
+          );
+        }
       }
-    }
-  );
-
-  for (let index = 0; index < pending.length; index += 1) {
-    const record = pending[index];
-    finalizeSemanticPaperLlmMetadata(
-      record.semanticPaper,
-      record.semanticObjects,
-      relationBatchResults[index],
-      semanticExtractionPlan,
-      record.semanticExtractionMode || semanticExtractionPlan.effectiveMode,
-      record.semanticObjectCount || 0
     );
+
+    for (let index = 0; index < relationPending.length; index += 1) {
+      const record = relationPending[index];
+      const inference = relationBatchResults[index];
+      if (inference.relations.length || inference.findings.length || inference.benchmarks.length || inference.researchGoals.length) {
+        record.semanticPaper.benchmarks = mergeSemanticSlots(record.semanticPaper.benchmarks, inference.benchmarks, 8);
+        record.semanticPaper.findings = mergeSemanticSlots(record.semanticPaper.findings, inference.findings, 8);
+        record.semanticPaper.researchGoals = mergeSemanticSlots(record.semanticPaper.researchGoals, inference.researchGoals, 4);
+      }
+      const previousLlm = record.semanticPaper.llm || {};
+      const relationFailed = Boolean(inference.error) && Number(inference.relations.length || 0) === 0;
+      record.semanticPaper.llm = {
+        ...previousLlm,
+        provider: inference.provider !== 'disabled' ? inference.provider : previousLlm.provider,
+        error: inference.error || null,
+        relationCount: inference.relations.length,
+        relationConfigSignature,
+        relationRetryCount: relationFailed ? Number(previousLlm.relationRetryCount || 0) + 1 : 0
+      };
+      record.semanticPaper.llmRelations = inference.relations;
+    }
+    relationProgress.done();
+  }
+
+  for (const record of records) {
+    applySemanticAdmissionPolicy(record.semanticPaper);
     await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
   }
-  relationProgress.done();
 }
 
 function mergeArray(target, key, values) {
@@ -2296,11 +2469,25 @@ function hasSourceChanges(summary) {
 
 function createManifestCommitToken(manifest) {
   if (!manifest) return null;
+  const sources = (manifest.sources || [])
+    .map((entry) => ({
+      sourceKey: entry.sourceKey || '',
+      fingerprint: entry.fingerprint || entry.sourceFingerprint || '',
+      paperId: entry.paperId || null,
+      activeInGraph: entry.activeInGraph !== false,
+      canonicalSourceKey: entry.canonicalSourceKey || null,
+      duplicateOfSourceKey: entry.duplicateOfSourceKey || null,
+      snapshotStateSignature: entry.snapshotStateSignature || null
+    }))
+    .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
   return JSON.stringify({
     version: manifest.version || null,
-    indexedAt: manifest.indexedAt || null,
-    sourceCount: Array.isArray(manifest.sources) ? manifest.sources.length : 0,
-    semanticExtractionMode: manifest.semanticExtractionMode || null
+    inputPaths: normalizeInputPaths(resolveManifestInputPath(manifest)),
+    sourceMode: manifest.sourceMode || null,
+    pdfParser: manifest.pdfParser || null,
+    semanticExtractionMode: manifest.semanticExtractionMode || null,
+    sourceCount: sources.length,
+    sources
   });
 }
 
@@ -2449,7 +2636,7 @@ function collectNodeLlmCheckCandidates(graph) {
 }
 
 async function runOptionalNodeLlmCheck(graph, options = {}) {
-  if (!options.nodeLlmCheck) {
+  if (!NODE_LLM_CHECK_ENABLED || !options.nodeLlmCheck) {
     return {
       graph,
       summary: createEmptyNodeLlmCheckSummary(false),
@@ -2536,7 +2723,7 @@ async function mergePreparedGraphBuild(rootPath, stagedBuild, options = {}) {
     stage: 'graph-merged',
     mergedAt: nextMeta.indexedAt,
     mergeSummary: effectiveMergeSummary,
-    nodeLlmCheckRequested: Boolean(options.nodeLlmCheck),
+    nodeLlmCheckRequested: Boolean(NODE_LLM_CHECK_ENABLED && options.nodeLlmCheck),
     nodeLlmCheckSummary: nodeCheckResult.summary,
     stagedManifestToken: createManifestCommitToken(nextManifest)
   };
@@ -2600,7 +2787,7 @@ async function commitPreparedCorpusIndex({
   cleanupStagedBuild = false
 }) {
   const activeManifestSources = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false);
-  const writeTaskCount = analysisOptions.enqueueEnhancements !== false ? 4 : 3;
+  const writeTaskCount = analysisOptions.enqueueEnhancements !== false ? 5 : 4;
   const writeProgress = analysisOptions.quiet ? createQuietProgress() : createProgressBar(writeTaskCount, { prefix: 'Writing index' });
   let writeCompleted = 0;
   const setWriteLabel = (label) => {
@@ -2619,6 +2806,12 @@ async function commitPreparedCorpusIndex({
       if (typeof validation === 'function') {
         await validation();
       }
+
+      setWriteLabel('backing up current corpus index');
+      await backupExistingCorpusRoot(rootPath, {
+        backupDir: analysisOptions.backupDir
+      });
+      advanceWrite('backup ready');
 
       setWriteLabel('writing authoritative graph store');
       await saveCorpus(rootPath, graph, meta, {
@@ -2696,6 +2889,10 @@ async function commitPreparedCorpusIndex({
 }
 
 function normalizeInputPaths(inputPath) {
+  if (!inputPath) {
+    return [];
+  }
+
   if (Array.isArray(inputPath)) {
     return unique(inputPath.map((item) => path.resolve(item)));
   }
@@ -2707,6 +2904,33 @@ function describeInputPaths(inputPaths) {
   if (!inputPaths.length) return 'the configured inputs';
   if (inputPaths.length === 1) return inputPaths[0];
   return inputPaths.join(', ');
+}
+
+function inputScopesEqual(leftInputPaths, rightInputPaths) {
+  const left = normalizeInputPaths(leftInputPaths).slice().sort();
+  const right = normalizeInputPaths(rightInputPaths).slice().sort();
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((entry, index) => entry === right[index]);
+}
+
+function createSingleGraphScopeError(rootPath, expectedInputPaths, requestedInputPaths) {
+  return new Error(
+    `PaperNexus is running in single-graph mode for ${rootPath}. ` +
+    `Keep using ${describeInputPaths(normalizeInputPaths(expectedInputPaths))}. ` +
+    `Refusing to switch this graph to ${describeInputPaths(normalizeInputPaths(requestedInputPaths))}.`
+  );
+}
+
+async function assertSingleGraphInputScope(rootPath, requestedInputPaths, persistedInputPaths) {
+  if (!persistedInputPaths) {
+    return;
+  }
+
+  if (!inputScopesEqual(requestedInputPaths, persistedInputPaths)) {
+    throw createSingleGraphScopeError(rootPath, persistedInputPaths, requestedInputPaths);
+  }
 }
 
 async function collectSourcesFromInput(absoluteInput) {
@@ -2812,6 +3036,7 @@ function buildManifestEntry(rootPath, sourceState, semanticPaper, markerCommand,
     materializedFrom: sourceState.markdownCacheNeedsRefresh ? 'source-refresh' : 'markdown-cache',
     markerCommand: markerCommand || null,
     snapshotPath: path.relative(rootPath, getSemanticPaperSnapshotPath(rootPath, sourceState.sourceKey)),
+    snapshotStateSignature: createSemanticPaperSnapshotStateSignature(semanticPaper),
     activeInGraph: semanticPaper.activeInGraph !== false,
     canonicalSourceKey: semanticPaper.canonicalSourceKey || sourceState.sourceKey,
     duplicateOfSourceKey: semanticPaper.duplicateOfSourceKey || null,
@@ -3164,11 +3389,12 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
 
   async function processSourceState(sourceState) {
     if (sourceState.changeType === 'unchanged' || sourceState.reuseCachedMaterialization) {
-      const cachedPaper = sourceState.cachedPaper || await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey);
-      if (cachedPaper) {
-        const shouldPrepareParsedPaper = Boolean(
+        const cachedPaper = sourceState.cachedPaper || await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey);
+        if (cachedPaper) {
+          const shouldPrepareParsedPaper = Boolean(
           options.enableLlmEnrichment !== false
           && sourceState.reuseCachedMaterialization
+          && sourceState.llmRefreshState?.anyRequired
         );
         const parsedPaper = shouldPrepareParsedPaper
           ? await loadParsedPaperFromMarkdownCache(sourceState, cachedPaper)
@@ -3319,6 +3545,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
     const previousIndexExists = await fileExists(metaPath) && await hasCorpusGraphStore(rootPath);
     const inputLabel = describeInputPaths(absoluteInputs);
 
+    await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(previousManifest));
+
     if (!discovery.sources.length && !previousIndexExists) {
       throw new Error(`No PDF or Markdown files found in ${inputLabel}.`);
     }
@@ -3338,6 +3566,13 @@ export async function analyzeCorpus(inputPath, options = {}) {
           cachedPaper = null;
         }
       }
+      let llmRefreshState = cachedPaper
+        ? summarizeLlmRefreshState(cachedPaper, analysisOptions)
+        : {
+            semanticRequired: false,
+            relationRequired: false,
+            anyRequired: false
+          };
 
       const markdownCachePath = resolveExpectedMarkdownCachePath(rootPath, {
         ...source,
@@ -3365,20 +3600,25 @@ export async function analyzeCorpus(inputPath, options = {}) {
 
       let changeType = 'unchanged';
       if (forceLlmRefresh) {
+        llmRefreshState = {
+          semanticRequired: resolveSemanticExtractionPlan(analysisOptions).shouldAttempt,
+          relationRequired: canAttemptLlmRelations(analysisOptions),
+          anyRequired: resolveSemanticExtractionPlan(analysisOptions).shouldAttempt || canAttemptLlmRelations(analysisOptions)
+        };
         changeType = cachedPaper ? 'updated' : (previous ? 'updated' : 'added');
         reuseCachedMaterialization = Boolean(cachedPaper && !markdownCacheNeedsRefresh);
       } else if (forceMaterialization || manifestVersionMismatch || !previous || !snapshotExists) {
         changeType = previous ? 'updated' : 'added';
-        if (!forceMaterialization && cachedPaper && !markdownCacheNeedsRefresh && !snapshotNeedsLlmRefresh(cachedPaper, analysisOptions)) {
+        if (!forceMaterialization && cachedPaper && !markdownCacheNeedsRefresh && !llmRefreshState.anyRequired) {
           reuseCachedMaterialization = true;
         }
       } else if (previous.fingerprint !== fingerprint || previous.kind !== source.kind || markdownCacheNeedsRefresh) {
         changeType = 'updated';
-        if (cachedPaper && !markdownCacheNeedsRefresh && !snapshotNeedsLlmRefresh(cachedPaper, analysisOptions)) {
+        if (cachedPaper && !markdownCacheNeedsRefresh && !llmRefreshState.anyRequired) {
           reuseCachedMaterialization = true;
         }
       } else {
-        if (!cachedPaper || snapshotNeedsLlmRefresh(cachedPaper, analysisOptions)) {
+        if (!cachedPaper || llmRefreshState.anyRequired) {
           changeType = 'updated';
           if (cachedPaper && !markdownCacheNeedsRefresh) {
             reuseCachedMaterialization = true;
@@ -3398,6 +3638,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
         markdownCacheExists,
         markdownCacheNeedsRefresh,
         cachedPaper,
+        llmRefreshState,
         reuseCachedMaterialization
       };
     });
@@ -3405,6 +3646,28 @@ export async function analyzeCorpus(inputPath, options = {}) {
 
     const removedSources = (previousManifest?.sources || []).filter((entry) => !currentKeys.has(entry.sourceKey));
     const changes = summarizeSourceChanges(sourceStates, removedSources);
+
+    if (!options.force && llmOnly && !hasSourceChanges(changes) && sourceStates.every((sourceState) => !sourceState.llmRefreshState?.anyRequired)) {
+      const paperCount = (previousManifest?.sources || []).filter((entry) => entry.activeInGraph !== false).length
+        || (previousManifest?.sources || []).length;
+      return {
+        graph: null,
+        meta: {
+          name: corpusName,
+          indexedAt: previousManifest?.indexedAt || new Date().toISOString(),
+          paperCount,
+          relationshipCount: 0,
+          sourceCount: previousManifest?.sources?.length || sourceStates.length,
+          stage: 'llm-optimized',
+          semanticExtractionMode: normalizedSemanticExtractionMode,
+          lastChangeSummary: changes
+        },
+        rootPath,
+        changes,
+        reused: true,
+        stage: 'llm-optimized'
+      };
+    }
 
     if (!options.force && !llmOnly && !hasSourceChanges(changes) && previousIndexExists) {
       const existing = await loadCorpus(rootPath);
@@ -3490,6 +3753,9 @@ export async function analyzeCorpus(inputPath, options = {}) {
       const indexedAt = new Date().toISOString();
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
+        await backupExistingCorpusRoot(rootPath, {
+          backupDir: analysisOptions.backupDir
+        });
         await saveSourceManifest(rootPath, createEmptyManifest({
           corpusName,
           rootPath,
@@ -3529,6 +3795,9 @@ export async function analyzeCorpus(inputPath, options = {}) {
       const indexedAt = new Date().toISOString();
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
+        await backupExistingCorpusRoot(rootPath, {
+          backupDir: analysisOptions.backupDir
+        });
         await saveSourceManifest(rootPath, createEmptyManifest({
           corpusName,
           rootPath,
@@ -3655,11 +3924,13 @@ export async function buildGraphCorpus(inputPath, options = {}) {
   const discovery = await discoverCorpusSources(inputPath, {
     rootPath: options.rootPath
   });
-  const { rootPath } = discovery;
+  const { rootPath, absoluteInputs } = discovery;
   const manifest = await loadSourceManifest(rootPath);
   if (!manifest) {
     throw new Error('No source manifest found. Run Stage 1 or Stage 2 before building Stage 3.');
   }
+
+  await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(manifest));
 
   const metadataConcurrency = resolveMetadataConcurrency(options);
   const stagedBuild = !options.force ? await loadStagedCorpusBuild(rootPath) : null;
@@ -3758,14 +4029,16 @@ export async function mergeGraphCorpus(inputPath, options = {}) {
   const discovery = await discoverCorpusSources(inputPath, {
     rootPath: options.rootPath
   });
-  const { rootPath } = discovery;
+  const { rootPath, absoluteInputs } = discovery;
   const stagedBuild = !options.force ? await loadStagedCorpusBuild(rootPath) : await loadStagedCorpusBuild(rootPath);
   if (!stagedBuild) {
     throw new Error('No staged graph build found. Run Stage 3 before running the merge stage.');
   }
 
+  await assertSingleGraphInputScope(rootPath, absoluteInputs, stagedBuild.state?.inputPaths || stagedBuild.manifest?.inputPaths || stagedBuild.state?.inputPath || stagedBuild.manifest?.inputPath);
+
   const metadataConcurrency = resolveMetadataConcurrency(options);
-  const wantsNodeLlmCheck = Boolean(options.nodeLlmCheck);
+  const wantsNodeLlmCheck = Boolean(NODE_LLM_CHECK_ENABLED && options.nodeLlmCheck);
   if (!options.force && stagedBuild.state?.stage === 'graph-merged' && (!wantsNodeLlmCheck || stagedBuild.state?.nodeLlmCheckRequested)) {
     try {
       await assertStagedBuildStillFresh(rootPath, stagedBuild.state, metadataConcurrency);
@@ -3811,13 +4084,16 @@ export async function writeIndexCorpus(inputPath, options = {}) {
   const discovery = await discoverCorpusSources(inputPath, {
     rootPath: options.rootPath
   });
-  const { rootPath } = discovery;
+  const { rootPath, absoluteInputs } = discovery;
   let stagedBuild = await loadStagedCorpusBuild(rootPath);
   if (!stagedBuild) {
     throw new Error('No staged graph build found. Run Stage 3 before running Stage 4.');
   }
 
-  if (stagedBuild.state?.stage === 'graph-built' || (options.nodeLlmCheck && !stagedBuild.state?.nodeLlmCheckRequested)) {
+  await assertSingleGraphInputScope(rootPath, absoluteInputs, stagedBuild.state?.inputPaths || stagedBuild.manifest?.inputPaths || stagedBuild.state?.inputPath || stagedBuild.manifest?.inputPath);
+  const wantsNodeLlmCheck = Boolean(NODE_LLM_CHECK_ENABLED && options.nodeLlmCheck);
+
+  if (stagedBuild.state?.stage === 'graph-built' || (wantsNodeLlmCheck && !stagedBuild.state?.nodeLlmCheckRequested)) {
     const merged = await mergePreparedGraphBuild(rootPath, stagedBuild, {
       ...options,
       quiet: true

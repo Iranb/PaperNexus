@@ -126,6 +126,45 @@ function firstDefined(...values) {
   return undefined;
 }
 
+function maybeWarnAboutForceUsage(command, flags = {}) {
+  if (!flags.force) {
+    return;
+  }
+
+  const normalized = String(command || '').trim().toLowerCase();
+  if (![
+    'analyze',
+    'materialize',
+    'llm-optimize',
+    'build-graph',
+    'merge-graph',
+    'write-index',
+    'stage1',
+    'stage2',
+    'stage3',
+    'stage4',
+    'optimize'
+  ].includes(normalized)) {
+    return;
+  }
+
+  console.warn(
+    `Warning: \`--force\` is intended for deliberate full rebuilds on \`${normalized}\`. `
+    + 'Prefer plain `papernexus analyze` or `--continue` for routine updates, resume flows, and normal graph refreshes.'
+  );
+}
+
+function maybeWarnAboutDisabledNodeLlmCheck(flags = {}) {
+  if (!flags['node-llm-check']) {
+    return;
+  }
+
+  console.warn(
+    'Warning: `--node-llm-check` is temporarily disabled. '
+    + 'PaperNexus will skip LLM-based node drop/rename decisions for the staged graph.'
+  );
+}
+
 function getGlobalConfig(config) {
   return normalizeObject(config.global);
 }
@@ -630,7 +669,7 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
     if ((llmProvider === 'openai' || llmProvider === 'anthropic') && !keychainConfiguredNow) {
       console.log('Tip: run `papernexus auth llm set --provider <name> --base-url <url>` later to store your API key in Keychain.');
     }
-    console.log('Next: run `papernexus analyze --force` to build the first index.');
+    console.log('Next: run `papernexus analyze` to build the first index. Add `--force` only when you intentionally want a full rebuild.');
   } finally {
     if (!promptClosed) {
       prompt.close();
@@ -1011,6 +1050,11 @@ async function main() {
     return;
   }
 
+  if (flags.help) {
+    console.log(HELP_TEXT.trim());
+    return;
+  }
+
   if (flags.config === true) {
     throw new Error('Missing value for `--config <path>`.');
   }
@@ -1063,6 +1107,9 @@ async function main() {
     'stage4',
     'optimize'
   ].includes(command)) {
+    maybeWarnAboutForceUsage(command, flags);
+    maybeWarnAboutDisabledNodeLlmCheck(flags);
+
     const target = resolveAnalyzeInput(config, configBaseDir, positionals[0]);
     if (!target.input) {
       throw new Error(`Missing ${command} path. Example: \`papernexus ${command} ./papers\` or configure \`sources.inputs\` in config.json.`);
