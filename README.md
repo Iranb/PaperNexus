@@ -68,7 +68,7 @@ papernexus analyze
 # Stage 1: markdown cache + heuristic snapshots
 papernexus materialize --continue
 
-# Stage 2: batched LLM enrichment
+# Stage 2: batched LLM enrichment, dirty-only and cache-first
 papernexus llm-optimize --continue --semantic-extraction llm-primary --batch-size 16
 
 # Stage 3: staged graph build
@@ -77,8 +77,8 @@ papernexus build-graph --continue
 # Stage 4a: merge similar evaluation nodes
 papernexus merge-graph --continue
 
-# Optional LLM review for low-value evaluation nodes such as "training dataset"
-papernexus merge-graph --continue --node-llm-check
+# Merge currently relies on deterministic heuristics only
+papernexus merge-graph --continue
 
 # Stage 4b: commit the staged graph
 papernexus write-index --continue
@@ -305,7 +305,7 @@ You’ve exercised the full PaperNexus flow when:
 - staged pipeline with resumable commands
 - optional LLM-assisted semantic extraction and relation extraction
 - graph merge stage for duplicate evaluation nodes
-- optional `--node-llm-check` during merge to drop low-value nodes
+- merge-time LLM node deletion is currently disabled; do not rely on `--node-llm-check`
 - Kuzu-backed authoritative graph with lite JSON read index
 - theory, storyline, and reflection overlays
 - local dashboard, MCP server, and macOS background services

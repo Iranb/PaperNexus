@@ -22,7 +22,7 @@ function createManifestToken(manifest) {
   });
 }
 
-test('mergeGraphCorpus can use LLM node check to drop generic evaluation nodes like training dataset', async () => {
+test('mergeGraphCorpus keeps node LLM check disabled even when the flag is requested', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-check-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-check-corpus-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
@@ -195,38 +195,6 @@ test('mergeGraphCorpus can use LLM node check to drop generic evaluation nodes l
       expectedSources: [{ sourceKey: sourcePath, fingerprint }]
     });
 
-    globalThis.fetch = async () => ({
-      ok: true,
-      async json() {
-        return {
-          choices: [
-            {
-              message: {
-                content: JSON.stringify({
-                  nodes: [
-                    {
-                      id: 'dataset:training',
-                      verdict: 'drop',
-                      canonicalName: '',
-                      confidence: 0.97,
-                      reason: 'Generic placeholder, not a specific reusable dataset.'
-                    },
-                    {
-                      id: 'dataset:office-home',
-                      verdict: 'keep',
-                      canonicalName: 'Office-Home dataset',
-                      confidence: 0.98,
-                      reason: 'Specific evaluation dataset.'
-                    }
-                  ]
-                })
-              }
-            }
-          ]
-        };
-      }
-    });
-
     const ingestion = await import('../src/core/ingestion/pipeline.js');
     const merged = await ingestion.mergeGraphCorpus(tempCorpusRoot, {
       nodeLlmCheck: true,
@@ -237,21 +205,22 @@ test('mergeGraphCorpus can use LLM node check to drop generic evaluation nodes l
     });
 
     assert.equal(merged.stage, 'graph-merged');
-    assert.equal(merged.graph.nodes.some((node) => node.id === 'dataset:training'), false);
+    assert.equal(merged.graph.nodes.some((node) => node.id === 'dataset:training'), true);
     assert.equal(merged.graph.nodes.some((node) => node.id === 'dataset:office-home'), true);
     assert.equal(
       merged.graph.relationships.some((relationship) => relationship.targetId === 'dataset:training'),
-      false
+      true
     );
     assert.equal(
       merged.graph.relationships.filter((relationship) => relationship.sourceId === 'paper:1' && relationship.type === EDGE_TYPES.EVALUATES_ON).length,
-      1
+      2
     );
 
     const staged = await loadStagedCorpusBuild(tempCorpusRoot);
     assert.equal(staged.state.stage, 'graph-merged');
-    assert.equal(staged.meta.nodeLlmCheck.checkedNodeCount, 2);
-    assert.equal(staged.meta.nodeLlmCheck.droppedNodeCount, 1);
+    assert.equal(staged.meta.nodeLlmCheck.checkedNodeCount, 0);
+    assert.equal(staged.meta.nodeLlmCheck.droppedNodeCount, 0);
+    assert.equal(staged.state.nodeLlmCheckRequested, false);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;

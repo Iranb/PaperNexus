@@ -32,6 +32,9 @@ Use this skill when you need to:
 
 Reflection data is refreshed through the existing incremental enhancement workflow.
 
+When the refresh path needs PDF parsing, prefer the repo default remote MinerU path first. Only fall back to a local parser if the remote PDF backend is unavailable or the task explicitly calls for local parsing.
+Do not add `--force` by default here. Reflection refresh should normally follow incremental graph refresh behavior unless the user explicitly wants a full rebuild.
+
 Typical update path:
 
 ```bash
@@ -45,20 +48,30 @@ Equivalent staged path:
 papernexus materialize --continue
 papernexus llm-optimize --continue
 papernexus build-graph --continue
-papernexus merge-graph --continue --node-llm-check
-papernexus write-index --continue --node-llm-check
+papernexus merge-graph --continue
+papernexus write-index --continue
 papernexus enhance --once
 ```
 
-Use `papernexus analyze --force` when source Markdown or PDFs changed and you want a full rebuild.
+Keep the configured corpus in single-graph mode. Once an index root already has snapshots or a committed graph, do not point stage commands at a narrower paper subdirectory on that same root.
+
+Use `papernexus analyze --force` only when the user explicitly asks for a full rebuild or when cached stage outputs are known bad and normal resume cannot recover.
+
+If PDFs are involved and you need to spell the parser out explicitly, prefer:
+
+```bash
+papernexus analyze --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000
+```
 
 If the paper content did not change and the previous run only missed LLM-assisted extraction because of network/model failures, `papernexus analyze` is enough. Incremental ingestion now retries those failed papers and reuses snapshots for papers that already succeeded.
 
 If Stage 3 already finished and you want to clean up duplicate `Dataset` / `Benchmark` nodes before committing, run `papernexus merge-graph --continue`.
 
-If the staged graph still contains generic evaluation nodes such as `training dataset`, rerun `papernexus merge-graph --continue --node-llm-check`. This LLM node review is optional and default-off.
+If the staged graph still contains generic evaluation nodes such as `training dataset`, do not rely on `--node-llm-check` right now. That merge-time LLM node deletion path is temporarily disabled.
 
 If the staged graph already looks correct and only needs to be committed, use `papernexus write-index --continue` instead of rebuilding earlier stages. `write-index` will auto-run the merge step if it was skipped.
+
+Before `write-index` overwrites the committed graph, PaperNexus now creates a backup under `<rootPath>/.papernexus-backups/`.
 
 If raw source files changed after Stage 3 and you want those new changes reflected in the graph, rerun Stage 1-3 before running Stage 4. Stage 4 only commits the staged graph that already exists.
 

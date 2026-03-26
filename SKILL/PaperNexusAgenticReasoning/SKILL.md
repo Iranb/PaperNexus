@@ -243,9 +243,23 @@ Next best action:
 If source papers changed, refresh the graph before trusting the reasoning state:
 
 ```bash
-papernexus analyze --force
+papernexus analyze
 papernexus enhance --once
 ```
+
+If the refresh involves PDFs and you need to be explicit about parser choice, prefer the remote MinerU path first:
+
+```bash
+papernexus analyze --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000
+papernexus enhance --once
+```
+
+Agent rule:
+
+- prefer remote MinerU for PDF ingestion and rebuilds
+- do not recommend local Docling or Marker as the first option unless the remote backend is unavailable or the user asks for a local parser
+- do not add `--force` by default; reserve it for explicit full-rebuild requests or known-corrupt staged/cache recovery cases
+- if the cache-first graph build still fails and the user can operate locally, hand the exact command to the user instead of forcing a rebuild
 
 If you want a staged, resumable refresh instead of a monolithic rebuild, use:
 
@@ -253,10 +267,12 @@ If you want a staged, resumable refresh instead of a monolithic rebuild, use:
 papernexus materialize --continue
 papernexus llm-optimize --continue
 papernexus build-graph --continue
-papernexus merge-graph --continue --node-llm-check
-papernexus write-index --continue --node-llm-check
+papernexus merge-graph --continue
+papernexus write-index --continue
 papernexus enhance --once
 ```
+
+Treat that staged path as single-graph continuation. Once an index root already has a committed graph or snapshots, do not point these stage commands at a narrower paper subdirectory on the same root.
 
 If source files did not change and the only failure was LLM extraction or relation requests, prefer:
 
@@ -282,11 +298,12 @@ When the background services are healthy:
 Important Stage 4 boundary:
 
 - `merge-graph` canonicalizes near-duplicate `Dataset` / `Benchmark` nodes inside the staged graph before final commit
-- `merge-graph --node-llm-check` can optionally ask the LLM to drop low-value generic evaluation nodes such as `training dataset`
+- merge-time LLM node deletion is currently disabled; do not rely on `--node-llm-check` for staged graph cleanup
 - `write-index` commits the staged graph that Stage 3 and `merge-graph` prepared
+- `write-index` creates a backup under `<rootPath>/.papernexus-backups/` before overwriting the committed graph
 - if raw paper files changed after Stage 3 and those new files must be included in reasoning, rerun Stage 1-3 before Stage 4
 - if you want to inspect or clean duplicate evaluation nodes before final commit, run `papernexus merge-graph --continue`
-- if the staged graph still contains low-value generic evaluation nodes, rerun `papernexus merge-graph --continue --node-llm-check`
+- if the staged graph still contains low-value generic evaluation nodes, handle them through merge heuristics or later manual review; do not rely on `--node-llm-check` right now
 - if you only need to finish committing an already-built staged graph, `papernexus write-index --continue` is the right recovery path; it will auto-run merge if needed
 
 ## Mutation Decision Policy
