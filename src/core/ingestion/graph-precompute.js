@@ -554,13 +554,23 @@ function runPrecomputeWorker(paper) {
 export async function precomputePaperGraphFragments(papers, options = {}) {
   if (!Array.isArray(papers) || !papers.length) return [];
 
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const concurrency = Math.min(resolvePrecomputeConcurrency(options), papers.length);
   if (concurrency <= 1 || papers.length <= 1) {
-    return papers.map((paper) => precomputePaperGraphFragment(paper));
+    return papers.map((paper, index) => {
+      const fragment = precomputePaperGraphFragment(paper);
+      onProgress?.({
+        completed: index + 1,
+        total: papers.length,
+        paper
+      });
+      return fragment;
+    });
   }
 
   const results = new Array(papers.length);
   let nextIndex = 0;
+  let completed = 0;
 
   async function workerLoop() {
     while (true) {
@@ -576,6 +586,12 @@ export async function precomputePaperGraphFragments(papers, options = {}) {
       } catch {
         results[currentIndex] = precomputePaperGraphFragment(paper);
       }
+      completed += 1;
+      onProgress?.({
+        completed,
+        total: papers.length,
+        paper
+      });
     }
   }
 

@@ -2,8 +2,8 @@
   "corpora": [
     {
       "name": "cache-papers",
-      "rootPath": "/var/folders/ld/gwn4r9d963s5m3dbbjllj2l80000gn/T/papernexus-cache-corpus-Nc85D8",
-      "indexedAt": "2026-03-20T07:30:29.887Z",
+      "rootPath": "/var/folders/ld/gwn4r9d963s5m3dbbjllj2l80000gn/T/papernexus-cache-corpus-aLEGo7",
+      "indexedAt": "2026-03-26T01:42:54.527Z",
       "paperCount": 2
     },
     {
@@ -11,6 +11,24 @@
       "rootPath": "/Users/iranb/.papernexus/index-store",
       "indexedAt": "2026-03-23T10:22:03.421Z",
       "paperCount": 152
+    },
+    {
+      "name": "markdown-cache-test",
+      "rootPath": "/var/folders/ld/gwn4r9d963s5m3dbbjllj2l80000gn/T/papernexus-md-cache-corpus-jesYiZ",
+      "indexedAt": "2026-03-25T13:51:28.471Z",
+      "paperCount": 1
+    },
+    {
+      "name": "markdown-force-test",
+      "rootPath": "/var/folders/ld/gwn4r9d963s5m3dbbjllj2l80000gn/T/papernexus-md-force-corpus-2AhDHp",
+      "indexedAt": "2026-03-25T13:51:28.705Z",
+      "paperCount": 1
+    },
+    {
+      "name": "merge-stage-test",
+      "rootPath": "/var/folders/ld/gwn4r9d963s5m3dbbjllj2l80000gn/T/papernexus-merge-stage-corpus-Kxs8o7",
+      "indexedAt": "2026-03-26T03:16:41.023Z",
+      "paperCount": 1
     },
     {
       "name": "tmp",

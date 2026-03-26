@@ -29,12 +29,22 @@ test('resolveAnalyzeConcurrency increases local docling parallelism', () => {
   }), 4);
 });
 
-test('resolveAnalyzeConcurrency clamps when llm-assisted extraction is enabled', () => {
+test('resolveAnalyzeConcurrency keeps higher concurrency when llm-assisted extraction is enabled', () => {
   assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
     pdfParser: 'docling',
     semanticExtraction: 'llm-assisted',
     availableParallelism: 8
-  }), 2);
+  }), 8);
+});
+
+test('resolveAnalyzeConcurrency uses more parallelism for remote mineru plus llm', () => {
+  assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
+    pdfParser: 'mineru',
+    mineruHttpUrl: 'http://example.test',
+    semanticExtraction: 'llm-primary',
+    llmRelations: true,
+    availableParallelism: 12
+  }), 12);
 });
 
 test('resolveAnalyzeConcurrency respects explicit override', () => {

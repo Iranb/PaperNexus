@@ -106,8 +106,18 @@ export async function hasKuzuGraphStore(dbPath) {
   return fileExists(dbPath);
 }
 
-export async function saveKnowledgeGraphToKuzu(dbPath, graph) {
+export async function saveKnowledgeGraphToKuzu(dbPath, graph, options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const reportProgress = (label) => {
+    onProgress?.({
+      phase: 'authoritative-graph',
+      label
+    });
+  };
+  const progressEvery = Math.max(1, Number(options.progressEvery || 250));
+
   await ensureDir(path.dirname(dbPath));
+  reportProgress('resetting Kuzu graph files');
   await resetKuzuFiles(dbPath);
 
   return withKuzuConnection(dbPath, async (conn) => {
@@ -125,23 +135,51 @@ export async function saveKnowledgeGraphToKuzu(dbPath, graph) {
       `MATCH (src:${KUZU_NODE_TABLE} {id: $sourceId}), (dst:${KUZU_NODE_TABLE} {id: $targetId}) CREATE (src)-[:${KUZU_REL_TABLE} {relId: $relId, relType: $relType, properties: $properties}]->(dst);`
     );
 
-    for (const node of graph.nodes) {
-      closeQueryResult(await conn.execute(insertNode, {
-        id: node.id,
-        nodeType: node.type,
-        name: node.name,
-        properties: serializeProperties(node.properties)
-      }));
-    }
+    let transactionOpen = false;
+    try {
+      reportProgress(`writing Kuzu nodes 0/${graph.nodes.length}, relationships 0/${graph.relationships.length}`);
+      closeQueryResult(await conn.query('BEGIN TRANSACTION;'));
+      transactionOpen = true;
 
-    for (const relationship of graph.relationships) {
-      closeQueryResult(await conn.execute(insertRelationship, {
-        sourceId: relationship.sourceId,
-        targetId: relationship.targetId,
-        relId: relationship.id,
-        relType: relationship.type,
-        properties: serializeProperties(relationship.properties)
-      }));
+      for (let index = 0; index < graph.nodes.length; index += 1) {
+        const node = graph.nodes[index];
+        closeQueryResult(await conn.execute(insertNode, {
+          id: node.id,
+          nodeType: node.type,
+          name: node.name,
+          properties: serializeProperties(node.properties)
+        }));
+
+        if ((index + 1) % progressEvery === 0 || index === graph.nodes.length - 1) {
+          reportProgress(`writing Kuzu nodes ${index + 1}/${graph.nodes.length}, relationships 0/${graph.relationships.length}`);
+        }
+      }
+
+      for (let index = 0; index < graph.relationships.length; index += 1) {
+        const relationship = graph.relationships[index];
+        closeQueryResult(await conn.execute(insertRelationship, {
+          sourceId: relationship.sourceId,
+          targetId: relationship.targetId,
+          relId: relationship.id,
+          relType: relationship.type,
+          properties: serializeProperties(relationship.properties)
+        }));
+
+        if ((index + 1) % progressEvery === 0 || index === graph.relationships.length - 1) {
+          reportProgress(`writing Kuzu nodes ${graph.nodes.length}/${graph.nodes.length}, relationships ${index + 1}/${graph.relationships.length}`);
+        }
+      }
+
+      reportProgress('committing Kuzu transaction');
+      closeQueryResult(await conn.query('COMMIT;'));
+      transactionOpen = false;
+    } catch (error) {
+      if (transactionOpen) {
+        try {
+          closeQueryResult(await conn.query('ROLLBACK;'));
+        } catch {}
+      }
+      throw error;
     }
   });
 }

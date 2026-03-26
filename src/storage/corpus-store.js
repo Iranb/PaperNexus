@@ -30,14 +30,20 @@ export function getCorpusLockPath(rootPath) {
 
 export function getCorpusPaths(rootPath) {
   const corpusDir = getCorpusDir(rootPath);
+  const stagedDir = path.join(corpusDir, 'staged');
   return {
     corpusDir,
+    stagedDir,
     graphPath: path.join(corpusDir, 'graph.json'),
     kuzuGraphPath: path.join(corpusDir, 'graph.kuzu'),
     liteGraphPath: path.join(corpusDir, 'graph.lite.json'),
     liteStatePath: path.join(corpusDir, 'graph.lite.state.json'),
     metaPath: path.join(corpusDir, 'meta.json'),
     manifestPath: path.join(corpusDir, 'sources.json'),
+    stagedGraphPath: path.join(stagedDir, 'graph.json'),
+    stagedMetaPath: path.join(stagedDir, 'meta.json'),
+    stagedManifestPath: path.join(stagedDir, 'sources.json'),
+    stagedStatePath: path.join(stagedDir, 'state.json'),
     papersDir: path.join(corpusDir, 'papers'),
     markdownDir: path.join(corpusDir, 'markdown'),
     markerDir: path.join(corpusDir, 'marker')
@@ -78,21 +84,41 @@ export async function hasCorpusGraphStore(rootPath) {
 export async function saveCorpus(rootPath, graph, meta, options = {}) {
   const { graphPath, kuzuGraphPath, liteGraphPath, liteStatePath, metaPath } = getCorpusPaths(rootPath);
   const backend = await resolveGraphStorageBackend();
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
 
   if (backend === 'kuzu') {
-    await saveKnowledgeGraphToKuzu(kuzuGraphPath, graph);
+    onProgress?.({
+      phase: 'authoritative-graph',
+      label: 'writing authoritative graph to Kuzu'
+    });
+    await saveKnowledgeGraphToKuzu(kuzuGraphPath, graph, {
+      onProgress
+    });
     await removePath(graphPath);
   } else {
+    onProgress?.({
+      phase: 'authoritative-graph',
+      label: 'writing authoritative graph JSON'
+    });
     await writeJson(graphPath, graph.toJSON());
     await removePath(kuzuGraphPath);
     await removePath(`${kuzuGraphPath}.wal`);
   }
 
+  onProgress?.({
+    phase: 'lite-view',
+    label: 'building lite graph materialized view'
+  });
   await saveLiteGraphMaterializedView(rootPath, graph, {
     liteGraphPath,
     liteStatePath,
     currentSources: options.liteViewSources || null,
-    incremental: options.liteViewMode === 'incremental'
+    incremental: options.liteViewMode === 'incremental',
+    onProgress
+  });
+  onProgress?.({
+    phase: 'meta',
+    label: 'writing corpus metadata'
   });
   await writeJson(metaPath, meta);
 }
@@ -224,6 +250,55 @@ export async function loadSourceManifest(rootPath) {
 export async function saveSourceManifest(rootPath, manifest) {
   const { manifestPath } = getCorpusPaths(rootPath);
   await writeJson(manifestPath, manifest);
+}
+
+export async function saveStagedCorpusBuild(rootPath, graph, meta, manifest, state = {}) {
+  const {
+    stagedDir,
+    stagedGraphPath,
+    stagedMetaPath,
+    stagedManifestPath,
+    stagedStatePath
+  } = getCorpusPaths(rootPath);
+
+  await ensureDir(stagedDir);
+  await writeJson(stagedGraphPath, graph.toJSON());
+  await writeJson(stagedMetaPath, meta);
+  await writeJson(stagedManifestPath, manifest);
+  await writeJson(stagedStatePath, state);
+}
+
+export async function loadStagedCorpusBuild(rootPath) {
+  const {
+    stagedGraphPath,
+    stagedMetaPath,
+    stagedManifestPath,
+    stagedStatePath
+  } = getCorpusPaths(rootPath);
+
+  const [graphData, meta, manifest, state] = await Promise.all([
+    readJson(stagedGraphPath, null),
+    readJson(stagedMetaPath, null),
+    readJson(stagedManifestPath, null),
+    readJson(stagedStatePath, null)
+  ]);
+
+  if (!graphData || !meta || !manifest || !state) {
+    return null;
+  }
+
+  return {
+    rootPath,
+    graph: loadKnowledgeGraph(graphData),
+    meta,
+    manifest,
+    state
+  };
+}
+
+export async function removeStagedCorpusBuild(rootPath) {
+  const { stagedDir } = getCorpusPaths(rootPath);
+  await removePath(stagedDir);
 }
 
 export async function loadSemanticPaperSnapshot(rootPath, sourceKey) {

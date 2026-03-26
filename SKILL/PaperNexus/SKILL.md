@@ -37,6 +37,7 @@ Inside each corpus root, PaperNexus writes:
 - `.papernexus/meta.json`
 - `.papernexus/sources.json`
 - `.papernexus/papers/*.json` for per-paper semantic snapshots
+- `.papernexus/markdown/` as the unified markdown working cache for both PDF-derived markdown and copied source markdown
 
 ## Paper Markdown Storage Conventions
 
@@ -97,6 +98,9 @@ Guidelines:
 - keep one paper per Markdown file
 - do not place generated graph artifacts under the paper source tree
 - mixed PDF and Markdown source directories are supported; the ingestion pipeline now materializes both and dedupes same-paper pairs before graph construction
+- both PDF inputs and raw Markdown inputs are cached under the corpus markdown cache so later analyzes can reuse the cached markdown path
+- both `papernexus analyze` and `papernexus analyze --force` are cache-first now: they prefer the corpus markdown cache when the source fingerprint is unchanged, and only refresh the cache when the source file itself changed or the cache is missing
+- if you need to force regeneration of every PDF-derived markdown cache, use `papernexus analyze --force --rebuild-pdf-markdown`
 - prefer a clean source tree over deep nesting
 
 ## Current Behavior To Know
@@ -114,8 +118,32 @@ Guidelines:
 - Kept research nodes may carry `brainstormEligible`, `brainstormScore`, and `brainstormTier` properties. These mark the high-quality ideation layer used by brainstorming features.
 - `ideas` and `brainstorm` now prefer the brainstorm-quality node view rather than the full noisy graph.
 - LLM-assisted relation extraction is controlled by `llm.relations: true` in config.
+- LLM semantic extraction and per-paper relation optimization now support batched requests during `analyze`; tune with `llm.batchSize` or `--batch-size`.
+- If your provider supports high throughput, increase `analyze.concurrency` or `--concurrency`; the pipeline no longer forces a low LLM concurrency cap for non-marker parsers.
+- The pipeline can now run as five cache-first resumable stages:
+  - `papernexus materialize` or `papernexus stage1` for markdown cache + heuristic snapshots
+  - `papernexus llm-optimize` or `papernexus stage2` for batched LLM snapshot enrichment only
+  - `papernexus build-graph` or `papernexus stage3` for building a staged graph artifact from snapshots
+  - `papernexus merge-graph` for canonicalizing near-duplicate `Dataset` / `Benchmark` nodes inside the staged graph
+  - `papernexus write-index` or `papernexus stage4` for committing the staged graph into the authoritative index
+- `papernexus optimize` is still available as a convenience path for stages 2-5 together.
+- Stage 3 persists a staged graph under `.papernexus/staged/`; the merge stage rewrites that staged graph in place; Stage 4 consumes the merged staged graph and removes it after a successful commit.
+- Stage semantics:
+  - Stage 1 `--continue` reuses markdown cache and snapshots when fingerprints still match; `--force` rematerializes source states; add `--rebuild-pdf-markdown` only when you really want to regenerate every PDF-derived markdown cache.
+  - Stage 2 `--continue` only retries or fills snapshots that still need LLM enrichment; `--force` reruns LLM optimization for all staged papers without re-decoding PDFs.
+  - Stage 3 `--continue` reuses the staged graph if it still matches the latest manifest; `--force` rebuilds the staged graph from snapshots.
+  - `merge-graph --continue` reuses an already-merged staged graph when it is still fresh; `--force` reruns canonicalization from the Stage 3 graph.
+  - Stage 4 `--continue` commits the staged graph that Stage 3 and `merge-graph` already prepared; `--force` recommits that staged graph. Stage 4 now validates against the staged manifest, not raw input rescans.
+- `write-index` stays backward-compatible: if the staged graph has not gone through `merge-graph` yet, it will auto-merge similar evaluation nodes before committing.
+- Important Stage 4 boundary: if raw paper files changed after Stage 3, Stage 4 can still commit the already-built staged graph. Those newer raw changes are not included until you rerun Stage 1-3 and then Stage 4.
+- If `sources.inputs` is configured in `config.json`, `analyze`, `materialize`, `llm-optimize`, `build-graph`, `merge-graph`, `write-index`, `optimize`, and `watch` can run without a positional path.
 - Per-paper semantic snapshots now record whether LLM assistance was requested, whether it actually participated, the effective mode, and the failure reason when it did not.
 - Incremental `analyze` retries papers whose prior LLM build failed because of request/network/model availability issues, while reusing snapshots for papers that already succeeded.
+- When using `mineru` with a remote HTTP backend, PaperNexus now probes reachability first. Default behavior is to stop on unreachable backends. Set `--mineru-remote-failure docling` or `analyze.mineruRemoteFailureMode = "docling"` to fall back to Docling instead.
+- `watch --force` only matters for the initial startup pass; later file-change reindexes run with `force: false` so background watching stays incremental.
+- `service install` defaults to both `watch` and `serve` if `--services` is omitted.
+- `papernexus logs watch` prints the current auto-index tmp log path and current log contents.
+- Stage 4 progress labels now distinguish `acquiring corpus commit lock` from `waiting for corpus commit lock`; seeing `waiting` now means there is real lock contention.
 - Chart/axis noise from OCR (e.g., "0.50 0.45 0.40 [SSR] [CLIP]") is automatically filtered during text extraction and entity sanitization.
 - Set `PAPERNEXUS_GRAPH_BACKEND=json` to force legacy JSON graph storage.
 - Environment variables: `PAPERNEXUS_PDF_PARSER`, `PAPERNEXUS_MINERU_CMD`, `PAPERNEXUS_MINERU_HTTP_URL`, `PAPERNEXUS_DOCLING_CMD`, `PAPERNEXUS_DOCLING_OCR_ENGINE`, `PAPERNEXUS_DOCLING_PDF_BACKEND`, `PAPERNEXUS_MARKER_CMD`, `PAPERNEXUS_GRAPH_BACKEND`, `PAPERNEXUS_HOME`.
@@ -141,8 +169,22 @@ papernexus init
 papernexus analyze
 papernexus analyze --quiet  # 进度条模式，简洁输出
 papernexus analyze --semantic-extraction auto
+papernexus analyze --force --rebuild-pdf-markdown
+papernexus analyze --semantic-extraction llm-primary --concurrency 16 --batch-size 16
+papernexus analyze  # if sources.inputs is configured
+papernexus materialize --continue
+papernexus llm-optimize --continue --semantic-extraction llm-primary --batch-size 16
+papernexus build-graph --continue
+papernexus merge-graph --continue
+papernexus write-index --continue
+papernexus stage1 --continue
+papernexus stage2 --continue --semantic-extraction llm-primary --batch-size 16
+papernexus stage3 --continue
+papernexus stage4 --continue
+papernexus optimize --continue --semantic-extraction llm-primary --batch-size 16
 papernexus analyze --force
 papernexus analyze --force --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000
+papernexus analyze --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000 --mineru-remote-failure docling
 papernexus analyze --force --pdf-parser docling --docling-pdf-backend pypdfium2
 papernexus analyze --semantic-extraction auto --provider openai --model gpt-4o-mini
 papernexus probe  # Test LLM connectivity
@@ -152,8 +194,9 @@ papernexus brainstorm "<topic>" --corpus <name>
 papernexus brainstorm "<topic>" --corpus <name> --mode diverge
 papernexus enhance --once
 papernexus serve
-papernexus service install --services watch,serve
-papernexus service status --services watch,serve
+papernexus service install
+papernexus service status
+papernexus logs watch
 ```
 
 ## Core Files
@@ -174,7 +217,11 @@ Read these first when you need orientation:
 - Use `apply_patch` for edits.
 - Be careful with repo-local `config.json`; some tests intentionally bypass it with `--no-config=true`.
 - Do not assume paths using `~` are safe unless they go through the config helpers.
-- When an ingestion run failed only because LLM requests were unavailable, prefer rerunning `papernexus analyze <path>` before reaching for `--force`.
+- When an ingestion run failed only because LLM requests were unavailable, prefer rerunning `papernexus llm-optimize`, `papernexus optimize`, or `papernexus analyze` before reaching for `--force`.
+- Prefer `papernexus materialize` first when debugging PDF parsing or markdown cache issues, `papernexus llm-optimize` when debugging LLM extraction, `papernexus build-graph` when debugging graph projection, `papernexus merge-graph` when debugging duplicate evaluation nodes, and `papernexus write-index` when debugging final persistence.
+- If Stage 3 already succeeded and you specifically need to inspect or fix duplicate `Dataset` / `Benchmark` nodes before commit, run `papernexus merge-graph --continue`.
+- If Stage 3 already succeeded and you only need to finish the commit, prefer `papernexus write-index --continue`.
+- If new raw papers were added and you want them included in the next committed graph, rerun Stage 1-3 before Stage 4. Stage 4 alone only commits the staged graph it already has.
 - When changing persistence behavior, run tests that cover CLI, workflow, backup, and enhancements.
 
 ## Validation Checklist
@@ -206,13 +253,19 @@ Supported services:
 Install:
 
 ```bash
-papernexus service install --services watch,serve
+papernexus service install
 ```
 
 Status:
 
 ```bash
-papernexus service status --services watch,serve
+papernexus service status
+```
+
+Watch log:
+
+```bash
+papernexus logs watch
 ```
 
 ## Graph Mutation Support

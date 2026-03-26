@@ -25,6 +25,24 @@ papernexus init
 # Build or rebuild the corpus
 papernexus analyze --force
 
+# Prepare markdown cache + heuristic snapshots only
+papernexus materialize
+
+# Run Stage 2 only: batch LLM optimization on prepared snapshots
+papernexus llm-optimize
+
+# Run Stage 3 only: build a staged graph from current snapshots
+papernexus build-graph
+
+# Run the merge stage only: canonicalize near-duplicate datasets/benchmarks
+papernexus merge-graph
+
+# Run Stage 4 only: commit the staged graph into the index
+papernexus write-index
+
+# Run stages 2-4 together on top of prepared snapshots
+papernexus optimize
+
 # Resume a previously interrupted analyze run when possible
 papernexus analyze
 
@@ -51,7 +69,11 @@ Recommended day-one flow:
 
 ```bash
 papernexus init
-papernexus analyze --force
+papernexus materialize --continue
+papernexus llm-optimize --continue
+papernexus build-graph --continue
+papernexus merge-graph --continue
+papernexus write-index --continue
 papernexus service install
 papernexus logs watch
 papernexus status
@@ -105,6 +127,16 @@ Once that flow works, point `analyze` at your own paper folder:
 papernexus analyze ./papers --name my-corpus
 ```
 
+Or run the staged pipeline independently:
+
+```bash
+papernexus materialize ./papers --name my-corpus --continue
+papernexus llm-optimize ./papers --name my-corpus --continue --semantic-extraction llm-primary
+papernexus build-graph ./papers --name my-corpus --continue
+papernexus merge-graph ./papers --continue
+papernexus write-index ./papers --continue
+```
+
 ## What PaperNexus Does
 
 PaperNexus currently supports:
@@ -112,6 +144,7 @@ PaperNexus currently supports:
 - indexing local paper corpora from `PDF` or `Markdown`
 - converting PDFs to Markdown via [Docling](https://docling-project.github.io/docling/) by default, with [Marker](https://github.com/datalab-to/marker) as a switchable alternative
 - dynamic incremental rebuilds with per-paper semantic snapshots
+- split pipeline stages so markdown materialization, LLM snapshot optimization, graph build, similar-node merge, and final index commit can run independently with cache-first resume behavior
 - `watch` mode for continuous corpus monitoring
 - an explicit multilayer research graph for topic mapping and idea generation
 - semantic search, context lookup, and upstream/downstream impact traversal
@@ -378,11 +411,14 @@ papernexus service install --services watch,serve
 
 - `--name <corpus>`
 - `--force`
+- `--continue`
 - `--concurrency <n>`
+- `--batch-size <n>`
 - `--config <path>`
 - `--no-config`
 - `--semantic-extraction <heuristic-only|llm-assisted|llm-primary>`
 - `--pdf-parser <docling|marker>`
+- `--rebuild-pdf-markdown`
 - `--pdf-cmd <cmd>`
 - `--pdf-parser-ssh-host <host>`
 - `--docling-cmd <cmd>`
@@ -391,6 +427,7 @@ papernexus service install --services watch,serve
 - `--marker-cmd <cmd>`
 - `--marker-ssh-host <host>`
 - `--marker-concurrency <n>`
+- `--mineru-remote-failure <error|docling>`
 - `--page-range <pages>`
 - `--pdf-ssh-host <host>`
 - `--watch`
@@ -407,6 +444,7 @@ papernexus service install --services watch,serve
 - `--port <port>`
 - `--provider <name>`
 - `--base-url <url>`
+- `--batch-size <n>`
 - `--service <name>`
 - `--account <name>`
 - `--stdin`
@@ -430,7 +468,8 @@ The wizard asks for:
 It then writes a usable `config.json` so the next step can be as short as:
 
 ```bash
-papernexus analyze --force
+papernexus materialize --continue
+papernexus optimize --continue
 ```
 
 ### Legacy Ollama Flags
@@ -494,8 +533,9 @@ Example `config.json`:
   },
   "analyze": {
     "name": "sample-papers",
-    "concurrency": 4,
+    "concurrency": 8,
     "semanticExtraction": "heuristic-only",
+    "rebuildPdfMarkdown": false,
     "pdfParser": "docling",
     "doclingCommand": "docling",
     "doclingOcrEngine": "ocrmac",
@@ -504,6 +544,7 @@ Example `config.json`:
     "markerCommand": "marker_single",
     "markerSshHost": "your-marker-host",
     "markerConcurrency": 4,
+    "mineruRemoteFailureMode": "error",
     "pageRange": "0-5",
     "pdfSshHost": "your-ssh-host",
     "debounceMs": 700,
@@ -546,6 +587,12 @@ Example `config.json`:
 
 PaperNexus can now use an LLM to extract paper-local semantic objects before graph projection.
 
+`analyze` and `analyze --force` are both cache-first now:
+
+- every source records its markdown cache path, fingerprint, and refresh status in the source manifest
+- if the source fingerprint is unchanged, PaperNexus rebuilds from the cached markdown copy instead of re-decoding the PDF
+- `--force` still rebuilds the graph and reruns semantic extraction, but it prefers the cached markdown unless the source file itself changed
+
 Supported modes:
 
 - `heuristic-only`
@@ -558,6 +605,8 @@ Recommended starting point:
 papernexus analyze ./papers \
   --name my-corpus \
   --semantic-extraction llm-assisted \
+  --concurrency 8 \
+  --batch-size 8 \
   --provider openai \
   --model gpt-4o-mini
 ```
@@ -567,30 +616,87 @@ Config example:
 ```json
 {
   "analyze": {
-    "semanticExtraction": "llm-assisted"
+    "semanticExtraction": "llm-assisted",
+    "concurrency": 8
   },
   "llm": {
     "provider": "openai",
     "model": "gpt-4o-mini",
     "baseUrl": "https://api.openai.com/v1",
-    "relations": true
+    "relations": true,
+    "batchSize": 8
   }
 }
 ```
 
-If `analyze` feels slow on a larger corpus, increase parallelism explicitly:
+If your LLM provider supports large throughput, increase both worker parallelism and batch size explicitly:
 
 ```bash
 papernexus analyze ./papers \
   --name my-corpus \
-  --concurrency 4
+  --concurrency 16 \
+  --batch-size 16
 ```
 
 What this changes:
 
 - `Problem`, `Method`, and `Claim` names can be normalized by the LLM
 - the model can also extract `Finding`, `Limitation`, `Assumption`, `Evidence`, `FutureDirection`, `Benchmark`, `Dataset`, and `Metric` candidates
+- semantic extraction and per-paper relation optimization can now be sent in batch during `analyze`
 - outputs are still projected into the existing graph schema, so the workflow stays incremental and non-blocking
+
+### Split Materialize / Optimize Workflow
+
+If you want PDF conversion and LLM optimization to run as separate resumable stages, use:
+
+```bash
+papernexus materialize ./papers --name my-corpus --continue
+papernexus optimize ./papers --name my-corpus --continue --semantic-extraction llm-primary --batch-size 16
+```
+
+This workflow is useful when:
+
+- PDF parsing is expensive and you want to finish it first
+- you want `continue`-style resume behavior for both stages
+- you want to batch LLM requests after all markdown caches and semantic snapshots are ready
+
+`papernexus materialize`:
+
+- refreshes markdown cache and paper snapshots
+- skips LLM extraction
+- does not require the remote LLM to be available
+
+`papernexus optimize`:
+
+- reuses prepared markdown cache and snapshots
+- batches LLM semantic extraction and per-paper relation optimization
+- then builds the staged graph, merges near-duplicate evaluation nodes, and writes the index
+
+### Split Staged Graph Workflow
+
+If you want full manual control over the staged graph path, use:
+
+```bash
+papernexus materialize ./papers --name my-corpus --continue
+papernexus llm-optimize ./papers --name my-corpus --continue --semantic-extraction llm-primary --batch-size 16
+papernexus build-graph ./papers --name my-corpus --continue
+papernexus merge-graph ./papers --continue
+papernexus write-index ./papers --continue
+```
+
+Stage behavior:
+
+- `materialize`: markdown cache + heuristic snapshots
+- `llm-optimize`: batched LLM semantic objects and relation extraction
+- `build-graph`: project snapshots into a staged graph artifact
+- `merge-graph`: canonicalize near-duplicate `Dataset` / `Benchmark` nodes such as `Office-Home dataset` vs `Office Home benchmarks`
+- `write-index`: commit the staged graph into the authoritative graph store and lite view
+
+Resume semantics:
+
+- `--continue` reuses the cached output of that stage when it is still fresh
+- `--force` reruns that stage
+- `write-index` remains backward-compatible: if a merge step was not run explicitly, it will auto-merge the staged graph before committing
 
 ### PDF Parser Selection
 
@@ -630,6 +736,18 @@ If you want this to be the default in config, set:
     "doclingOcrEngine": "ocrmac"
   }
 }
+```
+
+When using `mineru` with a remote HTTP backend, PaperNexus now probes the endpoint before parsing. If the backend is unreachable, the default behavior is to stop with a warning instead of silently continuing. You can opt into automatic fallback with:
+
+```bash
+papernexus analyze ./papers --pdf-parser mineru --mineru-http-url http://host:30000 --mineru-remote-failure docling
+```
+
+If you need to forcibly regenerate every PDF-derived markdown cache, add:
+
+```bash
+papernexus analyze ./papers --force --rebuild-pdf-markdown
 ```
 
 If you need page-range control, use Marker:

@@ -300,6 +300,10 @@ function buildPostprocessTasks(input = {}) {
   return tasks;
 }
 
+export function countGraphPostprocessTasks(input = {}) {
+  return buildPostprocessTasks(input).length;
+}
+
 function runTaskWorker(task) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./graph-postprocess.js', import.meta.url), {
@@ -341,13 +345,23 @@ export async function precomputeGraphPostprocess(input = {}, options = {}) {
   const tasks = buildPostprocessTasks(input);
   if (!tasks.length) return [];
 
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const concurrency = Math.min(resolvePostprocessConcurrency(options), tasks.length);
   if (concurrency <= 1 || tasks.length <= 1) {
-    return tasks.flatMap((task) => executeTask(task));
+    return tasks.flatMap((task, index) => {
+      const relationships = executeTask(task);
+      onProgress?.({
+        completed: index + 1,
+        total: tasks.length,
+        task
+      });
+      return relationships;
+    });
   }
 
   const results = new Array(tasks.length);
   let nextIndex = 0;
+  let completed = 0;
 
   async function workerLoop() {
     while (true) {
@@ -363,6 +377,12 @@ export async function precomputeGraphPostprocess(input = {}, options = {}) {
       } catch {
         results[currentIndex] = executeTask(task);
       }
+      completed += 1;
+      onProgress?.({
+        completed,
+        total: tasks.length,
+        task
+      });
     }
   }
 

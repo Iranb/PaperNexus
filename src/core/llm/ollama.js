@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { EDGE_TYPES, NODE_TYPES } from '../graph/schema.js';
 import {
   ALLOWED_NODE_TYPES,
@@ -13,6 +14,12 @@ import {
   getKeychainSecret
 } from '../../lib/keychain.js';
 import { normalizeText, truncate } from '../../lib/utils.js';
+
+const require = createRequire(import.meta.url);
+let jsonrepair = null;
+try {
+  ({ jsonrepair } = require('jsonrepair'));
+} catch {}
 
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -249,6 +256,136 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
     '- Limitations and assumptions: keep them specific and falsifiable.',
     '- Evidence: extract compact evidence units, not the entire paragraph.',
     '- If a category is unsupported, return an empty list.'
+  ].join('\n');
+}
+
+function buildSemanticExtractionBatchPrompt(entries) {
+  const importantRoles = new Set([
+    'abstract',
+    'introduction',
+    'method',
+    'experiments',
+    'results',
+    'analysis',
+    'discussion',
+    'conclusion'
+  ]);
+  const papers = entries.map((entry, index) => {
+    const parsedPaper = entry.parsedPaper || {};
+    const semanticPaper = entry.semanticPaper || {};
+    return {
+      id: String(entry.id || parsedPaper.paperId || semanticPaper.paperId || `paper-${index + 1}`),
+      title: cleanText(parsedPaper.title || semanticPaper.paperTitle || '', 240),
+      abstract: cleanText(semanticPaper.abstract || parsedPaper.abstract || '', 900),
+      heuristicCandidates: collectEntitySnapshot(semanticPaper).slice(0, 20),
+      sections: (parsedPaper.sections || [])
+        .filter((section) => importantRoles.has(section.role))
+        .slice(0, 8)
+        .map((section) => ({
+          heading: cleanText(section.heading || section.role || 'Section', 120),
+          role: cleanText(section.role || 'body', 32),
+          excerpt: cleanText(section.text, 700)
+        }))
+    };
+  });
+
+  return [
+    'You are extracting structured research objects from multiple papers for a knowledge graph.',
+    'Return strict JSON only.',
+    'Do not invent unsupported entities.',
+    'Prefer short canonical names for Problem and Method nodes.',
+    'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the paper text.',
+    'Merge synonymous surface forms into one canonical object when possible.',
+    '',
+    'Return this JSON shape:',
+    '{',
+    '  "papers": [',
+    '    {',
+    '      "id": "...",',
+    '      "problems": [{"name":"...", "type":"Problem", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "methods": [{"name":"...", "type":"Method", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "claims": [{"name":"...", "type":"Claim", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "findings": [{"name":"...", "type":"Finding", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "researchGoals": [{"name":"...", "type":"ResearchGoal", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "limitations": [{"name":"...", "type":"Limitation", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "assumptions": [{"name":"...", "type":"Assumption", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "evidences": [{"name":"...", "type":"Evidence", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "futureDirections": [{"name":"...", "type":"FutureDirection", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "benchmarks": [{"name":"...", "type":"Benchmark", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "datasets": [{"name":"...", "type":"Dataset", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "metrics": [{"name":"...", "type":"Metric", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}]',
+    '    }',
+    '  ]',
+    '}',
+    '',
+    'Guidelines:',
+    '- Problems: name the research challenge, not a sentence fragment.',
+    '- Methods: use the canonical method or framework name.',
+    '- Claims: capture the main asserted result or contribution.',
+    '- Findings: capture concrete empirical observations.',
+    '- ResearchGoals: capture the overarching goal or vision driving the research.',
+    '- Limitations and assumptions: keep them specific and falsifiable.',
+    '- Evidence: extract compact evidence units, not the entire paragraph.',
+    '- If a category is unsupported, return an empty list.',
+    '',
+    'Papers:',
+    JSON.stringify(papers, null, 2)
+  ].join('\n');
+}
+
+function buildResearchSemanticsBatchPrompt(entries) {
+  const papers = entries.map((entry, index) => {
+    const parsedPaper = entry.parsedPaper || {};
+    const semanticPaper = entry.semanticPaper || {};
+    return {
+      id: String(entry.id || parsedPaper.paperId || semanticPaper.paperId || `paper-${index + 1}`),
+      title: cleanText(parsedPaper.title || semanticPaper.paperTitle || '', 240),
+      abstract: cleanText(semanticPaper.abstract || parsedPaper.abstract || '', 800),
+      candidateEntities: collectEntitySnapshot(semanticPaper).slice(0, 20),
+      excerpts: (parsedPaper.sections || [])
+        .slice(0, 6)
+        .map((section) => ({
+          heading: cleanText(section.heading || section.role || 'Section', 120),
+          role: cleanText(section.role || 'body', 32),
+          excerpt: cleanText(section.text, 420)
+        }))
+    };
+  });
+
+  return [
+    'You are building a multi-layer research knowledge graph from multiple papers.',
+    'Return strict JSON only.',
+    'Do not invent entities or relations that are unsupported by the paper text.',
+    'Focus on relations that help research topic selection, assumption tracking, method transfer, and innovation composition.',
+    '',
+    'Allowed node types:',
+    [...ALLOWED_NODE_TYPES].join(', '),
+    '',
+    'Allowed relation types:',
+    [...ALLOWED_RELATION_TYPES].join(', '),
+    '',
+    'Return this JSON shape:',
+    '{',
+    '  "papers": [',
+    '    {',
+    '      "id": "...",',
+    '      "benchmarks": [{"name": "...", "type": "Benchmark", "evidenceText": "...", "sectionHeading": "...", "confidence": 0.0, "explicitOrInferred": "explicit"}],',
+    '      "findings": [{"name": "...", "type": "Finding", "evidenceText": "...", "sectionHeading": "...", "confidence": 0.0, "explicitOrInferred": "explicit"}],',
+    '      "researchGoals": [{"name": "...", "type": "ResearchGoal", "evidenceText": "...", "sectionHeading": "...", "confidence": 0.0, "explicitOrInferred": "explicit"}],',
+    '      "relations": [{"sourceType": "Method", "sourceName": "...", "targetType": "Problem", "targetName": "...", "type": "APPLIES_TO", "confidence": 0.0, "evidenceText": "...", "rationale": "...", "explicitOrInferred": "explicit"}]',
+    '    }',
+    '  ]',
+    '}',
+    '',
+    'Key relations to capture:',
+    '- LEADS_TO: Method/Finding/Claim → ResearchGoal/Problem',
+    '- BLOCKED_BY: ResearchGoal/Problem/Method → Limitation/Assumption/Problem',
+    '- SOLVES: Paper → Problem, USES: Paper → Method, CLAIMS: Paper → Claim',
+    '',
+    'Only emit relations that are strongly grounded in the paper text. Use explicitOrInferred="inferred" for transfer/composition hypotheses.',
+    '',
+    'Papers:',
+    JSON.stringify(papers, null, 2)
   ].join('\n');
 }
 
@@ -629,6 +766,36 @@ function extractOpenAiText(payload) {
   return '';
 }
 
+function shouldDisableThinkingForJsonMode(config = {}) {
+  if (config.provider !== 'openai') {
+    return false;
+  }
+
+  const baseUrl = String(config.baseUrl || '').toLowerCase();
+  if (!baseUrl.includes('dashscope.aliyuncs.com')) {
+    return false;
+  }
+
+  return /^qwen3/i.test(String(config.model || '').trim());
+}
+
+function tryJsonRepair(candidate) {
+  const text = String(candidate || '');
+  if (!text) return text;
+
+  if (typeof jsonrepair === 'function') {
+    try {
+      return jsonrepair(text);
+    } catch {}
+  }
+
+  return text
+    .replace(/^\uFEFF/, '')
+    .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)(\s*:)/g, '$1"$2"$3')
+    .replace(/:\s*'([^'\\]*(?:\\.[^'\\]*)*)'/g, ': "$1"')
+    .replace(/,\s*([}\]])/g, '$1');
+}
+
 async function requestOpenAiGenerate(config, prompt) {
   const apiKey = config.apiKey || await loadLlmApiKey(config);
   if (apiKey && !config.apiKey) {
@@ -644,6 +811,25 @@ async function requestOpenAiGenerate(config, prompt) {
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), config.timeoutMs);
 
+  const requestBody = {
+    model: config.model,
+    messages: [
+      {
+        role: 'user',
+        content: prompt
+      }
+    ],
+    response_format: {
+      type: 'json_object'
+    },
+    max_completion_tokens: config.maxTokens,
+    temperature: 0.1
+  };
+
+  if (shouldDisableThinkingForJsonMode(config)) {
+    requestBody.enable_thinking = false;
+  }
+
   try {
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -652,20 +838,7 @@ async function requestOpenAiGenerate(config, prompt) {
         'content-type': 'application/json'
       },
       signal: controller.signal,
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        response_format: {
-          type: 'json_object'
-        },
-        max_completion_tokens: config.maxTokens,
-        temperature: 0.1
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
@@ -753,19 +926,96 @@ function parseJsonText(text) {
     return {};
   }
 
-  try {
-    return JSON.parse(normalized);
-  } catch {}
+  const collectJsonCandidates = (value) => {
+    const candidates = [];
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return candidates;
 
-  const fenceMatch = normalized.match(/```(?:json)?\s*([\s\S]+?)```/i);
-  if (fenceMatch?.[1]) {
-    return JSON.parse(fenceMatch[1].trim());
-  }
+    candidates.push(trimmed);
 
-  const firstBrace = normalized.indexOf('{');
-  const lastBrace = normalized.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    return JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
+    const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]+?)```/i);
+    if (fenceMatch?.[1]) {
+      candidates.push(fenceMatch[1].trim());
+    }
+
+    const extractBalancedCandidate = (source) => {
+      const start = source.search(/[{\[]/);
+      if (start === -1) return '';
+
+      const stack = [];
+      let inString = false;
+      let escaping = false;
+
+      for (let index = start; index < source.length; index += 1) {
+        const character = source[index];
+
+        if (inString) {
+          if (escaping) {
+            escaping = false;
+            continue;
+          }
+          if (character === '\\') {
+            escaping = true;
+            continue;
+          }
+          if (character === '"') {
+            inString = false;
+          }
+          continue;
+        }
+
+        if (character === '"') {
+          inString = true;
+          continue;
+        }
+
+        if (character === '{' || character === '[') {
+          stack.push(character);
+          continue;
+        }
+
+        if (character === '}' || character === ']') {
+          const expected = character === '}' ? '{' : '[';
+          if (stack[stack.length - 1] === expected) {
+            stack.pop();
+          }
+          if (!stack.length) {
+            return source.slice(start, index + 1).trim();
+          }
+        }
+      }
+
+      return '';
+    };
+
+    const balancedCandidate = extractBalancedCandidate(trimmed);
+    if (balancedCandidate) {
+      candidates.push(balancedCandidate);
+    }
+
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+    }
+
+    const firstBracket = trimmed.indexOf('[');
+    const lastBracket = trimmed.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+      candidates.push(trimmed.slice(firstBracket, lastBracket + 1));
+    }
+
+    return [...new Set(candidates.filter(Boolean))];
+  };
+
+  for (const candidate of collectJsonCandidates(normalized)) {
+    try {
+      return JSON.parse(candidate);
+    } catch {}
+
+    try {
+      return JSON.parse(tryJsonRepair(candidate));
+    } catch {}
   }
 
   throw new Error('Model response was not valid JSON.');
@@ -827,6 +1077,123 @@ export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, opti
   }
 }
 
+export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
+  const plan = resolveSemanticExtractionPlan(options);
+  if (!entries?.length) return [];
+
+  if (!plan.shouldAttempt) {
+    return entries.map(() => createSemanticObjectInferenceResult({
+      requestedMode: plan.requestedMode,
+      effectiveMode: plan.effectiveMode,
+      attempted: false,
+      participated: false,
+      reason: plan.reason
+    }));
+  }
+
+  const batchSize = Math.max(1, Number(plan.config?.batchSize || DEFAULT_BATCH_SIZE));
+  const results = new Array(entries.length);
+  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+
+  for (let start = 0; start < entries.length; start += batchSize) {
+    const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
+      ...entry,
+      id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${start + index + 1}`)
+    }));
+
+    try {
+      const payload = await requestLlmGenerate(plan.config, buildSemanticExtractionBatchPrompt(batch));
+      const raw = parseJsonText(payload.text);
+      const paperErrors = new Map(
+        (raw?.errors || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), String(entry.error || 'request-failed')])
+      );
+      const paperResults = new Map(
+        (raw?.papers || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), entry])
+      );
+
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        const rawPaper = paperResults.get(batchEntry.id);
+        const rawError = paperErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
+        if (rawError) {
+          results[start + offset] = createSemanticObjectInferenceResult({
+            provider: plan.config.provider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'request-failed',
+            error: rawError
+          });
+          continue;
+        }
+
+        if (!rawPaper) {
+          results[start + offset] = createSemanticObjectInferenceResult({
+            provider: plan.config.provider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'request-failed',
+            error: `Missing batch semantic result for ${batchEntry.id}`
+          });
+          continue;
+        }
+
+        results[start + offset] = createSemanticObjectInferenceResult({
+          provider: plan.config.provider,
+          requestedMode: plan.requestedMode,
+          effectiveMode: plan.effectiveMode,
+          attempted: true,
+          participated: true,
+          reason: null,
+          problems: sanitizeEntityGroup(rawPaper, 'problems', NODE_TYPES.PROBLEM),
+          methods: sanitizeEntityGroup(rawPaper, 'methods', NODE_TYPES.METHOD),
+          claims: sanitizeEntityGroup(rawPaper, 'claims', NODE_TYPES.CLAIM),
+          findings: sanitizeEntityGroup(rawPaper, 'findings', NODE_TYPES.FINDING),
+          researchGoals: sanitizeEntityGroup(rawPaper, 'researchGoals', NODE_TYPES.RESEARCH_GOAL),
+          limitations: sanitizeEntityGroup(rawPaper, 'limitations', NODE_TYPES.LIMITATION),
+          assumptions: sanitizeEntityGroup(rawPaper, 'assumptions', NODE_TYPES.ASSUMPTION),
+          evidences: sanitizeEntityGroup(rawPaper, 'evidences', NODE_TYPES.EVIDENCE),
+          futureDirections: sanitizeEntityGroup(rawPaper, 'futureDirections', NODE_TYPES.FUTURE_DIRECTION),
+          benchmarks: sanitizeEntityGroup(rawPaper, 'benchmarks', NODE_TYPES.BENCHMARK),
+          datasets: sanitizeEntityGroup(rawPaper, 'datasets', NODE_TYPES.DATASET),
+          metrics: sanitizeEntityGroup(rawPaper, 'metrics', NODE_TYPES.METRIC),
+          error: null
+        });
+      }
+    } catch (error) {
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        results[start + offset] = createSemanticObjectInferenceResult({
+          provider: plan.config.provider,
+          requestedMode: plan.requestedMode,
+          effectiveMode: 'heuristic-only',
+          attempted: true,
+          participated: false,
+          reason: 'request-failed',
+          error: error.message
+        });
+      }
+    } finally {
+      options.onBatchComplete?.({
+        phase: 'semantic-extraction',
+        batchNumber: Math.floor(start / batchSize) + 1,
+        totalBatches,
+        completed: Math.min(start + batch.length, entries.length),
+        total: entries.length,
+        batchSize: batch.length
+      });
+    }
+  }
+
+  return results;
+}
+
 export async function inferPaperResearchSemantics(parsedPaper, semanticPaper, options = {}) {
   if (!llmRelationsEnabled(options)) {
     return {
@@ -885,6 +1252,127 @@ export async function inferPaperResearchSemantics(parsedPaper, semanticPaper, op
       error: error.message
     };
   }
+}
+
+export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
+  if (!entries?.length) return [];
+
+  if (!llmRelationsEnabled(options)) {
+    return entries.map(() => ({
+      provider: 'disabled',
+      benchmarks: [],
+      findings: [],
+      researchGoals: [],
+      relations: [],
+      error: null
+    }));
+  }
+
+  const config = resolveLlmConfig(options);
+  if (!config.enabled || !config.model) {
+    return entries.map(() => ({
+      provider: 'disabled',
+      benchmarks: [],
+      findings: [],
+      researchGoals: [],
+      relations: [],
+      error: null
+    }));
+  }
+
+  const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const results = new Array(entries.length);
+  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+
+  for (let start = 0; start < entries.length; start += batchSize) {
+    const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
+      ...entry,
+      id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${start + index + 1}`)
+    }));
+
+    try {
+      const payload = await requestLlmGenerate(config, buildResearchSemanticsBatchPrompt(batch));
+      const raw = parseJsonText(payload.text);
+      const paperErrors = new Map(
+        (raw?.errors || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), String(entry.error || 'request-failed')])
+      );
+      const paperResults = new Map(
+        (raw?.papers || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), entry])
+      );
+
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        const rawPaper = paperResults.get(batchEntry.id);
+        const rawError = paperErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
+        if (rawError) {
+          results[start + offset] = {
+            provider: config.provider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: rawError
+          };
+          continue;
+        }
+
+        if (!rawPaper) {
+          results[start + offset] = {
+            provider: config.provider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: `Missing batch relation result for ${batchEntry.id}`
+          };
+          continue;
+        }
+
+        results[start + offset] = {
+          provider: config.provider,
+          benchmarks: (rawPaper.benchmarks || [])
+            .map((record) => sanitizeEntityRecord(record, NODE_TYPES.BENCHMARK))
+            .filter(Boolean),
+          findings: (rawPaper.findings || [])
+            .map((record) => sanitizeEntityRecord(record, NODE_TYPES.FINDING))
+            .filter(Boolean),
+          researchGoals: (rawPaper.researchGoals || [])
+            .map((record) => sanitizeEntityRecord(record, NODE_TYPES.RESEARCH_GOAL))
+            .filter(Boolean),
+          relations: (rawPaper.relations || [])
+            .map(sanitizeRelationRecord)
+            .filter(Boolean),
+          error: null
+        };
+      }
+    } catch (error) {
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        results[start + offset] = {
+          provider: config.provider,
+          benchmarks: [],
+          findings: [],
+          researchGoals: [],
+          relations: [],
+          error: error.message
+        };
+      }
+    } finally {
+      options.onBatchComplete?.({
+        phase: 'relation-extraction',
+        batchNumber: Math.floor(start / batchSize) + 1,
+        totalBatches,
+        completed: Math.min(start + batch.length, entries.length),
+        total: entries.length,
+        batchSize: batch.length
+      });
+    }
+  }
+
+  return results;
 }
 
 function buildCrossPaperPrompt(batch) {

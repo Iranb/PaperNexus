@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -53,6 +54,87 @@ test('withFileLock serializes concurrent writers to the same resource', async ()
     releaseFirstWriter();
     await Promise.all([firstWriter, secondWriter]);
     assert.deepEqual(steps, ['first:entered', 'first:released', 'second:entered']);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('withFileLock only reports waiting after real lock contention and reports acquisition details', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-lock-callbacks-'));
+  const lockPath = path.join(workspaceRoot, 'resource.lock');
+  let releaseFirstWriter = null;
+  const secondWriterEvents = [];
+
+  try {
+    const firstWriterStarted = new Promise((resolve) => {
+      releaseFirstWriter = resolve;
+    });
+
+    const firstWriter = withFileLock(lockPath, async () => {
+      await firstWriterStarted;
+    }, {
+      timeoutMs: 2000,
+      pollIntervalMs: 25
+    });
+
+    await sleep(100);
+
+    const secondWriter = withFileLock(lockPath, async () => {
+      secondWriterEvents.push('entered');
+    }, {
+      timeoutMs: 2000,
+      pollIntervalMs: 25,
+      onWait() {
+        secondWriterEvents.push('wait');
+      },
+      onAcquired(event) {
+        secondWriterEvents.push(`acquired:${event.waited ? 'waited' : 'immediate'}`);
+      }
+    });
+
+    await sleep(120);
+    releaseFirstWriter();
+    await Promise.all([firstWriter, secondWriter]);
+
+    assert.deepEqual(secondWriterEvents, ['wait', 'acquired:waited', 'entered']);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('withFileLock removes the lock directory when interrupted by SIGINT', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-lock-sigint-'));
+  const lockPath = path.join(workspaceRoot, 'resource.lock');
+  const scriptPath = path.join(workspaceRoot, 'lock-holder.mjs');
+  const fsModulePath = path.join(__dirname, '..', 'src', 'lib', 'fs.js');
+
+  try {
+    await fs.writeFile(scriptPath, `
+import { withFileLock } from ${JSON.stringify(fsModulePath)};
+await withFileLock(${JSON.stringify(lockPath)}, async () => {
+  await new Promise(() => {});
+});
+`, 'utf8');
+
+    const child = spawn('node', [scriptPath], {
+      cwd: workspaceRoot,
+      stdio: ['ignore', 'ignore', 'ignore']
+    });
+
+    const deadline = Date.now() + 5000;
+    while (!(await fs.stat(lockPath).then(() => true).catch(() => false))) {
+      if (Date.now() > deadline) {
+        throw new Error('Timed out waiting for child process to acquire the lock.');
+      }
+      await sleep(50);
+    }
+
+    child.kill('SIGINT');
+    await new Promise((resolve) => {
+      child.once('close', () => resolve());
+    });
+
+    assert.equal(await fs.stat(lockPath).then(() => true).catch(() => false), false);
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }

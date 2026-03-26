@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { __markerTestables } from '../src/core/ingestion/marker.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { __markerTestables, convertPdfToMarkdown } from '../src/core/ingestion/marker.js';
 
 test('resolveRemoteMarkerHost prefers explicit marker host then pdf host', () => {
   assert.equal(
@@ -57,4 +60,52 @@ test('buildRemoteDoclingScript includes docling command and output directory', (
   assert.match(script, /--ocr-engine 'ocrmac'/);
   assert.match(script, /--output '\/tmp\/run\/out'/);
   assert.match(script, /find "\$run_dir" -type f -name '\*\.md'/);
+});
+
+test('resolveMineruRemoteFailureMode defaults to error and accepts docling', () => {
+  assert.equal(__markerTestables.resolveMineruRemoteFailureMode({}), 'error');
+  assert.equal(__markerTestables.resolveMineruRemoteFailureMode({ mineruRemoteFailureMode: 'docling' }), 'docling');
+  assert.equal(__markerTestables.resolveMineruRemoteFailureMode({ mineruRemoteFailureMode: 'unexpected' }), 'error');
+});
+
+test('probeHttpEndpoint reports unreachable connections', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:30000');
+    };
+
+    const result = await __markerTestables.probeHttpEndpoint('http://127.0.0.1:30000');
+    assert.equal(result.reachable, false);
+    assert.match(result.error, /ECONNREFUSED/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('convertPdfToMarkdown stops early when remote mineru backend is unreachable', async () => {
+  const originalFetch = globalThis.fetch;
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mineru-unreachable-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    globalThis.fetch = async () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:30000');
+    };
+
+    await assert.rejects(
+      () => convertPdfToMarkdown(pdfPath, {
+        pdfParser: 'mineru',
+        mineruHttpUrl: 'http://127.0.0.1:30000',
+        mineruRemoteFailureMode: 'error',
+        markerDir: tempDir,
+        markdownDir: tempDir
+      }),
+      /Remote MinerU backend is unreachable/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });

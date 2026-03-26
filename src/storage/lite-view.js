@@ -333,22 +333,34 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
   const liteStatePath = options.liteStatePath;
   const currentSources = Array.isArray(options.currentSources) ? options.currentSources : null;
   const incremental = Boolean(options.incremental && currentSources);
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const reportProgress = (label) => {
+    onProgress?.({
+      phase: 'lite-view',
+      label
+    });
+  };
 
   if (!incremental || !liteGraphPath || !liteStatePath) {
+    reportProgress('writing full lite graph payload');
     await writeJson(liteGraphPath, createLiteGraphPayload(graph));
     if (liteStatePath && currentSources) {
+      reportProgress('writing full lite graph state');
       await writeJson(liteStatePath, buildFullLiteState(graph, currentSources));
     }
     return;
   }
 
+  reportProgress('loading previous lite graph state');
   const [previousPayload, previousStateRaw] = await Promise.all([
     readJson(liteGraphPath, null),
     readJson(liteStatePath, null)
   ]);
 
   if (!previousPayload || !previousStateRaw || previousStateRaw.version !== LITE_VIEW_VERSION) {
+    reportProgress('rebuilding lite graph payload from scratch');
     await writeJson(liteGraphPath, createLiteGraphPayload(graph));
+    reportProgress('rebuilding lite graph state from scratch');
     await writeJson(liteStatePath, buildFullLiteState(graph, currentSources));
     return;
   }
@@ -357,6 +369,7 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
   const payloadMaps = hydratePayloadMaps(previousPayload);
   const nextState = normalizeLiteState(previousState);
   const currentSourceMap = new Map((currentSources || []).map((source) => [escapeKey(source.sourceKey), source]));
+  reportProgress('computing lite graph membership');
   const membership = buildLiteMembership(graph, currentSources);
   const graphNodesById = new Map(graph.nodes.map((node) => [node.id, node]));
   const graphRelationshipsById = new Map(graph.relationships.map((relationship) => [relationship.id, relationship]));
@@ -382,6 +395,12 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
 
   const impactedNodeIds = new Set();
   const impactedRelationshipIds = new Set();
+  let projectionProgress = 0;
+  let projectionTotal = 0;
+  const reportProjectionProgress = () => {
+    if (!projectionTotal) return;
+    reportProgress(`projecting lite graph ${projectionProgress}/${projectionTotal}`);
+  };
 
   for (const sourceKey of changedSourceKeys) {
     const previous = nextState.sources[sourceKey];
@@ -431,11 +450,18 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
     incrementRefCount(nextState.relationshipRefs, relationshipId);
   }
 
+  const totalProjectionWork = impactedNodeIds.size + impactedRelationshipIds.size;
+  projectionTotal = totalProjectionWork;
+  projectionProgress = 0;
   for (const nodeId of impactedNodeIds) {
     if (nextState.nodeRefs[nodeId] > 0 && graphNodesById.has(nodeId)) {
       applyNodeProjection(payloadMaps, graphNodesById.get(nodeId));
     } else {
       removeNodeProjection(payloadMaps, nodeId);
+    }
+    projectionProgress += 1;
+    if (projectionProgress % 500 === 0 || projectionProgress === totalProjectionWork) {
+      reportProjectionProgress();
     }
   }
 
@@ -445,8 +471,14 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
     } else {
       removeRelationshipProjection(payloadMaps, relationshipId);
     }
+    projectionProgress += 1;
+    if (projectionProgress % 500 === 0 || projectionProgress === totalProjectionWork) {
+      reportProjectionProgress();
+    }
   }
 
+  reportProgress('writing lite graph payload');
   await writeJson(liteGraphPath, serializePayload(payloadMaps));
+  reportProgress('writing lite graph state');
   await writeJson(liteStatePath, nextState);
 }

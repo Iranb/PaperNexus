@@ -20,8 +20,18 @@ Global options:
 
 Commands:
   papernexus init [--force]
-  papernexus analyze [<path>] [--name <corpus>] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
-  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
+  papernexus llm-optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus build-graph [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>]
+  papernexus merge-graph [<path>] [--continue] [--force] [--quiet]
+  papernexus write-index [<path>] [--continue] [--force] [--quiet]
+  papernexus stage1 [<path>] [--name <corpus>] [--continue] [--force]
+  papernexus stage2 [<path>] [--name <corpus>] [--continue] [--force]
+  papernexus stage3 [<path>] [--name <corpus>] [--continue] [--force]
+  papernexus stage4 [<path>] [--continue] [--force]
+  papernexus optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
   papernexus logs watch
@@ -50,6 +60,12 @@ Examples:
   papernexus analyze ./papers --name ml-papers --semantic-extraction auto --provider openai --model gpt-4o-mini
   papernexus analyze ./papers --name ml-papers --pdf-parser marker --marker-cmd marker_single --pdf-ssh-host 211.71.76.29 --ollama-model qwen2.5:0.5b --ollama-relations --ollama-ssh-host 211.71.76.29
   papernexus analyze ./papers --name ml-papers --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000
+  papernexus materialize ./papers --name ml-papers --continue
+  papernexus llm-optimize ./papers --name ml-papers --continue --semantic-extraction llm-primary --batch-size 16
+  papernexus build-graph ./papers --name ml-papers --continue
+  papernexus merge-graph ./papers --continue
+  papernexus write-index ./papers --continue
+  papernexus optimize ./papers --name ml-papers --continue --semantic-extraction llm-primary --batch-size 16
   papernexus watch ./papers --name ml-papers
   papernexus enhance --once
   papernexus auth llm set --provider openai --base-url https://coding.dashscope.aliyuncs.com/v1
@@ -201,9 +217,11 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
   return {
     name: firstDefined(flags.name, commandConfig.name),
     force: Boolean(firstDefined(flags.force, commandConfig.force)),
+    continueMode: Boolean(firstDefined(flags.continue, commandConfig.continueMode, !firstDefined(flags.force, commandConfig.force))),
     quiet: Boolean(firstDefined(flags.quiet, commandConfig.quiet)),
     analyzeConcurrency: toNumber(firstDefined(flags.concurrency, flags['analyze-concurrency'], commandConfig.concurrency, commandConfig.analyzeConcurrency), undefined),
     semanticExtraction: firstDefined(flags['semantic-extraction'], commandConfig.semanticExtraction, 'auto'),
+    rebuildPdfMarkdown: Boolean(firstDefined(flags['rebuild-pdf-markdown'], commandConfig.rebuildPdfMarkdown)),
     pdfParser: firstDefined(flags['pdf-parser'], commandConfig.pdfParser, 'mineru'),
     pdfCommand: firstDefined(flags['pdf-cmd'], commandConfig.pdfCommand),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], commandConfig.pdfParserSshHost),
@@ -216,6 +234,7 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     markerConcurrency: toNumber(firstDefined(flags['marker-concurrency'], commandConfig.markerConcurrency), undefined),
     mineruCommand: firstDefined(flags['mineru-cmd'], commandConfig.mineruCommand),
     mineruHttpUrl: firstDefined(flags['mineru-http-url'], commandConfig.mineruHttpUrl, commandConfig.pdfCommand),
+    mineruRemoteFailureMode: firstDefined(flags['mineru-remote-failure'], commandConfig.mineruRemoteFailureMode, 'error'),
     pageRange: firstDefined(flags['page-range'], commandConfig.pageRange),
     pdfSshHost: firstDefined(flags['pdf-ssh-host'], commandConfig.pdfSshHost, commandConfig.pdfParserSshHost, llmSshHost),
     ...llmOptions,
@@ -1030,29 +1049,119 @@ async function main() {
 
   const runtime = await loadRuntimeModules();
 
-  if (command === 'analyze') {
+  if ([
+    'analyze',
+    'materialize',
+    'llm-optimize',
+    'build-graph',
+    'merge-graph',
+    'write-index',
+    'stage1',
+    'stage2',
+    'stage3',
+    'stage4',
+    'optimize'
+  ].includes(command)) {
     const target = resolveAnalyzeInput(config, configBaseDir, positionals[0]);
     if (!target.input) {
-      throw new Error('Missing analyze path. Example: `papernexus analyze ./papers` or configure `sources.inputs` in config.json.');
+      throw new Error(`Missing ${command} path. Example: \`papernexus ${command} ./papers\` or configure \`sources.inputs\` in config.json.`);
     }
 
+    const isMaterialize = command === 'materialize' || command === 'stage1';
+    const isLlmOptimize = command === 'llm-optimize' || command === 'stage2';
+    const isBuildGraph = command === 'build-graph' || command === 'stage3';
+    const isMergeGraph = command === 'merge-graph';
+    const isWriteIndex = command === 'write-index' || command === 'stage4';
+    const isOptimize = command === 'optimize';
     const runAsWatch = Boolean(firstDefined(flags.watch, getSection(config, 'analyze').watch));
     const analyzeOptions = {
       ...buildAnalyzeOptions(flags, config, runAsWatch ? 'watch' : 'analyze'),
-      rootPath: target.rootPath
+      rootPath: target.rootPath,
+      materializeOnly: isMaterialize,
+      llmOnly: isLlmOptimize,
+      optimizeOnly: isOptimize
     };
     if (runAsWatch) {
       await runtime.watchCorpus(target.input, analyzeOptions);
       return;
     }
 
-    const result = await runtime.analyzeCorpus(target.input, analyzeOptions);
+    const result = isMaterialize
+      ? await runtime.materializeCorpus(target.input, analyzeOptions)
+      : isLlmOptimize
+        ? await runtime.llmOptimizeCorpus(target.input, analyzeOptions)
+        : isBuildGraph
+          ? await runtime.buildGraphCorpus(target.input, analyzeOptions)
+          : isMergeGraph
+            ? await runtime.mergeGraphCorpus(target.input, analyzeOptions)
+          : isWriteIndex
+            ? await runtime.writeIndexCorpus(target.input, analyzeOptions)
+      : isOptimize
+        ? await runtime.optimizeCorpus(target.input, analyzeOptions)
+        : await runtime.analyzeCorpus(target.input, analyzeOptions);
     const quiet = Boolean(flags.quiet);
 
+    if (isMaterialize || result.stage === 'materialized') {
+      if (quiet) {
+        console.log(`Materialized corpus "${result.meta.name}" - ${result.meta.paperCount} papers cached`);
+      } else {
+        console.log(`Materialized corpus "${result.meta.name}" at ${result.rootPath}`);
+        console.log(`Prepared ${result.meta.paperCount} papers into markdown cache + semantic snapshots`);
+      }
+      logChangeSummary(result, quiet);
+      return;
+    }
+
+    if (isLlmOptimize || result.stage === 'llm-optimized') {
+      if (quiet) {
+        console.log(`LLM-optimized corpus "${result.meta.name}" - ${result.meta.paperCount} snapshots refreshed`);
+      } else {
+        console.log(`LLM-optimized snapshots for "${result.meta.name}" at ${result.rootPath}`);
+        console.log(`Refreshed ${result.meta.paperCount} paper snapshots with semantic objects and relations`);
+      }
+      logChangeSummary(result, quiet);
+      return;
+    }
+
+    if (isBuildGraph || result.stage === 'graph-built') {
+      if (quiet) {
+        console.log(`Built staged graph for "${result.meta.name}" - ${result.meta.paperCount} papers, ${result.meta.relationshipCount} relationships`);
+      } else {
+        console.log(`Built staged graph for "${result.meta.name}" at ${result.rootPath}`);
+        console.log(runtime.renderStatus(result.meta));
+        console.log('The merge stage is now ready: run `papernexus merge-graph` before `papernexus write-index`.');
+      }
+      logChangeSummary(result, quiet);
+      return;
+    }
+
+    if (isMergeGraph || result.stage === 'graph-merged') {
+      if (quiet) {
+        console.log(`Merged similar evaluation nodes for "${result.meta.name}" - ${result.meta.nodeCount} nodes remain in the staged graph`);
+      } else {
+        console.log(`Merged similar evaluation nodes for "${result.meta.name}" at ${result.rootPath}`);
+        console.log(runtime.renderStatus(result.meta));
+        console.log('The staged graph is ready to commit: run `papernexus write-index`.');
+      }
+      logChangeSummary(result, quiet);
+      return;
+    }
+
+    if (isWriteIndex || result.stage === 'index-written') {
+      if (quiet) {
+        console.log(`Committed staged graph for "${result.meta.name}" - ${result.meta.paperCount} papers, ${result.meta.relationshipCount} relationships`);
+      } else {
+        console.log(`Committed staged graph for "${result.meta.name}" at ${result.rootPath}`);
+        console.log(runtime.renderStatus(result.meta));
+      }
+      logChangeSummary(result, quiet);
+      return;
+    }
+
     if (quiet) {
-      console.log(`Indexed corpus "${result.meta.name}" - ${result.meta.paperCount} papers, ${result.meta.relationshipCount} relationships`);
+      console.log(`${isOptimize ? 'Optimized' : 'Indexed'} corpus "${result.meta.name}" - ${result.meta.paperCount} papers, ${result.meta.relationshipCount} relationships`);
     } else {
-      console.log(`Indexed corpus "${result.meta.name}" at ${result.rootPath}`);
+      console.log(`${isOptimize ? 'Optimized' : 'Indexed'} corpus "${result.meta.name}" at ${result.rootPath}`);
       console.log(runtime.renderStatus(result.meta));
     }
     logChangeSummary(result, quiet);

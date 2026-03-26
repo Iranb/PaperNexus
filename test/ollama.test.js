@@ -2,7 +2,9 @@ import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   adjudicateCrossPaperCandidates,
+  inferPaperResearchSemanticsBatch,
   inferPaperSemanticObjects,
+  inferPaperSemanticObjectsBatch,
   inferPaperResearchSemantics,
   loadLlmApiKey,
   resolveLlmConfig
@@ -130,6 +132,96 @@ test('inferPaperSemanticObjects auto falls back to heuristic-only when no LLM mo
   assert.equal(result.reason, 'llm-unconfigured');
   assert.equal(result.error, null);
   assert.equal(result.problems.length, 0);
+});
+
+test('inferPaperSemanticObjects disables thinking for DashScope Qwen3 JSON mode', async () => {
+  let requestBody = null;
+  globalThis.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  problems: []
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  await inferPaperSemanticObjects(
+    {
+      title: 'DashScope Qwen3 paper',
+      sections: [
+        { heading: 'Introduction', role: 'introduction', text: 'Structured JSON extraction test.' }
+      ]
+    },
+    {
+      abstract: 'A test paper.',
+      problems: [],
+      methods: [],
+      claims: []
+    },
+    {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'qwen3-32b',
+      llmBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      llmApiKey: 'test-key'
+    }
+  );
+
+  assert.equal(requestBody.enable_thinking, false);
+  assert.deepEqual(requestBody.response_format, { type: 'json_object' });
+});
+
+test('inferPaperSemanticObjects tolerates lightly malformed JSON with repair fallback', async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: "{problems:[{name:'open-world ssl', type:'Problem', evidenceText:'A test.',}],}"
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const result = await inferPaperSemanticObjects(
+    {
+      title: 'Repair test',
+      sections: [
+        { heading: 'Introduction', role: 'introduction', text: 'A malformed JSON response should still parse.' }
+      ]
+    },
+    {
+      abstract: 'A test paper.',
+      problems: [],
+      methods: [],
+      claims: []
+    },
+    {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key'
+    }
+  );
+
+  assert.equal(result.problems.length, 1);
+  assert.equal(result.problems[0].name, 'open-world ssl');
 });
 
 test('inferPaperResearchSemantics sanitizes Ollama output and remaps incompatible relations', async () => {
@@ -296,6 +388,114 @@ test('adjudicateCrossPaperCandidates batches requests and filters unsupported re
     judgments.map((item) => item.relationType),
     ['TRANSFERABLE_TO', 'COMBINES_WITH']
   );
+});
+
+test('batch LLM inference reports batch progress callbacks', async () => {
+  const batchEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  papers: papers.map((paper) => ({
+                    id: paper.id,
+                    problems: []
+                  }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} },
+    { id: 'paper-3', parsedPaper: { title: 'C', sections: [] }, semanticPaper: {} }
+  ];
+
+  const semanticResults = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmBatchSize: 2,
+    onBatchComplete(event) {
+      batchEvents.push(event);
+    }
+  });
+
+  assert.equal(semanticResults.length, 3);
+  assert.equal(batchEvents.length, 2);
+  assert.equal(batchEvents[0].batchNumber, 1);
+  assert.equal(batchEvents[0].totalBatches, 2);
+  assert.equal(batchEvents[0].completed, 2);
+  assert.equal(batchEvents[1].batchNumber, 2);
+  assert.equal(batchEvents[1].totalBatches, 2);
+  assert.equal(batchEvents[1].completed, 3);
+
+  batchEvents.length = 0;
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  papers: papers.map((paper) => ({
+                    id: paper.id,
+                    relations: []
+                  }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const relationResults = await inferPaperResearchSemanticsBatch(entries, {
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmRelations: true,
+    llmBatchSize: 2,
+    onBatchComplete(event) {
+      batchEvents.push(event);
+    }
+  });
+
+  assert.equal(relationResults.length, 3);
+  assert.equal(batchEvents.length, 2);
+  assert.equal(batchEvents[0].batchNumber, 1);
+  assert.equal(batchEvents[0].totalBatches, 2);
+  assert.equal(batchEvents[0].completed, 2);
+  assert.equal(batchEvents[1].batchNumber, 2);
+  assert.equal(batchEvents[1].totalBatches, 2);
+  assert.equal(batchEvents[1].completed, 3);
 });
 
 test('inferPaperResearchSemantics supports OpenAI chat-completions style responses', async () => {

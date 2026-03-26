@@ -6,6 +6,22 @@ import path from 'node:path';
 
 const originalFetch = globalThis.fetch;
 
+function extractPromptPapers(prompt) {
+  const marker = 'Papers:\n';
+  const markerIndex = String(prompt || '').lastIndexOf(marker);
+  if (markerIndex === -1) return [];
+
+  try {
+    return JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+  } catch {
+    return [];
+  }
+}
+
+function findPromptPaper(prompt, title) {
+  return extractPromptPapers(prompt).find((entry) => entry?.title === title) || null;
+}
+
 test('analyzeCorpus merges llm-assisted semantic extraction into the graph and semantic snapshot', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-corpus-'));
@@ -37,51 +53,62 @@ Our method is a graph-theoretic open-world consistency framework for open-world 
 The framework improves robustness to unknown classes on OpenWorldBench.
 `, 'utf8');
 
-    globalThis.fetch = async () => ({
-      ok: true,
-      async json() {
-        return {
-          choices: [
-            {
-              message: {
-                content: JSON.stringify({
-                  problems: [
-                    {
-                      name: 'open-world semi-supervised learning under distribution shift',
-                      type: 'Problem',
-                      evidenceText: 'We study open-world semi-supervised learning under distribution shift.',
-                      sectionHeading: 'Abstract',
-                      sectionRole: 'abstract',
-                      confidence: 0.95
-                    }
-                  ],
-                  methods: [
-                    {
-                      name: 'graph-theoretic open-world consistency framework',
-                      type: 'Method',
-                      evidenceText: 'We propose a graph-theoretic consistency framework.',
-                      sectionHeading: 'Method',
-                      sectionRole: 'method',
-                      confidence: 0.92
-                    }
-                  ],
-                  claims: [
-                    {
-                      name: 'the framework improves robustness to unknown classes',
-                      type: 'Claim',
-                      evidenceText: 'The framework improves robustness to unknown classes.',
-                      sectionHeading: 'Results',
-                      sectionRole: 'results',
-                      confidence: 0.88
-                    }
-                  ]
-                })
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const paper = extractPromptPapers(prompt)[0];
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: [
+                      {
+                        id: paper?.id || 'paper-1',
+                        problems: [
+                          {
+                            name: 'open-world semi-supervised learning under distribution shift',
+                            type: 'Problem',
+                            evidenceText: 'We study open-world semi-supervised learning under distribution shift.',
+                            sectionHeading: 'Abstract',
+                            sectionRole: 'abstract',
+                            confidence: 0.95
+                          }
+                        ],
+                        methods: [
+                          {
+                            name: 'graph-theoretic open-world consistency framework',
+                            type: 'Method',
+                            evidenceText: 'We propose a graph-theoretic consistency framework.',
+                            sectionHeading: 'Method',
+                            sectionRole: 'method',
+                            confidence: 0.92
+                          }
+                        ],
+                        claims: [
+                          {
+                            name: 'the framework improves robustness to unknown classes',
+                            type: 'Claim',
+                            evidenceText: 'The framework improves robustness to unknown classes.',
+                            sectionHeading: 'Results',
+                            sectionRole: 'results',
+                            confidence: 0.88
+                          }
+                        ]
+                      }
+                    ]
+                  })
+                }
               }
-            }
-          ]
-        };
-      }
-    });
+            ]
+          };
+        }
+      };
+    };
 
     const [{ analyzeCorpus }, corpusStore] = await Promise.all([
       import('../src/core/ingestion/pipeline.js'),
@@ -169,46 +196,55 @@ We use a heuristic-only backup path.
     globalThis.fetch = async (_url, options) => {
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
+      const participating = findPromptPaper(prompt, 'Participating Paper');
+      const fallingBack = findPromptPaper(prompt, 'Falling Back Paper');
 
-      if (prompt.includes('Paper title: Participating Paper')) {
-        return {
-          ok: true,
-          async json() {
-            return {
-              choices: [
-                {
-                  message: {
-                    content: JSON.stringify({
-                      problems: [
-                        {
-                          name: 'structured semantic extraction',
-                          type: 'Problem',
-                          evidenceText: 'We study structured semantic extraction for paper graphs.',
-                          sectionHeading: 'Abstract',
-                          sectionRole: 'abstract',
-                          confidence: 0.91
-                        }
-                      ],
-                      methods: [
-                        {
-                          name: 'participation-aware graph summarizer',
-                          type: 'Method',
-                          evidenceText: 'We use a participation-aware graph summarizer.',
-                          sectionHeading: 'Method',
-                          sectionRole: 'method',
-                          confidence: 0.89
-                        }
-                      ]
-                    })
-                  }
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: participating ? [
+                      {
+                        id: participating.id,
+                        problems: [
+                          {
+                            name: 'structured semantic extraction',
+                            type: 'Problem',
+                            evidenceText: 'We study structured semantic extraction for paper graphs.',
+                            sectionHeading: 'Abstract',
+                            sectionRole: 'abstract',
+                            confidence: 0.91
+                          }
+                        ],
+                        methods: [
+                          {
+                            name: 'participation-aware graph summarizer',
+                            type: 'Method',
+                            evidenceText: 'We use a participation-aware graph summarizer.',
+                            sectionHeading: 'Method',
+                            sectionRole: 'method',
+                            confidence: 0.89
+                          }
+                        ]
+                      }
+                    ] : [],
+                    errors: fallingBack ? [
+                      {
+                        id: fallingBack.id,
+                        error: 'synthetic llm failure'
+                      }
+                    ] : []
+                  })
                 }
-              ]
-            };
-          }
-        };
-      }
-
-      throw new Error('synthetic llm failure');
+              }
+            ]
+          };
+        }
+      };
     };
 
     const [{ analyzeCorpus }, corpusStore] = await Promise.all([
@@ -267,6 +303,108 @@ We use a heuristic-only backup path.
   }
 });
 
+test('analyzeCorpus batches LLM semantic extraction across multiple papers', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-batch-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-batch-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let fetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Batch Paper A
+
+Alice Example
+
+## Abstract
+
+We study batch semantic extraction for paper A.
+
+## Method
+
+We use a batched graph summarizer.
+`, 'utf8');
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-b.md'), `# Batch Paper B
+
+Bob Example
+
+## Abstract
+
+We study batch semantic extraction for paper B.
+
+## Method
+
+We use a batched evidence linker.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      fetchCount += 1;
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const papers = extractPromptPapers(prompt);
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [
+                        {
+                          name: `batch semantic extraction for ${paper.title.toLowerCase()}`,
+                          type: 'Problem',
+                          evidenceText: `We study batch semantic extraction for ${paper.title}.`,
+                          sectionHeading: 'Abstract',
+                          sectionRole: 'abstract',
+                          confidence: 0.9
+                        }
+                      ]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [{ analyzeCorpus }] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js')
+    ]);
+
+    const result = await analyzeCorpus(tempCorpusRoot, {
+      name: 'semantic-extraction-batch-test',
+      force: true,
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 8
+    });
+
+    assert.equal(fetchCount, 1);
+    assert.equal(result.meta.llm.semanticExtraction.participatedPaperCount, 2);
+    assert.equal(result.meta.llm.semanticExtraction.skippedPaperCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('analyzeCorpus retries only previously failed LLM-assisted papers on a later incremental run', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-retry-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-retry-corpus-'));
@@ -311,42 +449,48 @@ We use a cached graph summarizer.
     globalThis.fetch = async (_url, options) => {
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
+      const retryPaper = findPromptPaper(prompt, 'Retry Me Paper');
+      const stablePaper = findPromptPaper(prompt, 'Stable Paper');
 
-      if (prompt.includes('Paper title: Retry Me Paper')) {
-        recordRequest('Retry Me Paper');
-        throw new Error('temporary network failure');
-      }
+      if (retryPaper) recordRequest('Retry Me Paper');
+      if (stablePaper) recordRequest('Stable Paper');
 
-      if (prompt.includes('Paper title: Stable Paper')) {
-        recordRequest('Stable Paper');
-        return {
-          ok: true,
-          async json() {
-            return {
-              choices: [
-                {
-                  message: {
-                    content: JSON.stringify({
-                      problems: [
-                        {
-                          name: 'stable semantic extraction',
-                          type: 'Problem',
-                          evidenceText: 'We study stable semantic extraction.',
-                          sectionHeading: 'Abstract',
-                          sectionRole: 'abstract',
-                          confidence: 0.9
-                        }
-                      ]
-                    })
-                  }
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: stablePaper ? [
+                      {
+                        id: stablePaper.id,
+                        problems: [
+                          {
+                            name: 'stable semantic extraction',
+                            type: 'Problem',
+                            evidenceText: 'We study stable semantic extraction.',
+                            sectionHeading: 'Abstract',
+                            sectionRole: 'abstract',
+                            confidence: 0.9
+                          }
+                        ]
+                      }
+                    ] : [],
+                    errors: retryPaper ? [
+                      {
+                        id: retryPaper.id,
+                        error: 'temporary network failure'
+                      }
+                    ] : []
+                  })
                 }
-              ]
-            };
-          }
-        };
-      }
-
-      throw new Error(`unexpected prompt: ${prompt.slice(0, 80)}`);
+              }
+            ]
+          };
+        }
+      };
     };
 
     const [{ analyzeCorpus }, corpusStore] = await Promise.all([
@@ -372,12 +516,14 @@ We use a cached graph summarizer.
     globalThis.fetch = async (_url, options) => {
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
+      const stablePaper = findPromptPaper(prompt, 'Stable Paper');
+      const retryPaper = findPromptPaper(prompt, 'Retry Me Paper');
 
-      if (prompt.includes('Paper title: Stable Paper')) {
+      if (stablePaper) {
         throw new Error('stable paper should have been reused from cache');
       }
 
-      if (prompt.includes('Paper title: Retry Me Paper')) {
+      if (retryPaper) {
         recordRequest('Retry Me Paper');
         return {
           ok: true,
@@ -387,24 +533,29 @@ We use a cached graph summarizer.
                 {
                   message: {
                     content: JSON.stringify({
-                      problems: [
+                      papers: [
                         {
-                          name: 'retry-aware semantic extraction',
-                          type: 'Problem',
-                          evidenceText: 'We study retry-aware semantic extraction.',
-                          sectionHeading: 'Abstract',
-                          sectionRole: 'abstract',
-                          confidence: 0.94
-                        }
-                      ],
-                      methods: [
-                        {
-                          name: 'resumable graph synthesizer',
-                          type: 'Method',
-                          evidenceText: 'We use a resumable graph synthesizer.',
-                          sectionHeading: 'Method',
-                          sectionRole: 'method',
-                          confidence: 0.9
+                          id: retryPaper.id,
+                          problems: [
+                            {
+                              name: 'retry-aware semantic extraction',
+                              type: 'Problem',
+                              evidenceText: 'We study retry-aware semantic extraction.',
+                              sectionHeading: 'Abstract',
+                              sectionRole: 'abstract',
+                              confidence: 0.94
+                            }
+                          ],
+                          methods: [
+                            {
+                              name: 'resumable graph synthesizer',
+                              type: 'Method',
+                              evidenceText: 'We use a resumable graph synthesizer.',
+                              sectionHeading: 'Method',
+                              sectionRole: 'method',
+                              confidence: 0.9
+                            }
+                          ]
                         }
                       ]
                     })

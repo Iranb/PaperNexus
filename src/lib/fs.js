@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 
 export async function ensureDir(dirPath) {
@@ -61,12 +62,20 @@ export async function withFileLock(lockPath, fn, options = {}) {
   const pollIntervalMs = Math.max(25, Number(options.pollIntervalMs || 125));
   const staleMs = Math.max(timeoutMs, Number(options.staleMs || 60 * 60 * 1000));
   const startedAt = Date.now();
+  const onWait = typeof options.onWait === 'function' ? options.onWait : null;
+  const onAcquired = typeof options.onAcquired === 'function' ? options.onAcquired : null;
+  let waitingNotified = false;
 
   await ensureDir(path.dirname(lockPath));
 
   while (true) {
     try {
       await fs.mkdir(lockPath);
+      onAcquired?.({
+        lockPath,
+        waitedMs: Date.now() - startedAt,
+        waited: waitingNotified
+      });
       break;
     } catch (error) {
       if (error?.code !== 'EEXIST') {
@@ -90,9 +99,45 @@ export async function withFileLock(lockPath, fn, options = {}) {
         throw new Error(`Timed out waiting for file lock: ${lockPath}`);
       }
 
+      if (!waitingNotified) {
+        waitingNotified = true;
+        onWait?.({
+          lockPath,
+          waitedMs: Date.now() - startedAt
+        });
+      }
+
       await sleep(pollIntervalMs);
     }
   }
+
+  let released = false;
+  const releaseLockSync = () => {
+    if (released) return;
+    released = true;
+    try {
+      fsSync.rmSync(lockPath, { recursive: true, force: true });
+    } catch {}
+  };
+  const releaseLock = async () => {
+    if (released) return;
+    released = true;
+    await fs.rm(lockPath, { recursive: true, force: true });
+  };
+  const handleSignal = (signal) => {
+    releaseLockSync();
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+    try {
+      process.kill(process.pid, signal);
+    } catch {
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    }
+  };
+  const onSigint = () => handleSignal('SIGINT');
+  const onSigterm = () => handleSignal('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
 
   try {
     await fs.writeFile(path.join(lockPath, 'owner.json'), `${JSON.stringify({
@@ -101,7 +146,9 @@ export async function withFileLock(lockPath, fn, options = {}) {
     }, null, 2)}\n`, 'utf8');
     return await fn();
   } finally {
-    await fs.rm(lockPath, { recursive: true, force: true });
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+    await releaseLock();
   }
 }
 

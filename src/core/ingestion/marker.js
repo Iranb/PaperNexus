@@ -145,6 +145,42 @@ function resolveMineruHttpUrl(options = {}) {
     || '';
 }
 
+function resolveMineruRemoteFailureMode(options = {}) {
+  const normalized = String(
+    options.mineruRemoteFailureMode
+    || process.env.PAPERNEXUS_MINERU_REMOTE_FAILURE_MODE
+    || 'error'
+  ).trim().toLowerCase();
+  return normalized === 'docling' ? 'docling' : 'error';
+}
+
+async function probeHttpEndpoint(url, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: 'HEAD',
+      signal: controller.signal
+    });
+    return {
+      reachable: true,
+      status: response.status,
+      error: null
+    };
+  } catch (error) {
+    return {
+      reachable: false,
+      status: null,
+      error: error?.name === 'AbortError'
+        ? `Connection probe timed out after ${timeoutMs}ms`
+        : (error?.message || 'Unknown connectivity error')
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
 function buildRemoteMarkerScript({ markerCommand, remotePdfPath, remoteRunDir, pageRange }) {
   const markerArgs = [
     shellQuote(remotePdfPath),
@@ -323,6 +359,46 @@ function getParserCachePaths(parser, basename, directories = {}) {
   return {
     cachedMarkdownPath: path.join(directories.markdownDir, parser, `${basename}.md`),
     runDir: path.join(directories.markerDir, parser, basename)
+  };
+}
+
+export function getPdfMarkdownCachePath(pdfPath, options = {}) {
+  const parser = normalizePdfParser(options.pdfParser);
+  const basename = path.basename(pdfPath, path.extname(pdfPath));
+  return getParserCachePaths(parser, basename, {
+    markerDir: options.markerDir,
+    markdownDir: options.markdownDir
+  }).cachedMarkdownPath;
+}
+
+export function getMarkdownSourceCachePath(markdownPath, directories = {}) {
+  const basename = path.basename(markdownPath, path.extname(markdownPath));
+  const suffix = stableHash(path.resolve(markdownPath), 10);
+  return path.join(directories.markdownDir, 'source', `${basename}-${suffix}.md`);
+}
+
+export async function cacheMarkdownSource(markdownPath, options = {}) {
+  const {
+    markdownDir,
+    force = false
+  } = options;
+
+  const cachedMarkdownPath = getMarkdownSourceCachePath(markdownPath, { markdownDir });
+  await ensureDir(path.dirname(cachedMarkdownPath));
+
+  if (!force && await fileExists(cachedMarkdownPath)) {
+    return {
+      markdownPath: cachedMarkdownPath,
+      generated: false,
+      parser: 'source'
+    };
+  }
+
+  await writeText(cachedMarkdownPath, await readText(markdownPath));
+  return {
+    markdownPath: cachedMarkdownPath,
+    generated: true,
+    parser: 'source'
   };
 }
 
@@ -757,8 +833,29 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   await ensureDir(path.dirname(cachedMarkdownPath));
 
   const resolvedHttpUrl = resolveMineruHttpUrl({ mineruHttpUrl, pdfParserHttpUrl });
+  const remoteFailureMode = resolveMineruRemoteFailureMode(options);
 
   if (resolvedHttpUrl) {
+    const reachability = await probeHttpEndpoint(resolvedHttpUrl);
+    if (!reachability.reachable) {
+      const warning = `Remote MinerU backend is unreachable at ${resolvedHttpUrl}: ${reachability.error}`;
+      process.stderr.write(`[mineru:${basename}] WARNING: ${warning}\n`);
+
+      if (remoteFailureMode === 'docling') {
+        process.stderr.write(`[mineru:${basename}] Falling back to docling because --mineru-remote-failure docling is enabled\n`);
+        return convertPdfToMarkdownWithDocling(pdfPath, {
+          ...options,
+          force,
+          quiet
+        });
+      }
+
+      throw new Error(
+        `${warning}\n` +
+        'Tip: bring the MinerU HTTP backend back online, switch to `--pdf-parser docling`, or set `--mineru-remote-failure docling` to fall back automatically.'
+      );
+    }
+
     try {
       const remoteResult = await convertPdfToMarkdownViaMineru(pdfPath, {
         mineruCommand,
@@ -777,7 +874,7 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
     } catch (error) {
       throw new Error(
         `Mineru failed for ${pdfPath}. ${error.message}\n` +
-        'Tip: verify the mineru HTTP API endpoint is accessible.'
+        'Tip: verify the mineru HTTP API endpoint is accessible, switch to `--pdf-parser docling`, or set `--mineru-remote-failure docling`.'
       );
     }
   }
@@ -840,6 +937,8 @@ export const __markerTestables = {
   shellQuote,
   normalizePdfParser,
   resolveRemoteMarkerHost,
+  resolveMineruRemoteFailureMode,
+  probeHttpEndpoint,
   buildRemoteMarkerScript,
   buildRemoteDoclingScript
 };
