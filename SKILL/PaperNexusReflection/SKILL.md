@@ -45,8 +45,8 @@ Equivalent staged path:
 papernexus materialize --continue
 papernexus llm-optimize --continue
 papernexus build-graph --continue
-papernexus merge-graph --continue
-papernexus write-index --continue
+papernexus merge-graph --continue --node-llm-check
+papernexus write-index --continue --node-llm-check
 papernexus enhance --once
 ```
 
@@ -55,6 +55,8 @@ Use `papernexus analyze --force` when source Markdown or PDFs changed and you wa
 If the paper content did not change and the previous run only missed LLM-assisted extraction because of network/model failures, `papernexus analyze` is enough. Incremental ingestion now retries those failed papers and reuses snapshots for papers that already succeeded.
 
 If Stage 3 already finished and you want to clean up duplicate `Dataset` / `Benchmark` nodes before committing, run `papernexus merge-graph --continue`.
+
+If the staged graph still contains generic evaluation nodes such as `training dataset`, rerun `papernexus merge-graph --continue --node-llm-check`. This LLM node review is optional and default-off.
 
 If the staged graph already looks correct and only needs to be committed, use `papernexus write-index --continue` instead of rebuilding earlier stages. `write-index` will auto-run the merge step if it was skipped.
 

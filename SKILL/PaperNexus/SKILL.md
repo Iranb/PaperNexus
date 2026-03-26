@@ -133,8 +133,9 @@ Guidelines:
   - Stage 2 `--continue` only retries or fills snapshots that still need LLM enrichment; `--force` reruns LLM optimization for all staged papers without re-decoding PDFs.
   - Stage 3 `--continue` reuses the staged graph if it still matches the latest manifest; `--force` rebuilds the staged graph from snapshots.
   - `merge-graph --continue` reuses an already-merged staged graph when it is still fresh; `--force` reruns canonicalization from the Stage 3 graph.
+  - `merge-graph --node-llm-check` is optional and default-off. When enabled, it asks the LLM to review staged `Dataset` / `Benchmark` nodes and drop generic placeholders such as `training dataset`.
   - Stage 4 `--continue` commits the staged graph that Stage 3 and `merge-graph` already prepared; `--force` recommits that staged graph. Stage 4 now validates against the staged manifest, not raw input rescans.
-- `write-index` stays backward-compatible: if the staged graph has not gone through `merge-graph` yet, it will auto-merge similar evaluation nodes before committing.
+- `write-index` stays backward-compatible: if the staged graph has not gone through `merge-graph` yet, it will auto-merge similar evaluation nodes before committing. If you explicitly pass `--node-llm-check`, that optional node review also runs during the auto-merge path.
 - Important Stage 4 boundary: if raw paper files changed after Stage 3, Stage 4 can still commit the already-built staged graph. Those newer raw changes are not included until you rerun Stage 1-3 and then Stage 4.
 - If `sources.inputs` is configured in `config.json`, `analyze`, `materialize`, `llm-optimize`, `build-graph`, `merge-graph`, `write-index`, `optimize`, and `watch` can run without a positional path.
 - Per-paper semantic snapshots now record whether LLM assistance was requested, whether it actually participated, the effective mode, and the failure reason when it did not.
@@ -175,8 +176,8 @@ papernexus analyze  # if sources.inputs is configured
 papernexus materialize --continue
 papernexus llm-optimize --continue --semantic-extraction llm-primary --batch-size 16
 papernexus build-graph --continue
-papernexus merge-graph --continue
-papernexus write-index --continue
+papernexus merge-graph --continue --node-llm-check
+papernexus write-index --continue --node-llm-check
 papernexus stage1 --continue
 papernexus stage2 --continue --semantic-extraction llm-primary --batch-size 16
 papernexus stage3 --continue
@@ -218,8 +219,9 @@ Read these first when you need orientation:
 - Be careful with repo-local `config.json`; some tests intentionally bypass it with `--no-config=true`.
 - Do not assume paths using `~` are safe unless they go through the config helpers.
 - When an ingestion run failed only because LLM requests were unavailable, prefer rerunning `papernexus llm-optimize`, `papernexus optimize`, or `papernexus analyze` before reaching for `--force`.
-- Prefer `papernexus materialize` first when debugging PDF parsing or markdown cache issues, `papernexus llm-optimize` when debugging LLM extraction, `papernexus build-graph` when debugging graph projection, `papernexus merge-graph` when debugging duplicate evaluation nodes, and `papernexus write-index` when debugging final persistence.
+- Prefer `papernexus materialize` first when debugging PDF parsing or markdown cache issues, `papernexus llm-optimize` when debugging LLM extraction, `papernexus build-graph` when debugging graph projection, `papernexus merge-graph` when debugging duplicate or low-quality evaluation nodes, and `papernexus write-index` when debugging final persistence.
 - If Stage 3 already succeeded and you specifically need to inspect or fix duplicate `Dataset` / `Benchmark` nodes before commit, run `papernexus merge-graph --continue`.
+- If the staged graph contains generic evaluation nodes such as `training dataset`, rerun `papernexus merge-graph --continue --node-llm-check`.
 - If Stage 3 already succeeded and you only need to finish the commit, prefer `papernexus write-index --continue`.
 - If new raw papers were added and you want them included in the next committed graph, rerun Stage 1-3 before Stage 4. Stage 4 alone only commits the staged graph it already has.
 - When changing persistence behavior, run tests that cover CLI, workflow, backup, and enhancements.

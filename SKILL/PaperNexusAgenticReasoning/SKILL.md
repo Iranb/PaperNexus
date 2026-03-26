@@ -253,8 +253,8 @@ If you want a staged, resumable refresh instead of a monolithic rebuild, use:
 papernexus materialize --continue
 papernexus llm-optimize --continue
 papernexus build-graph --continue
-papernexus merge-graph --continue
-papernexus write-index --continue
+papernexus merge-graph --continue --node-llm-check
+papernexus write-index --continue --node-llm-check
 papernexus enhance --once
 ```
 
@@ -282,9 +282,11 @@ When the background services are healthy:
 Important Stage 4 boundary:
 
 - `merge-graph` canonicalizes near-duplicate `Dataset` / `Benchmark` nodes inside the staged graph before final commit
-- `write-index` commits the staged graph that Stage 3 already built
+- `merge-graph --node-llm-check` can optionally ask the LLM to drop low-value generic evaluation nodes such as `training dataset`
+- `write-index` commits the staged graph that Stage 3 and `merge-graph` prepared
 - if raw paper files changed after Stage 3 and those new files must be included in reasoning, rerun Stage 1-3 before Stage 4
 - if you want to inspect or clean duplicate evaluation nodes before final commit, run `papernexus merge-graph --continue`
+- if the staged graph still contains low-value generic evaluation nodes, rerun `papernexus merge-graph --continue --node-llm-check`
 - if you only need to finish committing an already-built staged graph, `papernexus write-index --continue` is the right recovery path; it will auto-run merge if needed
 
 ## Mutation Decision Policy

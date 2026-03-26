@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { createKnowledgeGraph } from '../graph/graph.js';
-import { mergeSimilarGraphNodes } from '../graph/merge-similar.js';
+import { applyNodeCheckDecisions, mergeSimilarGraphNodes } from '../graph/merge-similar.js';
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from '../graph/schema.js';
 import {
   adjudicateCrossPaperCandidates,
+  inferGraphNodeChecksBatch,
   inferPaperResearchSemanticsBatch,
   inferPaperSemanticObjectsBatch,
   normalizeSemanticExtractionMode,
@@ -2186,7 +2187,7 @@ async function createMeta({ name, rootPath, graph, sourceMode, problems, semanti
   };
 }
 
-function refreshMetaFromGraph(previousMeta, graph, mergeSummary = null) {
+function refreshMetaFromGraph(previousMeta, graph, mergeSummary = null, nodeLlmCheckSummary = null) {
   const layerCounts = {};
   const layerPathCounts = {};
   const brainstormNodeCounts = {};
@@ -2219,6 +2220,17 @@ function refreshMetaFromGraph(previousMeta, graph, mergeSummary = null) {
     brainstormView: {
       eligibleNodeCount: Object.values(brainstormNodeCounts).reduce((total, count) => total + count, 0),
       nodeTypes: brainstormNodeCounts
+    },
+    nodeLlmCheck: nodeLlmCheckSummary || previousMeta.nodeLlmCheck || {
+      requested: false,
+      checkedNodeCount: 0,
+      keptNodeCount: 0,
+      droppedNodeCount: 0,
+      renamedNodeCount: 0,
+      errorCount: 0,
+      provider: 'disabled',
+      attempted: false,
+      participated: false
     },
     similarNodeMerge: mergeSummary || previousMeta.similarNodeMerge || {
       mergedGroupCount: 0,
@@ -2372,9 +2384,148 @@ async function assertStagedBuildStillFresh(rootPath, stagedState, metadataConcur
   }
 }
 
+function createEmptyNodeLlmCheckSummary(requested = false, overrides = {}) {
+  return {
+    requested,
+    checkedNodeCount: 0,
+    keptNodeCount: 0,
+    droppedNodeCount: 0,
+    renamedNodeCount: 0,
+    errorCount: 0,
+    provider: 'disabled',
+    attempted: false,
+    participated: false,
+    errors: [],
+    ...overrides
+  };
+}
+
+function combineMergeSummaries(left = null, right = null) {
+  const base = left || {
+    mergedGroupCount: 0,
+    mergedNodeCount: 0,
+    mergedRelationshipCount: 0,
+    groups: []
+  };
+  const extra = right || {
+    mergedGroupCount: 0,
+    mergedNodeCount: 0,
+    mergedRelationshipCount: 0,
+    groups: []
+  };
+
+  return {
+    mergedGroupCount: Number(base.mergedGroupCount || 0) + Number(extra.mergedGroupCount || 0),
+    mergedNodeCount: Number(base.mergedNodeCount || 0) + Number(extra.mergedNodeCount || 0),
+    mergedRelationshipCount: Number(base.mergedRelationshipCount || 0) + Number(extra.mergedRelationshipCount || 0),
+    groups: [...(base.groups || []), ...(extra.groups || [])].slice(0, 48)
+  };
+}
+
+function collectNodeLlmCheckCandidates(graph) {
+  return graph.nodes
+    .filter((node) => node.type === NODE_TYPES.DATASET || node.type === NODE_TYPES.BENCHMARK)
+    .map((node) => {
+      const relationships = [...graph.getIncoming(node.id), ...graph.getOutgoing(node.id)];
+      const evidenceTexts = unique(
+        relationships
+          .map((relationship) => relationship.properties?.evidenceText)
+          .filter(Boolean)
+      ).slice(0, 4);
+      const relationTypes = unique(relationships.map((relationship) => relationship.type)).slice(0, 8);
+
+      return {
+        id: node.id,
+        type: node.type,
+        name: node.name,
+        aliases: node.properties?.aliases || [],
+        paperTitles: node.properties?.paperTitles || [],
+        mentionCount: node.properties?.mentionCount || 1,
+        confidence: node.properties?.confidence || 0.6,
+        evidenceTexts,
+        relationTypes
+      };
+    });
+}
+
+async function runOptionalNodeLlmCheck(graph, options = {}) {
+  if (!options.nodeLlmCheck) {
+    return {
+      graph,
+      summary: createEmptyNodeLlmCheckSummary(false),
+      changed: false,
+      decisions: []
+    };
+  }
+
+  const candidates = collectNodeLlmCheckCandidates(graph);
+  if (!candidates.length) {
+    return {
+      graph,
+      summary: createEmptyNodeLlmCheckSummary(true),
+      changed: false,
+      decisions: []
+    };
+  }
+
+  const progress = options.quiet ? createQuietProgress() : createProgressBar(candidates.length, { prefix: 'Node LLM check' });
+  progress.start();
+  const decisions = await inferGraphNodeChecksBatch(candidates, {
+    ...options,
+    onBatchComplete(event = {}) {
+      progress.update(
+        Math.min(Number(event.completed || 0), candidates.length),
+        `batch ${Math.max(1, Number(event.batchNumber || 0))}/${Math.max(1, Number(event.totalBatches || 0))}, ${Math.min(Number(event.completed || 0), candidates.length)}/${candidates.length} nodes checked`
+      );
+    }
+  });
+  progress.done();
+
+  const applied = applyNodeCheckDecisions(graph, decisions);
+  let nextGraph = applied.graph;
+  let postCheckMergeSummary = null;
+  if (applied.summary.renamedNodeCount > 0) {
+    const renamedMerge = mergeSimilarGraphNodes(nextGraph, options);
+    nextGraph = renamedMerge.graph;
+    postCheckMergeSummary = renamedMerge.summary;
+  }
+
+  const providers = unique(decisions.map((decision) => decision.provider).filter((provider) => provider && provider !== 'disabled'));
+  const errors = decisions
+    .filter((decision) => decision.error)
+    .map((decision) => ({ id: decision.id, error: decision.error }))
+    .slice(0, 12);
+  const summary = createEmptyNodeLlmCheckSummary(true, {
+    checkedNodeCount: candidates.length,
+    keptNodeCount: applied.summary.keptNodeCount,
+    droppedNodeCount: applied.summary.droppedNodeCount,
+    renamedNodeCount: applied.summary.renamedNodeCount,
+    errorCount: errors.length,
+    provider: providers[0] || 'disabled',
+    attempted: decisions.some((decision) => decision.attempted),
+    participated: decisions.some((decision) => decision.participated),
+    errors
+  });
+
+  return {
+    graph: nextGraph,
+    summary,
+    changed: applied.changed,
+    decisions,
+    postCheckMergeSummary
+  };
+}
+
 async function mergePreparedGraphBuild(rootPath, stagedBuild, options = {}) {
   const mergeResult = mergeSimilarGraphNodes(stagedBuild.graph, options);
-  const nextMeta = refreshMetaFromGraph(stagedBuild.meta, mergeResult.graph, mergeResult.summary);
+  const nodeCheckResult = await runOptionalNodeLlmCheck(mergeResult.graph, options);
+  const effectiveMergeSummary = combineMergeSummaries(mergeResult.summary, nodeCheckResult.postCheckMergeSummary);
+  const nextMeta = refreshMetaFromGraph(
+    stagedBuild.meta,
+    nodeCheckResult.graph,
+    effectiveMergeSummary,
+    nodeCheckResult.summary
+  );
   const nextManifest = {
     ...stagedBuild.manifest,
     indexedAt: nextMeta.indexedAt
@@ -2384,19 +2535,22 @@ async function mergePreparedGraphBuild(rootPath, stagedBuild, options = {}) {
     version: stagedBuild.state?.version || 1,
     stage: 'graph-merged',
     mergedAt: nextMeta.indexedAt,
-    mergeSummary: mergeResult.summary,
+    mergeSummary: effectiveMergeSummary,
+    nodeLlmCheckRequested: Boolean(options.nodeLlmCheck),
+    nodeLlmCheckSummary: nodeCheckResult.summary,
     stagedManifestToken: createManifestCommitToken(nextManifest)
   };
 
-  await saveStagedCorpusBuild(rootPath, mergeResult.graph, nextMeta, nextManifest, nextState);
+  await saveStagedCorpusBuild(rootPath, nodeCheckResult.graph, nextMeta, nextManifest, nextState);
 
   return {
-    graph: mergeResult.graph,
+    graph: nodeCheckResult.graph,
     meta: nextMeta,
     manifest: nextManifest,
     state: nextState,
-    summary: mergeResult.summary,
-    changed: mergeResult.changed
+    summary: effectiveMergeSummary,
+    nodeCheckSummary: nodeCheckResult.summary,
+    changed: mergeResult.changed || nodeCheckResult.changed
   };
 }
 
@@ -3611,7 +3765,8 @@ export async function mergeGraphCorpus(inputPath, options = {}) {
   }
 
   const metadataConcurrency = resolveMetadataConcurrency(options);
-  if (!options.force && stagedBuild.state?.stage === 'graph-merged') {
+  const wantsNodeLlmCheck = Boolean(options.nodeLlmCheck);
+  if (!options.force && stagedBuild.state?.stage === 'graph-merged' && (!wantsNodeLlmCheck || stagedBuild.state?.nodeLlmCheckRequested)) {
     try {
       await assertStagedBuildStillFresh(rootPath, stagedBuild.state, metadataConcurrency);
       return {
@@ -3621,7 +3776,8 @@ export async function mergeGraphCorpus(inputPath, options = {}) {
         changes: stagedBuild.manifest.lastChangeSummary || null,
         reused: true,
         stage: 'graph-merged',
-        mergeSummary: stagedBuild.state.mergeSummary || stagedBuild.meta.similarNodeMerge || null
+        mergeSummary: stagedBuild.state.mergeSummary || stagedBuild.meta.similarNodeMerge || null,
+        nodeCheckSummary: stagedBuild.state.nodeLlmCheckSummary || stagedBuild.meta.nodeLlmCheck || null
       };
     } catch {}
   }
@@ -3646,7 +3802,8 @@ export async function mergeGraphCorpus(inputPath, options = {}) {
     changes: merged.manifest.lastChangeSummary || null,
     reused: false,
     stage: 'graph-merged',
-    mergeSummary: merged.summary
+    mergeSummary: merged.summary,
+    nodeCheckSummary: merged.nodeCheckSummary
   };
 }
 
@@ -3660,7 +3817,7 @@ export async function writeIndexCorpus(inputPath, options = {}) {
     throw new Error('No staged graph build found. Run Stage 3 before running Stage 4.');
   }
 
-  if (stagedBuild.state?.stage === 'graph-built') {
+  if (stagedBuild.state?.stage === 'graph-built' || (options.nodeLlmCheck && !stagedBuild.state?.nodeLlmCheckRequested)) {
     const merged = await mergePreparedGraphBuild(rootPath, stagedBuild, {
       ...options,
       quiet: true

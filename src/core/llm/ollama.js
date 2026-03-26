@@ -389,6 +389,44 @@ function buildResearchSemanticsBatchPrompt(entries) {
   ].join('\n');
 }
 
+function buildNodeCheckBatchPrompt(entries) {
+  const nodes = entries.map((entry, index) => ({
+    id: String(entry.id || `node-${index + 1}`),
+    type: cleanText(entry.type || '', 48),
+    name: cleanText(entry.name || '', 180),
+    aliases: (entry.aliases || []).slice(0, 8).map((alias) => cleanText(alias, 120)).filter(Boolean),
+    paperTitles: (entry.paperTitles || []).slice(0, 6).map((title) => cleanText(title, 180)).filter(Boolean),
+    mentionCount: Number(entry.mentionCount || 0),
+    confidence: Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : 0.6,
+    relationTypes: (entry.relationTypes || []).slice(0, 8).map((type) => cleanText(type, 48)).filter(Boolean),
+    evidenceTexts: (entry.evidenceTexts || []).slice(0, 4).map((text) => cleanText(text, 220)).filter(Boolean)
+  }));
+
+  return [
+    'You are validating staged graph nodes for a paper knowledge graph.',
+    'Return strict JSON only.',
+    'Decide whether each node should be kept, dropped, or renamed.',
+    'Focus on evaluation-layer nodes such as datasets and benchmarks.',
+    '',
+    'Return this JSON shape:',
+    '{',
+    '  "nodes": [',
+    '    {"id":"...", "verdict":"keep|drop|rename", "canonicalName":"...", "confidence":0.0, "reason":"..."}',
+    '  ],',
+    '  "errors": [{"id":"...", "error":"..."}]',
+    '}',
+    '',
+    'Guidelines:',
+    '- Keep specific reusable resources such as Office-Home, CIFAR-10, DomainNet, Oxford-IIIT Pet, ImageNet.',
+    '- Drop generic placeholders such as "training dataset", "test dataset", "source domain data", "target domain benchmark", or any node that is not a specific named resource.',
+    '- Rename only when the node is valid but the name should be normalized into a specific canonical form.',
+    '- If uncertain, prefer keep over drop.',
+    '',
+    'Nodes:',
+    JSON.stringify(nodes, null, 2)
+  ].join('\n');
+}
+
 function normalizeProviderName(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return '';
@@ -1027,6 +1065,29 @@ function sanitizeEntityGroup(raw, key, fallbackType) {
     .filter(Boolean);
 }
 
+function sanitizeNodeCheckRecord(record, fallbackId = '', fallbackName = '') {
+  const id = String(record?.id || fallbackId || '').trim();
+  if (!id) return null;
+
+  const normalizedVerdict = String(record?.verdict || 'keep').trim().toLowerCase();
+  const verdict = normalizedVerdict === 'drop'
+    ? 'drop'
+    : normalizedVerdict === 'rename'
+      ? 'rename'
+      : 'keep';
+  const canonicalName = verdict === 'drop'
+    ? ''
+    : cleanText(record?.canonicalName || record?.name || fallbackName, 180) || fallbackName;
+
+  return {
+    id,
+    verdict,
+    canonicalName,
+    confidence: Number.isFinite(Number(record?.confidence)) ? Number(record.confidence) : 0.72,
+    reason: cleanText(record?.reason || record?.rationale || '', 220)
+  };
+}
+
 export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, options = {}) {
   const plan = resolveSemanticExtractionPlan(options);
   if (!plan.shouldAttempt) {
@@ -1363,6 +1424,135 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
     } finally {
       options.onBatchComplete?.({
         phase: 'relation-extraction',
+        batchNumber: Math.floor(start / batchSize) + 1,
+        totalBatches,
+        completed: Math.min(start + batch.length, entries.length),
+        total: entries.length,
+        batchSize: batch.length
+      });
+    }
+  }
+
+  return results;
+}
+
+export async function inferGraphNodeChecksBatch(entries, options = {}) {
+  if (!entries?.length) return [];
+
+  if (!options.nodeLlmCheck) {
+    return entries.map((entry) => ({
+      id: String(entry?.id || ''),
+      verdict: 'keep',
+      canonicalName: entry?.name || '',
+      confidence: 0,
+      reason: 'node-llm-check-disabled',
+      provider: 'disabled',
+      attempted: false,
+      participated: false,
+      error: null
+    }));
+  }
+
+  const config = resolveLlmConfig(options);
+  if (!config.enabled || !config.model) {
+    return entries.map((entry) => ({
+      id: String(entry?.id || ''),
+      verdict: 'keep',
+      canonicalName: entry?.name || '',
+      confidence: 0,
+      reason: 'llm-unconfigured',
+      provider: 'disabled',
+      attempted: false,
+      participated: false,
+      error: null
+    }));
+  }
+
+  const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const results = new Array(entries.length);
+  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+
+  for (let start = 0; start < entries.length; start += batchSize) {
+    const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
+      ...entry,
+      id: String(entry?.id || `node-${start + index + 1}`)
+    }));
+
+    try {
+      const payload = await requestLlmGenerate(config, buildNodeCheckBatchPrompt(batch));
+      const raw = parseJsonText(payload.text);
+      const nodeErrors = new Map(
+        (raw?.errors || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), String(entry.error || 'request-failed')])
+      );
+      const nodeResults = new Map(
+        (raw?.nodes || [])
+          .map((entry) => sanitizeNodeCheckRecord(entry))
+          .filter(Boolean)
+          .map((entry) => [entry.id, entry])
+      );
+
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        const rawError = nodeErrors.get(batchEntry.id);
+        const rawNode = nodeResults.get(batchEntry.id);
+        if (rawError) {
+          results[start + offset] = {
+            id: batchEntry.id,
+            verdict: 'keep',
+            canonicalName: batchEntry.name,
+            confidence: 0,
+            reason: 'request-failed',
+            provider: config.provider,
+            attempted: true,
+            participated: false,
+            error: rawError
+          };
+          continue;
+        }
+
+        if (!rawNode) {
+          results[start + offset] = {
+            id: batchEntry.id,
+            verdict: 'keep',
+            canonicalName: batchEntry.name,
+            confidence: 0,
+            reason: 'request-failed',
+            provider: config.provider,
+            attempted: true,
+            participated: false,
+            error: `Missing node check result for ${batchEntry.id}`
+          };
+          continue;
+        }
+
+        results[start + offset] = {
+          ...rawNode,
+          provider: config.provider,
+          attempted: true,
+          participated: true,
+          error: null
+        };
+      }
+    } catch (error) {
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        results[start + offset] = {
+          id: batchEntry.id,
+          verdict: 'keep',
+          canonicalName: batchEntry.name,
+          confidence: 0,
+          reason: 'request-failed',
+          provider: config.provider,
+          attempted: true,
+          participated: false,
+          error: error.message
+        };
+      }
+    } finally {
+      options.onBatchComplete?.({
+        phase: 'node-check',
         batchNumber: Math.floor(start / batchSize) + 1,
         totalBatches,
         completed: Math.min(start + batch.length, entries.length),

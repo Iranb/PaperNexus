@@ -211,6 +211,116 @@ function mergeRelationshipGroup(relationships, sourceId, targetId, type, sourceT
   };
 }
 
+function normalizeDecisionVerdict(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'drop') return 'drop';
+  if (normalized === 'rename') return 'rename';
+  return 'keep';
+}
+
+export function applyNodeCheckDecisions(graph, decisions = []) {
+  const decisionMap = new Map();
+  for (const decision of decisions || []) {
+    if (!decision?.id) continue;
+    decisionMap.set(String(decision.id), {
+      ...decision,
+      verdict: normalizeDecisionVerdict(decision.verdict)
+    });
+  }
+
+  if (!decisionMap.size) {
+    return {
+      graph,
+      changed: false,
+      summary: {
+        checkedNodeCount: 0,
+        keptNodeCount: 0,
+        droppedNodeCount: 0,
+        renamedNodeCount: 0
+      }
+    };
+  }
+
+  const droppedNodeIds = new Set();
+  const renamedNodeIds = new Set();
+  const nextGraph = createKnowledgeGraph();
+
+  for (const node of graph.nodes) {
+    const decision = decisionMap.get(node.id);
+    if (decision?.verdict === 'drop') {
+      droppedNodeIds.add(node.id);
+      continue;
+    }
+
+    const nextName = decision?.verdict === 'rename' && decision.canonicalName
+      ? decision.canonicalName
+      : node.name;
+    if (decision?.verdict === 'rename' && decision.canonicalName && normalizeText(decision.canonicalName) !== normalizeText(node.name)) {
+      renamedNodeIds.add(node.id);
+    }
+
+    const previousAliases = Array.isArray(node.properties?.aliases) ? node.properties.aliases : [];
+    const aliases = unique([
+      ...previousAliases,
+      ...(nextName !== node.name ? [node.name] : [])
+    ]).filter((alias) => alias && alias !== nextName);
+
+    nextGraph.addNode({
+      ...node,
+      name: nextName,
+      properties: {
+        ...cloneProperties(node.properties),
+        normalized: normalizeText(nextName),
+        aliases,
+        nodeLlmChecked: Boolean(decision),
+        nodeLlmVerdict: decision?.verdict || 'keep',
+        nodeLlmConfidence: Number.isFinite(Number(decision?.confidence)) ? Number(decision.confidence) : node.properties?.nodeLlmConfidence,
+        nodeLlmReason: decision?.reason || node.properties?.nodeLlmReason || '',
+        nodeLlmCanonicalName: decision?.canonicalName || nextName
+      }
+    });
+  }
+
+  const relationshipGroups = new Map();
+  for (const relationship of graph.relationships) {
+    if (droppedNodeIds.has(relationship.sourceId) || droppedNodeIds.has(relationship.targetId)) {
+      continue;
+    }
+
+    const key = JSON.stringify([relationship.sourceId, relationship.type, relationship.targetId]);
+    if (!relationshipGroups.has(key)) {
+      relationshipGroups.set(key, {
+        sourceId: relationship.sourceId,
+        targetId: relationship.targetId,
+        type: relationship.type,
+        relationships: []
+      });
+    }
+    relationshipGroups.get(key).relationships.push(relationship);
+  }
+
+  for (const group of relationshipGroups.values()) {
+    const { sourceId, type, targetId, relationships } = group;
+    const sourceType = nextGraph.getNode(sourceId)?.type;
+    const targetType = nextGraph.getNode(targetId)?.type;
+    if (!sourceType || !targetType) continue;
+    nextGraph.addRelationship(
+      mergeRelationshipGroup(relationships, sourceId, targetId, type, sourceType, targetType)
+    );
+  }
+
+  return {
+    graph: nextGraph,
+    changed: droppedNodeIds.size > 0 || renamedNodeIds.size > 0,
+    summary: {
+      checkedNodeCount: decisionMap.size,
+      keptNodeCount: [...decisionMap.values()].filter((decision) => decision.verdict === 'keep').length,
+      droppedNodeCount: droppedNodeIds.size,
+      renamedNodeCount: renamedNodeIds.size
+    }
+  };
+}
+
 export function mergeSimilarGraphNodes(graph, options = {}) {
   const groups = new Map();
   for (const node of graph.nodes) {
