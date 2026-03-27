@@ -7,15 +7,27 @@ import { stableHash } from '../../lib/utils.js';
 const PDF_PARSER_DOCLING = 'docling';
 const PDF_PARSER_MARKER = 'marker';
 const PDF_PARSER_MINERU = 'mineru';
+const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
     let stdout = '';
     let stderr = '';
+    const timeoutMs = Number(options.timeoutMs || 0);
+    const timeoutLabel = String(options.timeoutLabel || command);
+    const timeoutHandle = timeoutMs > 0
+      ? setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill('SIGKILL');
+          reject(new Error(`${timeoutLabel} timed out after ${timeoutMs}ms`));
+        }, timeoutMs)
+      : null;
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -28,10 +40,16 @@ function runCommand(command, args, options = {}) {
     });
 
     child.on('error', (error) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (settled) return;
+      settled = true;
       reject(error);
     });
 
     child.on('close', (code) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (settled) return;
+      settled = true;
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -44,12 +62,23 @@ function runCommand(command, args, options = {}) {
 
 function runCommandWithStdin(command, args, stdinBuffer, options = {}) {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const child = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
     let stdout = '';
     let stderr = '';
+    const timeoutMs = Number(options.timeoutMs || 0);
+    const timeoutLabel = String(options.timeoutLabel || command);
+    const timeoutHandle = timeoutMs > 0
+      ? setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill('SIGKILL');
+          reject(new Error(`${timeoutLabel} timed out after ${timeoutMs}ms`));
+        }, timeoutMs)
+      : null;
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -62,10 +91,16 @@ function runCommandWithStdin(command, args, stdinBuffer, options = {}) {
     });
 
     child.on('error', (error) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (settled) return;
+      settled = true;
       reject(error);
     });
 
     child.on('close', (code) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (settled) return;
+      settled = true;
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -152,6 +187,16 @@ function resolveMineruRemoteFailureMode(options = {}) {
     || 'error'
   ).trim().toLowerCase();
   return normalized === 'docling' ? 'docling' : 'error';
+}
+
+function resolvePdfParseTimeoutMs(options = {}) {
+  const raw = Number(
+    options.pdfParseTimeoutMs
+    || process.env.PAPERNEXUS_PDF_PARSE_TIMEOUT_MS
+    || DEFAULT_PDF_PARSE_TIMEOUT_MS
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PDF_PARSE_TIMEOUT_MS;
+  return Math.max(1, Math.round(raw));
 }
 
 async function probeHttpEndpoint(url, timeoutMs = 6000) {
@@ -407,13 +452,20 @@ async function convertPdfToMarkdownViaRemoteMarker(pdfPath, options = {}) {
   const pdfBuffer = await fs.readFile(pdfPath);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`marker:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
   const remoteRoot = `/tmp/papernexus-marker-${stableHash(`${pdfPath}:${Date.now()}`, 16)}`;
   const remotePdfPath = `${remoteRoot}/${basename}.pdf`;
   const remoteRunDir = `${remoteRoot}/out`;
 
   process.stderr.write(`[marker:${basename}] Uploading PDF to ${markerSshHost}\n`);
-  await runRemoteCommand(markerSshHost, `mkdir -p ${shellQuote(remoteRoot)}`);
-  await runRemoteCommandWithStdin(markerSshHost, `cat > ${shellQuote(remotePdfPath)}`, pdfBuffer);
+  await runRemoteCommand(markerSshHost, `mkdir -p ${shellQuote(remoteRoot)}`, {
+    timeoutMs,
+    timeoutLabel: `remote marker setup for ${pdfPath}`
+  });
+  await runRemoteCommandWithStdin(markerSshHost, `cat > ${shellQuote(remotePdfPath)}`, pdfBuffer, {
+    timeoutMs,
+    timeoutLabel: `remote marker upload for ${pdfPath}`
+  });
   process.stderr.write(`[marker:${basename}] Running remote marker on ${markerSshHost}\n`);
 
   const script = buildRemoteMarkerScript({
@@ -424,7 +476,9 @@ async function convertPdfToMarkdownViaRemoteMarker(pdfPath, options = {}) {
   });
 
   const { stdout } = await runRemoteCommand(markerSshHost, script, {
-    onStderr: progress
+    onStderr: progress,
+    timeoutMs,
+    timeoutLabel: `remote marker parse for ${pdfPath}`
   });
   flushProgressReporter(progress);
   const markdown = String(stdout || '').trim();
@@ -447,13 +501,20 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
   const pdfBuffer = await fs.readFile(pdfPath);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`docling:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
   const remoteRoot = `/tmp/papernexus-docling-${stableHash(`${pdfPath}:${Date.now()}`, 16)}`;
   const remotePdfPath = `${remoteRoot}/${basename}.pdf`;
   const remoteRunDir = `${remoteRoot}/out`;
 
   process.stderr.write(`[docling:${basename}] Uploading PDF to ${doclingSshHost}\n`);
-  await runRemoteCommand(doclingSshHost, `mkdir -p ${shellQuote(remoteRoot)}`);
-  await runRemoteCommandWithStdin(doclingSshHost, `cat > ${shellQuote(remotePdfPath)}`, pdfBuffer);
+  await runRemoteCommand(doclingSshHost, `mkdir -p ${shellQuote(remoteRoot)}`, {
+    timeoutMs,
+    timeoutLabel: `remote docling setup for ${pdfPath}`
+  });
+  await runRemoteCommandWithStdin(doclingSshHost, `cat > ${shellQuote(remotePdfPath)}`, pdfBuffer, {
+    timeoutMs,
+    timeoutLabel: `remote docling upload for ${pdfPath}`
+  });
   process.stderr.write(`[docling:${basename}] Running remote docling on ${doclingSshHost}\n`);
 
   const script = buildRemoteDoclingScript({
@@ -465,7 +526,9 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
   });
 
   const { stdout } = await runRemoteCommand(doclingSshHost, script, {
-    onStderr: progress
+    onStderr: progress,
+    timeoutMs,
+    timeoutLabel: `remote docling parse for ${pdfPath}`
   });
   flushProgressReporter(progress);
   const markdown = String(stdout || '').trim();
@@ -482,6 +545,7 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
 async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   const { mineruHttpUrl, mineruCommand, runDir, quiet = false } = options;
   const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
 
   // 如果使用 HTTP API 直接调用
   if (mineruHttpUrl && !runDir) {
@@ -494,7 +558,7 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
     }
 
     const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => controller.abort(), 300000);
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(mineruHttpUrl, {
@@ -523,7 +587,7 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
     } catch (error) {
       clearTimeout(timeoutHandle);
       if (error.name === 'AbortError') {
-        throw new Error(`Mineru request timed out after 5 minutes for ${pdfPath}`);
+        throw new Error(`Mineru request timed out after ${timeoutMs}ms for ${pdfPath}`);
       }
       throw error;
     }
@@ -546,7 +610,9 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   }
   await runCommand('mineru', args, {
     onStdout: quiet ? () => {} : undefined,
-    onStderr: quiet ? () => {} : undefined
+    onStderr: quiet ? () => {} : undefined,
+    timeoutMs,
+    timeoutLabel: `mineru parse for ${pdfPath}`
   });
 
   const generatedMarkdownPath = await findGeneratedMarkdown(runDir, basename);
@@ -572,6 +638,7 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
 
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`marker:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKER, basename, {
     markerDir,
     markdownDir
@@ -642,7 +709,9 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
     process.stderr.write(`[marker:${basename}] Running local marker\n`);
     await runCommand(markerCommand, args, {
       onStdout: progress,
-      onStderr: progress
+      onStderr: progress,
+      timeoutMs,
+      timeoutLabel: `marker parse for ${pdfPath}`
     });
     flushProgressReporter(progress);
   } catch (error) {
@@ -692,6 +761,7 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
 
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`docling:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_DOCLING, basename, {
     markerDir,
     markdownDir
@@ -764,7 +834,9 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
       ...(doclingPdfBackend ? ['--pdf-backend', doclingPdfBackend] : [])
     ], {
       onStdout: progress,
-      onStderr: progress
+      onStderr: progress,
+      timeoutMs,
+      timeoutLabel: `docling parse for ${pdfPath}`
     });
     flushProgressReporter(progress);
   } catch (error) {
@@ -810,6 +882,7 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   } = options;
 
   const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MINERU, basename, {
     markerDir,
     markdownDir
@@ -890,7 +963,9 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   try {
     await runCommand('mineru', args, {
       onStdout: quiet ? () => {} : undefined,
-      onStderr: quiet ? () => {} : undefined
+      onStderr: quiet ? () => {} : undefined,
+      timeoutMs,
+      timeoutLabel: `mineru parse for ${pdfPath}`
     });
   } catch (error) {
     throw new Error(
@@ -938,6 +1013,7 @@ export const __markerTestables = {
   normalizePdfParser,
   resolveRemoteMarkerHost,
   resolveMineruRemoteFailureMode,
+  resolvePdfParseTimeoutMs,
   probeHttpEndpoint,
   buildRemoteMarkerScript,
   buildRemoteDoclingScript

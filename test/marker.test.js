@@ -109,3 +109,27 @@ test('convertPdfToMarkdown stops early when remote mineru backend is unreachable
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('convertPdfToMarkdown fails with a clear timeout error when the parser exceeds the deadline', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-parser-timeout-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const sleepyParserPath = path.join(tempDir, 'sleepy-docling.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(sleepyParserPath, '#!/bin/sh\nsleep 2\n', { mode: 0o755 });
+
+    await assert.rejects(
+      () => convertPdfToMarkdown(pdfPath, {
+        pdfParser: 'docling',
+        doclingCommand: sleepyParserPath,
+        markerDir: tempDir,
+        markdownDir: tempDir,
+        pdfParseTimeoutMs: 100
+      }),
+      /timed out after 100ms/i
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
