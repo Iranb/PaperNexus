@@ -155,6 +155,59 @@ We use a batched llm optimizer.
   }
 });
 
+test('materializeCorpus renders an initial paper progress bar before the first paper completes', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-progress-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-progress-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const originalIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+  const originalWrite = process.stdout.write;
+  let output = '';
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Materialize Progress Paper
+
+## Abstract
+
+We verify that the materialize stage shows an initial progress bar.
+`, 'utf8');
+
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: true
+    });
+    process.stdout.write = ((chunk, ...args) => {
+      output += String(chunk);
+      return originalWrite.call(process.stdout, chunk, ...args);
+    });
+
+    const ingestion = await import('../src/core/ingestion/pipeline.js');
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'materialize-progress-test'
+    });
+
+    assert.match(output, /Processing papers: \[[^\]]+\] 0\/1 \(0%\)/);
+  } finally {
+    process.stdout.write = originalWrite;
+    if (originalIsTTYDescriptor) {
+      Object.defineProperty(process.stdout, 'isTTY', originalIsTTYDescriptor);
+    } else {
+      delete process.stdout.isTTY;
+    }
+
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus reuses existing semantic and relation results when config and sources are unchanged', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));

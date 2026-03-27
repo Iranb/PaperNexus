@@ -3962,6 +3962,7 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
 
   // 创建进度条
   const progress = quiet ? createQuietProgress() : createProgressBar(sourceStates.length, { prefix: 'Processing papers' });
+  progress.start();
 
   async function processSourceState(sourceState) {
     if (sourceState.changeType === 'unchanged' || sourceState.reuseCachedMaterialization) {
