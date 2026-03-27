@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolvePathWithHome } from '../lib/config.js';
 import {
   backupCorpusPayload,
   corpusMetaPayload,
@@ -31,6 +32,22 @@ const MIME_TYPES = {
 function getServeConfig(options = {}) {
   const value = options.config?.serve;
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function getConfiguredRootPaths(options = {}) {
+  const explicit = Array.isArray(options.rootPaths)
+    ? options.rootPaths.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (explicit.length) {
+    return explicit;
+  }
+
+  const raw = options.config?.storage?.indexDir;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return undefined;
+  }
+
+  return [resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd())];
 }
 
 function resolveApiToken(options = {}) {
@@ -120,11 +137,13 @@ export async function serveCommand(options = {}) {
   const port = Number(options.port || 4821);
   const host = options.host || '127.0.0.1';
   const apiToken = resolveApiToken(options);
+  const rootPaths = getConfiguredRootPaths(options);
   const webRoot = buildWebRoot();
   const apiCache = createApiCache();
   const enhancementWorker = options.enableEnhancements === false
     ? null
     : startEnhancementWorker({
+      rootPaths,
       intervalMs: options.enhancementIntervalMs,
       backfillLimit: options.enhancementBackfillLimit,
       logger: console
@@ -132,6 +151,7 @@ export async function serveCommand(options = {}) {
   const importWorker = options.enableImports === false
     ? null
     : startImportWorker({
+      rootPaths,
       intervalMs: options.importIntervalMs,
       logger: console
     });

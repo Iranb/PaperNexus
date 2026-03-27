@@ -74,3 +74,52 @@ test('backup archive export and unpack preserve the index plus source papers', a
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('backup archive unpack tolerates large tar stderr output', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-archive-stderr-'));
+  const archivePath = path.join(workspaceRoot, 'dummy-backup.tgz');
+  const unpackRoot = path.join(workspaceRoot, 'unpacked');
+  const fakeTarPath = path.join(workspaceRoot, 'fake-tar.sh');
+
+  try {
+    await fs.writeFile(archivePath, 'placeholder archive');
+    await fs.writeFile(
+      fakeTarPath,
+      `#!/bin/sh
+set -eu
+target=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-C" ]; then
+    target="$arg"
+    prev=""
+    continue
+  fi
+  if [ "$arg" = "-C" ]; then
+    prev="-C"
+  fi
+done
+python3 - <<'PY' >&2
+print("x" * 200000)
+PY
+mkdir -p "$target/index/.papernexus" "$target/sources/0"
+printf '{"version":1}\\n' > "$target/export.json"
+printf '{"name":"fake"}\\n' > "$target/index/.papernexus/meta.json"
+printf '# fake source\\n' > "$target/sources/0/test.md"
+`
+    );
+    await fs.chmod(fakeTarPath, 0o755);
+
+    const backupArchive = await import('../src/storage/backup-archive.js');
+    const unpacked = await backupArchive.unpackCorpusArchive(archivePath, unpackRoot, {
+      tarBin: fakeTarPath
+    });
+
+    assert.equal(unpacked.outputPath, unpackRoot);
+    await fs.access(path.join(unpackRoot, 'export.json'));
+    await fs.access(path.join(unpackRoot, 'index', '.papernexus', 'meta.json'));
+    await fs.access(path.join(unpackRoot, 'sources', '0', 'test.md'));
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});

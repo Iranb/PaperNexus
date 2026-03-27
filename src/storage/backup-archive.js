@@ -1,12 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { ensureDir, fileExists, readJson, removePath, writeJson } from '../lib/fs.js';
 import { getCorpusPaths, loadCorpusMeta, loadSourceManifest, resolveCorpus } from './corpus-store.js';
-
-const execFileAsync = promisify(execFile);
 
 function emitStage(options, step, total, title, detail = '') {
   options.onStage?.(step, total, title, detail);
@@ -14,6 +11,58 @@ function emitStage(options, step, total, title, detail = '') {
 
 function emitProgress(options, progress) {
   options.onProgress?.(progress);
+}
+
+function resolveTarBin(options = {}) {
+  return String(options.tarBin || process.env.PAPERNEXUS_TAR_BIN || 'tar').trim() || 'tar';
+}
+
+async function runTar(args, options = {}) {
+  const tarBin = resolveTarBin(options);
+  const env = {
+    ...process.env,
+    ...(options.env || {})
+  };
+  const maxCapturedStderrBytes = 16 * 1024;
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(tarBin, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env
+    });
+
+    let stderr = '';
+    let stderrBytes = 0;
+    let stderrTruncated = false;
+
+    child.stderr.on('data', (chunk) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk || '');
+      const chunkBytes = Buffer.byteLength(text);
+      if (stderrBytes < maxCapturedStderrBytes) {
+        const remainingBytes = maxCapturedStderrBytes - stderrBytes;
+        const slice = Buffer.from(text, 'utf8').subarray(0, remainingBytes).toString('utf8');
+        stderr += slice;
+      } else {
+        stderrTruncated = true;
+      }
+      stderrBytes += chunkBytes;
+      if (stderrBytes > maxCapturedStderrBytes) {
+        stderrTruncated = true;
+      }
+    });
+
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const detail = stderr.trim()
+        ? `${stderr.trim()}${stderrTruncated ? '\n...stderr truncated...' : ''}`
+        : `tar exited with code ${code}`;
+      reject(new Error(detail));
+    });
+  });
 }
 
 async function copyPathIntoArchive(sourcePath, targetDir) {
@@ -133,7 +182,14 @@ export async function exportCorpusArchive(target, archivePath, options = {}) {
       label: 'wrote export manifest'
     });
 
-    await execFileAsync('tar', ['-czf', absoluteArchivePath, '-C', stageRoot, '.']);
+    await runTar(['-czf', absoluteArchivePath, '-C', stageRoot, '.'], {
+      ...options,
+      env: {
+        ...(options.env || {}),
+        COPYFILE_DISABLE: '1',
+        COPY_EXTENDED_ATTRIBUTES_DISABLE: '1'
+      }
+    });
     completed += 1;
     emitProgress(options, {
       completed,
@@ -163,7 +219,7 @@ export async function unpackCorpusArchive(archivePath, outputPath, options = {})
     total: totalSteps,
     label: 'prepared output directory'
   });
-  await execFileAsync('tar', ['-xzf', absoluteArchivePath, '-C', absoluteOutputPath]);
+  await runTar(['-xzf', absoluteArchivePath, '-C', absoluteOutputPath], options);
   completed += 1;
   emitProgress(options, {
     completed,

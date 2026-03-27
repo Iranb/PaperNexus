@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { backupCorpus, loadCorpus, loadCorpusMeta, loadSourceManifest, resolveCorpus } from '../storage/corpus-store.js';
 import { resolveLlmConfig, getDefaultLlmApiKeyEnv, getDefaultLlmBaseUrl } from '../core/llm/ollama.js';
 import { getNodeLayer } from '../core/graph/schema.js';
-import { saveRuntimeConfig } from '../lib/config.js';
+import { resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
 import { buildDefaultLlmKeychainAccount } from '../lib/keychain.js';
 import { getCorpusPaths } from '../storage/corpus-store.js';
 import { getRegistryPath, loadRegistry } from '../storage/registry.js';
@@ -41,6 +41,33 @@ export function createApiCache() {
     enhancementSummaryByRoot: new Map(),
     enhancementPaperByKey: new Map()
   };
+}
+
+function getConfiguredRootPath(options = {}) {
+  const raw = options.config?.storage?.indexDir;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return null;
+  }
+  return resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd());
+}
+
+async function loadConfiguredCorpusEntry(options = {}) {
+  const rootPath = getConfiguredRootPath(options);
+  if (!rootPath) {
+    return null;
+  }
+
+  try {
+    const meta = await loadCorpusMeta(rootPath);
+    return {
+      name: meta.name,
+      rootPath,
+      indexedAt: meta.indexedAt,
+      paperCount: meta.paperCount
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function readPathStamp(filePath) {
@@ -91,6 +118,14 @@ async function resolveCachedPayload(cacheMap, key, stamp, loader) {
 }
 
 export async function listCorporaPayload(options = {}) {
+  const configuredCorpus = await loadConfiguredCorpusEntry(options);
+  if (configuredCorpus) {
+    return {
+      corpora: [configuredCorpus],
+      generatedAt: new Date().toISOString()
+    };
+  }
+
   const registryPath = getRegistryPath();
   const cache = options.cache;
   const stamp = await readPathStamp(registryPath);
@@ -115,6 +150,11 @@ export async function listCorporaPayload(options = {}) {
 async function resolveCorpusForApi(candidate, options = {}) {
   if (candidate) {
     return resolveCorpus(candidate);
+  }
+
+  const configuredRoot = getConfiguredRootPath(options);
+  if (configuredRoot) {
+    return configuredRoot;
   }
 
   const registryPayload = await listCorporaPayload(options);
