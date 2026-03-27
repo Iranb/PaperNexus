@@ -69,7 +69,8 @@ async function processImportTask(rootPath, task, options = {}) {
     const materialized = await materializeCorpus(inputPath, sharedOptions);
     result.materialized = {
       reused: Boolean(materialized?.reused),
-      paperCount: materialized?.meta?.paperCount || 0
+      paperCount: materialized?.meta?.paperCount || 0,
+      timings: materialized?.timings || null
     };
   }
 

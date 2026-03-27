@@ -3712,6 +3712,40 @@ function createSourceStateFromManifestEntry(entry) {
   };
 }
 
+function createEmptyMaterializeTimings() {
+  return {
+    totalMs: 0,
+    pdfToMarkdownMs: 0,
+    markdownReadMs: 0,
+    markdownParseMs: 0,
+    semanticSnapshotMs: 0,
+    parser: {
+      probeHttpMs: 0,
+      pdfReadMs: 0,
+      mineruRequestMs: 0,
+      markdownWriteMs: 0
+    }
+  };
+}
+
+function mergeMaterializeTimings(target = createEmptyMaterializeTimings(), source = {}) {
+  for (const key of ['totalMs', 'pdfToMarkdownMs', 'markdownReadMs', 'markdownParseMs', 'semanticSnapshotMs']) {
+    const value = Number(source?.[key] || 0);
+    if (Number.isFinite(value) && value > 0) {
+      target[key] = Number(target[key] || 0) + value;
+    }
+  }
+
+  for (const key of ['probeHttpMs', 'pdfReadMs', 'mineruRequestMs', 'markdownWriteMs']) {
+    const value = Number(source?.parser?.[key] || 0);
+    if (Number.isFinite(value) && value > 0) {
+      target.parser[key] = Number(target.parser[key] || 0) + value;
+    }
+  }
+
+  return target;
+}
+
 async function buildStage2RecordsFromManifest(rootPath, manifest, options = {}) {
   const metadataConcurrency = resolveMetadataConcurrency(options);
   const records = await mapWithConcurrency(manifest.sources || [], metadataConcurrency, async (entry) => {
@@ -3763,8 +3797,11 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
   let markdownPath = sourceState.inputPath;
   let sourcePdfPath = null;
   let pdfCommand = null;
+  const timings = createEmptyMaterializeTimings();
+  const materializeStartedAt = Date.now();
 
   if (sourceState.kind === 'pdf') {
+    const convertStartedAt = Date.now();
     const converted = await convertPdfToMarkdown(sourceState.inputPath, {
       pdfParser: options.pdfParser,
       pdfCommand: options.pdfCommand,
@@ -3782,6 +3819,10 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       markerDir,
       markdownDir
     });
+    timings.pdfToMarkdownMs = Date.now() - convertStartedAt;
+    mergeMaterializeTimings(timings, {
+      parser: converted.timings || null
+    });
     markdownPath = converted.markdownPath;
     sourcePdfPath = converted.sourcePdfPath;
     pdfCommand = converted.parserCommand || converted.markerCommand || null;
@@ -3793,8 +3834,12 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
     markdownPath = cached.markdownPath;
   }
 
+  const markdownReadStartedAt = Date.now();
   const markdown = await readText(markdownPath);
+  timings.markdownReadMs = Date.now() - markdownReadStartedAt;
+  const markdownParseStartedAt = Date.now();
   const parsed = parsePaperMarkdown(markdown, markdownPath);
+  timings.markdownParseMs = Date.now() - markdownParseStartedAt;
   parsed.paperId = `paper:${stableHash(sourceState.sourceKey)}`;
   parsed.paperTitle = parsed.title;
   parsed.sourceKey = sourceState.sourceKey;
@@ -3804,12 +3849,16 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
   parsed.sourceKind = sourceState.kind;
   parsed.sourceFingerprint = sourceState.fingerprint;
 
+  const semanticSnapshotStartedAt = Date.now();
   const semanticPaper = buildSemanticPaperView(parsed);
+  timings.semanticSnapshotMs = Date.now() - semanticSnapshotStartedAt;
+  timings.totalMs = Date.now() - materializeStartedAt;
 
   return {
     parsedPaper: parsed,
     semanticPaper,
-    markerCommand: pdfCommand
+    markerCommand: pdfCommand,
+    timings
   };
 }
 
@@ -4149,14 +4198,15 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
 
     try {
       setSourceStatus(sourceState, sourceState.kind === 'pdf' ? 'parsing pdf' : 'reading markdown');
-      const { parsedPaper, semanticPaper, markerCommand } = await materializeSemanticPaper(rootPath, sourceState, { ...options, quiet });
+      const { parsedPaper, semanticPaper, markerCommand, timings } = await materializeSemanticPaper(rootPath, sourceState, { ...options, quiet });
       setSourceStatus(sourceState, 'writing snapshot');
       await saveSemanticPaperSnapshot(rootPath, sourceState.sourceKey, semanticPaper);
       materializedSources.push({
         sourceState,
         parsedPaper,
         semanticPaper,
-        markerCommand
+        markerCommand,
+        timings
       });
     } catch (error) {
       failedSources.push({
@@ -4214,6 +4264,7 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
   }
 
   const { normalizedRecords, activeSemanticPapers } = canonicalizeMaterializedSources(materializedSources);
+  const timings = materializedSources.reduce((summary, record) => mergeMaterializeTimings(summary, record.timings), createEmptyMaterializeTimings());
   const manifestSources = await mapWithConcurrency(normalizedRecords, metadataConcurrency, async (record) => {
     await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
     return buildManifestEntry(
@@ -4230,7 +4281,8 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
   return {
     semanticPapers: activeSemanticPapers,
     manifestSources,
-    failedSources
+    failedSources,
+    timings
   };
 }
 
@@ -4443,7 +4495,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
         ? 'markdown cache and heuristic semantic snapshots'
         : (optimizeOnly || llmOnly ? 'cache-first snapshot reuse before optimization' : 'cache-first materialization and snapshot reuse')
     );
-    const { semanticPapers, manifestSources, failedSources } = await materializeSourceStates(rootPath, sourceStates, materializeOptions);
+    const { semanticPapers, manifestSources, failedSources, timings: materializeTimings } = await materializeSourceStates(rootPath, sourceStates, materializeOptions);
 
     await mapWithConcurrency(removedSources, metadataConcurrency, async (removedSource) => {
       await removeSemanticPaperSnapshot(rootPath, removedSource.sourceKey);
@@ -4539,7 +4591,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
         rootPath,
         changes,
         reused: false,
-        stage: 'materialized'
+        stage: 'materialized',
+        timings: materializeTimings
       };
     }
 

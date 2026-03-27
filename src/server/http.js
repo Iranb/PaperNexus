@@ -33,6 +33,7 @@ import {
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
+import { warmMineruHttpEndpoint } from '../core/ingestion/marker.js';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -41,6 +42,7 @@ const MIME_TYPES = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml; charset=utf-8'
 };
+const mineruWarmupsInFlight = new Map();
 
 function getServeConfig(options = {}) {
   const value = options.config?.serve;
@@ -172,6 +174,65 @@ function startNamedWorker(name, enabled, starter, options, logger = console) {
   }
 }
 
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function collectMineruWarmupUrls(options = {}) {
+  const analyzeConfig = options.config?.analyze;
+  const materializeConfig = options.config?.materialize;
+  const watchConfig = options.config?.watch;
+  const urls = [
+    options.mineruHttpUrl,
+    analyzeConfig?.mineruHttpUrl,
+    materializeConfig?.mineruHttpUrl,
+    watchConfig?.mineruHttpUrl,
+    process.env.PAPERNEXUS_MINERU_HTTP_URL
+  ]
+    .map((value) => String(value || '').trim())
+    .filter((value) => value && isHttpUrl(value));
+
+  return [...new Set(urls)];
+}
+
+async function warmMineruBackends(options = {}) {
+  const urls = collectMineruWarmupUrls(options);
+  const attempted = [];
+  const warmed = [];
+  const failed = [];
+
+  await Promise.all(urls.map(async (url) => {
+    attempted.push(url);
+    if (!mineruWarmupsInFlight.has(url)) {
+      mineruWarmupsInFlight.set(url, warmMineruHttpEndpoint(url, {
+        timeoutMs: options.mineruWarmupTimeoutMs,
+        mineruProbeCacheTtlMs: options.mineruProbeCacheTtlMs
+      }));
+    }
+
+    try {
+      const result = await mineruWarmupsInFlight.get(url);
+      if (!result.reachable) {
+        throw new Error(result.error || `MinerU warmup probe failed with status ${result.status || 'unknown'}`);
+      }
+      warmed.push(url);
+    } catch (error) {
+      failed.push({
+        url,
+        error: error.message || String(error)
+      });
+    } finally {
+      mineruWarmupsInFlight.delete(url);
+    }
+  }));
+
+  return {
+    attempted,
+    warmed,
+    failed
+  };
+}
+
 export async function serveCommand(options = {}) {
   const port = Number(options.port || 4821);
   const host = options.host || '127.0.0.1';
@@ -214,6 +275,27 @@ export async function serveCommand(options = {}) {
     },
     workerLogger
   );
+  const triggerMineruWarmup = options.warmMineruBackends || warmMineruBackends;
+  if (options.enableImports !== false && options.enableMineruWarmup !== false) {
+    workerLogger.log?.('[serve] MinerU warmup started');
+    Promise.resolve()
+      .then(() => triggerMineruWarmup({
+        ...options,
+        rootPaths,
+        logger: workerLogger
+      }))
+      .then((summary) => {
+        if (summary?.attempted?.length) {
+          const failedCount = Array.isArray(summary.failed) ? summary.failed.length : 0;
+          workerLogger.log?.(`[serve] MinerU warmup finished (${summary.warmed.length}/${summary.attempted.length} reachable, ${failedCount} failed)`);
+          return;
+        }
+        workerLogger.log?.('[serve] MinerU warmup finished (no MinerU HTTP backends configured)');
+      })
+      .catch((error) => {
+        workerLogger.warn?.(`[serve] MinerU warmup failed (${error.message || error})`);
+      });
+  }
 
   const server = http.createServer(async (request, response) => {
     try {

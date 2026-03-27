@@ -226,3 +226,67 @@ test('serveCommand logs background worker startup states', async () => {
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('serveCommand warms MinerU backends in the background when imports are enabled', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-mineru-warmup-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 53000 + Math.floor(Math.random() * 1000);
+  const calls = [];
+  const logs = [];
+  const logger = {
+    log(message) {
+      logs.push(String(message));
+    },
+    warn(message) {
+      logs.push(String(message));
+    },
+    error(message) {
+      logs.push(String(message));
+    }
+  };
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      logger,
+      config: {
+        analyze: {
+          pdfParser: 'mineru',
+          mineruHttpUrl: 'http://127.0.0.1:30000'
+        },
+        serve: {
+          apiToken: 'secret-token'
+        }
+      },
+      warmMineruBackends: async (warmupOptions) => {
+        calls.push(warmupOptions);
+        return {
+          attempted: ['http://127.0.0.1:30000'],
+          warmed: ['http://127.0.0.1:30000'],
+          failed: []
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].logger, logger);
+      assert.ok(logs.some((line) => line.includes('[serve] MinerU warmup started')));
+      assert.ok(logs.some((line) => line.includes('[serve] MinerU warmup finished')));
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

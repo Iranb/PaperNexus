@@ -8,6 +8,8 @@ const PDF_PARSER_DOCLING = 'docling';
 const PDF_PARSER_MARKER = 'marker';
 const PDF_PARSER_MINERU = 'mineru';
 const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
+const DEFAULT_MINERU_PROBE_CACHE_TTL_MS = 15_000;
+const mineruProbeCache = new Map();
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -173,7 +175,7 @@ function resolveRemoteDoclingHost(options = {}) {
     || '';
 }
 
-function resolveMineruHttpUrl(options = {}) {
+export function resolveMineruHttpUrl(options = {}) {
   return options.mineruHttpUrl
     || options.pdfParserHttpUrl
     || process.env.PAPERNEXUS_MINERU_HTTP_URL
@@ -199,28 +201,118 @@ function resolvePdfParseTimeoutMs(options = {}) {
   return Math.max(1, Math.round(raw));
 }
 
-async function probeHttpEndpoint(url, timeoutMs = 6000) {
+function resolveMineruProbeCacheTtlMs(options = {}) {
+  const raw = Number(
+    options.cacheTtlMs
+    ?? options.mineruProbeCacheTtlMs
+    ?? process.env.PAPERNEXUS_MINERU_PROBE_CACHE_TTL_MS
+    ?? DEFAULT_MINERU_PROBE_CACHE_TTL_MS
+  );
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_MINERU_PROBE_CACHE_TTL_MS;
+  return Math.max(0, Math.round(raw));
+}
+
+function resetMineruProbeCache(url = '') {
+  const normalized = String(url || '').trim();
+  if (!normalized) {
+    mineruProbeCache.clear();
+    return;
+  }
+  mineruProbeCache.delete(normalized);
+}
+
+function createMineruParserTimings() {
+  return {
+    probeHttpMs: 0,
+    pdfReadMs: 0,
+    mineruRequestMs: 0,
+    markdownWriteMs: 0
+  };
+}
+
+function mergeMineruParserTimings(target = {}, source = {}) {
+  for (const key of Object.keys(createMineruParserTimings())) {
+    const value = Number(source?.[key] || 0);
+    if (Number.isFinite(value) && value > 0) {
+      target[key] = Number(target[key] || 0) + value;
+    }
+  }
+  return target;
+}
+
+async function measureDuration(timings, key, action) {
+  const startedAt = Date.now();
+  try {
+    return await action();
+  } finally {
+    if (timings && key) {
+      timings[key] = Number(timings[key] || 0) + (Date.now() - startedAt);
+    }
+  }
+}
+
+async function probeHttpEndpoint(url, timeoutMs = 6000, options = {}) {
+  const normalizedUrl = String(url || '').trim();
+  const cacheTtlMs = resolveMineruProbeCacheTtlMs(options);
+  if (cacheTtlMs > 0 && normalizedUrl) {
+    const cached = mineruProbeCache.get(normalizedUrl);
+    if (cached && cached.expiresAt > Date.now()) {
+      return {
+        ...cached.result,
+        cached: true,
+        durationMs: 0
+      };
+    }
+  }
+
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
 
   try {
     const response = await fetch(url, {
       method: 'HEAD',
       signal: controller.signal
     });
-    return {
+    const result = {
       reachable: true,
       status: response.status,
-      error: null
+      error: null,
+      cached: false,
+      durationMs: Date.now() - startedAt
     };
+    if (cacheTtlMs > 0 && normalizedUrl) {
+      mineruProbeCache.set(normalizedUrl, {
+        expiresAt: Date.now() + cacheTtlMs,
+        result: {
+          reachable: result.reachable,
+          status: result.status,
+          error: result.error
+        }
+      });
+    }
+    return result;
   } catch (error) {
-    return {
+    const result = {
       reachable: false,
       status: null,
       error: error?.name === 'AbortError'
         ? `Connection probe timed out after ${timeoutMs}ms`
-        : (error?.message || 'Unknown connectivity error')
+        : (error?.message || 'Unknown connectivity error'),
+      cached: false,
+      durationMs: Date.now() - startedAt
     };
+    if (cacheTtlMs > 0 && normalizedUrl) {
+      mineruProbeCache.set(normalizedUrl, {
+        expiresAt: Date.now() + cacheTtlMs,
+        result: {
+          reachable: result.reachable,
+          status: result.status,
+          error: result.error
+        }
+      });
+    }
+    return result;
   } finally {
     clearTimeout(timeoutHandle);
   }
@@ -546,10 +638,11 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   const { mineruHttpUrl, mineruCommand, runDir, quiet = false } = options;
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const timings = createMineruParserTimings();
 
   // 如果使用 HTTP API 直接调用
   if (mineruHttpUrl && !runDir) {
-    const pdfBuffer = await fs.readFile(pdfPath);
+    const pdfBuffer = await measureDuration(timings, 'pdfReadMs', () => fs.readFile(pdfPath));
     const formData = new FormData();
     formData.append('file', new Blob([pdfBuffer], { type: 'application/pdf' }), `${basename}.pdf`);
 
@@ -561,11 +654,11 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
     const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(mineruHttpUrl, {
+      const response = await measureDuration(timings, 'mineruRequestMs', () => fetch(mineruHttpUrl, {
         method: 'POST',
         body: formData,
         signal: controller.signal
-      });
+      }));
 
       clearTimeout(timeoutHandle);
 
@@ -582,7 +675,8 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
 
       return {
         markdown,
-        parserCommand: `mineru (http@${mineruHttpUrl})`
+        parserCommand: `mineru (http@${mineruHttpUrl})`,
+        timings
       };
     } catch (error) {
       clearTimeout(timeoutHandle);
@@ -608,19 +702,20 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   if (!quiet) {
     process.stderr.write(`[mineru:${basename}] Running local mineru with remote backend\n`);
   }
-  await runCommand('mineru', args, {
+  await measureDuration(timings, 'mineruRequestMs', () => runCommand('mineru', args, {
     onStdout: quiet ? () => {} : undefined,
     onStderr: quiet ? () => {} : undefined,
     timeoutMs,
     timeoutLabel: `mineru parse for ${pdfPath}`
-  });
+  }));
 
   const generatedMarkdownPath = await findGeneratedMarkdown(runDir, basename);
   const markdown = await readText(generatedMarkdownPath);
 
   return {
     markdown,
-    parserCommand: `mineru -b vlm-http-client -u ${mineruHttpUrl || mineruCommand}`
+    parserCommand: `mineru -b vlm-http-client -u ${mineruHttpUrl || mineruCommand}`,
+    timings
   };
 }
 
@@ -907,9 +1002,11 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
 
   const resolvedHttpUrl = resolveMineruHttpUrl({ mineruHttpUrl, pdfParserHttpUrl });
   const remoteFailureMode = resolveMineruRemoteFailureMode(options);
+  const parserTimings = createMineruParserTimings();
 
   if (resolvedHttpUrl) {
-    const reachability = await probeHttpEndpoint(resolvedHttpUrl);
+    const reachability = await probeHttpEndpoint(resolvedHttpUrl, 6000, options);
+    parserTimings.probeHttpMs = Number(reachability.durationMs || 0);
     if (!reachability.reachable) {
       const warning = `Remote MinerU backend is unreachable at ${resolvedHttpUrl}: ${reachability.error}`;
       process.stderr.write(`[mineru:${basename}] WARNING: ${warning}\n`);
@@ -936,15 +1033,18 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
         runDir,
         quiet
       });
-      await writeText(cachedMarkdownPath, remoteResult.markdown);
+      mergeMineruParserTimings(parserTimings, remoteResult.timings);
+      await measureDuration(parserTimings, 'markdownWriteMs', () => writeText(cachedMarkdownPath, remoteResult.markdown));
       return {
         markdownPath: cachedMarkdownPath,
         sourcePdfPath: pdfPath,
         generated: true,
         parser: PDF_PARSER_MINERU,
-        parserCommand: remoteResult.parserCommand
+        parserCommand: remoteResult.parserCommand,
+        timings: parserTimings
       };
     } catch (error) {
+      resetMineruProbeCache(resolvedHttpUrl);
       throw new Error(
         `Mineru failed for ${pdfPath}. ${error.message}\n` +
         'Tip: verify the mineru HTTP API endpoint is accessible, switch to `--pdf-parser docling`, or set `--mineru-remote-failure docling`.'
@@ -975,14 +1075,40 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   }
 
   const generatedMarkdownPath = await findGeneratedMarkdown(runDir, basename);
-  await writeText(cachedMarkdownPath, await readText(generatedMarkdownPath));
+  await measureDuration(parserTimings, 'markdownWriteMs', async () => {
+    await writeText(cachedMarkdownPath, await readText(generatedMarkdownPath));
+  });
 
   return {
     markdownPath: cachedMarkdownPath,
     sourcePdfPath: pdfPath,
     generated: true,
     parser: PDF_PARSER_MINERU,
-    parserCommand: mineruCommand
+    parserCommand: mineruCommand,
+    timings: parserTimings
+  };
+}
+
+export async function warmMineruHttpEndpoint(url, options = {}) {
+  const normalizedUrl = String(url || '').trim();
+  if (!normalizedUrl) {
+    return {
+      url: '',
+      reachable: false,
+      status: null,
+      error: 'No MinerU HTTP URL configured.',
+      cached: false
+    };
+  }
+
+  const timeoutMs = Number(options.timeoutMs || options.probeTimeoutMs || 6000);
+  const result = await probeHttpEndpoint(normalizedUrl, timeoutMs, options);
+  return {
+    url: normalizedUrl,
+    reachable: result.reachable,
+    status: result.status,
+    error: result.error,
+    cached: Boolean(result.cached)
   };
 }
 
@@ -1013,8 +1139,10 @@ export const __markerTestables = {
   normalizePdfParser,
   resolveRemoteMarkerHost,
   resolveMineruRemoteFailureMode,
+  resolveMineruProbeCacheTtlMs,
   resolvePdfParseTimeoutMs,
   probeHttpEndpoint,
+  resetMineruProbeCache,
   buildRemoteMarkerScript,
   buildRemoteDoclingScript
 };

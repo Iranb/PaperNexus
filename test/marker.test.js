@@ -71,6 +71,7 @@ test('resolveMineruRemoteFailureMode defaults to error and accepts docling', () 
 test('probeHttpEndpoint reports unreachable connections', async () => {
   const originalFetch = globalThis.fetch;
   try {
+    __markerTestables.resetMineruProbeCache();
     globalThis.fetch = async () => {
       throw new Error('connect ECONNREFUSED 127.0.0.1:30000');
     };
@@ -83,12 +84,66 @@ test('probeHttpEndpoint reports unreachable connections', async () => {
   }
 });
 
+test('probeHttpEndpoint reuses cached reachability results within the TTL window', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+
+  try {
+    __markerTestables.resetMineruProbeCache();
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      return { status: 204 };
+    };
+
+    const first = await __markerTestables.probeHttpEndpoint('http://127.0.0.1:30000', 6000, {
+      cacheTtlMs: 15_000
+    });
+    const second = await __markerTestables.probeHttpEndpoint('http://127.0.0.1:30000', 6000, {
+      cacheTtlMs: 15_000
+    });
+
+    assert.equal(first.reachable, true);
+    assert.equal(second.reachable, true);
+    assert.equal(second.cached, true);
+    assert.equal(fetchCalls, 1);
+  } finally {
+    __markerTestables.resetMineruProbeCache();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('probeHttpEndpoint can bypass the cache when the TTL is disabled', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+
+  try {
+    __markerTestables.resetMineruProbeCache();
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      return { status: 204 };
+    };
+
+    await __markerTestables.probeHttpEndpoint('http://127.0.0.1:30000', 6000, {
+      cacheTtlMs: 0
+    });
+    await __markerTestables.probeHttpEndpoint('http://127.0.0.1:30000', 6000, {
+      cacheTtlMs: 0
+    });
+
+    assert.equal(fetchCalls, 2);
+  } finally {
+    __markerTestables.resetMineruProbeCache();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('convertPdfToMarkdown stops early when remote mineru backend is unreachable', async () => {
   const originalFetch = globalThis.fetch;
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mineru-unreachable-'));
   const pdfPath = path.join(tempDir, 'paper.pdf');
 
   try {
+    __markerTestables.resetMineruProbeCache();
     await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
     globalThis.fetch = async () => {
       throw new Error('connect ECONNREFUSED 127.0.0.1:30000');
@@ -105,7 +160,61 @@ test('convertPdfToMarkdown stops early when remote mineru backend is unreachable
       /Remote MinerU backend is unreachable/
     );
   } finally {
+    __markerTestables.resetMineruProbeCache();
     globalThis.fetch = originalFetch;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown surfaces mineru parser timings when using the remote backend', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalPath = process.env.PATH;
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mineru-timings-'));
+  const binDir = path.join(tempDir, 'bin');
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const mineruShimPath = path.join(binDir, 'mineru');
+
+  try {
+    __markerTestables.resetMineruProbeCache();
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      mineruShimPath,
+      [
+        '#!/bin/sh',
+        'run_dir=""',
+        'pdf_path=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    -o) run_dir="$2"; shift 2 ;;',
+        '    -p) pdf_path="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$run_dir"',
+        'base=$(basename "$pdf_path" .pdf)',
+        'printf "# Parsed\\n" > "$run_dir/$base.md"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    process.env.PATH = `${binDir}:${originalPath || ''}`;
+    globalThis.fetch = async () => ({ status: 204 });
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'mineru',
+      mineruHttpUrl: 'http://127.0.0.1:30000',
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'mineru');
+    assert.equal(typeof result.timings?.probeHttpMs, 'number');
+    assert.equal(typeof result.timings?.mineruRequestMs, 'number');
+    assert.equal(typeof result.timings?.markdownWriteMs, 'number');
+  } finally {
+    __markerTestables.resetMineruProbeCache();
+    globalThis.fetch = originalFetch;
+    process.env.PATH = originalPath;
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });

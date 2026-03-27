@@ -62,6 +62,8 @@ test('import worker processes queued uploads and merges them into the single gra
 
     const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
     assert.equal(loadedTask.status, 'completed');
+    assert.equal(typeof loadedTask.result?.materialized?.timings?.totalMs, 'number');
+    assert.equal(loadedTask.result.materialized.timings.totalMs >= 0, true);
 
     const corpus = await corpusStore.loadCorpusLite(indexRoot);
     assert.equal(corpus.meta.paperCount, 2);
