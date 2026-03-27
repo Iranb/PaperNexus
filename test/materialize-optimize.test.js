@@ -306,3 +306,146 @@ We study cache-first stage reuse for paper B.
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('llmOptimizeCorpus trusts a matching manifest-level optimization token and skips redundant reruns', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let semanticFetchCount = 0;
+  let relationFetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Manifest Token Paper A
+
+Alice Example
+
+## Abstract
+
+We study manifest-level cache reuse for paper A.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = String(request.messages?.[0]?.content || '');
+      const marker = 'Papers:\n';
+      const markerIndex = prompt.lastIndexOf(marker);
+      const papers = markerIndex === -1 ? [] : JSON.parse(prompt.slice(markerIndex + marker.length).trim());
+
+      if (prompt.includes('Allowed relation types:')) {
+        relationFetchCount += 1;
+        return {
+          ok: true,
+          async json() {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      papers: papers.map((paper) => ({
+                        id: paper.id,
+                        benchmarks: [],
+                        findings: [],
+                        researchGoals: [],
+                        relations: []
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+        };
+      }
+
+      semanticFetchCount += 1;
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [
+                        {
+                          name: `manifest-level cache reuse for ${paper.title.toLowerCase()}`,
+                          type: 'Problem',
+                          evidenceText: `We study manifest-level cache reuse for ${paper.title}.`,
+                          sectionHeading: 'Abstract',
+                          sectionRole: 'abstract',
+                          confidence: 0.92
+                        }
+                      ]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'llm-manifest-token-test',
+      force: true
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-manifest-token-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 8
+    });
+    assert.equal(semanticFetchCount, 1);
+    assert.equal(relationFetchCount, 1);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.ok(manifest.llmOptimization);
+
+    const firstSource = manifest.sources[0];
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, firstSource.sourceKey);
+    delete snapshot.llmSemanticObjects.configSignature;
+    delete snapshot.llm.semanticConfigSignature;
+    await corpusStore.saveSemanticPaperSnapshot(tempCorpusRoot, firstSource.sourceKey, snapshot);
+
+    const rerun = await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-manifest-token-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 8
+    });
+
+    assert.equal(rerun.stage, 'llm-optimized');
+    assert.equal(rerun.reused, true);
+    assert.equal(semanticFetchCount, 1);
+    assert.equal(relationFetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

@@ -2446,7 +2446,8 @@ function createEmptyManifest({ corpusName, rootPath, inputPath, inputPaths, sour
     mineruCommand: pdfParser === 'mineru' ? (pdfCommand || null) : null,
     indexedAt,
     lastChangeSummary: changes,
-    sources
+    sources,
+    llmOptimization: null
   };
 }
 
@@ -2471,6 +2472,18 @@ function hasSourceChanges(summary) {
   return Boolean(summary.added || summary.updated || summary.removed);
 }
 
+function hasInputSourceChanges(sourceStates = [], removedSources = []) {
+  if (removedSources.length) return true;
+
+  return sourceStates.some((sourceState) => {
+    if (!sourceState.previous) return true;
+    if (sourceState.previous.fingerprint !== sourceState.fingerprint) return true;
+    if (sourceState.previous.kind !== sourceState.kind) return true;
+    if (sourceState.markdownCacheNeedsRefresh) return true;
+    return false;
+  });
+}
+
 function createManifestCommitToken(manifest) {
   if (!manifest) return null;
   const sources = (manifest.sources || [])
@@ -2493,6 +2506,30 @@ function createManifestCommitToken(manifest) {
     sourceCount: sources.length,
     sources
   });
+}
+
+function createLlmOptimizationToken(manifest, options = {}) {
+  return stableHash(JSON.stringify({
+    version: 1,
+    manifestToken: createManifestCommitToken(manifest),
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: createRelationConfigSignature(options)
+  }), 20);
+}
+
+function buildLlmOptimizationState(manifest, options = {}) {
+  return {
+    version: 1,
+    completedAt: new Date().toISOString(),
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: createRelationConfigSignature(options),
+    token: createLlmOptimizationToken(manifest, options)
+  };
+}
+
+function manifestHasReusableLlmOptimization(manifest, options = {}) {
+  if (!manifest?.llmOptimization?.token) return false;
+  return manifest.llmOptimization.token === createLlmOptimizationToken(manifest, options);
 }
 
 function createSourceFingerprintMap(sourceStates = []) {
@@ -3672,8 +3709,16 @@ export async function analyzeCorpus(inputPath, options = {}) {
 
     const removedSources = (previousManifest?.sources || []).filter((entry) => !currentKeys.has(entry.sourceKey));
     const changes = summarizeSourceChanges(sourceStates, removedSources);
+    const inputSourcesChanged = hasInputSourceChanges(sourceStates, removedSources);
 
-    if (!options.force && llmOnly && !hasSourceChanges(changes) && sourceStates.every((sourceState) => !sourceState.llmRefreshState?.anyRequired)) {
+    if (
+      !options.force
+      && llmOnly
+      && (
+        (!hasSourceChanges(changes) && sourceStates.every((sourceState) => !sourceState.llmRefreshState?.anyRequired))
+        || (!inputSourcesChanged && manifestHasReusableLlmOptimization(previousManifest, analysisOptions))
+      )
+    ) {
       const paperCount = (previousManifest?.sources || []).filter((entry) => entry.activeInGraph !== false).length
         || (previousManifest?.sources || []).length;
       return {
@@ -3777,24 +3822,25 @@ export async function analyzeCorpus(inputPath, options = {}) {
     if (materializeOnly) {
       announceStage(materializeOptions, 2, 2, 'Writing source manifest', 'persisting reusable snapshot metadata');
       const indexedAt = new Date().toISOString();
+      const nextManifest = createEmptyManifest({
+        corpusName,
+        rootPath,
+        inputPath: absoluteInput,
+        inputPaths: absoluteInputs,
+        sourceMode,
+        pdfParser,
+        pdfCommand,
+        semanticExtractionMode: normalizedSemanticExtractionMode,
+        sources: manifestSources,
+        indexedAt,
+        changes
+      });
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
         await backupExistingCorpusRoot(rootPath, {
           backupDir: analysisOptions.backupDir
         });
-        await saveSourceManifest(rootPath, createEmptyManifest({
-          corpusName,
-          rootPath,
-          inputPath: absoluteInput,
-          inputPaths: absoluteInputs,
-          sourceMode,
-          pdfParser,
-          pdfCommand,
-          semanticExtractionMode: normalizedSemanticExtractionMode,
-          sources: manifestSources,
-          indexedAt,
-          changes
-        }));
+        await saveSourceManifest(rootPath, nextManifest);
       }, options.lockOptions);
 
       return {
@@ -3819,24 +3865,26 @@ export async function analyzeCorpus(inputPath, options = {}) {
     if (llmOnly) {
       announceStage(materializeOptions, 1, 1, 'Writing optimized snapshots', 'persisting LLM-enriched snapshot metadata');
       const indexedAt = new Date().toISOString();
+      const nextManifest = createEmptyManifest({
+        corpusName,
+        rootPath,
+        inputPath: absoluteInput,
+        inputPaths: absoluteInputs,
+        sourceMode,
+        pdfParser,
+        pdfCommand,
+        semanticExtractionMode: normalizedSemanticExtractionMode,
+        sources: manifestSources,
+        indexedAt,
+        changes
+      });
+      nextManifest.llmOptimization = buildLlmOptimizationState(nextManifest, analysisOptions);
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
         await backupExistingCorpusRoot(rootPath, {
           backupDir: analysisOptions.backupDir
         });
-        await saveSourceManifest(rootPath, createEmptyManifest({
-          corpusName,
-          rootPath,
-          inputPath: absoluteInput,
-          inputPaths: absoluteInputs,
-          sourceMode,
-          pdfParser,
-          pdfCommand,
-          semanticExtractionMode: normalizedSemanticExtractionMode,
-          sources: manifestSources,
-          indexedAt,
-          changes
-        }));
+        await saveSourceManifest(rootPath, nextManifest);
       }, options.lockOptions);
 
       return {
@@ -3905,23 +3953,25 @@ export async function analyzeCorpus(inputPath, options = {}) {
       'Writing graph and index files',
       'graph store, lite view, manifest, and enhancement queue'
     );
+    const nextManifest = createEmptyManifest({
+      corpusName,
+      rootPath,
+      inputPath: absoluteInput,
+      inputPaths: absoluteInputs,
+      sourceMode,
+      pdfParser,
+      pdfCommand,
+      semanticExtractionMode: normalizedSemanticExtractionMode,
+      sources: manifestSources,
+      indexedAt: mergedMeta.indexedAt,
+      changes
+    });
+    nextManifest.llmOptimization = buildLlmOptimizationState(nextManifest, analysisOptions);
     const enhancement = await commitPreparedCorpusIndex({
       rootPath,
       graph: mergedGraphResult.graph,
       meta: mergedMeta,
-      manifest: createEmptyManifest({
-        corpusName,
-        rootPath,
-        inputPath: absoluteInput,
-        inputPaths: absoluteInputs,
-        sourceMode,
-        pdfParser,
-        pdfCommand,
-        semanticExtractionMode: normalizedSemanticExtractionMode,
-        sources: manifestSources,
-        indexedAt: mergedMeta.indexedAt,
-        changes
-      }),
+      manifest: nextManifest,
       sourceStateByKey,
       analysisOptions,
       validation() {
