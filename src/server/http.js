@@ -146,6 +146,32 @@ function buildWebRoot() {
   return path.resolve(path.dirname(thisFile), '../../web');
 }
 
+function describeWorkerRoots(rootPaths) {
+  if (!Array.isArray(rootPaths) || !rootPaths.length) {
+    return 'all indexed corpora';
+  }
+  if (rootPaths.length === 1) {
+    return rootPaths[0];
+  }
+  return `${rootPaths.length} configured corpora`;
+}
+
+function startNamedWorker(name, enabled, starter, options, logger = console) {
+  if (!enabled) {
+    logger.log?.(`[serve] ${name} disabled`);
+    return null;
+  }
+
+  try {
+    const worker = starter(options);
+    logger.log?.(`[serve] ${name} started (${describeWorkerRoots(options.rootPaths)})`);
+    return worker;
+  } catch (error) {
+    logger.error?.(`[serve] ${name} failed to start (${error.message || error})`);
+    throw error;
+  }
+}
+
 export async function serveCommand(options = {}) {
   const port = Number(options.port || 4821);
   const host = options.host || '127.0.0.1';
@@ -153,28 +179,41 @@ export async function serveCommand(options = {}) {
   const rootPaths = getConfiguredRootPaths(options);
   const webRoot = buildWebRoot();
   const apiCache = createApiCache();
-  const enhancementWorker = options.enableEnhancements === false
-    ? null
-    : startEnhancementWorker({
+  const workerLogger = options.logger || console;
+  const enhancementWorker = startNamedWorker(
+    'enhancement worker',
+    options.enableEnhancements !== false,
+    startEnhancementWorker,
+    {
       rootPaths,
       intervalMs: options.enhancementIntervalMs,
       backfillLimit: options.enhancementBackfillLimit,
-      logger: console
-    });
-  const authoritativeSyncWorker = options.enableAuthoritativeSync === false
-    ? null
-    : startAuthoritativeSyncWorker({
+      logger: workerLogger
+    },
+    workerLogger
+  );
+  const authoritativeSyncWorker = startNamedWorker(
+    'authoritative sync worker',
+    options.enableAuthoritativeSync !== false,
+    startAuthoritativeSyncWorker,
+    {
       rootPaths,
       intervalMs: options.authoritativeSyncIntervalMs,
-      logger: console
-    });
-  const importWorker = options.enableImports === false
-    ? null
-    : startImportWorker({
+      logger: workerLogger
+    },
+    workerLogger
+  );
+  const importWorker = startNamedWorker(
+    'import worker',
+    options.enableImports !== false,
+    startImportWorker,
+    {
       rootPaths,
       intervalMs: options.importIntervalMs,
-      logger: console
-    });
+      logger: workerLogger
+    },
+    workerLogger
+  );
 
   const server = http.createServer(async (request, response) => {
     try {

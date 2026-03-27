@@ -177,3 +177,52 @@ test('serveCommand API routes prefer the configured storage index over stale reg
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('serveCommand logs background worker startup states', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-worker-log-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 52000 + Math.floor(Math.random() * 1000);
+  const logs = [];
+  const logger = {
+    log(message) {
+      logs.push(String(message));
+    },
+    warn(message) {
+      logs.push(String(message));
+    },
+    error(message) {
+      logs.push(String(message));
+    }
+  };
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: true,
+      enableImports: true,
+      enableAuthoritativeSync: true,
+      logger,
+      config: {
+        serve: {
+          apiToken: 'secret-token'
+        }
+      }
+    });
+
+    try {
+      assert.ok(logs.some((line) => line.includes('[serve] enhancement worker started')));
+      assert.ok(logs.some((line) => line.includes('[serve] import worker started')));
+      assert.ok(logs.some((line) => line.includes('[serve] authoritative sync worker started')));
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
