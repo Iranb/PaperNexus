@@ -4336,6 +4336,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
     if (materializeOnly) {
       announceStage(materializeOptions, 2, 2, 'Writing source manifest', 'persisting reusable snapshot metadata');
       const indexedAt = new Date().toISOString();
+      const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
       const nextManifest = createEmptyManifest({
         corpusName,
         rootPath,
@@ -4351,9 +4352,11 @@ export async function analyzeCorpus(inputPath, options = {}) {
       });
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
-        await backupExistingCorpusRoot(rootPath, {
-          backupDir: analysisOptions.backupDir
-        });
+        if (shouldBackupBeforePersist) {
+          await backupExistingCorpusRoot(rootPath, {
+            backupDir: analysisOptions.backupDir
+          });
+        }
         await saveSourceManifest(rootPath, nextManifest);
       }, options.lockOptions);
 
@@ -4379,6 +4382,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
     if (llmOnly) {
       announceStage(materializeOptions, 1, 1, 'Writing optimized snapshots', 'persisting LLM-enriched snapshot metadata');
       const indexedAt = new Date().toISOString();
+      const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
       const nextManifest = createEmptyManifest({
         corpusName,
         rootPath,
@@ -4395,9 +4399,11 @@ export async function analyzeCorpus(inputPath, options = {}) {
       nextManifest.llmOptimization = buildLlmOptimizationState(nextManifest, analysisOptions);
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
-        await backupExistingCorpusRoot(rootPath, {
-          backupDir: analysisOptions.backupDir
-        });
+        if (shouldBackupBeforePersist) {
+          await backupExistingCorpusRoot(rootPath, {
+            backupDir: analysisOptions.backupDir
+          });
+        }
         await saveSourceManifest(rootPath, nextManifest);
       }, options.lockOptions);
 
@@ -4604,10 +4610,14 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
     previousJobState
   );
 
+  announceStage(analysisOptions, 1, 1, 'Writing optimized snapshots', 'persisting LLM-enriched snapshot metadata');
+  const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
   await withFileLock(getCorpusLockPath(rootPath), async () => {
-    await backupExistingCorpusRoot(rootPath, {
-      backupDir: analysisOptions.backupDir
-    });
+    if (shouldBackupBeforePersist) {
+      await backupExistingCorpusRoot(rootPath, {
+        backupDir: analysisOptions.backupDir
+      });
+    }
     await saveSourceManifest(rootPath, nextManifest);
     await saveStage2JobState(rootPath, jobState);
   }, options.lockOptions);

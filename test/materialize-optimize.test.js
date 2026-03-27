@@ -208,6 +208,169 @@ We verify that the materialize stage shows an initial progress bar.
   }
 });
 
+test('materializeCorpus updates snapshot metadata without creating a backup by default', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-nobackup-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-nobackup-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Materialize Backup Test
+
+## Abstract
+
+We study cache-aware materialization.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(tempCorpusRoot, {
+      name: 'materialize-no-backup-test',
+      semanticExtraction: 'heuristic-only'
+    });
+
+    await fs.appendFile(path.join(tempCorpusRoot, 'paper-a.md'), '\n## Update\n\nWe changed the source markdown.\n', 'utf8');
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'materialize-no-backup-test'
+    });
+
+    const backupRoot = corpusStore.getCorpusBackupDir(tempCorpusRoot);
+    const backupEntries = await fs.readdir(backupRoot).catch((error) => {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.deepEqual(backupEntries, []);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus announces snapshot persistence and skips backups by default', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-stage2-nobackup-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-stage2-nobackup-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const originalIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+  const originalWrite = process.stdout.write;
+  let output = '';
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Stage 2 Backup Test
+
+## Abstract
+
+We study stage two persistence behavior.
+
+## Method
+
+We use a semantic optimizer.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const marker = 'Papers:\n';
+      const markerIndex = String(prompt).lastIndexOf(marker);
+      const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [
+                        {
+                          name: `stage two persistence for ${paper.title.toLowerCase()}`,
+                          type: 'Problem',
+                          evidenceText: `We study stage two persistence for ${paper.title}.`,
+                          sectionHeading: 'Abstract',
+                          sectionRole: 'abstract',
+                          confidence: 0.9
+                        }
+                      ]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(tempCorpusRoot, {
+      name: 'stage2-no-backup-test',
+      semanticExtraction: 'heuristic-only'
+    });
+
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: true
+    });
+    process.stdout.write = ((chunk, ...args) => {
+      output += String(chunk);
+      return originalWrite.call(process.stdout, chunk, ...args);
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'stage2-no-backup-test',
+      semanticExtraction: 'llm-primary',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmRelations: false
+    });
+
+    assert.match(output, /Stage 1\/1: Writing optimized snapshots - persisting LLM-enriched snapshot metadata/);
+
+    const backupRoot = corpusStore.getCorpusBackupDir(tempCorpusRoot);
+    const backupEntries = await fs.readdir(backupRoot).catch((error) => {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.deepEqual(backupEntries, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalWrite;
+    if (originalIsTTYDescriptor) {
+      Object.defineProperty(process.stdout, 'isTTY', originalIsTTYDescriptor);
+    } else {
+      delete process.stdout.isTTY;
+    }
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus reuses existing semantic and relation results when config and sources are unchanged', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
