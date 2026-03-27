@@ -379,6 +379,15 @@ Do not assume every visible node in the raw graph is a good ideation anchor. Pre
 - non-trivial evidence text
 - `brainstormTier` of `medium` or `high`
 
+Current ideation behavior to remember:
+
+- `ideas` and `brainstorm` still start from the brainstorm-quality node view rather than the full noisy graph
+- they now add a one-shot local Leiden community analysis at query time, not a persisted full-graph clustering index
+- the local community graph is concept-only: brainstorm-eligible `Problem`, `Method`, `Claim`, `Finding`, `Limitation`, `Assumption`, `FutureDirection`, and `ResearchGoal` nodes participate directly
+- `Paper` nodes only act as temporary bridge evidence for weak co-occurrence edges and do not appear as community members
+- explicit concept-concept edges remain the backbone; paper co-occurrence only adds bounded weak edges
+- if the local projected graph is too small, too sparse, or too slow, the search layer should fall back to the older heuristics instead of forcing a community result
+
 What is supported:
 
 - create node
