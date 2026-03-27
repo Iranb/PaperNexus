@@ -32,10 +32,16 @@ export function getCorpusPaths(rootPath) {
   const corpusDir = getCorpusDir(rootPath);
   const stagedDir = path.join(corpusDir, 'staged');
   const llmJobsDir = path.join(corpusDir, 'llm-jobs');
+  const authoritativeSyncDir = path.join(corpusDir, 'authoritative-sync');
+  const authoritativeSyncJobsDir = path.join(authoritativeSyncDir, 'jobs');
+  const authoritativeSyncHistoryDir = path.join(authoritativeSyncDir, 'history');
   return {
     corpusDir,
     stagedDir,
     llmJobsDir,
+    authoritativeSyncDir,
+    authoritativeSyncJobsDir,
+    authoritativeSyncHistoryDir,
     graphPath: path.join(corpusDir, 'graph.json'),
     kuzuGraphPath: path.join(corpusDir, 'graph.kuzu'),
     liteGraphPath: path.join(corpusDir, 'graph.lite.json'),
@@ -47,6 +53,8 @@ export function getCorpusPaths(rootPath) {
     stagedManifestPath: path.join(stagedDir, 'sources.json'),
     stagedStatePath: path.join(stagedDir, 'state.json'),
     llmStage2StatePath: path.join(llmJobsDir, 'stage2.json'),
+    authoritativeSyncQueuePath: path.join(authoritativeSyncDir, 'queue.json'),
+    authoritativeSyncLockPath: path.join(authoritativeSyncDir, 'queue.lock'),
     papersDir: path.join(corpusDir, 'papers'),
     markdownDir: path.join(corpusDir, 'markdown'),
     markerDir: path.join(corpusDir, 'marker')
