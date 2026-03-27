@@ -74,7 +74,7 @@ This paper should not silently replace the main graph scope.
   }
 });
 
-test('committing an updated graph creates a backup of the previous single-graph index', async () => {
+test('committing an updated graph does not create a backup by default', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-single-graph-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-single-graph-workspace-'));
   const inputRoot = path.join(workspaceRoot, 'papers');
@@ -109,12 +109,74 @@ We study backup-aware single graph updates.
 
 ## Abstract
 
-We trigger a second commit to require a backup.
+We trigger a second commit without requesting a backup.
 `, 'utf8');
 
     await ingestion.analyzeCorpus(inputRoot, {
       name: 'single-graph-backup',
       rootPath: indexRoot
+    });
+
+    const backupRoot = corpusStore.getCorpusBackupDir(indexRoot);
+    const backupEntries = await fs.readdir(backupRoot).catch((error) => {
+      if (error?.code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    });
+    assert.deepEqual(backupEntries, []);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('committing an updated graph creates a backup when backupBeforeCommit is enabled', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-single-graph-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-single-graph-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.writeFile(path.join(inputRoot, 'paper-a.md'), `# Paper A
+
+## Abstract
+
+We study backup-aware single graph updates.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      name: 'single-graph-backup',
+      rootPath: indexRoot,
+      force: true
+    });
+
+    await fs.writeFile(path.join(inputRoot, 'paper-b.md'), `# Paper B
+
+## Abstract
+
+We trigger a second commit and request a backup.
+`, 'utf8');
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      name: 'single-graph-backup',
+      rootPath: indexRoot,
+      backupBeforeCommit: true
     });
 
     const backupRoot = corpusStore.getCorpusBackupDir(indexRoot);

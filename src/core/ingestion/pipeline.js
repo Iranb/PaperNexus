@@ -3252,7 +3252,10 @@ async function commitPreparedCorpusIndex({
   cleanupStagedBuild = false
 }) {
   const activeManifestSources = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false);
-  const writeTaskCount = analysisOptions.enqueueEnhancements !== false ? 5 : 4;
+  const shouldBackupBeforeCommit = analysisOptions.backupBeforeCommit === true;
+  const writeTaskCount = analysisOptions.enqueueEnhancements !== false
+    ? (shouldBackupBeforeCommit ? 5 : 4)
+    : (shouldBackupBeforeCommit ? 4 : 3);
   const writeProgress = analysisOptions.quiet ? createQuietProgress() : createProgressBar(writeTaskCount, { prefix: 'Writing index' });
   let writeCompleted = 0;
   const setWriteLabel = (label) => {
@@ -3272,11 +3275,13 @@ async function commitPreparedCorpusIndex({
         await validation();
       }
 
-      setWriteLabel('backing up current corpus index');
-      await backupExistingCorpusRoot(rootPath, {
-        backupDir: analysisOptions.backupDir
-      });
-      advanceWrite('backup ready');
+      if (shouldBackupBeforeCommit) {
+        setWriteLabel('backing up current corpus index');
+        await backupExistingCorpusRoot(rootPath, {
+          backupDir: analysisOptions.backupDir
+        });
+        advanceWrite('backup ready');
+      }
 
       setWriteLabel('writing authoritative graph store');
       await saveCorpus(rootPath, graph, meta, {
