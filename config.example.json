@@ -1,0 +1,33 @@
+{
+  "sources": {
+    "inputs": [
+      "~/.papernexus/papers"
+    ]
+  },
+  "storage": {
+    "indexDir": "~/.papernexus/index-store"
+  },
+  "analyze": {
+    "name": "GCD",
+    "semanticExtraction": "llm-primary",
+    "pdfParser": "mineru",
+    "mineruHttpUrl": "http://127.0.0.1:30000",
+    "doclingCommand": "docling",
+    "doclingPdfBackend": "pdfplumber"
+  },
+  "global": {
+    "corpus": "GCD"
+  },
+  "serve": {
+    "host": "0.0.0.0",
+    "port": 4821,
+    "apiToken": "replace-with-your-api-token"
+  },
+  "llm": {
+    "provider": "openai",
+    "model": "qwen3.5-plus",
+    "baseUrl": "https://coding.dashscope.aliyuncs.com/v1",
+    "relations": true,
+    "apiKeyEnv": "DASHSCOPE_API_KEY"
+  }
+}

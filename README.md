@@ -170,6 +170,12 @@ Default runtime config path:
 /Users/iranb/.papernexus/config.json
 ```
 
+The repo now ships a template at [config.example.json](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/config.example.json). Runtime `config.json` and `.papernexus-home/` are local-only and ignored by Git, so copy the template when setting up a new machine:
+
+```bash
+cp ./config.example.json ~/.papernexus/config.json
+```
+
 ### 5. Build the first corpus
 
 ```bash
