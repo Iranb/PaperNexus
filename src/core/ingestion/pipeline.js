@@ -315,6 +315,62 @@ function announceStage(options = {}, step, total, title, detail = '') {
   console.log(`Stage ${step}/${total}: ${title}${suffix}`);
 }
 
+function logPipelineEvent(options = {}, message) {
+  if (options.quiet) return;
+  console.log(message);
+}
+
+function createLockProgressHandlers(options = {}, configure = {}) {
+  const resolveText = (value, info = {}) => {
+    if (typeof value === 'function') return value(info);
+    return typeof value === 'string' ? value : '';
+  };
+
+  return {
+    onWait(info = {}) {
+      const label = resolveText(configure.onWaitLabel, info);
+      if (label && typeof configure.setLabel === 'function') {
+        configure.setLabel(label);
+      }
+      const message = resolveText(configure.onWaitLog, info);
+      if (message) {
+        logPipelineEvent(options, message);
+      }
+    },
+    onAcquired(info = {}) {
+      const label = resolveText(configure.onAcquiredLabel, info);
+      if (label && typeof configure.setLabel === 'function') {
+        configure.setLabel(label);
+      }
+      const message = resolveText(configure.onAcquiredLog, info);
+      if (message) {
+        logPipelineEvent(options, message);
+      }
+    }
+  };
+}
+
+function mergeLockOptions(lockOptions = {}, extraHandlers = {}) {
+  const merged = {
+    ...(lockOptions || {})
+  };
+
+  for (const key of ['onWait', 'onAcquired']) {
+    const original = lockOptions?.[key];
+    const extra = extraHandlers?.[key];
+    if (original && extra) {
+      merged[key] = (info = {}) => {
+        original(info);
+        extra(info);
+      };
+    } else if (extra) {
+      merged[key] = extra;
+    }
+  }
+
+  return merged;
+}
+
 function createRelationship(sourceId, targetId, type, properties = {}) {
   return {
     id: `rel:${stableHash(`${sourceId}:${type}:${targetId}:${JSON.stringify(properties)}`)}`,
@@ -3274,6 +3330,13 @@ async function commitPreparedCorpusIndex({
   setWriteLabel('acquiring corpus commit lock');
   let writeSucceeded = false;
   try {
+    const lockHandlers = createLockProgressHandlers(analysisOptions, {
+      setLabel: setWriteLabel,
+      onWaitLabel: 'waiting for corpus commit lock',
+      onAcquiredLabel: 'corpus commit lock acquired',
+      onWaitLog: '[lock] waiting for corpus commit lock during Stage 4 write-index',
+      onAcquiredLog: '[lock] corpus commit lock acquired for Stage 4 write-index'
+    });
     await withFileLock(getCorpusLockPath(rootPath), async () => {
       if (typeof validation === 'function') {
         await validation();
@@ -3309,15 +3372,7 @@ async function commitPreparedCorpusIndex({
         paperCount: meta.paperCount
         });
       advanceWrite('corpus registry updated');
-    }, {
-      ...analysisOptions.lockOptions,
-      onWait() {
-        setWriteLabel('waiting for corpus commit lock');
-      },
-      onAcquired() {
-        setWriteLabel('corpus commit lock acquired');
-      }
-    });
+    }, mergeLockOptions(analysisOptions.lockOptions, lockHandlers));
 
     let enhancement = null;
     if (analysisOptions.enqueueEnhancements !== false) {
@@ -3959,12 +4014,52 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
   const metadataConcurrency = resolveMetadataConcurrency(options);
   const quiet = Boolean(options.quiet);
   let nextIndex = 0;
+  const activeStates = new Map();
+  const totalWorkers = Math.min(analyzeConcurrency, Math.max(sourceStates.length, 1));
 
   // 创建进度条
   const progress = quiet ? createQuietProgress() : createProgressBar(sourceStates.length, { prefix: 'Processing papers' });
   progress.start();
 
+  const formatSourceActivity = (sourceState, status = '') => {
+    const basename = path.basename(sourceState.inputPath, path.extname(sourceState.inputPath)) || sourceState.sourceKey;
+    const parser = sourceState.kind === 'pdf'
+      ? normalizePdfParser(options.pdfParser)
+      : 'markdown';
+    return `${basename} [${parser}] ${status}`.trim();
+  };
+
+  const refreshProgressLabel = () => {
+    const activeEntries = [...activeStates.values()];
+    if (!activeEntries.length) {
+      progress.setLabel(`workers 0/${totalWorkers} | starting`);
+      return;
+    }
+
+    const visible = activeEntries.slice(0, 2);
+    const overflow = activeEntries.length - visible.length;
+    const suffix = overflow > 0 ? ` | +${overflow} more` : '';
+    progress.setLabel(`workers ${activeEntries.length}/${totalWorkers} | ${visible.join(' | ')}${suffix}`);
+  };
+
+  const setSourceStatus = (sourceState, status) => {
+    activeStates.set(sourceState.sourceKey, formatSourceActivity(sourceState, status));
+    refreshProgressLabel();
+  };
+
+  const clearSourceStatus = (sourceState) => {
+    activeStates.delete(sourceState.sourceKey);
+    refreshProgressLabel();
+  };
+
   async function processSourceState(sourceState) {
+    setSourceStatus(
+      sourceState,
+      sourceState.changeType === 'unchanged' || sourceState.reuseCachedMaterialization
+        ? 'cache hit'
+        : (sourceState.kind === 'pdf' ? 'parsing pdf' : 'reading markdown')
+    );
+
     if (sourceState.changeType === 'unchanged' || sourceState.reuseCachedMaterialization) {
         const cachedPaper = sourceState.cachedPaper || await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey);
         if (cachedPaper) {
@@ -3984,14 +4079,15 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
             semanticPaper: cachedPaper,
             markerCommand: sourceState.previous?.markerCommand || null
           });
-          progress.tick();
           return;
         }
       }
     }
 
     try {
+      setSourceStatus(sourceState, sourceState.kind === 'pdf' ? 'parsing pdf' : 'reading markdown');
       const { parsedPaper, semanticPaper, markerCommand } = await materializeSemanticPaper(rootPath, sourceState, { ...options, quiet });
+      setSourceStatus(sourceState, 'writing snapshot');
       await saveSemanticPaperSnapshot(rootPath, sourceState.sourceKey, semanticPaper);
       materializedSources.push({
         sourceState,
@@ -4024,6 +4120,7 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
         }
       }
     } finally {
+      clearSourceStatus(sourceState);
       progress.tick();
     }
   }
@@ -4337,6 +4434,10 @@ export async function analyzeCorpus(inputPath, options = {}) {
       announceStage(materializeOptions, 2, 2, 'Writing source manifest', 'persisting reusable snapshot metadata');
       const indexedAt = new Date().toISOString();
       const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
+      const lockHandlers = createLockProgressHandlers(materializeOptions, {
+        onWaitLog: '[lock] waiting for corpus lock while writing the Stage 1 source manifest',
+        onAcquiredLog: '[lock] corpus lock acquired for Stage 1 source manifest write'
+      });
       const nextManifest = createEmptyManifest({
         corpusName,
         rootPath,
@@ -4358,7 +4459,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
           });
         }
         await saveSourceManifest(rootPath, nextManifest);
-      }, options.lockOptions);
+      }, mergeLockOptions(options.lockOptions, lockHandlers));
 
       return {
         graph: null,
@@ -4383,6 +4484,10 @@ export async function analyzeCorpus(inputPath, options = {}) {
       announceStage(materializeOptions, 1, 1, 'Writing optimized snapshots', 'persisting LLM-enriched snapshot metadata');
       const indexedAt = new Date().toISOString();
       const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
+      const lockHandlers = createLockProgressHandlers(materializeOptions, {
+        onWaitLog: '[lock] waiting for corpus lock while persisting Stage 2 optimized snapshots',
+        onAcquiredLog: '[lock] corpus lock acquired for Stage 2 optimized snapshot write'
+      });
       const nextManifest = createEmptyManifest({
         corpusName,
         rootPath,
@@ -4405,7 +4510,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
           });
         }
         await saveSourceManifest(rootPath, nextManifest);
-      }, options.lockOptions);
+      }, mergeLockOptions(options.lockOptions, lockHandlers));
 
       return {
         graph: null,
@@ -4612,6 +4717,10 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
 
   announceStage(analysisOptions, 1, 1, 'Writing optimized snapshots', 'persisting LLM-enriched snapshot metadata');
   const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
+  const lockHandlers = createLockProgressHandlers(analysisOptions, {
+    onWaitLog: '[lock] waiting for corpus lock while persisting Stage 2 optimized snapshots',
+    onAcquiredLog: '[lock] corpus lock acquired for Stage 2 optimized snapshot write'
+  });
   await withFileLock(getCorpusLockPath(rootPath), async () => {
     if (shouldBackupBeforePersist) {
       await backupExistingCorpusRoot(rootPath, {
@@ -4620,7 +4729,7 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
     }
     await saveSourceManifest(rootPath, nextManifest);
     await saveStage2JobState(rootPath, jobState);
-  }, options.lockOptions);
+  }, mergeLockOptions(options.lockOptions, lockHandlers));
 
   const paperCount = (nextManifest.sources || []).filter((entry) => entry.activeInGraph !== false).length
     || (nextManifest.sources || []).length;

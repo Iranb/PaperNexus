@@ -190,6 +190,8 @@ We verify that the materialize stage shows an initial progress bar.
     });
 
     assert.match(output, /Processing papers: \[[^\]]+\] 0\/1 \(0%\)/);
+    assert.match(output, /workers 1\/1 \| paper-a \[markdown\] (reading markdown|writing snapshot|cache hit)/);
+    assert.match(output, /\[lock\] corpus lock acquired for Stage 1 source manifest write/);
   } finally {
     process.stdout.write = originalWrite;
     if (originalIsTTYDescriptor) {
@@ -347,6 +349,7 @@ We use a semantic optimizer.
     });
 
     assert.match(output, /Stage 1\/1: Writing optimized snapshots - persisting LLM-enriched snapshot metadata/);
+    assert.match(output, /\[lock\] corpus lock acquired for Stage 2 optimized snapshot write/);
 
     const backupRoot = corpusStore.getCorpusBackupDir(tempCorpusRoot);
     const backupEntries = await fs.readdir(backupRoot).catch((error) => {
