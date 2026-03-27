@@ -198,6 +198,17 @@ function createGlobalEntry(nodeIds = [], relationshipIds = []) {
   };
 }
 
+function normalizeSourceEntry(entry = {}) {
+  return {
+    sourceKey: escapeKey(entry.sourceKey),
+    paperId: escapeKey(entry.paperId),
+    paperTitle: escapeKey(entry.paperTitle),
+    fingerprint: sourceFingerprintOf(entry),
+    nodeIds: cloneIdList(entry.nodeIds),
+    relationshipIds: cloneIdList(entry.relationshipIds)
+  };
+}
+
 function removeNodeTokens(indexMap, node) {
   if (!node) return;
   for (const token of getLiteNodeSearchTokens(node)) {
@@ -481,4 +492,118 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
   await writeJson(liteGraphPath, serializePayload(payloadMaps));
   reportProgress('writing lite graph state');
   await writeJson(liteStatePath, nextState);
+}
+
+export async function applyLiteDeltaCommit(rootPath, deltaPayload, options = {}) {
+  const liteGraphPath = options.liteGraphPath;
+  const liteStatePath = options.liteStatePath;
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const reportProgress = (label) => {
+    onProgress?.({
+      phase: 'lite-delta',
+      label
+    });
+  };
+
+  if (!liteGraphPath || !liteStatePath) {
+    throw new Error('Lite graph paths are required for delta commits.');
+  }
+
+  reportProgress('loading previous lite graph state');
+  const [previousPayload, previousStateRaw] = await Promise.all([
+    readJson(liteGraphPath, null),
+    readJson(liteStatePath, null)
+  ]);
+
+  if (!previousPayload || !previousStateRaw || previousStateRaw.version !== LITE_VIEW_VERSION) {
+    throw new Error('Fast local delta commit requires an existing lite graph payload and state.');
+  }
+
+  const previousState = normalizeLiteState(previousStateRaw);
+  const payloadMaps = hydratePayloadMaps(previousPayload);
+  const nextState = normalizeLiteState(previousState);
+  const sourceEntries = (deltaPayload.sourceEntries || []).map((entry) => normalizeSourceEntry(entry));
+  const sourceEntryByKey = new Map(sourceEntries.map((entry) => [entry.sourceKey, entry]));
+  const changedSourceKeys = cloneIdList(deltaPayload.changedSourceKeys || sourceEntries.map((entry) => entry.sourceKey));
+  const upsertNodesById = new Map((deltaPayload.upsertNodes || []).map((node) => [node.id, node]));
+  const upsertRelationshipsById = new Map((deltaPayload.upsertRelationships || []).map((relationship) => [relationship.id, relationship]));
+  const impactedNodeIds = new Set(deltaPayload.deleteNodeIds || []);
+  const impactedRelationshipIds = new Set(deltaPayload.deleteRelationshipIds || []);
+
+  reportProgress('updating lite graph reference counts');
+  for (const sourceKey of changedSourceKeys) {
+    const previousEntry = nextState.sources[sourceKey];
+    if (!previousEntry) continue;
+
+    for (const nodeId of previousEntry.nodeIds || []) {
+      impactedNodeIds.add(nodeId);
+      decrementRefCount(nextState.nodeRefs, nodeId);
+    }
+    for (const relationshipId of previousEntry.relationshipIds || []) {
+      impactedRelationshipIds.add(relationshipId);
+      decrementRefCount(nextState.relationshipRefs, relationshipId);
+    }
+
+    delete nextState.sources[sourceKey];
+  }
+
+  for (const sourceEntry of sourceEntries) {
+    nextState.sources[sourceEntry.sourceKey] = sourceEntry;
+    for (const nodeId of sourceEntry.nodeIds) {
+      impactedNodeIds.add(nodeId);
+      incrementRefCount(nextState.nodeRefs, nodeId);
+    }
+    for (const relationshipId of sourceEntry.relationshipIds) {
+      impactedRelationshipIds.add(relationshipId);
+      incrementRefCount(nextState.relationshipRefs, relationshipId);
+    }
+  }
+
+  const totalProjectionWork = impactedNodeIds.size + impactedRelationshipIds.size;
+  let projectionProgress = 0;
+  const reportProjectionProgress = () => {
+    if (!totalProjectionWork) return;
+    reportProgress(`projecting lite delta ${projectionProgress}/${totalProjectionWork}`);
+  };
+
+  for (const nodeId of impactedNodeIds) {
+    if (Number(nextState.nodeRefs[nodeId] || 0) > 0) {
+      const nextNode = upsertNodesById.get(nodeId);
+      if (nextNode) {
+        applyNodeProjection(payloadMaps, nextNode);
+      }
+    } else {
+      removeNodeProjection(payloadMaps, nodeId);
+    }
+    projectionProgress += 1;
+    if (projectionProgress % 500 === 0 || projectionProgress === totalProjectionWork) {
+      reportProjectionProgress();
+    }
+  }
+
+  for (const relationshipId of impactedRelationshipIds) {
+    if (Number(nextState.relationshipRefs[relationshipId] || 0) > 0) {
+      const nextRelationship = upsertRelationshipsById.get(relationshipId);
+      if (nextRelationship) {
+        applyRelationshipProjection(payloadMaps, nextRelationship);
+      }
+    } else {
+      removeRelationshipProjection(payloadMaps, relationshipId);
+    }
+    projectionProgress += 1;
+    if (projectionProgress % 500 === 0 || projectionProgress === totalProjectionWork) {
+      reportProjectionProgress();
+    }
+  }
+
+  reportProgress('writing lite graph payload');
+  await writeJson(liteGraphPath, serializePayload(payloadMaps));
+  reportProgress('writing lite graph state');
+  await writeJson(liteStatePath, nextState);
+
+  return {
+    payload: serializePayload(payloadMaps),
+    state: nextState,
+    sourceEntryByKey
+  };
 }

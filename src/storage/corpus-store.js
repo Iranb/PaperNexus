@@ -6,7 +6,8 @@ import { ensureDir, fileExists, readJson, removePath, withFileLock, writeJson } 
 import { loadKnowledgeGraph } from '../core/graph/graph.js';
 import { slugify, stableHash } from '../lib/utils.js';
 import { loadRegistry, unregisterCorpus } from './registry.js';
-import { saveLiteGraphMaterializedView } from './lite-view.js';
+import { applyLiteDeltaCommit, saveLiteGraphMaterializedView } from './lite-view.js';
+import { enqueueAuthoritativeSyncJob } from './authoritative-sync-store.js';
 import {
   hasKuzuGraphStore,
   loadKnowledgeGraphFromKuzu,
@@ -132,6 +133,63 @@ export async function saveCorpus(rootPath, graph, meta, options = {}) {
     label: 'writing corpus metadata'
   });
   await writeJson(metaPath, meta);
+}
+
+export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, manifest, options = {}) {
+  const {
+    liteGraphPath,
+    liteStatePath,
+    metaPath
+  } = getCorpusPaths(rootPath);
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const now = new Date().toISOString();
+
+  return withFileLock(getCorpusLockPath(rootPath), async () => {
+    onProgress?.({
+      phase: 'lite-delta',
+      label: 'applying fast local delta commit'
+    });
+    await applyLiteDeltaCommit(rootPath, deltaPayload, {
+      liteGraphPath,
+      liteStatePath,
+      onProgress
+    });
+
+    onProgress?.({
+      phase: 'manifest',
+      label: 'writing fast-commit source manifest'
+    });
+    await saveSourceManifest(rootPath, manifest);
+
+    const job = await enqueueAuthoritativeSyncJob(rootPath, {
+      baseManifestToken: options.baseManifestToken || null,
+      targetManifestToken: options.targetManifestToken || null,
+      changedSourceKeys: deltaPayload.changedSourceKeys || [],
+      mode: options.mode || 'delta',
+      dependsOnFastCommitJobId: options.dependsOnFastCommitJobId || null
+    });
+
+    const nextMeta = {
+      ...meta,
+      authoritativeSyncStatus: 'pending',
+      authoritativeSyncQueuedAt: now,
+      lastFastCommitJobId: job.jobId
+    };
+
+    onProgress?.({
+      phase: 'meta',
+      label: 'writing fast-commit corpus metadata'
+    });
+    await writeJson(metaPath, nextMeta);
+
+    return {
+      rootPath,
+      meta: nextMeta,
+      manifest,
+      deltaPayload,
+      syncJob: job
+    };
+  }, options.lockOptions);
 }
 
 function summarizeGraph(graph) {
