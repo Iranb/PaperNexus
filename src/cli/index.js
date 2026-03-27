@@ -435,7 +435,7 @@ function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = 
       : undefined,
     enableEnhancements: firstDefined(flags.enhance, enhanceConfig.enabled, true) !== false,
     enhancementIntervalMs: toNumber(firstDefined(flags['interval-ms'], enhanceConfig.intervalMs), 5000),
-    enhancementBackfillLimit: toNumber(firstDefined(flags['backfill-limit'], enhanceConfig.backfillLimit), 2),
+    enhancementBackfillLimit: toNumber(firstDefined(flags['backfill-limit'], enhanceConfig.backfillLimit), 0),
     config,
     configBaseDir: baseDir,
     configPath

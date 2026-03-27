@@ -137,3 +137,67 @@ test('idle backfill can enqueue overlays for an existing corpus that skipped ing
     await cleanupTempCorpus(context);
   }
 });
+
+test('reserveNextEnhancementJob skips pending jobs that are already satisfied by the current enhancement index', async () => {
+  const context = await createTempCorpus();
+
+  try {
+    await context.ingestion.analyzeCorpus(context.tempCorpusRoot, {
+      name: 'enhancement-satisfied-job-test',
+      force: true
+    });
+
+    await context.worker.runEnhancementQueueUntilIdle(context.tempCorpusRoot, {
+      maxPasses: 8,
+      backfillLimit: 2
+    });
+
+    const manifest = await context.corpusStore.loadSourceManifest(context.tempCorpusRoot);
+    const first = manifest.sources[0];
+
+    await context.enhancementStore.enqueuePaperEnhancements(context.tempCorpusRoot, [
+      {
+        paperId: first.paperId,
+        paperTitle: first.paperTitle,
+        sourceKey: first.sourceKey,
+        sourceFingerprint: first.fingerprint,
+        sourceMarkdownPath: first.sourceMarkdownPath,
+        overlayKinds: ['theory', 'storyline', 'reflection'],
+        trigger: 'test'
+      }
+    ]);
+
+    const reserved = await context.enhancementStore.reserveNextEnhancementJob(context.tempCorpusRoot);
+    assert.equal(reserved, null);
+
+    const summary = await context.enhancementStore.summarizeEnhancements(context.tempCorpusRoot);
+    assert.equal(summary.queue.pending, 0);
+  } finally {
+    await cleanupTempCorpus(context);
+  }
+});
+
+test('runEnhancementQueueOnce stays idle when automatic backfill is disabled', async () => {
+  const context = await createTempCorpus();
+
+  try {
+    await context.ingestion.analyzeCorpus(context.tempCorpusRoot, {
+      name: 'enhancement-no-auto-backfill-test',
+      force: true,
+      enqueueEnhancements: false
+    });
+
+    const result = await context.worker.runEnhancementQueueOnce(context.tempCorpusRoot, {
+      backfillLimit: 0
+    });
+
+    assert.equal(result.processed, false);
+    assert.equal(result.reason, 'idle');
+
+    const summary = await context.enhancementStore.summarizeEnhancements(context.tempCorpusRoot);
+    assert.equal(summary.queue.pending, 0);
+    assert.equal(summary.ready, 0);
+  } finally {
+    await cleanupTempCorpus(context);
+  }
+});

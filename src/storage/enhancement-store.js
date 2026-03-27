@@ -100,6 +100,13 @@ function isActiveManifestEntry(entry) {
   return entry?.activeInGraph !== false;
 }
 
+function isJobSatisfiedByIndex(job, indexEntry) {
+  if (!indexEntry?.activeRunId) return false;
+  if (indexEntry.activeSourceFingerprint !== job.sourceFingerprint) return false;
+  const requestedKinds = normalizeOverlayKinds(job.overlayKinds);
+  return requestedKinds.every((kind) => (indexEntry.activeOverlayKinds || []).includes(kind));
+}
+
 export function getEnhancementPaths(rootPath) {
   const { corpusDir } = getCorpusPaths(rootPath);
   const enhancementDir = path.join(corpusDir, 'enhancements');
@@ -303,22 +310,61 @@ export async function reserveNextEnhancementJob(rootPath) {
   const { queueLockPath } = getEnhancementPaths(rootPath);
 
   return withFileLock(queueLockPath, async () => {
-    const queue = await loadEnhancementQueue(rootPath);
-    const nextJob = sortJobs(queue.jobs).find((job) => job.status === 'pending');
-    if (!nextJob) {
-      return null;
+    const [queue, index, manifest] = await Promise.all([
+      loadEnhancementQueue(rootPath),
+      loadEnhancementIndex(rootPath),
+      loadSourceManifest(rootPath)
+    ]);
+    const activeEntries = (manifest?.sources || []).filter(isActiveManifestEntry);
+    const manifestByPaperId = new Map(activeEntries.map((entry) => [entry.paperId, entry]));
+    const manifestBySourceKey = new Map(activeEntries.map((entry) => [entry.sourceKey, entry]));
+    const now = new Date().toISOString();
+    let queueChanged = false;
+
+    for (const nextJob of sortJobs(queue.jobs)) {
+      if (nextJob.status !== 'pending') continue;
+
+      const job = queue.jobs.find((entry) => entry.id === nextJob.id);
+      const manifestEntry = manifestBySourceKey.get(job.sourceKey) || manifestByPaperId.get(job.paperId) || null;
+
+      if (!manifestEntry || manifestEntry.fingerprint !== job.sourceFingerprint) {
+        job.status = 'stale';
+        job.finishedAt = now;
+        job.updatedAt = now;
+        job.lastError = manifestEntry
+          ? 'Skipped because the enhancement source fingerprint changed.'
+          : 'Skipped because the enhancement source is no longer active in the manifest.';
+        queueChanged = true;
+        continue;
+      }
+
+      const indexEntry = index.papers?.[job.paperId] || null;
+      if (isJobSatisfiedByIndex(job, indexEntry)) {
+        job.status = 'completed';
+        job.finishedAt = now;
+        job.updatedAt = now;
+        job.lastError = null;
+        job.result = {
+          reusedExisting: true
+        };
+        queueChanged = true;
+        continue;
+      }
+
+      job.status = 'running';
+      job.attempts = Number(job.attempts || 0) + 1;
+      job.startedAt = now;
+      job.updatedAt = now;
+      queue.updatedAt = now;
+      await saveEnhancementQueue(rootPath, queue);
+      return { job: { ...job } };
     }
 
-    const job = queue.jobs.find((entry) => entry.id === nextJob.id);
-    const now = new Date().toISOString();
-    job.status = 'running';
-    job.attempts = Number(job.attempts || 0) + 1;
-    job.startedAt = now;
-    job.updatedAt = now;
-    queue.updatedAt = now;
-
-    await saveEnhancementQueue(rootPath, queue);
-    return { job: { ...job } };
+    if (queueChanged) {
+      queue.updatedAt = now;
+      await saveEnhancementQueue(rootPath, queue);
+    }
+    return null;
   });
 }
 

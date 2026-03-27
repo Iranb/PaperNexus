@@ -2754,6 +2754,15 @@ function hasSourceChanges(summary) {
   return Boolean(summary.added || summary.updated || summary.removed);
 }
 
+function createUnchangedManifestSummary(manifest) {
+  return {
+    added: 0,
+    updated: 0,
+    removed: 0,
+    reused: manifest?.sources?.length || 0
+  };
+}
+
 function hasInputSourceChanges(sourceStates = [], removedSources = []) {
   if (removedSources.length) return true;
 
@@ -2989,6 +2998,29 @@ function resolveManifestInputPath(manifest) {
     return manifest.inputPaths;
   }
   return manifest?.inputPath;
+}
+
+function canReuseCommittedCorpusForWatch(manifest, options = {}, stage2JobState = null) {
+  const normalizedSemanticExtractionMode = normalizeSemanticExtractionMode(
+    firstDefinedValue(options.semanticExtraction, manifest?.semanticExtractionMode, 'auto')
+  );
+  if ((manifest?.semanticExtractionMode || 'auto') !== normalizedSemanticExtractionMode) {
+    return false;
+  }
+
+  const analysisOptions = {
+    ...options,
+    semanticExtraction: normalizedSemanticExtractionMode
+  };
+  const requiresLlm = resolveSemanticExtractionPlan(analysisOptions).shouldAttempt
+    || canAttemptLlmRelations(analysisOptions);
+
+  if (!requiresLlm) {
+    return true;
+  }
+
+  return manifestHasReusableLlmOptimization(manifest, analysisOptions)
+    || isReusableStage2JobState(stage2JobState, manifest, analysisOptions);
 }
 
 async function assertStagedBuildStillFresh(rootPath, stagedState, metadataConcurrency, extraManifestTokens = []) {
@@ -4675,6 +4707,7 @@ export async function buildGraphCorpus(inputPath, options = {}) {
     indexedAt: meta.indexedAt,
     changes
   });
+  stagedManifest.llmOptimization = manifest.llmOptimization || null;
   const stagedState = {
     version: 1,
     stage: 'graph-built',
@@ -4822,6 +4855,60 @@ export async function writeIndexCorpus(inputPath, options = {}) {
   };
 }
 
+async function refreshWatchedCorpus(inputPath, options = {}) {
+  const discovery = await discoverCorpusSources(inputPath, {
+    rootPath: options.rootPath
+  });
+  const { rootPath, absoluteInputs } = discovery;
+  const manifest = await loadSourceManifest(rootPath);
+  const { metaPath } = getCorpusPaths(rootPath);
+  const hasCommittedIndex = await fileExists(metaPath) && await hasCorpusGraphStore(rootPath);
+
+  if (manifest) {
+    await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(manifest));
+
+    const metadataConcurrency = resolveMetadataConcurrency(options);
+    const expectedSources = createSourceFingerprintMapFromEntries(manifest.sources || []);
+    const currentSources = await collectCurrentSourceFingerprintMap(inputPath, rootPath, metadataConcurrency);
+    const inputSourcesChanged = !sourceFingerprintMapsEqual(expectedSources, currentSources);
+    const stage2JobState = !options.force ? await loadStage2JobState(rootPath) : null;
+
+    if (!options.force && !inputSourcesChanged && hasCommittedIndex && canReuseCommittedCorpusForWatch(manifest, options, stage2JobState)) {
+      const existing = await loadCorpus(rootPath);
+      const changes = createUnchangedManifestSummary(manifest);
+      await registerCorpus({
+        name: existing.meta.name || manifest.corpusName || path.basename(rootPath),
+        rootPath,
+        indexedAt: existing.meta.indexedAt,
+        paperCount: existing.meta.paperCount
+      });
+      return {
+        graph: existing.graph,
+        meta: {
+          ...existing.meta,
+          lastChangeSummary: changes
+        },
+        rootPath,
+        changes,
+        reused: true
+      };
+    }
+
+    if (!inputSourcesChanged) {
+      await llmOptimizeCorpus(inputPath, options);
+      await buildGraphCorpus(inputPath, options);
+      await mergeGraphCorpus(inputPath, options);
+      return writeIndexCorpus(inputPath, options);
+    }
+  }
+
+  await materializeCorpus(inputPath, options);
+  await llmOptimizeCorpus(inputPath, options);
+  await buildGraphCorpus(inputPath, options);
+  await mergeGraphCorpus(inputPath, options);
+  return writeIndexCorpus(inputPath, options);
+}
+
 function isRelevantWatchPath(filename) {
   if (!filename) return true;
 
@@ -4845,7 +4932,7 @@ function isRelevantWatchPath(filename) {
 }
 
 export async function watchCorpus(inputPath, options = {}) {
-  const initialResult = await analyzeCorpus(inputPath, options);
+  const initialResult = await refreshWatchedCorpus(inputPath, options);
   const discovery = await discoverCorpusSources(inputPath, {
     rootPath: options.rootPath
   });
@@ -4889,7 +4976,7 @@ export async function watchCorpus(inputPath, options = {}) {
 
     running = true;
     try {
-      const result = await analyzeCorpus(inputPath, {
+      const result = await refreshWatchedCorpus(inputPath, {
         ...options,
         force: false
       });
@@ -4983,5 +5070,6 @@ export async function optimizeCorpus(inputPath, options = {}) {
 
 export const __pipelineTestables = {
   resolveAnalyzeConcurrency,
-  resolveMarkerConcurrency
+  resolveMarkerConcurrency,
+  refreshWatchedCorpus
 };

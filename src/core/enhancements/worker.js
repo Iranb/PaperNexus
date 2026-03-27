@@ -68,12 +68,13 @@ async function processEnhancementJob(rootPath, job, options = {}) {
 
 export async function runEnhancementQueueOnce(rootPath, options = {}) {
   const { workerLockPath } = getEnhancementPaths(rootPath);
+  const allowBackfill = Number(options.backfillLimit) > 0;
 
   try {
     return await withFileLock(workerLockPath, async () => {
       let reserved = await reserveNextEnhancementJob(rootPath);
 
-      if (!reserved) {
+      if (!reserved && allowBackfill) {
         const backfill = await enqueueEnhancementBackfill(rootPath, {
           limit: options.backfillLimit,
           priority: options.backfillPriority,
@@ -91,6 +92,14 @@ export async function runEnhancementQueueOnce(rootPath, options = {}) {
             summary: await summarizeEnhancements(rootPath)
           };
         }
+      }
+
+      if (!reserved) {
+        return {
+          processed: false,
+          reason: 'idle',
+          summary: await summarizeEnhancements(rootPath)
+        };
       }
 
       try {
