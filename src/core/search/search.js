@@ -1,5 +1,6 @@
 import { EDGE_TYPES, IMPACT_RELATION_TYPES, NODE_TYPES } from '../graph/schema.js';
 import { isBrainstormEligibleNode, isBrainstormSupportNode } from '../graph/brainstorm-view.js';
+import { buildBrainstormCommunityContext } from './brainstorm-communities.js';
 import { scoreTokenOverlap, tokenizeWithoutStopwords, truncate, jaccardSimilarity, unique } from '../../lib/utils.js';
 
 function pushToMap(map, key, value) {
@@ -658,6 +659,202 @@ function rankSharedNode(node, seedPaperIds = new Set()) {
   return shared * 2 + support + (node.properties?.confidence || 0);
 }
 
+function collectSeedConcepts(graph, relationIndex, seedPapers = [], candidateNodes = [], allowedLayers = null) {
+  const concepts = new Map();
+
+  const addConcept = (node) => {
+    if (!isBrainstormEligibleNode(node)) return;
+    if (!nodeInAllowedLayers(node, allowedLayers)) return;
+    concepts.set(node.id, node);
+  };
+
+  for (const node of candidateNodes) {
+    addConcept(node);
+  }
+
+  for (const paper of seedPapers) {
+    for (const relationship of relationIndex.outgoing.get(paper.id) || []) {
+      const node = graph.getNode(relationship.targetId);
+      addConcept(node);
+    }
+  }
+
+  return [...concepts.values()].sort((left, right) => (
+    resolveNodeTypePriority(left.type) - resolveNodeTypePriority(right.type)
+    || left.name.localeCompare(right.name)
+  ));
+}
+
+function createBrainstormSession(graph, query, options = {}) {
+  const relationIndex = buildRelationIndex(graph);
+  const allowedLayers = normalizeLayerFilter(options.layers);
+  const seedPapers = collectRelevantPaperIds(graph, query, relationIndex, {
+    nodeView: 'brainstorm'
+  });
+  const candidateNodes = resolveNodeCandidates(graph, query, {
+    nodeView: 'brainstorm'
+  })
+    .filter((node) => nodeInAllowedLayers(node, allowedLayers))
+    .slice(0, 6);
+  const seedNodes = unique([
+    ...seedPapers.map((paper) => paper.id),
+    ...candidateNodes.map((node) => node.id)
+  ])
+    .map((nodeId) => graph.getNode(nodeId))
+    .filter(Boolean);
+  const seedConcepts = collectSeedConcepts(graph, relationIndex, seedPapers, candidateNodes, allowedLayers);
+  let communityContext = null;
+
+  return {
+    query,
+    queryTokens: tokenizeWithoutStopwords(String(query || '').trim().toLowerCase()),
+    relationIndex,
+    allowedLayers,
+    seedPapers,
+    candidateNodes,
+    seedNodes,
+    seedConcepts,
+    getCommunityContext() {
+      if (!communityContext) {
+        communityContext = buildBrainstormCommunityContext(graph, {
+          query,
+          queryTokens: this.queryTokens,
+          relationIndex,
+          seedPapers,
+          seedNodes,
+          seedConcepts,
+          allowedLayers
+        }, options);
+      }
+
+      return communityContext;
+    }
+  };
+}
+
+function mergeCommunityEntries(baseEntries, communityEntries, limit, toEntry) {
+  const merged = new Map(
+    baseEntries.map((entry, index) => [entry.id, {
+      ...entry,
+      __priority: 1000 - index
+    }])
+  );
+
+  for (const communityEntry of communityEntries) {
+    const mapped = toEntry(communityEntry);
+    const existing = merged.get(mapped.id) || {};
+    merged.set(mapped.id, {
+      ...existing,
+      ...mapped,
+      __priority: Math.max(existing.__priority || 0, 2000 + (communityEntry.score || 0))
+    });
+  }
+
+  return [...merged.values()]
+    .sort((left, right) => right.__priority - left.__priority || left.name.localeCompare(right.name))
+    .slice(0, limit)
+    .map(({ __priority, ...entry }) => entry);
+}
+
+function buildCommunityMethodCombinationIdea(graph, bridge, currentMethodIds) {
+  const left = graph.getNode(bridge.sourceId);
+  const right = graph.getNode(bridge.targetId);
+  if (!left || !right || left.type !== NODE_TYPES.METHOD || right.type !== NODE_TYPES.METHOD) return null;
+  if (!(currentMethodIds.has(left.id) || currentMethodIds.has(right.id))) return null;
+
+  const relevance = Math.min(5, 2.8 + (bridge.score * 0.35));
+  const novelty = 4.5;
+  const feasibility = 3.5;
+  const evidence = Math.min(5, 1.9 + (bridge.supportingPapers?.length || 0) * 0.5);
+  const risk = 1.8;
+  const cost = 2.2;
+
+  return {
+    template: 'community_method_combination',
+    title: `组合 ${left.name} 与 ${right.name}`,
+    summary: `${left.name} 与 ${right.name} 分处相邻社区，但局部图显示它们之间存在稳定桥接路径，适合把它们当作跨主题组合候选。`,
+    problemNames: [],
+    methodNames: [left.name, right.name],
+    limitationNames: [],
+    supportingPapers: bridge.supportingPapers || [],
+    scores: {
+      relevance: Number(relevance.toFixed(1)),
+      novelty: Number(novelty.toFixed(1)),
+      feasibility: Number(feasibility.toFixed(1)),
+      evidence: Number(evidence.toFixed(1)),
+      risk: Number(risk.toFixed(1)),
+      cost: Number(cost.toFixed(1))
+    },
+    totalScore: scoreIdea({ relevance, novelty, feasibility, evidence, risk, cost })
+  };
+}
+
+function buildCommunityProblemTransferIdea(graph, bridge, currentMethodIds) {
+  const problem = graph.getNode(bridge.sourceId);
+  const method = graph.getNode(bridge.targetId);
+  if (!problem || !method || problem.type !== NODE_TYPES.PROBLEM || method.type !== NODE_TYPES.METHOD) return null;
+  if (currentMethodIds.has(method.id)) return null;
+
+  const relevance = Math.min(5, 2.6 + (bridge.score * 0.35));
+  const novelty = 4.1;
+  const feasibility = 3.7;
+  const evidence = Math.min(5, 1.8 + (bridge.supportingPapers?.length || 0) * 0.45);
+  const risk = 2.0;
+  const cost = 1.9;
+
+  return {
+    template: 'community_problem_transfer',
+    title: `把 ${method.name} 迁移到 ${problem.name}`,
+    summary: `${method.name} 所在社区与 ${problem.name} 所在问题社区之间存在稳定桥接路径，可以把它当作一个跨主题迁移候选。`,
+    problemNames: [problem.name],
+    methodNames: [method.name],
+    limitationNames: [],
+    supportingPapers: bridge.supportingPapers || [],
+    scores: {
+      relevance: Number(relevance.toFixed(1)),
+      novelty: Number(novelty.toFixed(1)),
+      feasibility: Number(feasibility.toFixed(1)),
+      evidence: Number(evidence.toFixed(1)),
+      risk: Number(risk.toFixed(1)),
+      cost: Number(cost.toFixed(1))
+    },
+    totalScore: scoreIdea({ relevance, novelty, feasibility, evidence, risk, cost })
+  };
+}
+
+function buildCommunityLimitationIdea(graph, bridge, currentMethodIds) {
+  const limitation = graph.getNode(bridge.sourceId);
+  const method = graph.getNode(bridge.targetId);
+  if (!limitation || !method || limitation.type !== NODE_TYPES.LIMITATION || method.type !== NODE_TYPES.METHOD) return null;
+  if (currentMethodIds.has(method.id)) return null;
+
+  const relevance = Math.min(5, 2.7 + (bridge.score * 0.35));
+  const novelty = 4.0;
+  const feasibility = 3.6;
+  const evidence = Math.min(5, 1.8 + (bridge.supportingPapers?.length || 0) * 0.45);
+  const risk = 2.0;
+  const cost = 1.9;
+
+  return {
+    template: 'community_limitation_remedy',
+    title: `针对“${limitation.name}”引入 ${method.name}`,
+    summary: `${limitation.name} 与 ${method.name} 之间跨社区存在局部桥接路径，适合把它当作一个跨主题 remedy 方向。`,
+    problemNames: [],
+    methodNames: [method.name],
+    limitationNames: [limitation.name],
+    supportingPapers: bridge.supportingPapers || [],
+    scores: {
+      relevance: Number(relevance.toFixed(1)),
+      novelty: Number(novelty.toFixed(1)),
+      feasibility: Number(feasibility.toFixed(1)),
+      evidence: Number(evidence.toFixed(1)),
+      risk: Number(risk.toFixed(1)),
+      cost: Number(cost.toFixed(1))
+    },
+    totalScore: scoreIdea({ relevance, novelty, feasibility, evidence, risk, cost })
+  };
+}
+
 function traverseNeighborhood(graph, relationIndex, seedNodes, options = {}) {
   const maxHops = Number(options.maxHops || 2);
   const allowedLayers = normalizeLayerFilter(options.layers);
@@ -698,22 +895,8 @@ function traverseNeighborhood(graph, relationIndex, seedNodes, options = {}) {
 }
 
 function buildDivergence(graph, query, options = {}) {
-  const relationIndex = buildRelationIndex(graph);
-  const allowedLayers = normalizeLayerFilter(options.layers);
-  const seedPapers = collectRelevantPaperIds(graph, query, relationIndex, {
-    nodeView: 'brainstorm'
-  });
-  const candidateNodes = resolveNodeCandidates(graph, query, {
-    nodeView: 'brainstorm'
-  })
-    .filter((node) => nodeInAllowedLayers(node, allowedLayers))
-    .slice(0, 6);
-  const seedNodes = unique([
-    ...seedPapers.map((paper) => paper.id),
-    ...candidateNodes.map((node) => node.id)
-  ])
-    .map((nodeId) => graph.getNode(nodeId))
-    .filter(Boolean);
+  const session = options.session || createBrainstormSession(graph, query, options);
+  const { relationIndex, allowedLayers, seedPapers, seedNodes } = session;
 
   if (!seedNodes.length) {
     return {
@@ -740,7 +923,7 @@ function buildDivergence(graph, query, options = {}) {
   ]
     .filter((entry) => isBrainstormEligibleNode(entry.node));
 
-  const similarProblems = discovered
+  let similarProblems = discovered
     .filter((entry) => entry.node.type === NODE_TYPES.PROBLEM)
     .sort((left, right) => rankSharedNode(right.node, seedPaperIds) - rankSharedNode(left.node, seedPaperIds))
     .slice(0, 8)
@@ -752,7 +935,7 @@ function buildDivergence(graph, query, options = {}) {
       support: Array.isArray(entry.node.properties?.paperTitles) ? entry.node.properties.paperTitles.length : 0
     }));
 
-  const relatedConcepts = discovered
+  let relatedConcepts = discovered
     .filter((entry) => [NODE_TYPES.METHOD, NODE_TYPES.CLAIM, NODE_TYPES.FINDING, NODE_TYPES.FUTURE_DIRECTION].includes(entry.node.type))
     .sort((left, right) => rankSharedNode(right.node, seedPaperIds) - rankSharedNode(left.node, seedPaperIds))
     .slice(0, 10)
@@ -764,7 +947,7 @@ function buildDivergence(graph, query, options = {}) {
       via: entry.via
     }));
 
-  const potentialConstraints = discovered
+  let potentialConstraints = discovered
     .filter((entry) => [NODE_TYPES.LIMITATION, NODE_TYPES.ASSUMPTION, NODE_TYPES.DATASET, NODE_TYPES.BENCHMARK, NODE_TYPES.METRIC].includes(entry.node.type))
     .sort((left, right) => rankSharedNode(right.node, seedPaperIds) - rankSharedNode(left.node, seedPaperIds))
     .slice(0, 10)
@@ -805,6 +988,69 @@ function buildDivergence(graph, query, options = {}) {
       layer: entry.node.properties?.layer || '',
       paperCount: Array.isArray(entry.node.properties?.paperTitles) ? entry.node.properties.paperTitles.length : 0
     }));
+
+  const community = session.getCommunityContext();
+  if (!community.stats?.fallback) {
+    const communityDerivedIds = new Set([
+      ...community.latentNeighbors.map((entry) => entry.id),
+      ...community.boundaryNodes.map((entry) => entry.id),
+      ...community.crossCommunityBridges.flatMap((entry) => [entry.sourceId, entry.targetId])
+    ]);
+
+    similarProblems = mergeCommunityEntries(
+      similarProblems,
+      community.latentNeighbors.filter((entry) => entry.type === NODE_TYPES.PROBLEM),
+      8,
+      (entry) => ({
+        id: entry.id,
+        name: entry.name,
+        layer: entry.layer,
+        via: 'community',
+        support: entry.support || 0
+      })
+    );
+
+    relatedConcepts = mergeCommunityEntries(
+      relatedConcepts,
+      [
+        ...community.latentNeighbors,
+        ...community.boundaryNodes
+      ].filter((entry) => [NODE_TYPES.METHOD, NODE_TYPES.CLAIM, NODE_TYPES.FINDING, NODE_TYPES.FUTURE_DIRECTION].includes(entry.type)),
+      10,
+      (entry) => ({
+        id: entry.id,
+        name: entry.name,
+        type: entry.type,
+        layer: entry.layer,
+        via: entry.via === 'community-boundary' ? 'community-boundary' : 'community'
+      })
+    );
+
+    potentialConstraints = mergeCommunityEntries(
+      potentialConstraints,
+      [
+        ...community.latentNeighbors,
+        ...community.boundaryNodes
+      ].filter((entry) => [NODE_TYPES.LIMITATION, NODE_TYPES.ASSUMPTION].includes(entry.type)),
+      10,
+      (entry) => ({
+        id: entry.id,
+        name: entry.name,
+        type: entry.type,
+        layer: entry.layer,
+        via: entry.via === 'community-boundary' ? 'community-boundary' : 'community'
+      })
+    );
+
+    relatedConcepts = relatedConcepts.map((entry) => (
+      communityDerivedIds.has(entry.id) && entry.via !== 'seed'
+        ? {
+          ...entry,
+          via: 'community'
+        }
+        : entry
+    ));
+  }
 
   return {
     query,
@@ -852,15 +1098,21 @@ function buildConvergedDirections(divergence, ideas, limit = 5) {
 
 export function buildBrainstorm(graph, query, options = {}) {
   const mode = options.mode === 'converge' ? 'converge' : 'diverge';
-  const divergence = buildDivergence(graph, query, options);
+  const session = createBrainstormSession(graph, query, options);
+  const divergence = buildDivergence(graph, query, {
+    ...options,
+    session
+  });
 
   if (mode === 'diverge') {
     return divergence;
   }
 
   const ideas = buildResearchIdeas(graph, query, {
+    ...options,
     limit: Number(options.limit || 5),
-    layers: options.layers
+    layers: options.layers,
+    session
   });
 
   return {
@@ -873,11 +1125,8 @@ export function buildBrainstorm(graph, query, options = {}) {
 
 export function buildResearchIdeas(graph, query, options = {}) {
   const limit = Number(options.limit || 5);
-  const relationIndex = buildRelationIndex(graph);
-  const allowedLayers = normalizeLayerFilter(options.layers);
-  const seedPapers = collectRelevantPaperIds(graph, query, relationIndex, {
-    nodeView: 'brainstorm'
-  });
+  const session = options.session || createBrainstormSession(graph, query, options);
+  const { relationIndex, allowedLayers, seedPapers } = session;
 
   if (!seedPapers.length) {
     return {
@@ -981,6 +1230,28 @@ export function buildResearchIdeas(graph, query, options = {}) {
   for (const claim of seedClaims.slice(0, 4)) {
     const idea = buildEvidenceGapIdea(graph, relationIndex, claim);
     if (idea) ideas.push(idea);
+  }
+
+  const community = session.getCommunityContext();
+  if (!community.stats?.fallback) {
+    const communityIdeas = [];
+
+    for (const bridge of community.crossCommunityBridges.slice(0, 10)) {
+      let idea = null;
+      if (bridge.kind === 'method_method') {
+        idea = buildCommunityMethodCombinationIdea(graph, bridge, currentMethodIds);
+      } else if (bridge.kind === 'problem_method') {
+        idea = buildCommunityProblemTransferIdea(graph, bridge, currentMethodIds);
+      } else if (bridge.kind === 'limitation_method') {
+        idea = buildCommunityLimitationIdea(graph, bridge, currentMethodIds);
+      }
+
+      if (idea) {
+        communityIdeas.push(idea);
+      }
+    }
+
+    ideas.push(...communityIdeas.slice(0, 3));
   }
 
   const dedupedIdeas = [];
