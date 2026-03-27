@@ -122,6 +122,23 @@ Use this when you want to:
 
 If you skip `merge-graph`, `write-index` will automatically run the merge step before commit so older workflows still work.
 
+### `backup-export`
+
+```bash
+papernexus backup-export <archive-path> [--corpus <name>]
+```
+
+Exports the current single-graph environment into a compressed archive that includes the committed index plus current source inputs.
+
+### `backup-unpack` / `backup-load`
+
+```bash
+papernexus backup-unpack <archive-path> --output <dir>
+papernexus backup-load <archive-path> --output <dir>
+```
+
+Unpacks the archive into an inspectable directory. It does not overwrite the live graph automatically.
+
 ## Combined Commands
 
 ### `analyze`
@@ -200,6 +217,8 @@ papernexus service install
 papernexus service status
 papernexus service uninstall
 papernexus logs watch
+papernexus backup-export ./papernexus-backup.tgz
+papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
 ```
 
 By default, `papernexus service install` installs both:

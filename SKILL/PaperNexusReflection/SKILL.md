@@ -32,6 +32,8 @@ Use this skill when you need to:
 
 Reflection data is refreshed through the existing incremental enhancement workflow.
 
+One-off uploaded PDFs or Markdown files should normally enter through queued import tasks under `.papernexus/imports/` first. Let the import worker merge them into the main graph rather than manually moving them into the main paper directory during automation.
+
 When the refresh path needs PDF parsing, prefer the repo default remote MinerU path first. Only fall back to a local parser if the remote PDF backend is unavailable or the task explicitly calls for local parsing.
 Do not add `--force` by default here. Reflection refresh should normally follow incremental graph refresh behavior unless the user explicitly wants a full rebuild.
 
@@ -71,8 +73,6 @@ If the staged graph still contains generic evaluation nodes such as `training da
 
 If the staged graph already looks correct and only needs to be committed, use `papernexus write-index --continue` instead of rebuilding earlier stages. `write-index` will auto-run the merge step if it was skipped.
 
-Before `write-index` overwrites the committed graph, PaperNexus now creates a backup under `<rootPath>/.papernexus-backups/`.
-
 If raw source files changed after Stage 3 and you want those new changes reflected in the graph, rerun Stage 1-3 before running Stage 4. Stage 4 only commits the staged graph that already exists.
 
 For ongoing updates:
@@ -87,6 +87,7 @@ In the default background service mode:
 
 - `watch` monitors source file changes
 - `serve` runs the dashboard/API and enhancement worker
+- API access through `serve` now requires the configured PaperNexus token; do not assume anonymous access when inspecting reflection overlays remotely
 
 ## What To Read First
 
@@ -145,6 +146,11 @@ Guidelines:
 ## When Reflection Should Modify The Graph
 
 Reflection findings do not automatically mean the main graph should be edited.
+
+Agent safety rule for reflection work:
+
+- only add or update graph understanding
+- do not delete corpus data, restore archive snapshots, or run whole-database backup/restore commands as part of normal reflection workflows
 
 Prefer graph mutation only when the reflection process reveals a clear, local, high-confidence graph error, such as:
 

@@ -6,14 +6,19 @@ import {
   backupCorpusPayload,
   corpusMetaPayload,
   corpusPayload,
+  createImportTaskPayload,
   createApiCache,
   enhancementSummaryPayload,
+  importTaskLogPayload,
+  importTaskPayload,
+  listImportTasksPayload,
   listCorporaPayload,
   llmConfigPayload,
   paperEnhancementPayload,
   updateLlmConfigPayload
 } from './api.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
+import { startImportWorker } from '../core/imports/worker.js';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -22,6 +27,58 @@ const MIME_TYPES = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml; charset=utf-8'
 };
+
+function getServeConfig(options = {}) {
+  const value = options.config?.serve;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function resolveApiToken(options = {}) {
+  const serveConfig = getServeConfig(options);
+  const raw = options.apiToken ?? serveConfig.apiToken ?? process.env.PAPERNEXUS_API_TOKEN;
+  if (typeof raw !== 'string') return '';
+  const normalized = raw.trim();
+  return normalized || '';
+}
+
+function readRequestApiToken(request) {
+  const authHeader = request.headers?.authorization;
+  if (typeof authHeader === 'string') {
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  for (const headerName of ['x-papernexus-token', 'x-api-key']) {
+    const headerValue = request.headers?.[headerName];
+    if (typeof headerValue === 'string' && headerValue.trim()) {
+      return headerValue.trim();
+    }
+  }
+
+  return '';
+}
+
+function requireApiToken(request, response, expectedToken) {
+  if (!expectedToken) {
+    sendJson(response, 503, {
+      error: 'API token is not configured for this server. Set `serve.apiToken` or `PAPERNEXUS_API_TOKEN` before using the API.'
+    });
+    return false;
+  }
+
+  const providedToken = readRequestApiToken(request);
+  if (!providedToken || providedToken !== expectedToken) {
+    response.setHeader('WWW-Authenticate', 'Bearer realm="PaperNexus API"');
+    sendJson(response, 401, {
+      error: 'Unauthorized. Provide the PaperNexus API token as `Authorization: Bearer <token>`.'
+    });
+    return false;
+  }
+
+  return true;
+}
 
 function sendJson(response, statusCode, payload) {
   const body = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8');
@@ -62,6 +119,7 @@ function buildWebRoot() {
 export async function serveCommand(options = {}) {
   const port = Number(options.port || 4821);
   const host = options.host || '127.0.0.1';
+  const apiToken = resolveApiToken(options);
   const webRoot = buildWebRoot();
   const apiCache = createApiCache();
   const enhancementWorker = options.enableEnhancements === false
@@ -71,10 +129,22 @@ export async function serveCommand(options = {}) {
       backfillLimit: options.enhancementBackfillLimit,
       logger: console
     });
+  const importWorker = options.enableImports === false
+    ? null
+    : startImportWorker({
+      intervalMs: options.importIntervalMs,
+      logger: console
+    });
 
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url || '/', `http://${host}:${port}`);
+
+      if (url.pathname.startsWith('/api/')) {
+        if (!requireApiToken(request, response, apiToken)) {
+          return;
+        }
+      }
 
       if (request.method === 'GET' && url.pathname === '/api/health') {
         sendJson(response, 200, { ok: true, service: 'papernexus-web' });
@@ -101,6 +171,48 @@ export async function serveCommand(options = {}) {
       if (request.method === 'GET' && url.pathname === '/api/enhancements') {
         const name = url.searchParams.get('name') || undefined;
         sendJson(response, 200, await enhancementSummaryPayload(name, { cache: apiCache }));
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/imports') {
+        const name = url.searchParams.get('name') || undefined;
+        sendJson(response, 200, await listImportTasksPayload(name, {
+          cache: apiCache,
+          config: options.config || {}
+        }));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/imports') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        const payload = await createImportTaskPayload(name, body, {
+          cache: apiCache,
+          config: options.config || {}
+        });
+        importWorker?.pollNow();
+        sendJson(response, 202, payload);
+        return;
+      }
+
+      const importTaskMatch = request.method === 'GET'
+        ? url.pathname.match(/^\/api\/imports\/([^/]+)(?:\/log)?$/)
+        : null;
+      if (importTaskMatch) {
+        const name = url.searchParams.get('name') || undefined;
+        const taskId = decodeURIComponent(importTaskMatch[1]);
+        if (url.pathname.endsWith('/log')) {
+          sendJson(response, 200, await importTaskLogPayload(name, taskId, {
+            cache: apiCache,
+            config: options.config || {}
+          }));
+          return;
+        }
+
+        sendJson(response, 200, await importTaskPayload(name, taskId, {
+          cache: apiCache,
+          config: options.config || {}
+        }));
         return;
       }
 
@@ -175,13 +287,33 @@ export async function serveCommand(options = {}) {
   });
 
   console.log(`PaperNexus UI available at http://${host}:${port}`);
+  if (apiToken) {
+    console.log('API authentication: enabled (Bearer token required for all /api/* routes).');
+  } else {
+    console.warn('API authentication: token missing. All /api/* requests will return 503 until `serve.apiToken` or `PAPERNEXUS_API_TOKEN` is configured.');
+  }
   console.log('Press Ctrl+C to stop.');
 
-  const shutdown = () => {
+  const stop = async () => {
+    process.off('SIGINT', shutdown);
+    process.off('SIGTERM', shutdown);
     enhancementWorker?.stop();
-    server.close(() => process.exit(0));
+    importWorker?.stop();
+    await new Promise((resolve) => {
+      server.close(resolve);
+    });
+  };
+
+  const shutdown = () => {
+    stop().finally(() => process.exit(0));
   };
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  return {
+    host,
+    port,
+    stop
+  };
 }

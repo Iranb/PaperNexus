@@ -282,6 +282,8 @@ papernexus analyze
 
 This now retries only previously failed LLM-assisted papers and reuses snapshots for papers that already succeeded.
 
+If the new material enters through a UI or API upload, prefer the queued import-task path instead of manually moving files into the main paper source directory. Import tasks keep their own logs under `.papernexus/imports/` and merge into the main single graph after processing.
+
 For ongoing usage:
 
 ```bash
@@ -294,6 +296,7 @@ When the background services are healthy:
 
 - `watch` keeps the graph fresh
 - `serve` keeps dashboard/API and enhancement workers alive
+- remote dashboard/API access now requires the configured PaperNexus token, so agent workflows that call `/api/*` must include `Authorization: Bearer <token>`
 
 Important Stage 4 boundary:
 
@@ -316,6 +319,11 @@ Use this policy:
 2. inspect theory, storyline, or reflection overlays if available
 3. decide whether the issue is a clear factual graph error or only an interpretation gap
 4. mutate only if the correction is explicit, local, and high-confidence
+
+Agent safety rule:
+
+- reasoning agents may add or update understanding in the current graph
+- they must not delete corpus data, restore whole-database archives, or run backup/restore commands unless a human explicitly requests it
 
 Good mutation cases:
 

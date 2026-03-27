@@ -40,7 +40,8 @@ papernexus --no-config ...
   },
   "serve": {
     "host": "127.0.0.1",
-    "port": 4821
+    "port": 4821,
+    "apiToken": "replace-this-with-a-secret-token"
   }
 }
 ```
@@ -149,10 +150,18 @@ Controls the dashboard and local API binding.
 {
   "serve": {
     "host": "127.0.0.1",
-    "port": 4821
+    "port": 4821,
+    "apiToken": "replace-this-with-a-secret-token"
   }
 }
 ```
+
+Notes:
+
+- all `/api/*` routes now require a token
+- set the token with `serve.apiToken` or `PAPERNEXUS_API_TOKEN`
+- the dashboard can still serve static assets, but its API calls will fail until a token is provided
+- when the dashboard is opened in a browser, you can pass `?token=<secret>` once and the client will reuse it for later API calls
 
 ### `global`
 

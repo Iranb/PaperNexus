@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { backupCorpus, loadCorpus, loadCorpusMeta, resolveCorpus } from '../storage/corpus-store.js';
+import { backupCorpus, loadCorpus, loadCorpusMeta, loadSourceManifest, resolveCorpus } from '../storage/corpus-store.js';
 import { resolveLlmConfig, getDefaultLlmApiKeyEnv, getDefaultLlmBaseUrl } from '../core/llm/ollama.js';
 import { getNodeLayer } from '../core/graph/schema.js';
 import { saveRuntimeConfig } from '../lib/config.js';
@@ -7,6 +7,12 @@ import { buildDefaultLlmKeychainAccount } from '../lib/keychain.js';
 import { getCorpusPaths } from '../storage/corpus-store.js';
 import { getRegistryPath, loadRegistry } from '../storage/registry.js';
 import { getEnhancementPaths, getPaperEnhancementPath, loadPaperEnhancement, summarizeEnhancements } from '../storage/enhancement-store.js';
+import {
+  createImportTask,
+  listImportTasks,
+  loadImportTask,
+  loadImportTaskLog
+} from '../storage/import-store.js';
 
 function countBy(items, keyFn) {
   const counts = {};
@@ -175,6 +181,94 @@ export async function backupCorpusPayload(candidate, options = {}) {
     backup: await backupCorpus(rootPath, {
       backupDir: options.backupDir
     }),
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeImportFiles(files = []) {
+  const normalized = Array.isArray(files) ? files : [];
+  return normalized.map((file) => ({
+    name: String(file?.name || '').trim(),
+    mimeType: String(file?.mimeType || '').trim(),
+    contentBase64: String(file?.contentBase64 || '').trim()
+  })).filter((file) => file.name && file.contentBase64);
+}
+
+async function resolveImportInputPaths(rootPath, options = {}) {
+  const manifest = await loadSourceManifest(rootPath);
+  const manifestInputs = Array.isArray(manifest?.inputPaths)
+    ? manifest.inputPaths
+    : (manifest?.inputPath ? [manifest.inputPath] : []);
+  if (manifestInputs.length) {
+    return manifestInputs;
+  }
+
+  const configuredInputs = Array.isArray(options.config?.sources?.inputs)
+    ? options.config.sources.inputs
+    : [];
+  return configuredInputs.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+export async function createImportTaskPayload(candidate, body = {}, options = {}) {
+  const rootPath = await resolveCorpusForApi(candidate, options);
+  const files = normalizeImportFiles(body.files);
+  if (!files.length) {
+    throw new Error('At least one uploaded file is required.');
+  }
+
+  const inputPaths = await resolveImportInputPaths(rootPath, options);
+  const task = await createImportTask(rootPath, {
+    trigger: body.trigger || 'api',
+    inputPaths,
+    files
+  });
+
+  return {
+    rootPath,
+    task,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+export async function listImportTasksPayload(candidate, options = {}) {
+  const rootPath = await resolveCorpusForApi(candidate, options);
+  const payload = await listImportTasks(rootPath);
+  return {
+    rootPath,
+    tasks: payload.tasks,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+export async function importTaskPayload(candidate, taskId, options = {}) {
+  const rootPath = await resolveCorpusForApi(candidate, options);
+  if (!taskId) {
+    throw new Error('taskId is required.');
+  }
+  const task = await loadImportTask(rootPath, taskId);
+  if (!task) {
+    throw new Error(`No import task found for ${taskId}.`);
+  }
+  return {
+    rootPath,
+    task,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+export async function importTaskLogPayload(candidate, taskId, options = {}) {
+  const rootPath = await resolveCorpusForApi(candidate, options);
+  if (!taskId) {
+    throw new Error('taskId is required.');
+  }
+  const task = await loadImportTask(rootPath, taskId);
+  if (!task) {
+    throw new Error(`No import task found for ${taskId}.`);
+  }
+  return {
+    rootPath,
+    taskId,
+    log: await loadImportTaskLog(rootPath, taskId),
     generatedAt: new Date().toISOString()
   };
 }

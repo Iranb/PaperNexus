@@ -57,9 +57,8 @@ This stage:
 
 - canonicalizes similar `Dataset` and `Benchmark` nodes
 - merges aliases into a cleaner staged graph
-- optionally performs `--node-llm-check`
 
-The optional node LLM check is where low-value nodes such as `training dataset` can be dropped or renamed before the final commit.
+The current merge stage is heuristic-only. Merge-time LLM node deletion or renaming is disabled for now.
 
 ### 5. `write-index`
 
@@ -71,6 +70,18 @@ This stage:
 - writes `meta.json` and `sources.json`
 - updates the corpus registry
 - enqueues enhancement work
+
+## Import Tasks
+
+PaperNexus also supports queued import tasks for ad hoc PDF or Markdown uploads.
+
+The key behavior is:
+
+- uploaded files are stored outside the main paper source directory
+- uploads enter a task queue under `.papernexus/imports/`
+- the import worker processes them asynchronously through the normal staged pipeline
+- successful tasks can merge their parsed content into the main single graph
+- failed tasks do not block the committed graph and keep per-task logs
 
 ## `--continue` And `--force`
 
@@ -149,6 +160,21 @@ papernexus write-index --continue
 
 without repeating earlier work.
 
+### Import Task Storage
+
+Queued upload jobs live under:
+
+```text
+<index-root>/.papernexus/imports/
+```
+
+Important paths:
+
+- `queue.json`: pending task queue
+- `tasks/<taskId>/task.json`: task metadata and status
+- `tasks/<taskId>/events.log`: append-only task log
+- `tasks/<taskId>/sources/`: uploaded PDF or Markdown files kept outside the main paper source tree
+
 ## Corpus Layout
 
 Inside a corpus root, the main paths are:
@@ -160,6 +186,7 @@ Inside a corpus root, the main paths are:
   graph.lite.state.json
   meta.json
   sources.json
+  imports/
   markdown/
   papers/
   staged/
@@ -173,6 +200,29 @@ Key files:
 - `graph.lite.state.json`: incremental state for the lite graph materialized view
 - `meta.json`: corpus-level summary
 - `sources.json`: source manifest and staged metadata
+- `imports/`: queued upload tasks, per-task logs, and temporary uploaded sources kept separate from the primary paper directory
+
+## Backup Archives
+
+PaperNexus can export a portable archive of the current graph environment.
+
+Use:
+
+```bash
+papernexus backup-export /path/to/archive.tgz
+papernexus backup-unpack /path/to/archive.tgz --output /path/to/inspect-dir
+```
+
+The archive includes:
+
+- the committed `.papernexus/` corpus state
+- configured source papers
+- markdown cache
+- semantic snapshots
+- staged graph files
+- import-task data
+
+`backup-unpack` is intentionally non-destructive. It unpacks the archive into an inspectable directory and does not overwrite the live graph.
 
 ## Locking Model
 
@@ -212,24 +262,6 @@ Examples:
 - `Oxford Pets dataset` and `Oxford-Pet dataset`
 
 The goal is not just string deduplication. It is to produce cleaner research resources for downstream query and brainstorm use.
-
-## Node LLM Check
-
-`--node-llm-check` is optional and disabled by default.
-
-It runs during `merge-graph` and can:
-
-- keep a node as-is
-- rename a node
-- drop a node if it is too generic to be useful
-
-Typical use:
-
-```bash
-papernexus merge-graph --continue --node-llm-check
-```
-
-This is especially useful when you want to filter out vague evaluation labels before using the graph for brainstorming.
 
 ## Recommended Recovery Patterns
 

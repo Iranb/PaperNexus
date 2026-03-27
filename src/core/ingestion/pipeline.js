@@ -37,6 +37,7 @@ import {
   saveStagedCorpusBuild
 } from '../../storage/corpus-store.js';
 import { enqueuePaperEnhancements, pruneEnhancementsForManifest } from '../../storage/enhancement-store.js';
+import { listActiveImportSourceDirs } from '../../storage/import-store.js';
 import { registerCorpus } from '../../storage/registry.js';
 import {
   cacheMarkdownSource,
@@ -287,6 +288,9 @@ function createQuietProgress() {
     start() {},
     tick() {},
     update() {},
+    setLabel() {},
+    setTotal() {},
+    getCurrent() { return 0; },
     done() {},
     stop() {}
   };
@@ -2984,12 +2988,34 @@ async function collectSourcesFromInput(absoluteInput) {
 async function discoverCorpusSources(inputPath, options = {}) {
   const absoluteInputs = normalizeInputPaths(inputPath);
   const dedupedSources = new Map();
+  const rootPath = options.rootPath
+    ? path.resolve(options.rootPath)
+    : (absoluteInputs.length === 1
+        ? absoluteInputs[0]
+        : process.cwd());
 
-  const inputEntries = await mapWithConcurrency(
+  const baseInputEntries = await mapWithConcurrency(
     absoluteInputs,
     Math.min(Math.max(1, absoluteInputs.length), 4),
     (absoluteInput) => collectSourcesFromInput(absoluteInput)
   );
+  const importInputDirs = await listActiveImportSourceDirs(rootPath);
+  const importInputEntries = await mapWithConcurrency(
+    importInputDirs,
+    Math.min(Math.max(1, importInputDirs.length), 4),
+    async (absoluteInput) => {
+      try {
+        return await collectSourcesFromInput(absoluteInput);
+      } catch (error) {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+      }
+    }
+  );
+  const inputEntries = [
+    ...baseInputEntries,
+    ...importInputEntries.filter(Boolean)
+  ];
 
   for (const entry of inputEntries) {
     for (const source of entry.sources) {
@@ -2998,18 +3024,18 @@ async function discoverCorpusSources(inputPath, options = {}) {
   }
 
   const kinds = new Set([...dedupedSources.values()].map((source) => source.kind));
-  const rootPath = options.rootPath
+  const inferredRootPath = options.rootPath
     ? path.resolve(options.rootPath)
     : (absoluteInputs.length === 1
-        ? (inputEntries[0].inputStats.isDirectory() ? inputEntries[0].inputPath : path.dirname(inputEntries[0].inputPath))
+        ? (baseInputEntries[0].inputStats.isDirectory() ? baseInputEntries[0].inputPath : path.dirname(baseInputEntries[0].inputPath))
         : process.cwd());
 
   return {
     absoluteInput: absoluteInputs[0],
     absoluteInputs,
-    inputStats: inputEntries[0]?.inputStats || null,
+    inputStats: baseInputEntries[0]?.inputStats || null,
     inputEntries,
-    rootPath,
+    rootPath: inferredRootPath,
     sourceMode: kinds.size > 1 ? 'mixed' : (kinds.has('pdf') ? 'pdf' : 'markdown'),
     sources: [...dedupedSources.values()].sort((left, right) => left.inputPath.localeCompare(right.inputPath))
   };

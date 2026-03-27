@@ -166,6 +166,7 @@ const zoomOutButton = document.getElementById('zoom-out-button');
 const fitButton = document.getElementById('fit-button');
 const focusButton = document.getElementById('focus-button');
 const clearButton = document.getElementById('clear-button');
+const API_TOKEN_STORAGE_KEY = 'papernexus.apiToken';
 
 const state = {
   corpora: [],
@@ -191,6 +192,7 @@ const state = {
   viewMode: 'all',
   depthFilter: 2,
   backupInProgress: false,
+  apiToken: '',
   noticeMessage: '',
   camera: { x: 0, y: 0, scale: 1 },
   drag: null,
@@ -200,6 +202,80 @@ const state = {
 
 let corpusMetaPollHandle = null;
 let pendingFitFrame = 0;
+
+function loadApiTokenFromStorage() {
+  try {
+    return window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function persistApiToken(token) {
+  state.apiToken = String(token || '').trim();
+  try {
+    if (state.apiToken) {
+      window.localStorage.setItem(API_TOKEN_STORAGE_KEY, state.apiToken);
+    } else {
+      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+    }
+  } catch {}
+}
+
+function captureApiTokenFromLocation() {
+  try {
+    const url = new URL(window.location.href);
+    const token = url.searchParams.get('token');
+    if (!token || !token.trim()) return '';
+    persistApiToken(token.trim());
+    url.searchParams.delete('token');
+    window.history.replaceState({}, document.title, url.toString());
+    return state.apiToken;
+  } catch {
+    return '';
+  }
+}
+
+async function ensureApiToken(forcePrompt = false) {
+  if (!forcePrompt) {
+    if (state.apiToken) return state.apiToken;
+    const fromLocation = captureApiTokenFromLocation();
+    if (fromLocation) return fromLocation;
+    const fromStorage = loadApiTokenFromStorage().trim();
+    if (fromStorage) {
+      state.apiToken = fromStorage;
+      return fromStorage;
+    }
+  }
+
+  const entered = window.prompt('Enter the PaperNexus API token for this server.');
+  const token = String(entered || '').trim();
+  if (!token) {
+    throw new Error('A PaperNexus API token is required for API access.');
+  }
+  persistApiToken(token);
+  return token;
+}
+
+async function apiFetch(url, options = {}) {
+  const makeRequest = async (token) => {
+    const headers = new Headers(options.headers || {});
+    headers.set('Authorization', `Bearer ${token}`);
+    return fetch(url, {
+      ...options,
+      headers
+    });
+  };
+
+  let token = await ensureApiToken(false);
+  let response = await makeRequest(token);
+  if (response.status === 401 && !options._retriedAuth) {
+    persistApiToken('');
+    token = await ensureApiToken(true);
+    response = await makeRequest(token);
+  }
+  return response;
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -353,30 +429,28 @@ function applyFilterPreset(presetKey) {
   scheduleCameraFit();
 }
 
-function fetchJson(url) {
-  return fetch(url).then(async (response) => {
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.error || `Request failed: ${response.status}`);
-    }
-    return payload;
-  });
+async function fetchJson(url) {
+  const response = await apiFetch(url);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed: ${response.status}`);
+  }
+  return payload;
 }
 
-function postJson(url, body = null) {
-  return fetch(url, {
+async function postJson(url, body = null) {
+  const response = await apiFetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json'
     },
     body: body ? JSON.stringify(body) : null
-  }).then(async (response) => {
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.error || `Request failed: ${response.status}`);
-    }
-    return payload;
   });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed: ${response.status}`);
+  }
+  return payload;
 }
 
 function formatLlmLabel(llmConfig) {

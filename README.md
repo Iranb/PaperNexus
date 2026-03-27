@@ -2,6 +2,8 @@
 
 PaperNexus is a local-first research knowledge graph system for paper corpora. It ingests PDF or Markdown, materializes reusable paper snapshots, builds a multilayer graph, and exposes that graph through a CLI, local dashboard, MCP server, and background services.
 
+It also supports queued Web API imports for uploaded `pdf/md` files and portable backup archives for the current single-graph environment.
+
 Preferred setup path: run `papernexus init`, then `papernexus analyze --force`.
 
 [Getting Started](docs/getting-started.md) · [CLI Reference](docs/cli-reference.md) · [Configuration](docs/configuration.md) · [Pipeline & Storage](docs/pipeline-and-storage.md) · [Architecture](docs/architecture.md) · [Services & UI](docs/services-and-ui.md) · [Manual Walkthrough](#manual-walkthrough)
@@ -82,6 +84,12 @@ papernexus merge-graph --continue
 
 # Stage 4b: commit the staged graph
 papernexus write-index --continue
+
+# Export the current graph environment
+papernexus backup-export ./papernexus-backup.tgz
+
+# Unpack a backup archive into an inspectable directory
+papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
 
 # Or run stages 2-5 together
 papernexus optimize --continue --semantic-extraction llm-primary
@@ -306,6 +314,8 @@ You’ve exercised the full PaperNexus flow when:
 - optional LLM-assisted semantic extraction and relation extraction
 - graph merge stage for duplicate evaluation nodes
 - merge-time LLM node deletion is currently disabled; do not rely on `--node-llm-check`
+- queued Web API import tasks with per-task logs under `.papernexus/imports/`
+- backup archive export/unpack for graph data, source papers, markdown cache, snapshots, staged data, and imports
 - Kuzu-backed authoritative graph with lite JSON read index
 - theory, storyline, and reflection overlays
 - local dashboard, MCP server, and macOS background services

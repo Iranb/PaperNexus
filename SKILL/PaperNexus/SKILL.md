@@ -38,6 +38,7 @@ Inside each corpus root, PaperNexus writes:
 - `.papernexus/sources.json`
 - `.papernexus/papers/*.json` for per-paper semantic snapshots
 - `.papernexus/markdown/` as the unified markdown working cache for both PDF-derived markdown and copied source markdown
+- `.papernexus/imports/` for queued ad hoc upload tasks, task logs, and upload-specific source files
 
 ## Paper Markdown Storage Conventions
 
@@ -131,6 +132,8 @@ Guidelines:
   - `papernexus merge-graph` for canonicalizing near-duplicate `Dataset` / `Benchmark` nodes inside the staged graph
   - `papernexus write-index` or `papernexus stage4` for committing the staged graph into the authoritative index
 - `papernexus optimize` is still available as a convenience path for stages 2-5 together.
+- Ad hoc PDF/Markdown uploads should normally enter through queued import tasks under `.papernexus/imports/`, not by moving files directly into the main paper source tree during automation.
+- Import tasks keep per-task `events.log` files and stay in a separate directory even after their parsed content is merged into the main graph.
 - Single-graph safety:
   - Once a corpus already exists at an index root, Stage 1-4 commands must keep using that same configured input scope.
   - If you pass a narrower or different path on the same index root, PaperNexus now refuses instead of silently shrinking the graph.
@@ -144,7 +147,6 @@ Guidelines:
   - `merge-graph --continue` reuses an already-merged staged graph when it is still fresh; `--force` reruns canonicalization from the Stage 3 graph.
   - LLM-driven staged node deletion/renaming is currently disabled. Do not rely on `--node-llm-check` for merge-time pruning.
 - Stage 4 `--continue` commits the staged graph that Stage 3 and `merge-graph` already prepared; `--force` recommits that staged graph. Stage 4 now validates against the staged manifest, not raw input rescans.
-- Before PaperNexus overwrites the committed corpus index, it now creates a backup under `<rootPath>/.papernexus-backups/`.
 - `write-index` stays backward-compatible: if the staged graph has not gone through `merge-graph` yet, it will auto-merge similar evaluation nodes before committing.
 - Important Stage 4 boundary: if raw paper files changed after Stage 3, Stage 4 can still commit the already-built staged graph. Those newer raw changes are not included until you rerun Stage 1-3 and then Stage 4.
 - Agent force policy:
@@ -159,6 +161,9 @@ Guidelines:
 - `watch --force` only matters for the initial startup pass; later file-change reindexes run with `force: false` so background watching stays incremental.
 - `service install` defaults to both `watch` and `serve` if `--services` is omitted.
 - `papernexus logs watch` prints the current auto-index tmp log path and current log contents.
+- All `/api/*` routes served by `papernexus serve` now require a token.
+- Configure the server token with `serve.apiToken` or `PAPERNEXUS_API_TOKEN`.
+- Browser access to the dashboard can supply the token once via `?token=<secret>`; the web client will reuse it for later API calls.
 - Stage 4 progress labels now distinguish `acquiring corpus commit lock` from `waiting for corpus commit lock`; seeing `waiting` now means there is real lock contention.
 - Chart/axis noise from OCR (e.g., "0.50 0.45 0.40 [SSR] [CLIP]") is automatically filtered during text extraction and entity sanitization.
 - Set `PAPERNEXUS_GRAPH_BACKEND=json` to force legacy JSON graph storage.
@@ -233,15 +238,21 @@ Read these first when you need orientation:
 - Be careful with repo-local `config.json`; some tests intentionally bypass it with `--no-config=true`.
 - Do not assume paths using `~` are safe unless they go through the config helpers.
 - Treat `--force` as exceptional, not routine. If the user did not explicitly ask for a full rebuild, assume the safe default is `papernexus analyze` or a staged `--continue` path.
+- Agent database-safety policy:
+  - only perform additive or update-style operations on the current single graph
+  - do not delete corpus data, remove source files, wipe staged data, or restore/import whole-database archives unless a human explicitly asks
+  - do not run `backup-export`, `backup-unpack`, or `backup-load` on the user's behalf as part of normal agent operation
 - Prefer remote MinerU for PDF work. If an agent is about to run `analyze`, `materialize`, or any parser debug flow against PDFs, assume `mineruHttpUrl` is the first-choice path and mention that choice in the reasoning or command examples.
 - Treat local Docling and Marker as fallback or special-case tools, not the default recommendation, unless the user explicitly asks for local parsing.
+- If a task involves ad hoc uploaded PDFs or Markdown from a UI/API flow, prefer the queued import-task path over manually copying those files into the main paper source directory.
+- If a task involves the Web API, do not assume anonymous access. Use the configured PaperNexus API token and include it as `Authorization: Bearer <token>` unless the user explicitly says another auth path is in place.
 - When an ingestion run failed only because LLM requests were unavailable, prefer rerunning `papernexus llm-optimize`, `papernexus optimize`, or `papernexus analyze` before reaching for `--force`.
 - Prefer `papernexus materialize` first when debugging PDF parsing or markdown cache issues, `papernexus llm-optimize` when debugging LLM extraction, `papernexus build-graph` when debugging graph projection, `papernexus merge-graph` when debugging duplicate or low-quality evaluation nodes, and `papernexus write-index` when debugging final persistence.
 - If Stage 3 already succeeded and you specifically need to inspect or fix duplicate `Dataset` / `Benchmark` nodes before commit, run `papernexus merge-graph --continue`.
 - If the staged graph contains generic evaluation nodes such as `training dataset`, inspect and clean that logic through merge heuristics or later manual review; do not rely on `--node-llm-check` right now.
 - If Stage 3 already succeeded and you only need to finish the commit, prefer `papernexus write-index --continue`.
 - If new raw papers were added and you want them included in the next committed graph, rerun Stage 1-3 before Stage 4. Stage 4 alone only commits the staged graph it already has.
-- When changing persistence behavior, run tests that cover CLI, workflow, backup, and enhancements.
+- When changing persistence behavior, run tests that cover CLI, workflow, and enhancements.
 
 ## Validation Checklist
 
@@ -249,7 +260,6 @@ For storage, indexing, or CLI changes, prefer:
 
 ```bash
 node --test test/workflow.test.js
-node --test test/backup.test.js
 node --test test/enhancements.test.js
 node --test test/cli.test.js
 ```

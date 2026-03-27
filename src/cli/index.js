@@ -34,9 +34,12 @@ Commands:
   papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
+  papernexus backup-export <archive-path> [--corpus <name>]
+  papernexus backup-unpack <archive-path> --output <dir>
+  papernexus backup-load <archive-path> --output <dir>
   papernexus logs watch
   papernexus setup
-  papernexus serve [--host 127.0.0.1] [--port 4821]
+  papernexus serve [--host 127.0.0.1] [--port 4821] [--api-token <token>]
   papernexus mcp
 
 Docling PDF Backend Options:
@@ -68,6 +71,8 @@ Examples:
   papernexus optimize ./papers --name ml-papers --continue --semantic-extraction llm-primary --node-llm-check --batch-size 16
   papernexus watch ./papers --name ml-papers
   papernexus enhance --once
+  papernexus backup-export ./papernexus-backup.tgz
+  papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
   papernexus auth llm set --provider openai --base-url https://coding.dashscope.aliyuncs.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
   papernexus impact "semi-supervised learning" --corpus ml-papers --layers ProblemLayer,MethodLayer --layer-mode cross
@@ -163,6 +168,91 @@ function maybeWarnAboutDisabledNodeLlmCheck(flags = {}) {
     'Warning: `--node-llm-check` is temporarily disabled. '
     + 'PaperNexus will skip LLM-based node drop/rename decisions for the staged graph.'
   );
+}
+
+function createCliProgress(total, options = {}) {
+  const quiet = Boolean(options.quiet);
+  const prefix = options.prefix || 'Progress';
+  let current = 0;
+  let currentTotal = Math.max(1, Number(total || 1));
+  let lastLabel = '';
+  let startTime = Date.now();
+  let redrawTimer = null;
+
+  const formatTime = (ms) => {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${minutes}m${secs}s`;
+  };
+
+  const draw = (force = false) => {
+    if (quiet || !process.stdout.isTTY) return;
+    const safeTotal = Math.max(1, currentTotal);
+    const displayCurrent = Math.min(current, safeTotal);
+    const percent = Math.floor((displayCurrent / safeTotal) * 100);
+    const width = 30;
+    const filled = Math.floor((percent / 100) * width);
+    const bar = '█'.repeat(filled) + '░'.repeat(width - filled);
+    const elapsed = Date.now() - startTime;
+    const rate = displayCurrent > 0 ? elapsed / displayCurrent : 0;
+    const remaining = Math.max(0, safeTotal - displayCurrent) * rate;
+    const eta = displayCurrent >= safeTotal ? '0s' : formatTime(remaining);
+    const labelSuffix = lastLabel ? ` - ${lastLabel}` : '';
+    process.stdout.write(`\r${prefix}: [${bar}] ${displayCurrent}/${safeTotal} (${percent}%) - ETA: ${eta} - Elapsed: ${formatTime(elapsed)}${labelSuffix}   `);
+    if (force && displayCurrent >= safeTotal && !lastLabel) {
+      process.stdout.write('');
+    }
+  };
+
+  return {
+    start() {
+      if (!quiet && process.stdout.isTTY && !redrawTimer) {
+        redrawTimer = setInterval(() => draw(), 1000);
+      }
+      draw(true);
+    },
+    update(completed, totalValue, label = '') {
+      current = Math.max(0, Number(completed || 0));
+      currentTotal = Math.max(1, Number(totalValue || currentTotal));
+      lastLabel = String(label || '');
+      draw(true);
+    },
+    done(label = '') {
+      current = currentTotal;
+      lastLabel = String(label || '');
+      draw(true);
+      if (redrawTimer) {
+        clearInterval(redrawTimer);
+        redrawTimer = null;
+      }
+      if (!quiet && process.stdout.isTTY) {
+        const elapsed = formatTime(Date.now() - startTime);
+        const suffix = lastLabel ? ` - ${lastLabel}` : '';
+        process.stdout.write(`\r${prefix}: [${'█'.repeat(30)}] ${currentTotal}/${currentTotal} (100%) - Done in ${elapsed}${suffix}   \n`);
+      }
+    },
+    stop() {
+      if (redrawTimer) {
+        clearInterval(redrawTimer);
+        redrawTimer = null;
+      }
+      if (!quiet && process.stdout.isTTY) {
+        process.stdout.write('\n');
+      }
+    }
+  };
+}
+
+function announceCliStage(flags = {}, step, total, title, detail = '') {
+  if (flags.quiet) return;
+  const suffix = detail ? ` - ${detail}` : '';
+  if (process.stdout.isTTY) {
+    process.stdout.write(`\nStage ${step}/${total}: ${title}${suffix}\n`);
+    return;
+  }
+  console.log(`Stage ${step}/${total}: ${title}${suffix}`);
 }
 
 function getGlobalConfig(config) {
@@ -339,6 +429,7 @@ function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = 
   return {
     host: firstDefined(flags.host, commandConfig.host),
     port: firstDefined(flags.port, commandConfig.port),
+    apiToken: firstDefined(flags['api-token'], commandConfig.apiToken, process.env.PAPERNEXUS_API_TOKEN),
     backupDir: typeof rawBackupDir === 'string' && rawBackupDir.trim()
       ? resolvePathWithHome(rawBackupDir.trim(), baseDir)
       : undefined,
@@ -399,7 +490,8 @@ async function loadRuntimeModules() {
     corpusStore,
     registry,
     enhancementWorker,
-    enhancementStore
+    enhancementStore,
+    backupArchive
   ] = await Promise.all([
     import('../core/ingestion/pipeline.js'),
     import('../core/search/search.js'),
@@ -409,7 +501,8 @@ async function loadRuntimeModules() {
     import('../storage/corpus-store.js'),
     import('../storage/registry.js'),
     import('../core/enhancements/worker.js'),
-    import('../storage/enhancement-store.js')
+    import('../storage/enhancement-store.js'),
+    import('../storage/backup-archive.js')
   ]);
 
   return {
@@ -421,7 +514,8 @@ async function loadRuntimeModules() {
     ...corpusStore,
     ...registry,
     ...enhancementWorker,
-    ...enhancementStore
+    ...enhancementStore,
+    ...backupArchive
   };
 }
 
@@ -1093,6 +1187,75 @@ async function main() {
   }
 
   const runtime = await loadRuntimeModules();
+
+  if (command === 'backup-export') {
+    const archiveTarget = positionals[0];
+    if (!archiveTarget) {
+      throw new Error('Usage: `papernexus backup-export <archive-path> [--corpus <name>]`.');
+    }
+
+    const candidate = resolveConfiguredCorpus(flags, config, undefined, configBaseDir);
+    const archivePath = resolvePathWithHome(archiveTarget, process.cwd());
+    announceCliStage(flags, 1, 1, 'Exporting backup archive', 'capturing graph state, source papers, markdown cache, and staged artifacts');
+    const progress = createCliProgress(1, {
+      quiet: Boolean(flags.quiet),
+      prefix: 'Exporting backup'
+    });
+    progress.start();
+    let result;
+    try {
+      result = await runtime.exportCorpusArchive(candidate, archivePath, {
+        onProgress(update) {
+          progress.update(update.completed, update.total, update.label);
+        }
+      });
+      progress.done('archive ready');
+    } catch (error) {
+      progress.stop();
+      throw error;
+    }
+    console.log(`Exported backup archive to ${result.archivePath}`);
+    console.log(`Corpus: ${result.manifest.corpusName}`);
+    console.log(`Sources captured: ${result.manifest.sources.length}`);
+    return;
+  }
+
+  if (command === 'backup-unpack' || command === 'backup-load') {
+    const archiveTarget = positionals[0];
+    const outputTarget = flags.output || positionals[1];
+    if (!archiveTarget || !outputTarget) {
+      throw new Error('Usage: `papernexus backup-unpack <archive-path> --output <dir>`.');
+    }
+
+    announceCliStage(flags, 1, 1, 'Unpacking backup archive', 'restoring an inspectable directory without touching the live graph');
+    const progress = createCliProgress(1, {
+      quiet: Boolean(flags.quiet),
+      prefix: 'Unpacking backup'
+    });
+    progress.start();
+    let result;
+    try {
+      result = await runtime.unpackCorpusArchive(
+        resolvePathWithHome(archiveTarget, process.cwd()),
+        resolvePathWithHome(String(outputTarget), process.cwd()),
+        {
+          onProgress(update) {
+            progress.update(update.completed, update.total, update.label);
+          }
+        }
+      );
+      progress.done('restore directory ready');
+    } catch (error) {
+      progress.stop();
+      throw error;
+    }
+    console.log(`Unpacked backup archive to ${result.outputPath}`);
+    if (result.manifest?.corpusName) {
+      console.log(`Corpus: ${result.manifest.corpusName}`);
+    }
+    console.log('The archive was unpacked only. Inspect it before switching or importing.');
+    return;
+  }
 
   if ([
     'analyze',

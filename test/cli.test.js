@@ -261,6 +261,74 @@ test('CLI can write the corpus index under storage.indexDir', async () => {
   }
 });
 
+test('CLI backup-export and backup-unpack print stage banners and complete successfully', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-backup-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-backup-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const archivePath = path.join(workspaceRoot, 'backup.tgz');
+  const unpackRoot = path.join(workspaceRoot, 'unpacked');
+
+  try {
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const env = {
+      ...process.env,
+      PAPERNEXUS_HOME: tempHome
+    };
+
+    await execFileAsync('node', [
+      cliPath,
+      'analyze',
+      '--no-config=true',
+      inputRoot,
+      '--name',
+      'cli-backup-papers',
+      '--force'
+    ], {
+      cwd: projectRoot,
+      env
+    });
+
+    const exportRun = await execFileAsync('node', [
+      cliPath,
+      'backup-export',
+      '--no-config=true',
+      archivePath,
+      '--corpus',
+      'cli-backup-papers'
+    ], {
+      cwd: projectRoot,
+      env
+    });
+
+    assert.match(exportRun.stdout, /Stage 1\/1: Exporting backup archive/);
+    assert.match(exportRun.stdout, /Exported backup archive to/);
+
+    const unpackRun = await execFileAsync('node', [
+      cliPath,
+      'backup-unpack',
+      '--no-config=true',
+      archivePath,
+      '--output',
+      unpackRoot
+    ], {
+      cwd: projectRoot,
+      env
+    });
+
+    assert.match(unpackRun.stdout, /Stage 1\/1: Unpacking backup archive/);
+    assert.match(unpackRun.stdout, /Unpacked backup archive to/);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('CLI expands tilde-prefixed storage.indexDir to the user home directory', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-tilde-index-'));
   const papersRoot = path.join(workspaceRoot, 'papers');

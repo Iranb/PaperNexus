@@ -16,6 +16,16 @@ Default address:
 http://127.0.0.1:4821
 ```
 
+All `/api/*` routes require an API token. Configure it with `serve.apiToken` or `PAPERNEXUS_API_TOKEN`.
+
+If you open the dashboard in a browser, you can pass the token once as:
+
+```text
+http://127.0.0.1:4821/?token=your-secret-token
+```
+
+The client stores it locally and reuses it for later API calls.
+
 The dashboard is the easiest way to inspect:
 
 - corpus metadata
@@ -95,8 +105,45 @@ PaperNexus also writes structured watch output to a temp file derived from the c
 - the dashboard
 - the local API used by the UI
 - the enhancement worker
+- the import-task worker that processes queued uploaded PDF/Markdown jobs
 
 It does not replace `watch`. If you want both live file monitoring and the UI in the background, use `papernexus service install`.
+
+## Import API
+
+The dashboard server now exposes queued import-task endpoints for ad hoc paper uploads.
+
+Routes:
+
+- `GET /api/imports`
+- `POST /api/imports`
+- `GET /api/imports/:taskId`
+- `GET /api/imports/:taskId/log`
+
+`POST /api/imports` currently accepts JSON, not multipart form data.
+All of these routes require the PaperNexus API token as `Authorization: Bearer <token>` or `x-papernexus-token`.
+
+Body shape:
+
+```json
+{
+  "files": [
+    {
+      "name": "paper.md",
+      "mimeType": "text/markdown",
+      "contentBase64": "..."
+    }
+  ]
+}
+```
+
+Important behavior:
+
+- uploaded files are written under `.papernexus/imports/tasks/<taskId>/sources/`
+- they stay outside the main paper source directory
+- the import worker processes them asynchronously
+- successful tasks can merge into the main graph
+- task-specific logs are available through `GET /api/imports/:taskId/log`
 
 ## Checking Whether Background Work Is Real
 
@@ -130,7 +177,7 @@ For normal long-lived operation:
 
 ```bash
 papernexus init
-papernexus analyze --force
+papernexus analyze
 papernexus service install
 papernexus service status
 papernexus logs watch

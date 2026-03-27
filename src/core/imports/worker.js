@@ -1,0 +1,225 @@
+import { loadCorpusMeta, loadSourceManifest } from '../../storage/corpus-store.js';
+import {
+  completeImportTask,
+  failImportTask,
+  getImportPaths,
+  loadImportTask,
+  markImportTaskStage,
+  reserveNextImportTask
+} from '../../storage/import-store.js';
+import {
+  buildGraphCorpus,
+  llmOptimizeCorpus,
+  materializeCorpus,
+  mergeGraphCorpus,
+  writeIndexCorpus
+} from '../ingestion/pipeline.js';
+import { withFileLock } from '../../lib/fs.js';
+import { loadRegistry } from '../../storage/registry.js';
+
+function isLockTimeout(error) {
+  return String(error?.message || '').includes('Timed out waiting for file lock');
+}
+
+async function resolveTaskInputPath(rootPath, task) {
+  const taskInputPaths = Array.isArray(task?.inputPaths) ? task.inputPaths.filter(Boolean) : [];
+  if (taskInputPaths.length) {
+    return taskInputPaths.length === 1 ? taskInputPaths[0] : taskInputPaths;
+  }
+
+  const manifest = await loadSourceManifest(rootPath);
+  const manifestInputPaths = Array.isArray(manifest?.inputPaths)
+    ? manifest.inputPaths
+    : (manifest?.inputPath ? [manifest.inputPath] : []);
+  if (!manifestInputPaths.length) {
+    throw new Error(`Import task ${task?.id || ''} has no base input paths to rebuild from.`);
+  }
+  return manifestInputPaths.length === 1 ? manifestInputPaths[0] : manifestInputPaths;
+}
+
+async function processImportTask(rootPath, task, options = {}) {
+  const corpusMeta = await loadCorpusMeta(rootPath);
+  const inputPath = await resolveTaskInputPath(rootPath, task);
+  const sharedOptions = {
+    ...options,
+    rootPath,
+    quiet: true,
+    name: corpusMeta.name
+  };
+
+  await markImportTaskStage(rootPath, task.id, 'materialize', 'stage materialize');
+  const materialized = await materializeCorpus(inputPath, sharedOptions);
+
+  await markImportTaskStage(rootPath, task.id, 'llm-optimize', 'stage llm-optimize');
+  const optimized = await llmOptimizeCorpus(inputPath, sharedOptions);
+
+  await markImportTaskStage(rootPath, task.id, 'build-graph', 'stage build-graph');
+  const built = await buildGraphCorpus(inputPath, sharedOptions);
+
+  await markImportTaskStage(rootPath, task.id, 'merge-graph', 'stage merge-graph');
+  const merged = await mergeGraphCorpus(inputPath, sharedOptions);
+
+  await markImportTaskStage(rootPath, task.id, 'write-index', 'stage write-index');
+  const written = await writeIndexCorpus(inputPath, sharedOptions);
+
+  await completeImportTask(rootPath, task.id, {
+    materialized: {
+      reused: Boolean(materialized?.reused),
+      paperCount: materialized?.meta?.paperCount || 0
+    },
+    optimized: {
+      reused: Boolean(optimized?.reused)
+    },
+    built: {
+      reused: Boolean(built?.reused)
+    },
+    merged: {
+      reused: Boolean(merged?.reused)
+    },
+    written: {
+      paperCount: written?.meta?.paperCount || 0,
+      nodeCount: written?.meta?.nodeCount || 0,
+      relationshipCount: written?.meta?.relationshipCount || 0
+    }
+  });
+
+  return written;
+}
+
+export async function runImportQueueOnce(rootPath, options = {}) {
+  const { workerLockPath } = getImportPaths(rootPath);
+
+  try {
+    return await withFileLock(workerLockPath, async () => {
+      const reserved = await reserveNextImportTask(rootPath);
+      if (!reserved?.task) {
+        return {
+          processed: false,
+          reason: 'idle'
+        };
+      }
+
+      try {
+        const result = await processImportTask(rootPath, reserved.task, options);
+        return {
+          processed: true,
+          failed: false,
+          taskId: reserved.task.id,
+          result
+        };
+      } catch (error) {
+        await failImportTask(rootPath, reserved.task.id, error);
+        return {
+          processed: true,
+          failed: true,
+          taskId: reserved.task.id,
+          error: error.message
+        };
+      }
+    }, {
+      timeoutMs: Number(options.lockTimeoutMs || 350)
+    });
+  } catch (error) {
+    if (isLockTimeout(error)) {
+      return {
+        processed: false,
+        reason: 'busy'
+      };
+    }
+    throw error;
+  }
+}
+
+export async function runImportQueueUntilIdle(rootPath, options = {}) {
+  const maxPasses = Math.max(1, Number(options.maxPasses || 24));
+  const completedTaskIds = [];
+  let failedCount = 0;
+
+  for (let index = 0; index < maxPasses; index += 1) {
+    const result = await runImportQueueOnce(rootPath, options);
+    if (!result.processed) break;
+    if (result.failed) {
+      failedCount += 1;
+    } else if (result.taskId) {
+      completedTaskIds.push(result.taskId);
+    }
+  }
+
+  return {
+    completedTaskIds,
+    failedCount
+  };
+}
+
+export async function runImportsForAllCorporaOnce(options = {}) {
+  const configuredRoots = Array.isArray(options.rootPaths)
+    ? options.rootPaths.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const registry = configuredRoots.length ? null : await loadRegistry();
+  const roots = configuredRoots.length
+    ? configuredRoots.map((rootPath) => ({ rootPath, name: rootPath }))
+    : (registry?.corpora || []);
+  const results = [];
+
+  for (const corpus of roots) {
+    results.push({
+      rootPath: corpus.rootPath,
+      corpusName: corpus.name,
+      ...(await runImportQueueOnce(corpus.rootPath, options))
+    });
+  }
+
+  return results;
+}
+
+export function startImportWorker(options = {}) {
+  const logger = options.logger || console;
+  const intervalMs = Math.max(1500, Number(options.intervalMs || 5000));
+  let closed = false;
+  let running = false;
+  let timer = null;
+
+  const schedule = () => {
+    if (closed) return;
+    clearTimeout(timer);
+    timer = setTimeout(tick, intervalMs);
+  };
+
+  const tick = async () => {
+    if (closed || running) {
+      schedule();
+      return;
+    }
+
+    running = true;
+    try {
+      const results = await runImportsForAllCorporaOnce(options);
+      for (const result of results) {
+        if (!result.processed) continue;
+        if (result.failed) {
+          logger.error?.(`[imports] ${result.corpusName || result.rootPath}: task ${result.taskId} failed (${result.error})`);
+        } else {
+          logger.log?.(`[imports] ${result.corpusName || result.rootPath}: completed task ${result.taskId}`);
+        }
+      }
+    } catch (error) {
+      logger.error?.(`[imports] ${error.message}`);
+    } finally {
+      running = false;
+      schedule();
+    }
+  };
+
+  void tick();
+
+  return {
+    stop() {
+      closed = true;
+      clearTimeout(timer);
+    },
+    pollNow() {
+      clearTimeout(timer);
+      void tick();
+    }
+  };
+}
