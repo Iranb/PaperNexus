@@ -6,7 +6,8 @@ import { ensureDir, fileExists, readJson, removePath, withFileLock, writeJson } 
 import { loadKnowledgeGraph } from '../core/graph/graph.js';
 import { slugify, stableHash } from '../lib/utils.js';
 import { loadRegistry, unregisterCorpus } from './registry.js';
-import { saveLiteGraphMaterializedView } from './lite-view.js';
+import { applyLiteDeltaCommit, saveLiteGraphMaterializedView } from './lite-view.js';
+import { enqueueAuthoritativeSyncJob } from './authoritative-sync-store.js';
 import {
   hasKuzuGraphStore,
   loadKnowledgeGraphFromKuzu,
@@ -32,10 +33,16 @@ export function getCorpusPaths(rootPath) {
   const corpusDir = getCorpusDir(rootPath);
   const stagedDir = path.join(corpusDir, 'staged');
   const llmJobsDir = path.join(corpusDir, 'llm-jobs');
+  const authoritativeSyncDir = path.join(corpusDir, 'authoritative-sync');
+  const authoritativeSyncJobsDir = path.join(authoritativeSyncDir, 'jobs');
+  const authoritativeSyncHistoryDir = path.join(authoritativeSyncDir, 'history');
   return {
     corpusDir,
     stagedDir,
     llmJobsDir,
+    authoritativeSyncDir,
+    authoritativeSyncJobsDir,
+    authoritativeSyncHistoryDir,
     graphPath: path.join(corpusDir, 'graph.json'),
     kuzuGraphPath: path.join(corpusDir, 'graph.kuzu'),
     liteGraphPath: path.join(corpusDir, 'graph.lite.json'),
@@ -47,6 +54,9 @@ export function getCorpusPaths(rootPath) {
     stagedManifestPath: path.join(stagedDir, 'sources.json'),
     stagedStatePath: path.join(stagedDir, 'state.json'),
     llmStage2StatePath: path.join(llmJobsDir, 'stage2.json'),
+    authoritativeSyncQueuePath: path.join(authoritativeSyncDir, 'queue.json'),
+    authoritativeSyncLockPath: path.join(authoritativeSyncDir, 'queue.lock'),
+    authoritativeSyncWorkerLockPath: path.join(authoritativeSyncDir, 'worker.lock'),
     papersDir: path.join(corpusDir, 'papers'),
     markdownDir: path.join(corpusDir, 'markdown'),
     markerDir: path.join(corpusDir, 'marker')
@@ -124,6 +134,108 @@ export async function saveCorpus(rootPath, graph, meta, options = {}) {
     label: 'writing corpus metadata'
   });
   await writeJson(metaPath, meta);
+}
+
+export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, manifest, options = {}) {
+  const {
+    liteGraphPath,
+    liteStatePath,
+    manifestPath,
+    metaPath
+  } = getCorpusPaths(rootPath);
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const now = new Date().toISOString();
+  const targetManifestToken = options.targetManifestToken || null;
+
+  return withFileLock(getCorpusLockPath(rootPath), async () => {
+    const [currentMeta, currentManifest] = await Promise.all([
+      readJson(metaPath, null),
+      readJson(manifestPath, null)
+    ]);
+
+    if (targetManifestToken && currentMeta?.lastFastCommitManifestToken === targetManifestToken) {
+      const syncJob = currentMeta.authoritativeSyncStatus === 'synced'
+        ? {
+            jobId: currentMeta.lastFastCommitJobId || currentMeta.lastAuthoritativeSyncJobId || null
+          }
+        : await enqueueAuthoritativeSyncJob(rootPath, {
+            baseManifestToken: options.baseManifestToken || null,
+            targetManifestToken,
+            changedSourceKeys: deltaPayload.changedSourceKeys || [],
+            deltaPayload,
+            mode: options.mode || 'delta',
+            dependsOnFastCommitJobId: options.dependsOnFastCommitJobId || null
+          });
+
+      return {
+        rootPath,
+        meta: currentMeta,
+        manifest: currentManifest || manifest,
+        deltaPayload,
+        syncJob,
+        reused: true
+      };
+    }
+
+    onProgress?.({
+      phase: 'lite-delta',
+      label: 'applying fast local delta commit'
+    });
+    await applyLiteDeltaCommit(rootPath, deltaPayload, {
+      liteGraphPath,
+      liteStatePath,
+      onProgress
+    });
+
+    onProgress?.({
+      phase: 'manifest',
+      label: 'writing fast-commit source manifest'
+    });
+    await saveSourceManifest(rootPath, manifest);
+
+    const checkpointMeta = {
+      ...meta,
+      authoritativeSyncStatus: 'pending',
+      authoritativeSyncQueuedAt: now,
+      lastFastCommitManifestToken: targetManifestToken,
+      lastFastCommitJobId: currentMeta?.lastFastCommitJobId || null
+    };
+
+    onProgress?.({
+      phase: 'meta',
+      label: 'writing fast-commit checkpoint metadata'
+    });
+    await writeJson(metaPath, checkpointMeta);
+
+    const job = await enqueueAuthoritativeSyncJob(rootPath, {
+      baseManifestToken: options.baseManifestToken || null,
+      targetManifestToken,
+      changedSourceKeys: deltaPayload.changedSourceKeys || [],
+      deltaPayload,
+      mode: options.mode || 'delta',
+      dependsOnFastCommitJobId: options.dependsOnFastCommitJobId || null
+    });
+
+    const nextMeta = {
+      ...checkpointMeta,
+      lastFastCommitJobId: job.jobId
+    };
+
+    onProgress?.({
+      phase: 'meta',
+      label: 'writing fast-commit corpus metadata'
+    });
+    await writeJson(metaPath, nextMeta);
+
+    return {
+      rootPath,
+      meta: nextMeta,
+      manifest,
+      deltaPayload,
+      syncJob: job,
+      reused: false
+    };
+  }, options.lockOptions);
 }
 
 function summarizeGraph(graph) {

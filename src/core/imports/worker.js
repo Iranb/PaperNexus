@@ -8,11 +8,9 @@ import {
   reserveNextImportTask
 } from '../../storage/import-store.js';
 import {
-  buildGraphCorpus,
+  fastCommitCorpus,
   llmOptimizeCorpus,
   materializeCorpus,
-  mergeGraphCorpus,
-  writeIndexCorpus
 } from '../ingestion/pipeline.js';
 import { withFileLock } from '../../lib/fs.js';
 import { loadRegistry } from '../../storage/registry.js';
@@ -38,50 +36,68 @@ async function resolveTaskInputPath(rootPath, task) {
 async function processImportTask(rootPath, task, options = {}) {
   const corpusMeta = await loadCorpusMeta(rootPath);
   const inputPath = await resolveTaskInputPath(rootPath, task);
+  const changedSourceKeys = (task.files || []).map((file) => file.storedPath).filter(Boolean);
+  const startStage = (() => {
+    switch (task.stage) {
+      case 'llm-optimize':
+        return 'llm-optimize';
+      case 'build-graph':
+      case 'merge-graph':
+      case 'write-index':
+      case 'fast-commit':
+        return 'fast-commit';
+      case 'materialize':
+      case 'queued':
+      default:
+        return 'materialize';
+    }
+  })();
   const sharedOptions = {
     ...options,
     rootPath,
     quiet: true,
     name: corpusMeta.name
   };
+  const result = {
+    ...(task.result || {})
+  };
 
-  await markImportTaskStage(rootPath, task.id, 'materialize', 'stage materialize');
-  const materialized = await materializeCorpus(inputPath, sharedOptions);
+  if (startStage === 'materialize') {
+    await markImportTaskStage(rootPath, task.id, 'materialize', 'stage materialize');
+    const materialized = await materializeCorpus(inputPath, sharedOptions);
+    result.materialized = {
+      reused: Boolean(materialized?.reused),
+      paperCount: materialized?.meta?.paperCount || 0
+    };
+  }
 
   await markImportTaskStage(rootPath, task.id, 'llm-optimize', 'stage llm-optimize');
   const optimized = await llmOptimizeCorpus(inputPath, sharedOptions);
+  result.optimized = {
+    reused: Boolean(optimized?.reused)
+  };
 
-  await markImportTaskStage(rootPath, task.id, 'build-graph', 'stage build-graph');
-  const built = await buildGraphCorpus(inputPath, sharedOptions);
-
-  await markImportTaskStage(rootPath, task.id, 'merge-graph', 'stage merge-graph');
-  const merged = await mergeGraphCorpus(inputPath, sharedOptions);
-
-  await markImportTaskStage(rootPath, task.id, 'write-index', 'stage write-index');
-  const written = await writeIndexCorpus(inputPath, sharedOptions);
-
-  await completeImportTask(rootPath, task.id, {
-    materialized: {
-      reused: Boolean(materialized?.reused),
-      paperCount: materialized?.meta?.paperCount || 0
-    },
-    optimized: {
-      reused: Boolean(optimized?.reused)
-    },
-    built: {
-      reused: Boolean(built?.reused)
-    },
-    merged: {
-      reused: Boolean(merged?.reused)
-    },
-    written: {
-      paperCount: written?.meta?.paperCount || 0,
-      nodeCount: written?.meta?.nodeCount || 0,
-      relationshipCount: written?.meta?.relationshipCount || 0
-    }
+  await markImportTaskStage(rootPath, task.id, 'fast-commit', 'stage fast-commit');
+  const committed = await fastCommitCorpus(inputPath, {
+    ...sharedOptions,
+    changedSourceKeys,
+    mode: 'import'
   });
 
-  return written;
+  result.fastCommitted = {
+    reused: Boolean(committed?.reused),
+    paperCount: committed?.meta?.paperCount || 0,
+    nodeCount: committed?.meta?.nodeCount || 0,
+    relationshipCount: committed?.meta?.relationshipCount || 0
+  };
+  result.authoritativeSync = {
+    status: committed?.meta?.authoritativeSyncStatus || 'pending',
+    jobId: committed?.syncJob?.jobId || null
+  };
+
+  await completeImportTask(rootPath, task.id, result);
+
+  return committed;
 }
 
 export async function runImportQueueOnce(rootPath, options = {}) {

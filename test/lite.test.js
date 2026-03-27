@@ -4,8 +4,96 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createKnowledgeGraph } from '../src/core/graph/graph.js';
+import { buildGraphDeltaPayload } from '../src/core/graph/delta-commit.js';
 import { createLiteGraphPayload } from '../src/core/graph/lite.js';
-import { saveLiteGraphMaterializedView } from '../src/storage/lite-view.js';
+import { EDGE_TYPES, NODE_TYPES } from '../src/core/graph/schema.js';
+import { slugify, stableHash } from '../src/lib/utils.js';
+import {
+  getCorpusPaths,
+  saveCorpusFastLocalDelta
+} from '../src/storage/corpus-store.js';
+import { listAuthoritativeSyncJobs } from '../src/storage/authoritative-sync-store.js';
+import {
+  applyLiteDeltaCommit,
+  saveLiteGraphMaterializedView
+} from '../src/storage/lite-view.js';
+
+function createRelationship(sourceId, targetId, type, properties = {}) {
+  return {
+    id: `rel:${stableHash(`${sourceId}:${type}:${targetId}:${JSON.stringify(properties)}`)}`,
+    sourceId,
+    targetId,
+    type,
+    properties
+  };
+}
+
+function buildCorpusId(name, rootPath) {
+  return `corpus:${slugify(name)}:${stableHash(rootPath)}`;
+}
+
+function createSemanticPaper(overrides = {}) {
+  return {
+    paperId: 'paper:new',
+    paperTitle: 'New Paper',
+    sourceKey: 'source:new',
+    sourcePath: '/tmp/new-paper.md',
+    sourceMarkdownPath: '/tmp/new-paper.md',
+    sourcePdfPath: null,
+    sourceKind: 'markdown',
+    sourceFingerprint: 'fp:new',
+    authors: ['Researcher Example'],
+    abstract: 'We study generalized category discovery with prototype alignment.',
+    problems: [
+      {
+        name: 'Generalized Category Discovery',
+        text: 'generalized category discovery',
+        evidenceText: 'We study generalized category discovery.',
+        sectionRole: 'abstract',
+        confidence: 0.82
+      }
+    ],
+    methods: [
+      {
+        name: 'prototype alignment',
+        text: 'prototype alignment',
+        evidenceText: 'We propose prototype alignment.',
+        sectionRole: 'abstract',
+        confidence: 0.84
+      }
+    ],
+    datasets: [],
+    benchmarks: [],
+    metrics: [],
+    claims: [
+      {
+        name: 'Prototype alignment improves generalized category discovery.',
+        text: 'Prototype alignment improves generalized category discovery.',
+        evidenceText: 'Prototype alignment improves generalized category discovery.',
+        sectionRole: 'abstract',
+        confidence: 0.8
+      }
+    ],
+    findings: [],
+    researchGoals: [],
+    limitations: [],
+    assumptions: [],
+    evidences: [
+      {
+        text: 'We report evidence on a category discovery benchmark.',
+        section: 'Results',
+        sectionHeading: 'Results',
+        sectionRole: 'results',
+        confidence: 0.76,
+        linkedDatasets: [],
+        linkedMetrics: []
+      }
+    ],
+    futureDirections: [],
+    llmRelations: [],
+    ...overrides
+  };
+}
 
 test('createLiteGraphPayload preserves layer metadata and truncates large fields', () => {
   const graph = createKnowledgeGraph();
@@ -207,6 +295,211 @@ test('saveLiteGraphMaterializedView updates shared lite nodes incrementally acro
     assert.deepEqual(sharedProblem.properties.paperTitles, ['Paper B']);
     assert.equal(state.sources['source:a'], undefined);
     assert.deepEqual(state.sources['source:b'].nodeIds.sort(), ['paper:b', 'problem:shared']);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('saveCorpusFastLocalDelta makes a new paper query-visible in lite state and enqueues authoritative sync', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-fast-local-delta-'));
+  const corpusName = 'fast-delta-test';
+  const corpusId = buildCorpusId(corpusName, tempRoot);
+  const committedGraph = createKnowledgeGraph();
+  const paths = getCorpusPaths(tempRoot);
+
+  try {
+    committedGraph.addNode({
+      id: corpusId,
+      type: NODE_TYPES.CORPUS,
+      name: corpusName,
+      properties: {
+        layer: 'CorpusLayer',
+        rootPath: tempRoot
+      }
+    });
+    committedGraph.addNode({
+      id: 'paper:old',
+      type: NODE_TYPES.PAPER,
+      name: 'Old Paper',
+      properties: {
+        layer: 'DocumentLayer',
+        paperId: 'paper:old',
+        paperTitle: 'Old Paper'
+      }
+    });
+    committedGraph.addRelationship(createRelationship(corpusId, 'paper:old', EDGE_TYPES.CONTAINS));
+
+    await saveLiteGraphMaterializedView(tempRoot, committedGraph, {
+      liteGraphPath: paths.liteGraphPath,
+      liteStatePath: paths.liteStatePath,
+      incremental: true,
+      currentSources: [
+        {
+          sourceKey: 'source:old',
+          paperId: 'paper:old',
+          paperTitle: 'Old Paper',
+          sourceFingerprint: 'fp:old'
+        }
+      ]
+    });
+
+    const delta = await buildGraphDeltaPayload({
+      corpusName,
+      rootPath: tempRoot,
+      committedGraph,
+      semanticPapers: [createSemanticPaper()]
+    });
+
+    const nextManifest = {
+      corpusName,
+      rootPath: tempRoot,
+      sources: [
+        {
+          sourceKey: 'source:old',
+          paperId: 'paper:old',
+          paperTitle: 'Old Paper',
+          fingerprint: 'fp:old',
+          activeInGraph: true
+        },
+        {
+          sourceKey: 'source:new',
+          paperId: 'paper:new',
+          paperTitle: 'New Paper',
+          fingerprint: 'fp:new',
+          activeInGraph: true
+        }
+      ]
+    };
+
+    const result = await saveCorpusFastLocalDelta(tempRoot, delta, {
+      name: corpusName,
+      indexedAt: new Date().toISOString(),
+      paperCount: 2,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, nextManifest, {
+      baseManifestToken: 'manifest:base',
+      targetManifestToken: 'manifest:target'
+    });
+
+    const litePayload = JSON.parse(await fs.readFile(paths.liteGraphPath, 'utf8'));
+    const liteState = JSON.parse(await fs.readFile(paths.liteStatePath, 'utf8'));
+    const meta = JSON.parse(await fs.readFile(paths.metaPath, 'utf8'));
+    const manifest = JSON.parse(await fs.readFile(paths.manifestPath, 'utf8'));
+    const queuedJobs = await listAuthoritativeSyncJobs(tempRoot);
+
+    assert.ok(litePayload.nodes.some((node) => node.id === 'paper:new'));
+    assert.ok(liteState.sources['source:new']);
+    assert.equal(meta.authoritativeSyncStatus, 'pending');
+    assert.equal(meta.lastFastCommitJobId, result.syncJob.jobId);
+    assert.equal(manifest.sources.length, 2);
+    assert.equal(queuedJobs.length, 1);
+    assert.equal(queuedJobs[0].targetManifestToken, 'manifest:target');
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('saveCorpusFastLocalDelta is idempotent for the same target manifest token', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-fast-local-delta-idempotent-'));
+  const corpusName = 'fast-delta-idempotent-test';
+  const corpusId = buildCorpusId(corpusName, tempRoot);
+  const committedGraph = createKnowledgeGraph();
+  const paths = getCorpusPaths(tempRoot);
+
+  try {
+    committedGraph.addNode({
+      id: corpusId,
+      type: NODE_TYPES.CORPUS,
+      name: corpusName,
+      properties: {
+        layer: 'CorpusLayer',
+        rootPath: tempRoot
+      }
+    });
+    committedGraph.addNode({
+      id: 'paper:old',
+      type: NODE_TYPES.PAPER,
+      name: 'Old Paper',
+      properties: {
+        layer: 'DocumentLayer',
+        paperId: 'paper:old',
+        paperTitle: 'Old Paper'
+      }
+    });
+    committedGraph.addRelationship(createRelationship(corpusId, 'paper:old', EDGE_TYPES.CONTAINS));
+
+    await saveLiteGraphMaterializedView(tempRoot, committedGraph, {
+      liteGraphPath: paths.liteGraphPath,
+      liteStatePath: paths.liteStatePath,
+      incremental: true,
+      currentSources: [
+        {
+          sourceKey: 'source:old',
+          paperId: 'paper:old',
+          paperTitle: 'Old Paper',
+          sourceFingerprint: 'fp:old'
+        }
+      ]
+    });
+
+    const delta = await buildGraphDeltaPayload({
+      corpusName,
+      rootPath: tempRoot,
+      committedGraph,
+      semanticPapers: [createSemanticPaper()]
+    });
+
+    const nextManifest = {
+      corpusName,
+      rootPath: tempRoot,
+      sources: [
+        {
+          sourceKey: 'source:old',
+          paperId: 'paper:old',
+          paperTitle: 'Old Paper',
+          fingerprint: 'fp:old',
+          activeInGraph: true
+        },
+        {
+          sourceKey: 'source:new',
+          paperId: 'paper:new',
+          paperTitle: 'New Paper',
+          fingerprint: 'fp:new',
+          activeInGraph: true
+        }
+      ]
+    };
+
+    const first = await saveCorpusFastLocalDelta(tempRoot, delta, {
+      name: corpusName,
+      indexedAt: new Date().toISOString(),
+      paperCount: 2,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, nextManifest, {
+      baseManifestToken: 'manifest:base',
+      targetManifestToken: 'manifest:target'
+    });
+
+    const second = await saveCorpusFastLocalDelta(tempRoot, delta, {
+      name: corpusName,
+      indexedAt: new Date().toISOString(),
+      paperCount: 2,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, nextManifest, {
+      baseManifestToken: 'manifest:base',
+      targetManifestToken: 'manifest:target'
+    });
+
+    const liteState = JSON.parse(await fs.readFile(paths.liteStatePath, 'utf8'));
+    const queuedJobs = await listAuthoritativeSyncJobs(tempRoot);
+
+    assert.equal(first.syncJob.jobId, second.syncJob.jobId);
+    assert.equal(second.reused, true);
+    assert.equal(queuedJobs.length, 1);
+    assert.equal(liteState.nodeRefs['paper:new'], 1);
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
