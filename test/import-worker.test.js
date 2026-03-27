@@ -63,18 +63,92 @@ test('import worker processes queued uploads and merges them into the single gra
     const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
     assert.equal(loadedTask.status, 'completed');
 
-    const corpus = await corpusStore.loadCorpus(indexRoot);
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
     assert.equal(corpus.meta.paperCount, 2);
+    assert.equal(corpus.meta.authoritativeSyncStatus, 'pending');
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Uploaded Paper'));
 
     const manifest = await corpusStore.loadSourceManifest(indexRoot);
     assert.equal(
       manifest.sources.some((entry) => String(entry.sourcePath || '').includes(path.join('.papernexus', 'imports'))),
       true
     );
+    const queuedJobs = await import('../src/storage/authoritative-sync-store.js')
+      .then((module) => module.listAuthoritativeSyncJobs(indexRoot));
+    assert.equal(queuedJobs.length, 1);
 
     const log = await importStore.loadImportTaskLog(indexRoot, task.id);
     assert.match(log, /stage materialize/i);
-    assert.match(log, /stage write-index/i);
+    assert.match(log, /stage fast-commit/i);
+    assert.doesNotMatch(log, /stage build-graph/i);
+    assert.doesNotMatch(log, /stage write-index/i);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker resumes from the persisted task stage instead of restarting materialize', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-resume-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-resume-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-resume-test',
+      force: true
+    });
+
+    const task = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'resume-paper.md',
+          contentBase64: Buffer.from('# Resume Paper\n\n## Abstract\n\nThis upload should resume from stage 2.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const taskPaths = importStore.getImportTaskPaths(indexRoot, task.id);
+    const persistedTask = JSON.parse(await fs.readFile(taskPaths.taskPath, 'utf8'));
+    persistedTask.status = 'running';
+    persistedTask.stage = 'llm-optimize';
+    persistedTask.includeInGraph = true;
+    await fs.writeFile(taskPaths.taskPath, JSON.stringify(persistedTask, null, 2));
+
+    const result = await importWorker.runImportQueueUntilIdle(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      maxPasses: 4
+    });
+
+    assert.equal(result.completedTaskIds.includes(task.id), true);
+
+    const log = await importStore.loadImportTaskLog(indexRoot, task.id);
+    assert.match(log, /stage llm-optimize/i);
+    assert.doesNotMatch(log, /stage materialize/i);
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

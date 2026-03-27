@@ -399,3 +399,108 @@ test('saveCorpusFastLocalDelta makes a new paper query-visible in lite state and
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('saveCorpusFastLocalDelta is idempotent for the same target manifest token', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-fast-local-delta-idempotent-'));
+  const corpusName = 'fast-delta-idempotent-test';
+  const corpusId = buildCorpusId(corpusName, tempRoot);
+  const committedGraph = createKnowledgeGraph();
+  const paths = getCorpusPaths(tempRoot);
+
+  try {
+    committedGraph.addNode({
+      id: corpusId,
+      type: NODE_TYPES.CORPUS,
+      name: corpusName,
+      properties: {
+        layer: 'CorpusLayer',
+        rootPath: tempRoot
+      }
+    });
+    committedGraph.addNode({
+      id: 'paper:old',
+      type: NODE_TYPES.PAPER,
+      name: 'Old Paper',
+      properties: {
+        layer: 'DocumentLayer',
+        paperId: 'paper:old',
+        paperTitle: 'Old Paper'
+      }
+    });
+    committedGraph.addRelationship(createRelationship(corpusId, 'paper:old', EDGE_TYPES.CONTAINS));
+
+    await saveLiteGraphMaterializedView(tempRoot, committedGraph, {
+      liteGraphPath: paths.liteGraphPath,
+      liteStatePath: paths.liteStatePath,
+      incremental: true,
+      currentSources: [
+        {
+          sourceKey: 'source:old',
+          paperId: 'paper:old',
+          paperTitle: 'Old Paper',
+          sourceFingerprint: 'fp:old'
+        }
+      ]
+    });
+
+    const delta = await buildGraphDeltaPayload({
+      corpusName,
+      rootPath: tempRoot,
+      committedGraph,
+      semanticPapers: [createSemanticPaper()]
+    });
+
+    const nextManifest = {
+      corpusName,
+      rootPath: tempRoot,
+      sources: [
+        {
+          sourceKey: 'source:old',
+          paperId: 'paper:old',
+          paperTitle: 'Old Paper',
+          fingerprint: 'fp:old',
+          activeInGraph: true
+        },
+        {
+          sourceKey: 'source:new',
+          paperId: 'paper:new',
+          paperTitle: 'New Paper',
+          fingerprint: 'fp:new',
+          activeInGraph: true
+        }
+      ]
+    };
+
+    const first = await saveCorpusFastLocalDelta(tempRoot, delta, {
+      name: corpusName,
+      indexedAt: new Date().toISOString(),
+      paperCount: 2,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, nextManifest, {
+      baseManifestToken: 'manifest:base',
+      targetManifestToken: 'manifest:target'
+    });
+
+    const second = await saveCorpusFastLocalDelta(tempRoot, delta, {
+      name: corpusName,
+      indexedAt: new Date().toISOString(),
+      paperCount: 2,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, nextManifest, {
+      baseManifestToken: 'manifest:base',
+      targetManifestToken: 'manifest:target'
+    });
+
+    const liteState = JSON.parse(await fs.readFile(paths.liteStatePath, 'utf8'));
+    const queuedJobs = await listAuthoritativeSyncJobs(tempRoot);
+
+    assert.equal(first.syncJob.jobId, second.syncJob.jobId);
+    assert.equal(second.reused, true);
+    assert.equal(queuedJobs.length, 1);
+    assert.equal(liteState.nodeRefs['paper:new'], 1);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});

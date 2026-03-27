@@ -225,27 +225,34 @@ export async function buildGraphDeltaPayload({
   committedGraph,
   semanticPapers,
   liteState = null,
+  changedSourceKeys: requestedChangedSourceKeys = [],
   options = {}
 }) {
   const changedPapers = Array.isArray(semanticPapers) ? semanticPapers.filter(Boolean) : [];
-  const changedSourceKeys = sortStrings(changedPapers.map((paper) => paper.sourceKey).filter(Boolean));
-  if (!changedPapers.length) {
+  const changedSourceKeys = sortStrings([
+    ...changedPapers.map((paper) => paper.sourceKey).filter(Boolean),
+    ...(Array.isArray(requestedChangedSourceKeys) ? requestedChangedSourceKeys : [])
+  ]);
+  if (!changedSourceKeys.length) {
     return {
       changedSourceKeys: [],
       upsertNodes: [],
       upsertRelationships: [],
       deleteNodeIds: [],
-      deleteRelationshipIds: []
+      deleteRelationshipIds: [],
+      sourceEntries: []
     };
   }
 
   const deltaGraph = createKnowledgeGraph();
   const corpusId = buildCorpusId(corpusName, rootPath);
-  const fragments = await precomputePaperGraphFragments(changedPapers, {
-    graphPrecomputeConcurrency: options.graphPrecomputeConcurrency,
-    analyzeConcurrency: options.analyzeConcurrency,
-    concurrency: options.concurrency
-  });
+  const fragments = changedPapers.length
+    ? await precomputePaperGraphFragments(changedPapers, {
+        graphPrecomputeConcurrency: options.graphPrecomputeConcurrency,
+        analyzeConcurrency: options.analyzeConcurrency,
+        concurrency: options.concurrency
+      })
+    : [];
   const aggregatedGlobalContributions = aggregateGlobalContributions(fragments);
   const removalState = buildSourceRemovalState(liteState, changedSourceKeys);
   const globalNodeById = new Map();

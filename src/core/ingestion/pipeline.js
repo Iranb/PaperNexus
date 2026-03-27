@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 import { createKnowledgeGraph } from '../graph/graph.js';
 import { applyNodeCheckDecisions, mergeSimilarGraphNodes } from '../graph/merge-similar.js';
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from '../graph/schema.js';
+import { applyGraphDeltaPayload, buildGraphDeltaPayload } from '../graph/delta-commit.js';
 import {
   adjudicateCrossPaperCandidates,
   inferGraphNodeChecksBatch,
@@ -15,7 +16,7 @@ import {
   resolveSemanticExtractionPlan,
   resolveOllamaConfig
 } from '../llm/ollama.js';
-import { collectFiles, fileExists, readText, withFileLock } from '../../lib/fs.js';
+import { collectFiles, fileExists, readJson, readText, withFileLock } from '../../lib/fs.js';
 import { jaccardSimilarity, normalizeText, slugify, stableHash, titleCase, tokenizeWithoutStopwords, truncate, unique } from '../../lib/utils.js';
 import { createWatchTmpLogger } from '../../lib/watch-log.js';
 import {
@@ -25,6 +26,8 @@ import {
   getSemanticPaperSnapshotPath,
   hasCorpusGraphStore,
   loadCorpus,
+  loadCorpusMeta,
+  loadCorpusLite,
   loadStagedCorpusBuild,
   loadSourceManifest,
   loadStage2JobState,
@@ -34,6 +37,7 @@ import {
   resolveGraphStorageMode,
   removeSemanticPaperSnapshot,
   saveCorpus,
+  saveCorpusFastLocalDelta,
   saveSemanticPaperSnapshot,
   saveSourceManifest,
   saveStage2JobState,
@@ -4787,6 +4791,111 @@ export async function mergeGraphCorpus(inputPath, options = {}) {
     stage: 'graph-merged',
     mergeSummary: merged.summary,
     nodeCheckSummary: merged.nodeCheckSummary
+  };
+}
+
+export async function fastCommitCorpus(inputPath, options = {}) {
+  const discovery = await discoverCorpusSources(inputPath, {
+    rootPath: options.rootPath
+  });
+  const { rootPath, absoluteInputs } = discovery;
+  const manifest = await loadSourceManifest(rootPath);
+  if (!manifest) {
+    throw new Error('No source manifest found. Run Stage 1 or Stage 2 before fast-committing changes.');
+  }
+
+  await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(manifest));
+
+  const paths = getCorpusPaths(rootPath);
+  if (!(await fileExists(paths.liteGraphPath)) || !(await fileExists(paths.liteStatePath))) {
+    await buildGraphCorpus(inputPath, options);
+    await mergeGraphCorpus(inputPath, options);
+    return writeIndexCorpus(inputPath, options);
+  }
+
+  const changedSourceKeys = unique((Array.isArray(options.changedSourceKeys) ? options.changedSourceKeys : []).filter(Boolean)).sort();
+  if (!changedSourceKeys.length) {
+    return {
+      graph: null,
+      meta: await loadCorpusMeta(rootPath),
+      manifest,
+      rootPath,
+      changes: manifest.lastChangeSummary || null,
+      reused: true,
+      stage: 'fast-committed',
+      syncJob: null
+    };
+  }
+
+  announceStage(
+    options,
+    1,
+    1,
+    'Fast local graph update',
+    'applying changed papers to the lite graph and queueing authoritative sync'
+  );
+
+  const [currentCorpus, liteState] = await Promise.all([
+    loadCorpusLite(rootPath),
+    readJson(paths.liteStatePath, null)
+  ]);
+  const manifestEntriesByKey = new Map((manifest.sources || []).map((entry) => [entry.sourceKey, entry]));
+  const changedSemanticPapers = [];
+
+  for (const sourceKey of changedSourceKeys) {
+    const manifestEntry = manifestEntriesByKey.get(sourceKey);
+    if (!manifestEntry || manifestEntry.activeInGraph === false) continue;
+    const snapshot = await loadSemanticPaperSnapshot(rootPath, sourceKey);
+    if (!snapshot) {
+      throw new Error(`No semantic snapshot was available for ${sourceKey}. Run Stage 1 before fast-committing.`);
+    }
+    if (snapshot.activeInGraph !== false) {
+      changedSemanticPapers.push(snapshot);
+    }
+  }
+
+  const deltaPayload = await buildGraphDeltaPayload({
+    corpusName: manifest.corpusName || options.name || currentCorpus.meta.name || path.basename(rootPath),
+    rootPath,
+    committedGraph: currentCorpus.graph,
+    semanticPapers: changedSemanticPapers,
+    liteState,
+    changedSourceKeys,
+    options
+  });
+  const nextGraph = applyGraphDeltaPayload(currentCorpus.graph, deltaPayload);
+  const activeManifestSources = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false);
+  const nextMeta = {
+    ...refreshMetaFromGraph(currentCorpus.meta, nextGraph, currentCorpus.meta.similarNodeMerge, currentCorpus.meta.nodeLlmCheck),
+    name: currentCorpus.meta.name || manifest.corpusName || options.name || path.basename(rootPath),
+    paperCount: activeManifestSources.length,
+    sourceCount: manifest.sources?.length || 0,
+    sourceMode: manifest.sourceMode || currentCorpus.meta.sourceMode || 'markdown',
+    pdfParser: manifest.pdfParser || currentCorpus.meta.pdfParser || null,
+    semanticExtractionMode: manifest.semanticExtractionMode || currentCorpus.meta.semanticExtractionMode || 'heuristic-only',
+    lastChangeSummary: manifest.lastChangeSummary || currentCorpus.meta.lastChangeSummary || null
+  };
+  const nextManifest = {
+    ...manifest,
+    indexedAt: nextMeta.indexedAt
+  };
+  const targetManifestToken = createManifestCommitToken(nextManifest);
+  const fastCommitted = await saveCorpusFastLocalDelta(rootPath, deltaPayload, nextMeta, nextManifest, {
+    baseManifestToken: options.baseManifestToken || null,
+    targetManifestToken,
+    mode: options.mode || 'delta'
+  });
+
+  return {
+    graph: nextGraph,
+    meta: fastCommitted.meta,
+    manifest: nextManifest,
+    rootPath,
+    changes: nextManifest.lastChangeSummary || null,
+    reused: Boolean(fastCommitted.reused),
+    stage: 'fast-committed',
+    syncJob: fastCommitted.syncJob,
+    deltaPayload
   };
 }
 

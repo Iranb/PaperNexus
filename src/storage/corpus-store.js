@@ -140,12 +140,43 @@ export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, man
   const {
     liteGraphPath,
     liteStatePath,
+    manifestPath,
     metaPath
   } = getCorpusPaths(rootPath);
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const now = new Date().toISOString();
+  const targetManifestToken = options.targetManifestToken || null;
 
   return withFileLock(getCorpusLockPath(rootPath), async () => {
+    const [currentMeta, currentManifest] = await Promise.all([
+      readJson(metaPath, null),
+      readJson(manifestPath, null)
+    ]);
+
+    if (targetManifestToken && currentMeta?.lastFastCommitManifestToken === targetManifestToken) {
+      const syncJob = currentMeta.authoritativeSyncStatus === 'synced'
+        ? {
+            jobId: currentMeta.lastFastCommitJobId || currentMeta.lastAuthoritativeSyncJobId || null
+          }
+        : await enqueueAuthoritativeSyncJob(rootPath, {
+            baseManifestToken: options.baseManifestToken || null,
+            targetManifestToken,
+            changedSourceKeys: deltaPayload.changedSourceKeys || [],
+            deltaPayload,
+            mode: options.mode || 'delta',
+            dependsOnFastCommitJobId: options.dependsOnFastCommitJobId || null
+          });
+
+      return {
+        rootPath,
+        meta: currentMeta,
+        manifest: currentManifest || manifest,
+        deltaPayload,
+        syncJob,
+        reused: true
+      };
+    }
+
     onProgress?.({
       phase: 'lite-delta',
       label: 'applying fast local delta commit'
@@ -162,9 +193,23 @@ export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, man
     });
     await saveSourceManifest(rootPath, manifest);
 
+    const checkpointMeta = {
+      ...meta,
+      authoritativeSyncStatus: 'pending',
+      authoritativeSyncQueuedAt: now,
+      lastFastCommitManifestToken: targetManifestToken,
+      lastFastCommitJobId: currentMeta?.lastFastCommitJobId || null
+    };
+
+    onProgress?.({
+      phase: 'meta',
+      label: 'writing fast-commit checkpoint metadata'
+    });
+    await writeJson(metaPath, checkpointMeta);
+
     const job = await enqueueAuthoritativeSyncJob(rootPath, {
       baseManifestToken: options.baseManifestToken || null,
-      targetManifestToken: options.targetManifestToken || null,
+      targetManifestToken,
       changedSourceKeys: deltaPayload.changedSourceKeys || [],
       deltaPayload,
       mode: options.mode || 'delta',
@@ -172,9 +217,7 @@ export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, man
     });
 
     const nextMeta = {
-      ...meta,
-      authoritativeSyncStatus: 'pending',
-      authoritativeSyncQueuedAt: now,
+      ...checkpointMeta,
       lastFastCommitJobId: job.jobId
     };
 
@@ -189,7 +232,8 @@ export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, man
       meta: nextMeta,
       manifest,
       deltaPayload,
-      syncJob: job
+      syncJob: job,
+      reused: false
     };
   }, options.lockOptions);
 }
