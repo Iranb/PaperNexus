@@ -71,7 +71,8 @@ function normalizeJob(rootPath, payload, now) {
     mode: payload.mode || 'delta',
     status: payload.status || 'queued',
     createdAt: payload.createdAt || now,
-    updatedAt: payload.updatedAt || now
+    updatedAt: payload.updatedAt || now,
+    deltaPayload: payload.deltaPayload || null
   };
   return {
     ...payload,
@@ -98,6 +99,9 @@ export async function enqueueAuthoritativeSyncJob(rootPath, payload) {
 
     if (existing) {
       existing.changedSourceKeys = mergeChangedSourceKeys(existing.changedSourceKeys, payload.changedSourceKeys);
+      if (payload.deltaPayload) {
+        existing.deltaPayload = payload.deltaPayload;
+      }
       existing.updatedAt = now;
       await saveQueue(normalizedRootPath, queue);
       await saveJob(normalizedRootPath, existing);

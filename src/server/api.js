@@ -13,6 +13,7 @@ import {
   loadImportTask,
   loadImportTaskLog
 } from '../storage/import-store.js';
+import { listAuthoritativeSyncJobs } from '../storage/authoritative-sync-store.js';
 import {
   searchGraph,
   buildContext,
@@ -1011,17 +1012,36 @@ export async function brainstormBriefPayload(candidate, body = {}, options = {})
 export async function corpusMetaPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
   const cache = options.cache;
-  const stamp = await readPathStamp(getCorpusPaths(rootPath).metaPath);
+  const { metaPath, authoritativeSyncQueuePath } = getCorpusPaths(rootPath);
+  const stamp = `${await readPathStamp(metaPath)}|${await readPathStamp(authoritativeSyncQueuePath)}`;
+
+  const buildPayload = async () => {
+    const [meta, syncJobs] = await Promise.all([
+      loadCorpusMeta(rootPath),
+      listAuthoritativeSyncJobs(rootPath)
+    ]);
+
+    return {
+      meta,
+      authoritativeSync: {
+        status: meta.authoritativeSyncStatus || (syncJobs.length ? 'pending' : 'synced'),
+        pendingJobCount: syncJobs.length,
+        jobs: syncJobs.map((job) => ({
+          jobId: job.jobId,
+          status: job.status,
+          targetManifestToken: job.targetManifestToken,
+          changedSourceKeys: job.changedSourceKeys || [],
+          updatedAt: job.updatedAt
+        }))
+      }
+    };
+  };
 
   if (!cache?.corpusMetaByRoot) {
-    return {
-      meta: await loadCorpusMeta(rootPath)
-    };
+    return buildPayload();
   }
 
-  return resolveCachedPayload(cache.corpusMetaByRoot, rootPath, stamp, async () => ({
-    meta: await loadCorpusMeta(rootPath)
-  }));
+  return resolveCachedPayload(cache.corpusMetaByRoot, rootPath, stamp, buildPayload);
 }
 
 export async function backupCorpusPayload(candidate, options = {}) {

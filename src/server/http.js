@@ -31,6 +31,7 @@ import {
   updateLlmConfigPayload
 } from './api.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
+import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
 
 const MIME_TYPES = {
@@ -158,6 +159,13 @@ export async function serveCommand(options = {}) {
       rootPaths,
       intervalMs: options.enhancementIntervalMs,
       backfillLimit: options.enhancementBackfillLimit,
+      logger: console
+    });
+  const authoritativeSyncWorker = options.enableAuthoritativeSync === false
+    ? null
+    : startAuthoritativeSyncWorker({
+      rootPaths,
+      intervalMs: options.authoritativeSyncIntervalMs,
       logger: console
     });
   const importWorker = options.enableImports === false
@@ -409,6 +417,7 @@ export async function serveCommand(options = {}) {
     process.off('SIGINT', shutdown);
     process.off('SIGTERM', shutdown);
     enhancementWorker?.stop();
+    authoritativeSyncWorker?.stop();
     importWorker?.stop();
     await new Promise((resolve) => {
       server.close(resolve);

@@ -56,6 +56,7 @@ export function getCorpusPaths(rootPath) {
     llmStage2StatePath: path.join(llmJobsDir, 'stage2.json'),
     authoritativeSyncQueuePath: path.join(authoritativeSyncDir, 'queue.json'),
     authoritativeSyncLockPath: path.join(authoritativeSyncDir, 'queue.lock'),
+    authoritativeSyncWorkerLockPath: path.join(authoritativeSyncDir, 'worker.lock'),
     papersDir: path.join(corpusDir, 'papers'),
     markdownDir: path.join(corpusDir, 'markdown'),
     markerDir: path.join(corpusDir, 'marker')
@@ -165,6 +166,7 @@ export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, man
       baseManifestToken: options.baseManifestToken || null,
       targetManifestToken: options.targetManifestToken || null,
       changedSourceKeys: deltaPayload.changedSourceKeys || [],
+      deltaPayload,
       mode: options.mode || 'delta',
       dependsOnFastCommitJobId: options.dependsOnFastCommitJobId || null
     });

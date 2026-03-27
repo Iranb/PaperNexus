@@ -1,4 +1,4 @@
-import { createKnowledgeGraph } from './graph.js';
+import { createKnowledgeGraph, loadKnowledgeGraph } from './graph.js';
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from './schema.js';
 import { precomputePaperGraphFragments } from '../ingestion/graph-precompute.js';
 import { normalizeText, slugify, stableHash, unique } from '../../lib/utils.js';
@@ -172,6 +172,53 @@ function computeDeletionIds(liteState, changedSourceKeys) {
   };
 }
 
+function buildSourceEntryFromFragment({ corpusId, paper, fragment }) {
+  const nodeIds = new Set([fragment.paperNode?.id || paper.paperId]);
+  const relationshipIds = new Set([
+    createRelationship(corpusId, fragment.paperNode?.id || paper.paperId, EDGE_TYPES.CONTAINS).id
+  ]);
+
+  for (const contribution of fragment.globalContributions || []) {
+    if (contribution.node?.id) {
+      nodeIds.add(contribution.node.id);
+      relationshipIds.add(createRelationship(corpusId, contribution.node.id, EDGE_TYPES.CONTAINS).id);
+    }
+    if (contribution.paperRelationship?.id) {
+      relationshipIds.add(contribution.paperRelationship.id);
+    }
+  }
+
+  for (const contribution of fragment.paperScopedContributions || []) {
+    if (contribution.node?.id) {
+      nodeIds.add(contribution.node.id);
+      relationshipIds.add(createRelationship(corpusId, contribution.node.id, EDGE_TYPES.CONTAINS).id);
+    }
+    if (contribution.paperRelationship?.id) {
+      relationshipIds.add(contribution.paperRelationship.id);
+    }
+    for (const relationship of contribution.extraRelationships || []) {
+      if (relationship?.id) {
+        relationshipIds.add(relationship.id);
+      }
+    }
+  }
+
+  for (const relationship of fragment.localRelationships || []) {
+    if (relationship?.id) {
+      relationshipIds.add(relationship.id);
+    }
+  }
+
+  return {
+    sourceKey: paper.sourceKey,
+    paperId: paper.paperId,
+    paperTitle: paper.paperTitle,
+    fingerprint: paper.sourceFingerprint || '',
+    nodeIds: [...nodeIds].sort(),
+    relationshipIds: [...relationshipIds].sort()
+  };
+}
+
 export async function buildGraphDeltaPayload({
   corpusName,
   rootPath,
@@ -202,6 +249,7 @@ export async function buildGraphDeltaPayload({
   const aggregatedGlobalContributions = aggregateGlobalContributions(fragments);
   const removalState = buildSourceRemovalState(liteState, changedSourceKeys);
   const globalNodeById = new Map();
+  const sourceEntries = [];
 
   const existingCorpusNode = committedGraph?.getNode(corpusId);
   if (!existingCorpusNode) {
@@ -260,6 +308,12 @@ export async function buildGraphDeltaPayload({
     for (const relationship of fragment.localRelationships || []) {
       deltaGraph.addRelationship(relationship);
     }
+
+    sourceEntries.push(buildSourceEntryFromFragment({
+      corpusId,
+      paper,
+      fragment
+    }));
   }
 
   const upsertNodes = [];
@@ -286,6 +340,37 @@ export async function buildGraphDeltaPayload({
     upsertRelationships,
     deleteNodeIds: deletions.deleteNodeIds,
     deleteRelationshipIds: deletions.deleteRelationshipIds,
-    removalState
+    removalState,
+    sourceEntries
   };
+}
+
+export function applyGraphDeltaPayload(graph, deltaPayload = {}) {
+  const nextGraph = loadKnowledgeGraph(graph.toJSON());
+
+  for (const relationshipId of deltaPayload.deleteRelationshipIds || []) {
+    nextGraph.removeRelationship(relationshipId);
+  }
+
+  for (const nodeId of deltaPayload.deleteNodeIds || []) {
+    nextGraph.removeNode(nodeId);
+  }
+
+  for (const node of deltaPayload.upsertNodes || []) {
+    if (nextGraph.getNode(node.id)) {
+      nextGraph.updateNode(node);
+    } else {
+      nextGraph.addNode(node);
+    }
+  }
+
+  for (const relationship of deltaPayload.upsertRelationships || []) {
+    if (nextGraph.getRelationship(relationship.id)) {
+      nextGraph.updateRelationship(relationship);
+    } else {
+      nextGraph.addRelationship(relationship);
+    }
+  }
+
+  return nextGraph;
 }
