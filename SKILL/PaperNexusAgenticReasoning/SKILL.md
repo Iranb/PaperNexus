@@ -1,11 +1,51 @@
 ---
 name: papernexus-agentic-reasoning
-description: Use this skill when an agent needs to perform stepwise reasoning and structured problem solving for automated research tasks on top of the existing PaperNexus graph. It adapts Agentic Reasoning's mind-map style workflow to PaperNexus commands, graph structure, and enhancement overlays.
+description: Use this skill when an agent needs to perform stepwise reasoning for automated research tasks on top of an existing PaperNexus graph while keeping live-graph reads and imports on authenticated HTTP API endpoints.
 ---
 
 # PaperNexus Agentic Reasoning
 
 Use this skill when the goal is not just to retrieve graph facts, but to reason through a research problem step by step using the PaperNexus graph as structured memory.
+
+## Live Graph Access Policy
+
+For a running user graph, use authenticated HTTP API requests only.
+
+Do not call local CLI helpers such as `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, `papernexus brainstorm`, or local staged build commands against the live graph.
+
+Allowed live-graph entrypoints:
+
+- `GET /api/corpora`
+- `GET /api/corpus?name=<corpus>`
+- `GET /api/corpus-meta?name=<corpus>`
+- `GET /api/enhancements?name=<corpus>`
+- `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>`
+- `GET /api/imports?name=<corpus>`
+- `GET /api/imports/:taskId`
+- `GET /api/imports/:taskId/log`
+- `POST /api/imports?name=<corpus>`
+- `POST /api/query`
+- `POST /api/context`
+- `POST /api/impact`
+- `POST /api/ideas`
+- `POST /api/brainstorm`
+- `POST /api/path-trace`
+- `POST /api/evidence-chain`
+- `POST /api/reflection-chain`
+- `POST /api/research-brief`
+- `POST /api/brainstorm-brief`
+- `POST /api/theory-brief`
+- `POST /api/storyline-brief`
+
+Every API request must include:
+
+- `Authorization: Bearer <token>`
+
+Important query policy:
+
+- prefer typed query APIs over pulling the full graph whenever they can answer the task
+- use `/api/corpus` only when you need raw graph inspection that the typed endpoints do not provide
+- if the available API response is too limited for the requested reasoning task, report the missing server capability instead of falling back to local CLI
 
 ## What This Skill Is For
 
@@ -68,14 +108,21 @@ Prefer this order of operations:
 
 Do not start with broad web search if the graph already has enough structure to narrow the problem.
 
-In PaperNexus, the default reasoning tools are:
+In PaperNexus, the default live-graph reasoning inputs are:
 
-- `papernexus query`
-- `papernexus context`
-- `papernexus impact`
-- `papernexus ideas`
-- `papernexus brainstorm`
-- paper enhancement overlays from the API or local files
+- `POST /api/query`
+- `POST /api/context`
+- `POST /api/impact`
+- `POST /api/ideas`
+- `POST /api/brainstorm`
+- `POST /api/path-trace`
+- `POST /api/evidence-chain`
+- `POST /api/reflection-chain`
+- `POST /api/research-brief`
+- `POST /api/brainstorm-brief`
+- `POST /api/theory-brief`
+- `POST /api/storyline-brief`
+- `GET /api/paper-enhancement` when paper-local overlay detail is still needed
 
 For ideation, prefer the brainstorm-quality node view over the raw full graph. The full graph can still contain supporting nodes that are useful for provenance but too noisy to use as primary anchors.
 
@@ -84,11 +131,11 @@ For ideation, prefer the brainstorm-quality node view over the raw full graph. T
 For any non-trivial research task, use this loop:
 
 1. Define the current research objective in one sentence.
-2. Resolve the best anchor nodes with `query`.
-3. Inspect local structure with `context`.
-4. Traverse dependencies or consequences with `impact`.
-5. If designing new ideas, run `ideas` or `brainstorm`.
-6. If validating a claim, inspect theory and reflection overlays.
+2. Start with the narrowest typed API that matches the task.
+3. Resolve anchors with `query`, `context`, `impact`, or `path-trace`.
+4. If validating a claim, inspect `evidence-chain`, `theory-brief`, and `reflection-chain`.
+5. If designing new ideas, inspect `ideas`, `brainstorm`, and `brainstorm-brief`.
+6. Only fetch `/api/corpus` when the typed APIs still leave a structural gap.
 7. Write a short structured state update before moving to the next step.
 
 Each step should end with one of:
@@ -118,10 +165,9 @@ Do not let the reasoning jump ahead without filling these fields.
 ### A. Understand a topic
 
 ```bash
-papernexus query "<topic>" --corpus <name>
-papernexus context "<best-node>" --corpus <name>
-papernexus impact "<best-node>" --corpus <name> --direction upstream
-papernexus impact "<best-node>" --corpus <name> --direction downstream
+curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/query" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":8}}'
+curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/context" --data '{"name":"<corpus>","query":"<topic>","options":{"nodeView":"brainstorm"}}'
+curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/evidence-chain" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":5}}'
 ```
 
 Use this to answer:
@@ -134,10 +180,9 @@ Use this to answer:
 ### B. Generate a new research direction
 
 ```bash
-papernexus query "<topic>" --corpus <name>
-papernexus ideas "<topic>" --corpus <name>
-papernexus brainstorm "<topic>" --corpus <name> --mode diverge
-papernexus brainstorm "<topic>" --corpus <name> --mode converge
+curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/ideas" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":6}}'
+curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/brainstorm" --data '{"name":"<corpus>","query":"<topic>","options":{"mode":"converge","limit":6}}'
+curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/brainstorm-brief" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":6}}'
 ```
 
 Use this to produce:
@@ -148,17 +193,18 @@ Use this to produce:
 
 Important:
 
-- `ideas` and `brainstorm` already prioritize the brainstorm-quality node view
+- use nodes marked `brainstormEligible` as the primary ideation anchors
 - when manually inspecting nodes, trust `brainstormEligible`, `brainstormScore`, and `brainstormTier` over raw visual prominence on the canvas
 
 ### C. Evaluate whether an idea is well supported
 
 Use:
 
-- `query` for the main claim or keyword
-- `context` around the strongest `Claim`, `Method`, or `Finding`
-- theory overlay for assumptions, mechanisms, proof ideas, and failure modes
-- reflection overlay for innovations, experiments, outcomes, and takeaways
+- `/api/evidence-chain` for `Problem -> Method -> Claim -> Evidence -> Limitation`
+- `/api/reflection-chain` for `Innovation -> Experiment -> Outcome -> Reflection`
+- `/api/theory-brief` for assumptions, mechanisms, proof ideas, and failure modes
+- `/api/storyline-brief` for narrative beats and argument gaps
+- `GET /api/paper-enhancement` when you need the raw overlay card inventory
 
 ## How To Think With The Graph
 
@@ -168,6 +214,8 @@ Use this chain:
 
 `Problem -> Method -> Claim -> Evidence -> Limitation`
 
+Prefer `POST /api/evidence-chain` before reconstructing this chain yourself.
+
 Prefer `Problem` and `Method` nodes whose names are multi-word research objects rather than single generic nouns.
 
 ### For theory support
@@ -176,11 +224,15 @@ Use this chain:
 
 `Claim -> Assumption / Mechanism / Proof idea -> Failure mode`
 
+Prefer `POST /api/theory-brief`.
+
 ### For experiment reflection
 
 Use this chain:
 
 `Innovation -> Experiment -> Outcome -> Reflection`
+
+Prefer `POST /api/reflection-chain`.
 
 ### For future work
 
@@ -188,9 +240,13 @@ Use this chain:
 
 `Problem -> Limitation -> FutureDirection -> transferable Method`
 
+Start with `POST /api/impact`, then refine with `POST /api/path-trace` if you need a concrete typed path.
+
 ## When To Use Enhancement Overlays
 
 Use overlays when the raw graph alone is too flat.
+
+When a typed second-layer API already packages the needed overlay content, prefer that over reading the raw overlay first.
 
 ### Theory overlay
 
@@ -240,64 +296,29 @@ Next best action:
 
 ## Dynamic Update Rules
 
-If source papers changed, refresh the graph before trusting the reasoning state:
+If source papers changed, refresh the live graph through the import API before trusting the reasoning state:
 
-```bash
-papernexus analyze
-papernexus enhance --once
-```
-
-If the refresh involves PDFs and you need to be explicit about parser choice, prefer the remote MinerU path first:
-
-```bash
-papernexus analyze --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000
-papernexus enhance --once
-```
+1. `POST /api/imports?name=<corpus>`
+2. `GET /api/imports/:taskId`
+3. `GET /api/imports/:taskId/log`
+4. `GET /api/corpus?name=<corpus>`
+5. `GET /api/enhancements?name=<corpus>`
 
 Agent rule:
 
-- prefer remote MinerU for PDF ingestion and rebuilds
-- do not recommend local Docling or Marker as the first option unless the remote backend is unavailable or the user asks for a local parser
-- do not add `--force` by default; reserve it for explicit full-rebuild requests or known-corrupt staged/cache recovery cases
-- if the cache-first graph build still fails and the user can operate locally, hand the exact command to the user instead of forcing a rebuild
-
-If you want a staged, resumable refresh instead of a monolithic rebuild, use:
-
-```bash
-papernexus materialize --continue
-papernexus llm-optimize --continue
-papernexus build-graph --continue
-papernexus merge-graph --continue
-papernexus write-index --continue
-papernexus enhance --once
-```
-
-Treat that staged path as single-graph continuation. Once an index root already has a committed graph or snapshots, do not point these stage commands at a narrower paper subdirectory on the same root.
-
-If source files did not change and the only failure was LLM extraction or relation requests, prefer:
-
-```bash
-papernexus analyze
-```
-
-This now retries only previously failed LLM-assisted papers and reuses snapshots for papers that already succeeded.
+- prefer the existing remote `serve` + import workflow for PDF ingestion
+- do not replace live-graph import or query requests with local CLI fallback
+- if import or enhancement is blocked by missing API capability, lock contention, or missing data, report the blocker directly
+- do not keep retrying the same live-graph path without new evidence
 
 If the new material enters through a UI or API upload, prefer the queued import-task path instead of manually moving files into the main paper source directory. Import tasks keep their own logs under `.papernexus/imports/` and merge into the main single graph after processing.
 If a queued import or staged pipeline appears stalled, pause and report the exact stage, latest log evidence, and likely blocker. Do not keep retrying the same path without new diagnostic evidence.
 
-For ongoing usage:
+For ongoing live usage:
 
-```bash
-papernexus service install
-papernexus service status
-papernexus logs watch
-```
-
-When the background services are healthy:
-
-- `watch` keeps the graph fresh
-- `serve` keeps dashboard/API and enhancement workers alive
-- remote dashboard/API access now requires the configured PaperNexus token, so agent workflows that call `/api/*` must include `Authorization: Bearer <token>`
+- assume the remote `serve` process is already the system entrypoint
+- do not start `watch` or `service install` as part of a reasoning workflow
+- remote dashboard/API access requires the configured PaperNexus token, so agent workflows that call `/api/*` must include `Authorization: Bearer <token>`
 
 Important Stage 4 boundary:
 

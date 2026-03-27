@@ -1,6 +1,6 @@
 ---
 name: papernexus
-description: Use this skill when working inside the PaperNexus repository to understand its CLI, corpus layout, storage backends, enhancement worker, and service workflow. Helpful for agents making code changes, running the CLI, debugging config/path issues, or operating PaperNexus as a local research graph system.
+description: Use this skill when working inside the PaperNexus repository to understand its API-first graph workflow, corpus layout, storage backends, enhancement worker, and service model while keeping live-graph operations on authenticated HTTP endpoints.
 ---
 
 # PaperNexus
@@ -20,6 +20,55 @@ Key capabilities:
 - keep a lite JSON graph for fast read paths
 - run background theory/storyline enhancement workers
 - expose CLI, local web UI, and MCP server workflows
+
+## Live Graph Access Policy
+
+When touching a running user graph, use the authenticated HTTP API only.
+
+This applies to:
+
+- uploading new PDF or Markdown sources into the graph
+- checking import status
+- reading corpus metadata or graph payloads
+- reading enhancement overlays for a paper or corpus
+- performing graph-backed query or reasoning requests
+
+Do not use local CLI commands such as `papernexus analyze`, `papernexus materialize`, `papernexus stage1-4`, `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, or `papernexus brainstorm` against a live user graph.
+
+Allowed live-graph entrypoints:
+
+- `GET /api/health`
+- `GET /api/corpora`
+- `GET /api/corpus?name=<corpus>`
+- `GET /api/corpus-meta?name=<corpus>`
+- `GET /api/enhancements?name=<corpus>`
+- `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>`
+- `GET /api/imports?name=<corpus>`
+- `POST /api/imports?name=<corpus>`
+- `GET /api/imports/:taskId`
+- `GET /api/imports/:taskId/log`
+- `POST /api/query`
+- `POST /api/context`
+- `POST /api/impact`
+- `POST /api/ideas`
+- `POST /api/brainstorm`
+- `POST /api/path-trace`
+- `POST /api/evidence-chain`
+- `POST /api/reflection-chain`
+- `POST /api/research-brief`
+- `POST /api/brainstorm-brief`
+- `POST /api/theory-brief`
+- `POST /api/storyline-brief`
+
+Every `/api/*` request must include:
+
+- `Authorization: Bearer <token>`
+
+Important query policy:
+
+- prefer the typed HTTP query APIs over raw graph downloads whenever they fit the task
+- use `GET /api/corpus` only when you truly need raw graph inspection beyond what the typed APIs expose
+- if the available API payload is insufficient for the requested reasoning task, report that the server lacks the needed query endpoint; do not fall back to local CLI against the live graph
 
 ## Important Paths
 
@@ -134,6 +183,11 @@ Guidelines:
 - `papernexus optimize` is still available as a convenience path for stages 2-5 together.
 - Ad hoc PDF/Markdown uploads should normally enter through queued import tasks under `.papernexus/imports/`, not by moving files directly into the main paper source tree during automation.
 - Import tasks keep per-task `events.log` files and stay in a separate directory even after their parsed content is merged into the main graph.
+- Agent live-graph policy:
+  - ingest new papers through `POST /api/imports`
+  - read graph state through the typed query APIs first
+  - use `/api/corpus`, `/api/corpus-meta`, `/api/enhancements`, and `/api/paper-enhancement` as supporting raw/overlay reads
+  - if an operation exists only in CLI and not in the HTTP API, report the limitation instead of using local CLI against the live graph
 - Import-task execution should rebuild against the current committed corpus manifest and merge the task's `sourcesDir` on top of that base graph. Do not trust stored `task.inputPaths` as the authoritative rebuild root if they look stale or cross-machine.
 - Single-graph safety:
   - Once a corpus already exists at an index root, Stage 1-4 commands must keep using that same configured input scope.
@@ -170,7 +224,11 @@ Guidelines:
 - Set `PAPERNEXUS_GRAPH_BACKEND=json` to force legacy JSON graph storage.
 - Environment variables: `PAPERNEXUS_PDF_PARSER`, `PAPERNEXUS_MINERU_CMD`, `PAPERNEXUS_MINERU_HTTP_URL`, `PAPERNEXUS_DOCLING_CMD`, `PAPERNEXUS_DOCLING_OCR_ENGINE`, `PAPERNEXUS_DOCLING_PDF_BACKEND`, `PAPERNEXUS_MARKER_CMD`, `PAPERNEXUS_GRAPH_BACKEND`, `PAPERNEXUS_HOME`.
 
-## Preferred Command Style
+## Preferred Command Style For Repo Development
+
+Use the CLI only for repo-local development, isolated fixture testing, or implementation work inside this repository.
+
+Do not use these CLI commands as the control plane for a live remote graph.
 
 Prefer the globally linked CLI if available:
 
@@ -210,9 +268,6 @@ papernexus analyze --force --pdf-parser docling --docling-pdf-backend pypdfium2 
 papernexus analyze --semantic-extraction auto --provider openai --model gpt-4o-mini
 papernexus probe  # Test LLM connectivity
 papernexus watch
-papernexus status --corpus <name>
-papernexus brainstorm "<topic>" --corpus <name>
-papernexus brainstorm "<topic>" --corpus <name> --mode diverge
 papernexus enhance --once
 papernexus serve
 papernexus service install
@@ -247,7 +302,9 @@ Read these first when you need orientation:
 - Treat local Docling and Marker as fallback or special-case tools, not the default recommendation, unless the user explicitly asks for local parsing.
 - If a task involves ad hoc uploaded PDFs or Markdown from a UI/API flow, prefer the queued import-task path over manually copying those files into the main paper source directory.
 - If an import, stage, or worker run appears stuck, report the exact stage, latest task log lines, elapsed time, and the most likely blocker or stale-path cause. Do not keep retrying the same command in a loop without new evidence.
+- If a task involves the live graph, assume the authenticated HTTP API is the only allowed interface unless the user explicitly asks for isolated local repo testing.
 - If a task involves the Web API, do not assume anonymous access. Use the configured PaperNexus API token and include it as `Authorization: Bearer <token>` unless the user explicitly says another auth path is in place.
+- Do not fall back from a missing API feature to local CLI graph operations. Report the missing endpoint or unsupported workflow clearly.
 - When an ingestion run failed only because LLM requests were unavailable, prefer rerunning `papernexus llm-optimize`, `papernexus optimize`, or `papernexus analyze` before reaching for `--force`.
 - Prefer `papernexus materialize` first when debugging PDF parsing or markdown cache issues, `papernexus llm-optimize` when debugging LLM extraction, `papernexus build-graph` when debugging graph projection, `papernexus merge-graph` when debugging duplicate or low-quality evaluation nodes, and `papernexus write-index` when debugging final persistence.
 - If Stage 3 already succeeded and you specifically need to inspect or fix duplicate `Dataset` / `Benchmark` nodes before commit, run `papernexus merge-graph --continue`.

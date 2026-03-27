@@ -1,11 +1,37 @@
 ---
 name: papernexus-reflection
-description: Use this skill when a Coder or Analyzer agent needs to inspect, summarize, or update PaperNexus experiment-reflection overlays. It is for tracing a paper's Innovation, Experiment, Outcome, and Reflection chain, checking what was validated or failed, and refreshing the overlay through the normal incremental PaperNexus workflow.
+description: Use this skill when a Coder or Analyzer agent needs to inspect, summarize, or update PaperNexus experiment-reflection overlays through authenticated API-backed workflows instead of local live-graph CLI operations.
 ---
 
 # PaperNexus Reflection
 
 Use this skill when the task is about experiment reflection in the PaperNexus repository.
+
+## Live Graph Access Policy
+
+For a running user graph, use authenticated HTTP API requests only.
+
+Do not use local CLI commands such as `papernexus analyze`, `papernexus enhance --once`, or staged pipeline commands against the live graph when the goal is to ingest a paper, inspect a reflection overlay, or answer a graph-backed question.
+
+Allowed live-graph reflection entrypoints:
+
+- `POST /api/imports?name=<corpus>`
+- `GET /api/imports?name=<corpus>`
+- `GET /api/imports/:taskId`
+- `GET /api/imports/:taskId/log`
+- `GET /api/enhancements?name=<corpus>`
+- `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>`
+- `GET /api/corpus?name=<corpus>`
+- `POST /api/reflection-chain`
+- `POST /api/evidence-chain`
+- `POST /api/research-brief`
+- `POST /api/storyline-brief`
+
+Every API request must include:
+
+- `Authorization: Bearer <token>`
+
+If the needed reflection workflow is not exposed through these endpoints, report the missing API capability instead of falling back to local CLI on the live graph.
 
 ## What This Skill Covers
 
@@ -30,7 +56,7 @@ Use this skill when you need to:
 
 ## How The Data Updates
 
-Reflection data is refreshed through the existing incremental enhancement workflow.
+Reflection data is refreshed through the existing enhancement workflow, but live-graph agents should drive and inspect it through the API.
 
 One-off uploaded PDFs or Markdown files should normally enter through queued import tasks under `.papernexus/imports/` first. Let the import worker merge them into the main graph rather than manually moving them into the main paper directory during automation.
 If an import or enhancement pass stalls, report the current stage, recent task log lines, and the likely blocker first. Do not blindly rerun the same operation over and over without new evidence.
@@ -38,14 +64,14 @@ If an import or enhancement pass stalls, report the current stage, recent task l
 When the refresh path needs PDF parsing, prefer the repo default remote MinerU path first. Only fall back to a local parser if the remote PDF backend is unavailable or the task explicitly calls for local parsing.
 Do not add `--force` by default here. Reflection refresh should normally follow incremental graph refresh behavior unless the user explicitly wants a full rebuild.
 
-Typical update path:
+Typical live-graph update path:
 
-```bash
-papernexus analyze
-papernexus enhance --once
-```
+1. Upload the PDF or Markdown through `POST /api/imports?name=<corpus>`.
+2. Poll `GET /api/imports/:taskId` and `GET /api/imports/:taskId/log` until the task completes.
+3. Prefer reading the refreshed reflection view through `POST /api/reflection-chain`.
+4. Use `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>` when you need raw overlay cards or anchors for a specific paper.
 
-Equivalent staged path:
+Equivalent repo-local staged path for isolated development only:
 
 ```bash
 papernexus materialize --continue
@@ -58,7 +84,7 @@ papernexus enhance --once
 
 Keep the configured corpus in single-graph mode. Once an index root already has snapshots or a committed graph, do not point stage commands at a narrower paper subdirectory on that same root.
 
-Use `papernexus analyze --force` only when the user explicitly asks for a full rebuild or when cached stage outputs are known bad and normal resume cannot recover.
+Use `papernexus analyze --force` only in isolated repo-local testing when the user explicitly asks for a full rebuild or when cached stage outputs are known bad and normal resume cannot recover.
 
 If PDFs are involved and you need to spell the parser out explicitly, prefer:
 
@@ -76,19 +102,11 @@ If the staged graph already looks correct and only needs to be committed, use `p
 
 If raw source files changed after Stage 3 and you want those new changes reflected in the graph, rerun Stage 1-3 before running Stage 4. Stage 4 only commits the staged graph that already exists.
 
-For ongoing updates:
+For ongoing live usage:
 
-```bash
-papernexus service install
-papernexus service status
-papernexus logs watch
-```
-
-In the default background service mode:
-
-- `watch` monitors source file changes
-- `serve` runs the dashboard/API and enhancement worker
-- API access through `serve` now requires the configured PaperNexus token; do not assume anonymous access when inspecting reflection overlays remotely
+- assume the remote `serve` process already exposes the API
+- do not start `watch` or `service install` as part of normal reflection inspection
+- API access through `serve` requires the configured PaperNexus token; do not assume anonymous access when inspecting reflection overlays remotely
 
 ## What To Read First
 
@@ -114,11 +132,12 @@ At the paper level, look under the enhancement overlay and inspect:
 
 ## Recommended Reflection Workflow
 
-1. Confirm the paper source is current.
-2. Re-run `analyze` if the Markdown changed.
-3. Re-run `enhance --once` or let the background worker refresh it.
-4. Read the reflection overlay.
-5. Summarize in this order:
+1. Confirm the import task or corpus data is current through the API.
+2. If a new source is needed, submit it through `POST /api/imports`.
+3. Wait until the import task completes.
+4. Read `POST /api/reflection-chain` for typed innovation-experiment-outcome-reflection chains.
+5. Read `POST /api/evidence-chain` or `POST /api/research-brief` if you also need supporting paper claims and limitations.
+6. Summarize in this order:
 
 - innovation
 - experiment design
@@ -192,17 +211,14 @@ So use mutation here for corrective curation, not as the only long-term memory l
 
 If the overlay looks stale, suspect:
 
-- the paper Markdown changed but `analyze` was not rerun
+- the import task has not completed yet
 - enhancement jobs are still pending
 - the background `serve` worker is not running
-- the corpus selected in `--corpus` is not the one you expect
+- the API token, corpus name, or paper id is wrong
 
-Useful commands:
+Useful API checks:
 
-```bash
-papernexus status --corpus <name>
-papernexus analyze --corpus <name>
-papernexus enhance --once --corpus <name>
-papernexus service status
-papernexus logs watch
-```
+- `GET /api/imports?name=<corpus>`
+- `GET /api/imports/:taskId/log`
+- `GET /api/enhancements?name=<corpus>`
+- `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>`

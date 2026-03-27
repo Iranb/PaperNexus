@@ -5,17 +5,29 @@ import { fileURLToPath } from 'node:url';
 import { resolvePathWithHome } from '../lib/config.js';
 import {
   backupCorpusPayload,
+  brainstormBriefPayload,
+  brainstormGraphPayload,
+  contextGraphPayload,
   corpusMetaPayload,
   corpusPayload,
   createImportTaskPayload,
+  evidenceChainPayload,
   createApiCache,
   enhancementSummaryPayload,
+  ideasGraphPayload,
+  impactGraphPayload,
   importTaskLogPayload,
   importTaskPayload,
   listImportTasksPayload,
   listCorporaPayload,
   llmConfigPayload,
   paperEnhancementPayload,
+  pathTraceGraphPayload,
+  queryGraphPayload,
+  reflectionChainPayload,
+  researchBriefPayload,
+  storylineBriefPayload,
+  theoryBriefPayload,
   updateLlmConfigPayload
 } from './api.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
@@ -211,6 +223,90 @@ export async function serveCommand(options = {}) {
         const payload = await createImportTaskPayload(name, body, apiOptions);
         importWorker?.pollNow();
         sendJson(response, 202, payload);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/query') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await queryGraphPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/context') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await contextGraphPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/impact') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await impactGraphPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/ideas') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await ideasGraphPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/brainstorm') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await brainstormGraphPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/path-trace') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await pathTraceGraphPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/evidence-chain') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await evidenceChainPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/reflection-chain') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await reflectionChainPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/theory-brief') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await theoryBriefPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/storyline-brief') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await storylineBriefPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/research-brief') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await researchBriefPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/brainstorm-brief') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await brainstormBriefPayload(name, body, apiOptions));
         return;
       }
 

@@ -119,6 +119,18 @@ Routes:
 - `POST /api/imports`
 - `GET /api/imports/:taskId`
 - `GET /api/imports/:taskId/log`
+- `POST /api/query`
+- `POST /api/context`
+- `POST /api/impact`
+- `POST /api/ideas`
+- `POST /api/brainstorm`
+- `POST /api/path-trace`
+- `POST /api/evidence-chain`
+- `POST /api/reflection-chain`
+- `POST /api/research-brief`
+- `POST /api/brainstorm-brief`
+- `POST /api/theory-brief`
+- `POST /api/storyline-brief`
 
 `POST /api/imports` currently accepts JSON, not multipart form data.
 All of these routes require the PaperNexus API token as `Authorization: Bearer <token>` or `x-papernexus-token`.
