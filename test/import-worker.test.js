@@ -156,3 +156,140 @@ test('import worker resumes from the persisted task stage instead of restarting 
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('import worker clears a stale worker lock and continues processing the queue', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-stale-lock-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-stale-lock-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-stale-lock-test',
+      force: true
+    });
+
+    const task = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'stale-lock-paper.md',
+          contentBase64: Buffer.from('# Stale Lock Paper\n\n## Abstract\n\nThis upload should recover after a stale worker lock.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const workerLockPath = importStore.getImportPaths(indexRoot).workerLockPath;
+    await fs.mkdir(workerLockPath, { recursive: true });
+    await fs.writeFile(path.join(workerLockPath, 'owner.json'), JSON.stringify({
+      pid: 12345,
+      acquiredAt: new Date(Date.now() - 60_000).toISOString()
+    }, null, 2));
+    const staleTime = new Date(Date.now() - 60_000);
+    await fs.utimes(workerLockPath, staleTime, staleTime);
+
+    const result = await importWorker.runImportQueueUntilIdle(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      maxPasses: 4,
+      lockTimeoutMs: 20_000
+    });
+
+    assert.equal(result.completedTaskIds.includes(task.id), true);
+
+    const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
+    assert.equal(loadedTask.status, 'completed');
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker clears the worker lock after timeout and retries once', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-timeout-lock-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-timeout-lock-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-timeout-lock-test',
+      force: true
+    });
+
+    const task = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'timeout-lock-paper.md',
+          contentBase64: Buffer.from('# Timeout Lock Paper\n\n## Abstract\n\nThis upload should recover after a lock timeout.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const workerLockPath = importStore.getImportPaths(indexRoot).workerLockPath;
+    await fs.mkdir(workerLockPath, { recursive: true });
+    await fs.writeFile(path.join(workerLockPath, 'owner.json'), JSON.stringify({
+      pid: 12345,
+      acquiredAt: new Date().toISOString()
+    }, null, 2));
+
+    const result = await importWorker.runImportQueueUntilIdle(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      maxPasses: 4,
+      lockTimeoutMs: 250
+    });
+
+    assert.equal(result.completedTaskIds.includes(task.id), true);
+
+    const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
+    assert.equal(loadedTask.status, 'completed');
+    await assert.rejects(fs.access(workerLockPath));
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

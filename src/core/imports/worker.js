@@ -12,8 +12,10 @@ import {
   llmOptimizeCorpus,
   materializeCorpus,
 } from '../ingestion/pipeline.js';
-import { withFileLock } from '../../lib/fs.js';
+import { removePath, withFileLock } from '../../lib/fs.js';
 import { loadRegistry } from '../../storage/registry.js';
+
+const DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS = 20_000;
 
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
@@ -100,8 +102,9 @@ async function processImportTask(rootPath, task, options = {}) {
   return committed;
 }
 
-export async function runImportQueueOnce(rootPath, options = {}) {
+export async function runImportQueueOnce(rootPath, options = {}, retryState = { clearedTimedOutLock: false }) {
   const { workerLockPath } = getImportPaths(rootPath);
+  const lockTimeoutMs = Math.max(250, Number(options.lockTimeoutMs || DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS));
 
   try {
     return await withFileLock(workerLockPath, async () => {
@@ -131,10 +134,17 @@ export async function runImportQueueOnce(rootPath, options = {}) {
         };
       }
     }, {
-      timeoutMs: Number(options.lockTimeoutMs || 350)
+      timeoutMs: lockTimeoutMs,
+      staleMs: lockTimeoutMs
     });
   } catch (error) {
     if (isLockTimeout(error)) {
+      if (!retryState.clearedTimedOutLock) {
+        await removePath(workerLockPath);
+        return runImportQueueOnce(rootPath, options, {
+          clearedTimedOutLock: true
+        });
+      }
       return {
         processed: false,
         reason: 'busy'
@@ -209,7 +219,12 @@ export function startImportWorker(options = {}) {
     try {
       const results = await runImportsForAllCorporaOnce(options);
       for (const result of results) {
-        if (!result.processed) continue;
+        if (!result.processed) {
+          if (result.reason === 'busy') {
+            logger.warn?.(`[imports] ${result.corpusName || result.rootPath}: waiting for import worker lock`);
+          }
+          continue;
+        }
         if (result.failed) {
           logger.error?.(`[imports] ${result.corpusName || result.rootPath}: task ${result.taskId} failed (${result.error})`);
         } else {
