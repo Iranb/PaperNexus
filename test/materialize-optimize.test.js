@@ -449,3 +449,289 @@ We study manifest-level cache reuse for paper A.
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('llmOptimizeCorpus only retries semantic batches for papers that remain dirty after a partial failed run', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let semanticFetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Resume Paper A
+
+Alice Example
+
+## Abstract
+
+We study resumable batch checkpoints for paper A.
+`, 'utf8');
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-b.md'), `# Resume Paper B
+
+Bob Example
+
+## Abstract
+
+We study resumable batch checkpoints for paper B.
+`, 'utf8');
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-c.md'), `# Resume Paper C
+
+Cara Example
+
+## Abstract
+
+We study resumable batch checkpoints for paper C.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'llm-stage2-checkpoint-test',
+      force: true
+    });
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = String(request.messages?.[0]?.content || '');
+      const marker = 'Papers:\n';
+      const markerIndex = prompt.lastIndexOf(marker);
+      const papers = markerIndex === -1 ? [] : JSON.parse(prompt.slice(markerIndex + marker.length).trim());
+
+      semanticFetchCount += 1;
+      if (semanticFetchCount >= 2) {
+        throw new Error('simulated batch failure');
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [
+                        {
+                          name: `checkpoint resume for ${paper.title.toLowerCase()}`,
+                          type: 'Problem',
+                          evidenceText: `We study resumable batch checkpoints for ${paper.title}.`,
+                          sectionHeading: 'Abstract',
+                          sectionRole: 'abstract',
+                          confidence: 0.9
+                        }
+                      ]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const firstRun = await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-stage2-checkpoint-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 1
+    });
+
+    assert.equal(firstRun.stage, 'llm-optimized');
+    const manifestAfterFirstRun = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const firstSnapshots = await Promise.all(
+      manifestAfterFirstRun.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    const firstParticipatedCount = firstSnapshots.filter((snapshot) => snapshot.llm?.semanticExtractionParticipated).length;
+    assert.equal(firstParticipatedCount, 1);
+    const fetchCountAfterFirstRun = semanticFetchCount;
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = String(request.messages?.[0]?.content || '');
+      const marker = 'Papers:\n';
+      const markerIndex = prompt.lastIndexOf(marker);
+      const papers = markerIndex === -1 ? [] : JSON.parse(prompt.slice(markerIndex + marker.length).trim());
+
+      semanticFetchCount += 1;
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [
+                        {
+                          name: `checkpoint resume for ${paper.title.toLowerCase()}`,
+                          type: 'Problem',
+                          evidenceText: `We study resumable batch checkpoints for ${paper.title}.`,
+                          sectionHeading: 'Abstract',
+                          sectionRole: 'abstract',
+                          confidence: 0.9
+                        }
+                      ]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const secondRun = await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-stage2-checkpoint-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 1
+    });
+
+    assert.equal(secondRun.stage, 'llm-optimized');
+    assert.ok(semanticFetchCount > fetchCountAfterFirstRun);
+    assert.ok((semanticFetchCount - fetchCountAfterFirstRun) < 3);
+
+    const manifestAfterSecondRun = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const secondSnapshots = await Promise.all(
+      manifestAfterSecondRun.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    const secondParticipatedCount = secondSnapshots.filter((snapshot) => snapshot.llm?.semanticExtractionParticipated).length;
+    assert.equal(secondParticipatedCount, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus can reuse a completed Stage 2 job from manifest and snapshots even when source files are temporarily unavailable', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let semanticFetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Offline Stage 2 Paper
+
+Alice Example
+
+## Abstract
+
+We study reusing stage 2 metadata without rescanning source files.
+`, 'utf8');
+
+    const [ingestion] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'llm-offline-stage2-test',
+      force: true
+    });
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = String(request.messages?.[0]?.content || '');
+      const marker = 'Papers:\n';
+      const markerIndex = prompt.lastIndexOf(marker);
+      const papers = markerIndex === -1 ? [] : JSON.parse(prompt.slice(markerIndex + marker.length).trim());
+
+      semanticFetchCount += 1;
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [
+                        {
+                          name: `offline stage2 reuse for ${paper.title.toLowerCase()}`,
+                          type: 'Problem',
+                          evidenceText: `We study reusing stage 2 metadata without rescanning source files for ${paper.title}.`,
+                          sectionHeading: 'Abstract',
+                          sectionRole: 'abstract',
+                          confidence: 0.93
+                        }
+                      ]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-offline-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 1
+    });
+    assert.equal(semanticFetchCount, 1);
+
+    await fs.rm(path.join(tempCorpusRoot, 'paper-a.md'), { force: true });
+
+    const rerun = await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-offline-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 1
+    });
+
+    assert.equal(rerun.stage, 'llm-optimized');
+    assert.equal(rerun.reused, true);
+    assert.equal(semanticFetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

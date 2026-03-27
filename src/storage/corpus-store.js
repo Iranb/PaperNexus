@@ -31,9 +31,11 @@ export function getCorpusLockPath(rootPath) {
 export function getCorpusPaths(rootPath) {
   const corpusDir = getCorpusDir(rootPath);
   const stagedDir = path.join(corpusDir, 'staged');
+  const llmJobsDir = path.join(corpusDir, 'llm-jobs');
   return {
     corpusDir,
     stagedDir,
+    llmJobsDir,
     graphPath: path.join(corpusDir, 'graph.json'),
     kuzuGraphPath: path.join(corpusDir, 'graph.kuzu'),
     liteGraphPath: path.join(corpusDir, 'graph.lite.json'),
@@ -44,6 +46,7 @@ export function getCorpusPaths(rootPath) {
     stagedMetaPath: path.join(stagedDir, 'meta.json'),
     stagedManifestPath: path.join(stagedDir, 'sources.json'),
     stagedStatePath: path.join(stagedDir, 'state.json'),
+    llmStage2StatePath: path.join(llmJobsDir, 'stage2.json'),
     papersDir: path.join(corpusDir, 'papers'),
     markdownDir: path.join(corpusDir, 'markdown'),
     markerDir: path.join(corpusDir, 'marker')
@@ -299,6 +302,22 @@ export async function loadStagedCorpusBuild(rootPath) {
 export async function removeStagedCorpusBuild(rootPath) {
   const { stagedDir } = getCorpusPaths(rootPath);
   await removePath(stagedDir);
+}
+
+export async function loadStage2JobState(rootPath) {
+  const { llmStage2StatePath } = getCorpusPaths(rootPath);
+  return readJson(llmStage2StatePath, null);
+}
+
+export async function saveStage2JobState(rootPath, state) {
+  const { llmJobsDir, llmStage2StatePath } = getCorpusPaths(rootPath);
+  await ensureDir(llmJobsDir);
+  await writeJson(llmStage2StatePath, state);
+}
+
+export async function removeStage2JobState(rootPath) {
+  const { llmStage2StatePath } = getCorpusPaths(rootPath);
+  await removePath(llmStage2StatePath);
 }
 
 export async function loadSemanticPaperSnapshot(rootPath, sourceKey) {

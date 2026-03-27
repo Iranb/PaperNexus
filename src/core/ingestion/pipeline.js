@@ -27,13 +27,16 @@ import {
   loadCorpus,
   loadStagedCorpusBuild,
   loadSourceManifest,
+  loadStage2JobState,
   loadSemanticPaperSnapshot,
   removeStagedCorpusBuild,
+  removeStage2JobState,
   resolveGraphStorageMode,
   removeSemanticPaperSnapshot,
   saveCorpus,
   saveSemanticPaperSnapshot,
   saveSourceManifest,
+  saveStage2JobState,
   saveStagedCorpusBuild
 } from '../../storage/corpus-store.js';
 import { enqueuePaperEnhancements, pruneEnhancementsForManifest } from '../../storage/enhancement-store.js';
@@ -99,6 +102,7 @@ const NODE_LLM_CHECK_ENABLED = false;
 const SNAPSHOT_STATE_SIGNATURE_VERSION = 1;
 const SEMANTIC_LLM_SIGNATURE_VERSION = 1;
 const RELATION_LLM_SIGNATURE_VERSION = 1;
+const STAGE2_JOB_STATE_VERSION = 1;
 
 const PROBLEM_SENTENCE_PATTERNS = [
   /\b(?:we|this paper|this work)\s+(?:study|address(?:es)?|tackle(?:s|d)?|focus(?:es)? on|investigate(?:s|d)?)\s+(.+?)(?:\.|,|;| while | by | with )/i,
@@ -1598,6 +1602,284 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
   }
 }
 
+async function ensureParsedPaperForLlmRecord(record) {
+  if (record.parsedPaper) return record.parsedPaper;
+  record.parsedPaper = await loadParsedPaperFromMarkdownCache(record.sourceState, record.semanticPaper);
+  if (!record.parsedPaper) {
+    throw new Error(`Markdown cache missing for ${record.sourceState.sourceKey}. Run Stage 1 before Stage 2.`);
+  }
+  return record.parsedPaper;
+}
+
+function applySemanticBatchResultToRecord(record, semanticObjects, semanticExtractionPlan, options = {}) {
+  const { semanticExtractionMode, semanticObjectCount } = applySemanticObjectInference(
+    record.semanticPaper,
+    semanticObjects,
+    semanticExtractionPlan
+  );
+  const previousLlm = record.semanticPaper.llm || {};
+  const semanticFailed = Boolean(semanticObjects.error) && !semanticObjects.participated;
+  record.semanticPaper.llm = {
+    ...previousLlm,
+    provider: previousLlm.provider && previousLlm.provider !== 'disabled'
+      ? previousLlm.provider
+      : semanticObjects.provider,
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    semanticExtractionMode: semanticExtractionPlan.requestedMode,
+    semanticExtractionModeEffective: semanticExtractionMode,
+    semanticExtractionAttempted: semanticObjects.attempted,
+    semanticExtractionParticipated: semanticObjects.participated,
+    semanticExtractionParticipationReason: semanticObjects.reason,
+    semanticObjectCount,
+    semanticRetryCount: semanticFailed ? Number(previousLlm.semanticRetryCount || 0) + 1 : 0
+  };
+  record.semanticPaper.llmSemanticObjects = {
+    ...semanticObjects,
+    configSignature: createSemanticConfigSignature(options)
+  };
+  applySemanticAdmissionPolicy(record.semanticPaper);
+  return {
+    status: semanticFailed ? 'failed' : 'completed',
+    error: semanticObjects.error || null
+  };
+}
+
+function applyRelationBatchResultToRecord(record, inference, options = {}) {
+  if (inference.relations.length || inference.findings.length || inference.benchmarks.length || inference.researchGoals.length) {
+    record.semanticPaper.benchmarks = mergeSemanticSlots(record.semanticPaper.benchmarks, inference.benchmarks, 8);
+    record.semanticPaper.findings = mergeSemanticSlots(record.semanticPaper.findings, inference.findings, 8);
+    record.semanticPaper.researchGoals = mergeSemanticSlots(record.semanticPaper.researchGoals, inference.researchGoals, 4);
+  }
+  const previousLlm = record.semanticPaper.llm || {};
+  const relationFailed = Boolean(inference.error) && Number(inference.relations.length || 0) === 0;
+  record.semanticPaper.llm = {
+    ...previousLlm,
+    provider: inference.provider !== 'disabled' ? inference.provider : previousLlm.provider,
+    error: inference.error || null,
+    relationCount: inference.relations.length,
+    relationConfigSignature: createRelationConfigSignature(options),
+    relationRetryCount: relationFailed ? Number(previousLlm.relationRetryCount || 0) + 1 : 0
+  };
+  record.semanticPaper.llmRelations = inference.relations;
+  applySemanticAdmissionPolicy(record.semanticPaper);
+  return {
+    status: relationFailed ? 'failed' : 'completed',
+    error: inference.error || null
+  };
+}
+
+function seedStage2JobStateFromRecords(jobState, records) {
+  for (const record of records) {
+    const paperStatus = getOrCreateStage2PaperStatus(jobState, record.sourceState.sourceKey);
+    paperStatus.semantic = {
+      status: record.sourceState.llmRefreshState.semanticRequired ? 'pending' : 'completed',
+      updatedAt: paperStatus.semantic?.updatedAt || null,
+      error: paperStatus.semantic?.error || null
+    };
+    paperStatus.relation = {
+      status: record.sourceState.llmRefreshState.relationRequired ? 'pending' : 'completed',
+      updatedAt: paperStatus.relation?.updatedAt || null,
+      error: paperStatus.relation?.error || null
+    };
+  }
+  refreshStage2PhaseStatus(jobState, records, 'semantic');
+  refreshStage2PhaseStatus(jobState, records, 'relation');
+}
+
+function createStage2ManifestFromRecords(rootPath, manifest, records, options = {}) {
+  const nextManifest = createEmptyManifest({
+    corpusName: manifest.corpusName || options.name || path.basename(rootPath),
+    rootPath,
+    inputPath: manifest.inputPath,
+    inputPaths: manifest.inputPaths,
+    sourceMode: manifest.sourceMode || 'markdown',
+    pdfParser: manifest.pdfParser || null,
+    pdfCommand: manifest.pdfCommand || manifest.markerCommand || manifest.mineruCommand || null,
+    semanticExtractionMode: normalizeSemanticExtractionMode(
+      firstDefinedValue(options.semanticExtraction, manifest.semanticExtractionMode, 'auto')
+    ),
+    sources: records.map((record) => buildManifestEntry(rootPath, record.sourceState, record.semanticPaper, record.manifestEntry.markerCommand || null, {
+      dedupedBy: record.manifestEntry.dedupedBy || null
+    })),
+    indexedAt: new Date().toISOString(),
+    changes: manifest.lastChangeSummary || null
+  });
+  if (options.completed !== false) {
+    nextManifest.llmOptimization = buildLlmOptimizationState(nextManifest, options);
+  }
+  nextManifest.sources.sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
+  return nextManifest;
+}
+
+async function runStage2LlmOptimization(rootPath, manifest, records, options = {}, existingJobState = null) {
+  const quiet = Boolean(options.quiet);
+  const semanticExtractionPlan = resolveSemanticExtractionPlan(options);
+  const normalizedSemanticExtractionMode = normalizeSemanticExtractionMode(
+    firstDefinedValue(options.semanticExtraction, manifest.semanticExtractionMode, 'auto')
+  );
+  const jobState = existingJobState && existingJobState.token === createStage2JobToken(manifest, options)
+    ? existingJobState
+    : createStage2JobState(manifest, options);
+
+  seedStage2JobStateFromRecords(jobState, records);
+  await saveStage2JobState(rootPath, jobState);
+
+  const initialSemanticPending = records.filter((record) => record.sourceState.llmRefreshState.semanticRequired);
+  const semanticPending = [];
+  for (const record of initialSemanticPending) {
+    await ensureParsedPaperForLlmRecord(record);
+    semanticPending.push(record);
+  }
+
+  const batchSize = Math.max(1, Number(firstDefinedValue(options.llmBatchSize, options.batchSize, 8)));
+  announceStage(
+    options,
+    options.llmStageStep || 1,
+    options.llmStageTotal || 1,
+    options.llmStageTitle || 'Batch LLM optimization',
+    options.llmStageDetail || 'semantic objects and relation extraction'
+  );
+
+  const formatBatchLabel = (batchNumber, totalBatches, completed, total) =>
+    `batch ${batchNumber}/${Math.max(1, totalBatches)}, ${Math.min(completed, total)}/${total} papers completed`;
+
+  if (semanticPending.length) {
+    const semanticProgress = quiet ? createQuietProgress() : createProgressBar(semanticPending.length, { prefix: 'Semantic extraction' });
+    semanticProgress.start();
+    jobState.phases.semantic = {
+      ...jobState.phases.semantic,
+      status: 'running',
+      total: semanticPending.length,
+      completed: 0,
+      batchCount: Math.ceil(semanticPending.length / batchSize),
+      lastBatchNumber: 0
+    };
+    await saveStage2JobState(rootPath, jobState);
+
+    const totalBatches = Math.max(1, Math.ceil(semanticPending.length / batchSize));
+    for (let start = 0; start < semanticPending.length; start += batchSize) {
+      const batchRecords = semanticPending.slice(start, start + batchSize);
+      const semanticBatchResults = await inferPaperSemanticObjectsBatch(
+        batchRecords.map((record) => ({
+          id: record.sourceState.sourceKey,
+          parsedPaper: record.parsedPaper,
+          semanticPaper: record.semanticPaper
+        })),
+        {
+          ...options,
+          llmBatchSize: batchSize
+        }
+      );
+
+      for (let index = 0; index < batchRecords.length; index += 1) {
+        const record = batchRecords[index];
+        const summary = applySemanticBatchResultToRecord(record, semanticBatchResults[index], semanticExtractionPlan, options);
+        await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+        updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'semantic', summary.status, summary.error);
+      }
+
+      jobState.phases.semantic.lastBatchNumber = Math.floor(start / batchSize) + 1;
+      refreshStage2PhaseStatus(jobState, semanticPending, 'semantic');
+      await saveStage2JobState(rootPath, jobState);
+      semanticProgress.update(
+        Math.min(start + batchRecords.length, semanticPending.length),
+        formatBatchLabel(jobState.phases.semantic.lastBatchNumber, totalBatches, start + batchRecords.length, semanticPending.length)
+      );
+    }
+    semanticProgress.done();
+  }
+
+  const relationPending = [];
+  for (const record of records) {
+    record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
+    if (record.sourceState.llmRefreshState.relationRequired) {
+      await ensureParsedPaperForLlmRecord(record);
+      relationPending.push(record);
+    }
+  }
+
+  if (relationPending.length) {
+    const relationProgress = quiet ? createQuietProgress() : createProgressBar(relationPending.length, { prefix: 'Relation extraction' });
+    relationProgress.start();
+    jobState.phases.relation = {
+      ...jobState.phases.relation,
+      status: 'running',
+      total: relationPending.length,
+      completed: 0,
+      batchCount: Math.ceil(relationPending.length / batchSize),
+      lastBatchNumber: 0
+    };
+    await saveStage2JobState(rootPath, jobState);
+
+    const totalBatches = Math.max(1, Math.ceil(relationPending.length / batchSize));
+    for (let start = 0; start < relationPending.length; start += batchSize) {
+      const batchRecords = relationPending.slice(start, start + batchSize);
+      const relationBatchResults = await inferPaperResearchSemanticsBatch(
+        batchRecords.map((record) => ({
+          id: record.sourceState.sourceKey,
+          parsedPaper: record.parsedPaper,
+          semanticPaper: record.semanticPaper
+        })),
+        {
+          ...options,
+          llmBatchSize: batchSize
+        }
+      );
+
+      for (let index = 0; index < batchRecords.length; index += 1) {
+        const record = batchRecords[index];
+        const summary = applyRelationBatchResultToRecord(record, relationBatchResults[index], options);
+        await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+        updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'relation', summary.status, summary.error);
+      }
+
+      jobState.phases.relation.lastBatchNumber = Math.floor(start / batchSize) + 1;
+      refreshStage2PhaseStatus(jobState, relationPending, 'relation');
+      await saveStage2JobState(rootPath, jobState);
+      relationProgress.update(
+        Math.min(start + batchRecords.length, relationPending.length),
+        formatBatchLabel(jobState.phases.relation.lastBatchNumber, totalBatches, start + batchRecords.length, relationPending.length)
+      );
+    }
+    relationProgress.done();
+  }
+
+  for (const record of records) {
+    record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
+    const paperStatus = getOrCreateStage2PaperStatus(jobState, record.sourceState.sourceKey);
+    if (!record.sourceState.llmRefreshState.semanticRequired && paperStatus.semantic.status === 'pending') {
+      updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'semantic', 'completed', null);
+    }
+    if (!record.sourceState.llmRefreshState.relationRequired && paperStatus.relation.status === 'pending') {
+      updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'relation', 'completed', null);
+    }
+  }
+
+  refreshStage2PhaseStatus(jobState, records, 'semantic');
+  refreshStage2PhaseStatus(jobState, records, 'relation');
+  const completed = records.every((record) => !summarizeLlmRefreshState(record.semanticPaper, options).anyRequired);
+  jobState.status = completed ? 'completed' : 'partial';
+  jobState.completedAt = completed ? new Date().toISOString() : null;
+  jobState.updatedAt = new Date().toISOString();
+  await saveStage2JobState(rootPath, jobState);
+
+  const nextManifest = createStage2ManifestFromRecords(rootPath, manifest, records, {
+    ...options,
+    semanticExtraction: normalizedSemanticExtractionMode,
+    completed
+  });
+  if (completed) {
+    jobState.token = createStage2JobToken(nextManifest, options);
+    jobState.manifestToken = createManifestCommitToken(nextManifest);
+  }
+
+  return {
+    nextManifest,
+    jobState,
+    completed
+  };
+}
+
 function mergeArray(target, key, values) {
   if (!Array.isArray(values) || !values.length) return;
   target[key] = unique([...(target[key] || []), ...values]);
@@ -2532,6 +2814,116 @@ function manifestHasReusableLlmOptimization(manifest, options = {}) {
   return manifest.llmOptimization.token === createLlmOptimizationToken(manifest, options);
 }
 
+function createStage2JobToken(manifest, options = {}) {
+  return createLlmOptimizationToken(manifest, options);
+}
+
+function createEmptyStage2PaperStatus() {
+  return {
+    semantic: {
+      status: 'pending',
+      updatedAt: null,
+      error: null
+    },
+    relation: {
+      status: 'pending',
+      updatedAt: null,
+      error: null
+    }
+  };
+}
+
+function createStage2JobState(manifest, options = {}) {
+  const token = createStage2JobToken(manifest, options);
+  return {
+    version: STAGE2_JOB_STATE_VERSION,
+    token,
+    manifestToken: createManifestCommitToken(manifest),
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: createRelationConfigSignature(options),
+    status: 'running',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    completedAt: null,
+    phases: {
+      semantic: {
+        status: 'pending',
+        completed: 0,
+        total: 0,
+        batchCount: 0,
+        lastBatchNumber: 0
+      },
+      relation: {
+        status: 'pending',
+        completed: 0,
+        total: 0,
+        batchCount: 0,
+        lastBatchNumber: 0
+      }
+    },
+    papers: {}
+  };
+}
+
+function isReusableStage2JobState(jobState, manifest, options = {}) {
+  if (!jobState || jobState.version !== STAGE2_JOB_STATE_VERSION) return false;
+  if (jobState.status !== 'completed') return false;
+  return (
+    jobState.token === createStage2JobToken(manifest, options)
+    && jobState.manifestToken === createManifestCommitToken(manifest)
+  );
+}
+
+function getOrCreateStage2PaperStatus(jobState, sourceKey) {
+  if (!jobState.papers[sourceKey]) {
+    jobState.papers[sourceKey] = createEmptyStage2PaperStatus();
+  }
+  return jobState.papers[sourceKey];
+}
+
+function updateStage2PaperPhase(jobState, sourceKey, phase, status, error = null) {
+  const paperStatus = getOrCreateStage2PaperStatus(jobState, sourceKey);
+  paperStatus[phase] = {
+    status,
+    updatedAt: new Date().toISOString(),
+    error: error || null
+  };
+  jobState.updatedAt = new Date().toISOString();
+}
+
+function refreshStage2PhaseStatus(jobState, records, phase) {
+  const total = records.length;
+  let completed = 0;
+  let hasRunning = false;
+  let hasFailed = false;
+
+  for (const record of records) {
+    const paperStatus = getOrCreateStage2PaperStatus(jobState, record.sourceState.sourceKey);
+    const phaseStatus = paperStatus[phase]?.status || 'pending';
+    if (phaseStatus === 'completed' || phaseStatus === 'skipped') {
+      completed += 1;
+    } else if (phaseStatus === 'failed') {
+      hasFailed = true;
+    } else if (phaseStatus === 'running') {
+      hasRunning = true;
+    }
+  }
+
+  jobState.phases[phase] = {
+    ...jobState.phases[phase],
+    total,
+    completed,
+    status: completed >= total
+      ? 'completed'
+      : hasRunning
+        ? 'running'
+        : hasFailed
+          ? 'partial'
+          : 'pending'
+  };
+  jobState.updatedAt = new Date().toISOString();
+}
+
 function createSourceFingerprintMap(sourceStates = []) {
   return new Map(
     sourceStates.map((sourceState) => [sourceState.sourceKey, sourceState.fingerprint])
@@ -3078,6 +3470,33 @@ async function discoverCorpusSources(inputPath, options = {}) {
   };
 }
 
+async function resolveCorpusInputContext(inputPath, options = {}) {
+  const absoluteInputs = normalizeInputPaths(inputPath);
+  const absoluteInput = absoluteInputs[0];
+  let inputStats = null;
+
+  if (absoluteInput) {
+    try {
+      inputStats = await fs.stat(absoluteInput);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+
+  const rootPath = options.rootPath
+    ? path.resolve(options.rootPath)
+    : (absoluteInputs.length === 1
+        ? (inputStats?.isDirectory?.() ? absoluteInput : path.dirname(absoluteInput))
+        : process.cwd());
+
+  return {
+    absoluteInput,
+    absoluteInputs,
+    inputStats,
+    rootPath
+  };
+}
+
 function buildManifestEntry(rootPath, sourceState, semanticPaper, markerCommand, extra = {}) {
   return {
     sourceKey: sourceState.sourceKey,
@@ -3109,6 +3528,59 @@ function buildManifestEntry(rootPath, sourceState, semanticPaper, markerCommand,
       : [semanticPaper.sourceKind || sourceState.kind],
     ...extra
   };
+}
+
+function createSourceStateFromManifestEntry(entry) {
+  return {
+    sourceKey: entry.sourceKey,
+    inputPath: entry.inputPath,
+    kind: entry.kind,
+    fingerprint: entry.fingerprint || entry.sourceFingerprint,
+    sourceMtimeMs: Number(entry.sourceMtimeMs || 0),
+    sourceSizeBytes: Number(entry.sourceSizeBytes || 0),
+    previous: entry,
+    markdownCachePath: entry.markdownCachePath || entry.sourceMarkdownPath || null,
+    markdownCacheFingerprint: entry.markdownCacheFingerprint || entry.fingerprint || entry.sourceFingerprint || null,
+    markdownCacheExists: true,
+    markdownCacheNeedsRefresh: false,
+    cachedPaper: null,
+    llmRefreshState: {
+      semanticRequired: false,
+      relationRequired: false,
+      anyRequired: false
+    },
+    reuseCachedMaterialization: true
+  };
+}
+
+async function buildStage2RecordsFromManifest(rootPath, manifest, options = {}) {
+  const metadataConcurrency = resolveMetadataConcurrency(options);
+  const records = await mapWithConcurrency(manifest.sources || [], metadataConcurrency, async (entry) => {
+    const sourceState = createSourceStateFromManifestEntry(entry);
+    let semanticPaper = await loadSemanticPaperSnapshot(rootPath, entry.sourceKey);
+    let parsedPaper = null;
+
+    if (!semanticPaper) {
+      parsedPaper = await loadParsedPaperFromMarkdownCache(sourceState);
+      if (!parsedPaper) {
+        throw new Error(`No semantic snapshot or markdown cache was available for ${entry.sourceKey}. Run Stage 1 before Stage 2.`);
+      }
+      semanticPaper = buildSemanticPaperView(parsedPaper);
+      await saveSemanticPaperSnapshot(rootPath, entry.sourceKey, semanticPaper);
+    }
+
+    sourceState.cachedPaper = semanticPaper;
+    sourceState.llmRefreshState = summarizeLlmRefreshState(semanticPaper, options);
+
+    return {
+      manifestEntry: entry,
+      sourceState,
+      semanticPaper,
+      parsedPaper
+    };
+  });
+
+  return records;
 }
 
 function resolveExpectedMarkdownCachePath(rootPath, sourceState, options = {}) {
@@ -3990,10 +4462,134 @@ export async function analyzeCorpus(inputPath, options = {}) {
 }
 
 export async function llmOptimizeCorpus(inputPath, options = {}) {
-  return analyzeCorpus(inputPath, {
-    ...options,
-    llmOnly: true
+  const {
+    absoluteInput,
+    absoluteInputs,
+    rootPath
+  } = await resolveCorpusInputContext(inputPath, {
+    rootPath: options.rootPath
   });
+  const manifest = await loadSourceManifest(rootPath);
+  if (!manifest) {
+    throw new Error('No source manifest found. Run Stage 1 before running Stage 2.');
+  }
+
+  await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(manifest));
+
+  const normalizedSemanticExtractionMode = normalizeSemanticExtractionMode(
+    firstDefinedValue(options.semanticExtraction, manifest.semanticExtractionMode, 'auto')
+  );
+  const analysisOptions = {
+    ...options,
+    semanticExtraction: normalizedSemanticExtractionMode,
+    enableLlmEnrichment: true,
+    llmStageStep: 1,
+    llmStageTotal: 1,
+    llmStageTitle: 'Batch LLM optimization',
+    llmStageDetail: 'semantic objects and relation extraction'
+  };
+  const previousJobState = !options.force ? await loadStage2JobState(rootPath) : null;
+
+  if (
+    !options.force
+    && manifestHasReusableLlmOptimization(manifest, analysisOptions)
+    && isReusableStage2JobState(previousJobState, manifest, analysisOptions)
+  ) {
+    const paperCount = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false).length
+      || (manifest.sources || []).length;
+    return {
+      graph: null,
+      meta: {
+        name: manifest.corpusName || options.name || path.basename(rootPath),
+        indexedAt: manifest.indexedAt || new Date().toISOString(),
+        paperCount,
+        relationshipCount: 0,
+        sourceCount: manifest.sources?.length || 0,
+        stage: 'llm-optimized',
+        semanticExtractionMode: normalizedSemanticExtractionMode,
+        lastChangeSummary: manifest.lastChangeSummary || null
+      },
+      rootPath,
+      changes: manifest.lastChangeSummary || null,
+      reused: true,
+      stage: 'llm-optimized'
+    };
+  }
+
+  const records = await buildStage2RecordsFromManifest(rootPath, manifest, analysisOptions);
+  const hasPendingWork = records.some((record) => {
+    const refresh = summarizeLlmRefreshState(record.semanticPaper, analysisOptions);
+    record.sourceState.llmRefreshState = refresh;
+    return refresh.anyRequired;
+  });
+
+  if (!hasPendingWork && !options.force) {
+    const jobState = previousJobState && previousJobState.token === createStage2JobToken(manifest, analysisOptions)
+      ? previousJobState
+      : createStage2JobState(manifest, analysisOptions);
+    seedStage2JobStateFromRecords(jobState, records);
+    jobState.status = 'completed';
+    jobState.completedAt = new Date().toISOString();
+    jobState.updatedAt = new Date().toISOString();
+    await saveStage2JobState(rootPath, jobState);
+
+    const paperCount = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false).length
+      || (manifest.sources || []).length;
+    return {
+      graph: null,
+      meta: {
+        name: manifest.corpusName || options.name || path.basename(rootPath),
+        indexedAt: manifest.indexedAt || new Date().toISOString(),
+        paperCount,
+        relationshipCount: 0,
+        sourceCount: manifest.sources?.length || 0,
+        stage: 'llm-optimized',
+        semanticExtractionMode: normalizedSemanticExtractionMode,
+        lastChangeSummary: manifest.lastChangeSummary || null
+      },
+      rootPath,
+      changes: manifest.lastChangeSummary || null,
+      reused: true,
+      stage: 'llm-optimized'
+    };
+  }
+
+  const { nextManifest, jobState } = await runStage2LlmOptimization(
+    rootPath,
+    manifest,
+    records,
+    analysisOptions,
+    previousJobState
+  );
+
+  await withFileLock(getCorpusLockPath(rootPath), async () => {
+    await backupExistingCorpusRoot(rootPath, {
+      backupDir: analysisOptions.backupDir
+    });
+    await saveSourceManifest(rootPath, nextManifest);
+    await saveStage2JobState(rootPath, jobState);
+  }, options.lockOptions);
+
+  const paperCount = (nextManifest.sources || []).filter((entry) => entry.activeInGraph !== false).length
+    || (nextManifest.sources || []).length;
+  return {
+    graph: null,
+    meta: {
+      name: nextManifest.corpusName || options.name || path.basename(rootPath),
+      indexedAt: nextManifest.indexedAt || new Date().toISOString(),
+      paperCount,
+      relationshipCount: 0,
+      sourceCount: nextManifest.sources?.length || 0,
+      stage: 'llm-optimized',
+      semanticExtractionMode: normalizedSemanticExtractionMode,
+      lastChangeSummary: nextManifest.lastChangeSummary || null
+    },
+    rootPath,
+    changes: nextManifest.lastChangeSummary || null,
+    reused: false,
+    stage: 'llm-optimized',
+    inputPath: absoluteInput
+  };
 }
 
 export async function buildGraphCorpus(inputPath, options = {}) {
@@ -4379,10 +4975,10 @@ export async function materializeCorpus(inputPath, options = {}) {
 }
 
 export async function optimizeCorpus(inputPath, options = {}) {
-  return analyzeCorpus(inputPath, {
-    ...options,
-    optimizeOnly: true
-  });
+  await llmOptimizeCorpus(inputPath, options);
+  await buildGraphCorpus(inputPath, options);
+  await mergeGraphCorpus(inputPath, options);
+  return writeIndexCorpus(inputPath, options);
 }
 
 export const __pipelineTestables = {
