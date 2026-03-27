@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createKnowledgeGraph } from '../src/core/graph/graph.js';
 import { createLiteGraphPayload } from '../src/core/graph/lite.js';
 import { EDGE_TYPES, NODE_TYPES } from '../src/core/graph/schema.js';
-import { buildBrainstorm } from '../src/core/search/search.js';
+import { buildBrainstorm, buildResearchIdeas } from '../src/core/search/search.js';
 import { applySemanticAdmissionPolicy } from '../src/core/ingestion/pipeline.js';
 
 test('semantic admission policy removes low-signal surface-form nodes and annotates brainstorm-grade nodes', () => {
@@ -197,9 +197,302 @@ test('brainstorm search path ignores non-eligible noisy nodes', () => {
 
   const brainstorm = buildBrainstorm(graph, 'planning', {
     mode: 'diverge',
-    maxHops: 2
+    maxHops: 1
   });
 
   assert.ok(brainstorm.similarProblems.some((entry) => entry.name === 'evidence-aware experiment planning'));
   assert.equal(brainstorm.similarProblems.some((entry) => entry.name === 'energy'), false);
+});
+
+test('brainstorm divergence can surface same-community latent neighbors without direct edges', () => {
+  const graph = createKnowledgeGraph();
+
+  graph.addNode({
+    id: 'paper:seed',
+    type: NODE_TYPES.PAPER,
+    name: 'Planning Paper',
+    properties: {
+      layer: 'DocumentLayer',
+      paperId: 'paper:seed',
+      paperTitle: 'Planning Paper',
+      abstract: 'This paper studies evidence-aware experiment planning.'
+    }
+  });
+  graph.addNode({
+    id: 'paper:bridge',
+    type: NODE_TYPES.PAPER,
+    name: 'Auditing Paper',
+    properties: {
+      layer: 'DocumentLayer',
+      paperId: 'paper:bridge',
+      paperTitle: 'Auditing Paper',
+      abstract: 'This paper studies evidence trace coverage for research systems.'
+    }
+  });
+  graph.addNode({
+    id: 'problem:planning',
+    type: NODE_TYPES.PROBLEM,
+    name: 'evidence-aware experiment planning',
+    properties: {
+      layer: 'ProblemLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.93,
+      brainstormTier: 'high',
+      paperTitles: ['Planning Paper']
+    }
+  });
+  graph.addNode({
+    id: 'problem:audit',
+    type: NODE_TYPES.PROBLEM,
+    name: 'evidence trace auditing',
+    properties: {
+      layer: 'ProblemLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.87,
+      brainstormTier: 'high',
+      paperTitles: ['Auditing Paper']
+    }
+  });
+  graph.addNode({
+    id: 'method:seed',
+    type: NODE_TYPES.METHOD,
+    name: 'retrieval-augmented planning workflow',
+    properties: {
+      layer: 'MethodLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.91,
+      brainstormTier: 'high',
+      paperTitles: ['Planning Paper']
+    }
+  });
+  graph.addNode({
+    id: 'method:latent',
+    type: NODE_TYPES.METHOD,
+    name: 'graph-backed evidence scheduler',
+    properties: {
+      layer: 'MethodLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.88,
+      brainstormTier: 'high',
+      paperTitles: ['Auditing Paper']
+    }
+  });
+
+  graph.addRelationship({
+    id: 'rel:seed-paper-problem',
+    sourceId: 'paper:seed',
+    targetId: 'problem:planning',
+    type: EDGE_TYPES.SOLVES,
+    properties: { sourcePaperId: 'paper:seed', sourcePaperTitle: 'Planning Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:seed-paper-method',
+    sourceId: 'paper:seed',
+    targetId: 'method:seed',
+    type: EDGE_TYPES.USES,
+    properties: { sourcePaperId: 'paper:seed', sourcePaperTitle: 'Planning Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:seed-method-problem',
+    sourceId: 'method:seed',
+    targetId: 'problem:planning',
+    type: EDGE_TYPES.APPLIES_TO,
+    properties: { sourcePaperId: 'paper:seed', sourcePaperTitle: 'Planning Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:bridge-paper-problem',
+    sourceId: 'paper:bridge',
+    targetId: 'problem:audit',
+    type: EDGE_TYPES.SOLVES,
+    properties: { sourcePaperId: 'paper:bridge', sourcePaperTitle: 'Auditing Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:bridge-paper-method',
+    sourceId: 'paper:bridge',
+    targetId: 'method:latent',
+    type: EDGE_TYPES.USES,
+    properties: { sourcePaperId: 'paper:bridge', sourcePaperTitle: 'Auditing Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:bridge-method-problem',
+    sourceId: 'method:latent',
+    targetId: 'problem:audit',
+    type: EDGE_TYPES.APPLIES_TO,
+    properties: { sourcePaperId: 'paper:bridge', sourcePaperTitle: 'Auditing Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:problem-related',
+    sourceId: 'problem:planning',
+    targetId: 'problem:audit',
+    type: EDGE_TYPES.RELATED_TO,
+    properties: { score: 0.82 }
+  });
+
+  const brainstorm = buildBrainstorm(graph, 'planning', {
+    mode: 'diverge',
+    maxHops: 2
+  });
+
+  assert.ok(
+    brainstorm.relatedConcepts.some(
+      (entry) => entry.name === 'graph-backed evidence scheduler' && entry.via === 'community'
+    )
+  );
+});
+
+test('research ideas can add a cross-community method combination candidate', () => {
+  const graph = createKnowledgeGraph();
+
+  graph.addNode({
+    id: 'paper:seed',
+    type: NODE_TYPES.PAPER,
+    name: 'Planning Paper',
+    properties: {
+      layer: 'DocumentLayer',
+      paperId: 'paper:seed',
+      paperTitle: 'Planning Paper',
+      abstract: 'This paper studies evidence-aware experiment planning.'
+    }
+  });
+  graph.addNode({
+    id: 'paper:bridge',
+    type: NODE_TYPES.PAPER,
+    name: 'Verifier Paper',
+    properties: {
+      layer: 'DocumentLayer',
+      paperId: 'paper:bridge',
+      paperTitle: 'Verifier Paper',
+      abstract: 'This paper studies uncertainty-aware verification for evidence pipelines.'
+    }
+  });
+  graph.addNode({
+    id: 'problem:planning',
+    type: NODE_TYPES.PROBLEM,
+    name: 'evidence-aware experiment planning',
+    properties: {
+      layer: 'ProblemLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.93,
+      brainstormTier: 'high',
+      paperTitles: ['Planning Paper']
+    }
+  });
+  graph.addNode({
+    id: 'limitation:coverage',
+    type: NODE_TYPES.LIMITATION,
+    name: 'weak evidence coverage',
+    properties: {
+      layer: 'ConstraintLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.86,
+      brainstormTier: 'high',
+      paperTitles: ['Planning Paper']
+    }
+  });
+  graph.addNode({
+    id: 'method:planner',
+    type: NODE_TYPES.METHOD,
+    name: 'retrieval-augmented planning workflow',
+    properties: {
+      layer: 'MethodLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.91,
+      brainstormTier: 'high',
+      paperTitles: ['Planning Paper']
+    }
+  });
+  graph.addNode({
+    id: 'method:verifier',
+    type: NODE_TYPES.METHOD,
+    name: 'uncertainty-aware verifier',
+    properties: {
+      layer: 'MethodLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.89,
+      brainstormTier: 'high',
+      paperTitles: ['Verifier Paper']
+    }
+  });
+  graph.addNode({
+    id: 'problem:auditing',
+    type: NODE_TYPES.PROBLEM,
+    name: 'evidence trace auditing',
+    properties: {
+      layer: 'ProblemLayer',
+      brainstormEligible: true,
+      brainstormScore: 0.87,
+      brainstormTier: 'high',
+      paperTitles: ['Verifier Paper']
+    }
+  });
+
+  graph.addRelationship({
+    id: 'rel:seed-paper-problem',
+    sourceId: 'paper:seed',
+    targetId: 'problem:planning',
+    type: EDGE_TYPES.SOLVES,
+    properties: { sourcePaperId: 'paper:seed', sourcePaperTitle: 'Planning Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:seed-paper-method',
+    sourceId: 'paper:seed',
+    targetId: 'method:planner',
+    type: EDGE_TYPES.USES,
+    properties: { sourcePaperId: 'paper:seed', sourcePaperTitle: 'Planning Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:seed-paper-limitation',
+    sourceId: 'paper:seed',
+    targetId: 'limitation:coverage',
+    type: EDGE_TYPES.HAS_LIMITATION,
+    properties: { sourcePaperId: 'paper:seed', sourcePaperTitle: 'Planning Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:seed-method-problem',
+    sourceId: 'method:planner',
+    targetId: 'problem:planning',
+    type: EDGE_TYPES.APPLIES_TO,
+    properties: { sourcePaperId: 'paper:seed', sourcePaperTitle: 'Planning Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:bridge-paper-method',
+    sourceId: 'paper:bridge',
+    targetId: 'method:verifier',
+    type: EDGE_TYPES.USES,
+    properties: { sourcePaperId: 'paper:bridge', sourcePaperTitle: 'Verifier Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:bridge-paper-problem',
+    sourceId: 'paper:bridge',
+    targetId: 'problem:auditing',
+    type: EDGE_TYPES.SOLVES,
+    properties: { sourcePaperId: 'paper:bridge', sourcePaperTitle: 'Verifier Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:bridge-method-problem',
+    sourceId: 'method:verifier',
+    targetId: 'problem:auditing',
+    type: EDGE_TYPES.APPLIES_TO,
+    properties: { sourcePaperId: 'paper:bridge', sourcePaperTitle: 'Verifier Paper' }
+  });
+  graph.addRelationship({
+    id: 'rel:limitation-related-problem',
+    sourceId: 'limitation:coverage',
+    targetId: 'problem:auditing',
+    type: EDGE_TYPES.RELATED_TO,
+    properties: { score: 0.71 }
+  });
+  graph.addRelationship({
+    id: 'rel:problem-related',
+    sourceId: 'problem:planning',
+    targetId: 'problem:auditing',
+    type: EDGE_TYPES.RELATED_TO,
+    properties: { score: 0.82 }
+  });
+
+  const ideas = buildResearchIdeas(graph, 'planning', {
+    limit: 8
+  });
+
+  assert.ok(ideas.ideas.some((idea) => idea.template === 'community_method_combination'));
 });
