@@ -2,7 +2,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { ensureDir, fileExists, readJson, removePath, writeJson } from '../lib/fs.js';
+import {
+  ensureDir,
+  fileExists,
+  readJson,
+  removePath,
+  shouldIgnoreFsEntry,
+  writeJson
+} from '../lib/fs.js';
 import { getCorpusPaths, loadCorpusMeta, loadSourceManifest, resolveCorpus } from './corpus-store.js';
 
 function emitStage(options, step, total, title, detail = '') {
@@ -65,21 +72,40 @@ async function runTar(args, options = {}) {
   });
 }
 
+async function copyDirectoryIntoArchive(sourcePath, targetDir) {
+  await ensureDir(targetDir);
+  const entries = await fs.readdir(sourcePath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (shouldIgnoreFsEntry(entry.name, { isDirectory: entry.isDirectory() })) {
+      continue;
+    }
+
+    const sourceEntryPath = path.join(sourcePath, entry.name);
+    const targetEntryPath = path.join(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirectoryIntoArchive(sourceEntryPath, targetEntryPath);
+      continue;
+    }
+
+    await ensureDir(path.dirname(targetEntryPath));
+    await fs.copyFile(sourceEntryPath, targetEntryPath);
+  }
+}
+
 async function copyPathIntoArchive(sourcePath, targetDir) {
   const stats = await fs.stat(sourcePath);
   if (stats.isDirectory()) {
-    await ensureDir(targetDir);
-    const entries = await fs.readdir(sourcePath);
-    for (const entry of entries) {
-      await fs.cp(path.join(sourcePath, entry), path.join(targetDir, entry), {
-        recursive: true
-      });
-    }
+    await copyDirectoryIntoArchive(sourcePath, targetDir);
     return {
       originalPath: sourcePath,
       archivePath: targetDir,
       kind: 'directory'
     };
+  }
+
+  if (shouldIgnoreFsEntry(path.basename(sourcePath), { isDirectory: false })) {
+    return null;
   }
 
   await ensureDir(targetDir);
@@ -148,7 +174,10 @@ export async function exportCorpusArchive(target, archivePath, options = {}) {
       }
 
       const sourceTarget = path.join(stageRoot, 'sources', String(index));
-      sourceEntries.push(await copyPathIntoArchive(sourcePath, sourceTarget));
+      const copiedEntry = await copyPathIntoArchive(sourcePath, sourceTarget);
+      if (copiedEntry) {
+        sourceEntries.push(copiedEntry);
+      }
       completed += 1;
       emitProgress(options, {
         completed,

@@ -62,3 +62,39 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
+
+test('createImportTask ignores uploaded metadata files and keeps only real paper files', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-meta-'));
+
+  try {
+    const { createImportTask } = await import('../src/storage/import-store.js');
+
+    const task = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: '.DS_Store',
+          contentBase64: Buffer.from('ignored metadata', 'utf8').toString('base64'),
+          mimeType: 'application/octet-stream'
+        },
+        {
+          name: '._sample-paper.md',
+          contentBase64: Buffer.from('ignored apple double', 'utf8').toString('base64'),
+          mimeType: 'application/octet-stream'
+        },
+        {
+          name: 'sample-paper.md',
+          contentBase64: Buffer.from('# Sample Paper\n\n## Abstract\n\nA short upload test.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    assert.equal(task.files.length, 1);
+    assert.equal(task.files[0].originalName, 'sample-paper.md');
+    await fs.access(task.files[0].storedPath);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});

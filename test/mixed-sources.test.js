@@ -92,3 +92,46 @@ await fs.copyFile(${JSON.stringify(templateMarkdownPath)}, path.join(outputDir, 
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('analyzeCorpus ignores cross-platform metadata files during source discovery', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-metadata-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-metadata-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    await fs.mkdir(path.join(tempCorpusRoot, '__MACOSX'), { recursive: true });
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper.md'), '# Real Paper\n\n## Abstract\n\nKeep me.\n', 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, '.DS_Store'), 'ignore me', 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, '._paper.md'), 'ignore me too', 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, 'Thumbs.db'), 'ignore windows metadata', 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, 'desktop.ini'), 'ignore windows metadata', 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, '__MACOSX', 'ghost.md'), '# Ghost\n', 'utf8');
+
+    const [{ analyzeCorpus }, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    const result = await analyzeCorpus(tempCorpusRoot, {
+      name: 'metadata-ignore-test',
+      force: true
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(result.meta.paperCount, 1);
+    assert.equal(result.meta.sourceCount, 1);
+    assert.equal(manifest.sources.length, 1);
+    assert.equal(path.basename(manifest.sources[0].sourcePath), 'paper.md');
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

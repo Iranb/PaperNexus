@@ -75,6 +75,49 @@ test('backup archive export and unpack preserve the index plus source papers', a
   }
 });
 
+test('backup archive export skips common filesystem metadata files from source directories', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-meta-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-meta-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const archivePath = path.join(workspaceRoot, 'papernexus-backup-meta.tgz');
+  const unpackRoot = path.join(workspaceRoot, 'unpacked');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(path.join(inputRoot, '__MACOSX'), { recursive: true });
+    await fs.writeFile(path.join(inputRoot, 'paper.md'), '# Backup Test\n\n## Abstract\n\nKeep me.\n', 'utf8');
+    await fs.writeFile(path.join(inputRoot, '.DS_Store'), 'ignore me', 'utf8');
+    await fs.writeFile(path.join(inputRoot, '._paper.md'), 'ignore me too', 'utf8');
+    await fs.writeFile(path.join(inputRoot, 'Thumbs.db'), 'ignore windows metadata', 'utf8');
+    await fs.writeFile(path.join(inputRoot, '__MACOSX', 'ghost.md'), '# Ghost', 'utf8');
+
+    const [{ analyzeCorpus }, backupArchive] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/backup-archive.js')
+    ]);
+
+    await analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'backup-metadata-test',
+      force: true
+    });
+
+    await backupArchive.exportCorpusArchive(indexRoot, archivePath);
+    await backupArchive.unpackCorpusArchive(archivePath, unpackRoot);
+
+    const restoredSourceRoot = path.join(unpackRoot, 'sources', '0');
+    const restoredEntries = await fs.readdir(restoredSourceRoot);
+    assert.deepEqual(restoredEntries.sort(), ['paper.md']);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('backup archive unpack tolerates large tar stderr output', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-archive-stderr-'));
   const archivePath = path.join(workspaceRoot, 'dummy-backup.tgz');

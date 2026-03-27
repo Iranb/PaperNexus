@@ -1,7 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getCorpusPaths } from './corpus-store.js';
-import { ensureDir, fileExists, readText, readJson, withFileLock, writeJson } from '../lib/fs.js';
+import {
+  ensureDir,
+  fileExists,
+  isMetadataFileName,
+  readText,
+  readJson,
+  withFileLock,
+  writeJson
+} from '../lib/fs.js';
 import { slugify, stableHash } from '../lib/utils.js';
 
 const IMPORT_SCHEMA_VERSION = 1;
@@ -122,10 +130,12 @@ export async function createImportTask(rootPath, options = {}) {
   const inputPaths = Array.isArray(options.inputPaths)
     ? options.inputPaths.map((item) => path.resolve(String(item))).filter(Boolean)
     : [];
-  const files = Array.isArray(options.files) ? options.files : [];
+  const files = Array.isArray(options.files)
+    ? options.files.filter((file) => !isMetadataFileName(path.basename(String(file?.name || ''))))
+    : [];
 
   if (!files.length) {
-    throw new Error('At least one uploaded file is required to create an import task.');
+    throw new Error('At least one non-metadata uploaded file is required to create an import task.');
   }
 
   return withFileLock(queueLockPath, async () => {

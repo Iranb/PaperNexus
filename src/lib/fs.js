@@ -2,6 +2,48 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 
+const METADATA_FILE_NAMES = new Set([
+  '.ds_store',
+  'thumbs.db',
+  'desktop.ini',
+  '.localized'
+]);
+
+const METADATA_DIRECTORY_NAMES = new Set([
+  '__macosx',
+  '.appledouble',
+  '.spotlight-v100',
+  '.trashes',
+  '.fseventsd'
+]);
+
+export function isMetadataFileName(fileName) {
+  const normalized = String(fileName || '').trim();
+  if (!normalized) return false;
+  if (normalized.startsWith('._')) return true;
+  return METADATA_FILE_NAMES.has(normalized.toLowerCase());
+}
+
+export function isMetadataDirectoryName(directoryName) {
+  const normalized = String(directoryName || '').trim();
+  if (!normalized) return false;
+  return METADATA_DIRECTORY_NAMES.has(normalized.toLowerCase());
+}
+
+export function shouldIgnoreFsEntry(entryName, options = {}) {
+  const normalized = String(entryName || '').trim();
+  if (!normalized) return false;
+  if (normalized === '.papernexus' || normalized === 'node_modules' || normalized === '.git') {
+    return true;
+  }
+
+  if (options.isDirectory) {
+    return isMetadataDirectoryName(normalized);
+  }
+
+  return isMetadataFileName(normalized);
+}
+
 export async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true });
 }
@@ -158,11 +200,18 @@ export async function removePath(targetPath) {
 
 export async function listFilesRecursive(rootPath) {
   if (!(await fileExists(rootPath))) return [];
+  const stats = await fs.stat(rootPath);
+  if (stats.isFile()) {
+    return isMetadataFileName(path.basename(rootPath)) ? [] : [rootPath];
+  }
   const results = [];
 
   async function walk(currentPath) {
     const entries = await fs.readdir(currentPath, { withFileTypes: true });
     for (const entry of entries) {
+      if (shouldIgnoreFsEntry(entry.name, { isDirectory: entry.isDirectory() })) {
+        continue;
+      }
       const absolutePath = path.join(currentPath, entry.name);
       if (entry.isDirectory()) {
         await walk(absolutePath);
@@ -178,7 +227,9 @@ export async function listFilesRecursive(rootPath) {
 
 export async function collectFiles(rootPath, extensions = []) {
   const stats = await fs.stat(rootPath);
-  if (stats.isFile()) return [rootPath];
+  if (stats.isFile()) {
+    return shouldIgnoreFsEntry(path.basename(rootPath), { isDirectory: false }) ? [] : [rootPath];
+  }
 
   const extensionSet = new Set(extensions.map((value) => value.toLowerCase()));
   const results = [];
@@ -186,7 +237,7 @@ export async function collectFiles(rootPath, extensions = []) {
   async function walk(currentPath) {
     const entries = await fs.readdir(currentPath, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === '.papernexus' || entry.name === 'node_modules' || entry.name === '.git') {
+      if (shouldIgnoreFsEntry(entry.name, { isDirectory: entry.isDirectory() })) {
         continue;
       }
 
