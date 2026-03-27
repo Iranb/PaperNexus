@@ -22,16 +22,14 @@ function isLockTimeout(error) {
 }
 
 async function resolveTaskInputPath(rootPath, task) {
-  const taskInputPaths = Array.isArray(task?.inputPaths) ? task.inputPaths.filter(Boolean) : [];
-  if (taskInputPaths.length) {
-    return taskInputPaths.length === 1 ? taskInputPaths[0] : taskInputPaths;
-  }
-
   const manifest = await loadSourceManifest(rootPath);
   const manifestInputPaths = Array.isArray(manifest?.inputPaths)
     ? manifest.inputPaths
     : (manifest?.inputPath ? [manifest.inputPath] : []);
   if (!manifestInputPaths.length) {
+    if (task?.sourcesDir) {
+      return task.sourcesDir;
+    }
     throw new Error(`Import task ${task?.id || ''} has no base input paths to rebuild from.`);
   }
   return manifestInputPaths.length === 1 ? manifestInputPaths[0] : manifestInputPaths;

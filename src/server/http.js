@@ -159,6 +159,11 @@ export async function serveCommand(options = {}) {
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url || '/', `http://${host}:${port}`);
+      const apiOptions = {
+        cache: apiCache,
+        config: options.config || {},
+        configBaseDir: options.configBaseDir || process.cwd()
+      };
 
       if (url.pathname.startsWith('/api/')) {
         if (!requireApiToken(request, response, apiToken)) {
@@ -172,44 +177,38 @@ export async function serveCommand(options = {}) {
       }
 
       if (request.method === 'GET' && url.pathname === '/api/corpora') {
-        sendJson(response, 200, await listCorporaPayload({ cache: apiCache }));
+        sendJson(response, 200, await listCorporaPayload(apiOptions));
         return;
       }
 
       if (request.method === 'GET' && url.pathname === '/api/corpus') {
         const name = url.searchParams.get('name') || undefined;
-        sendJson(response, 200, await corpusPayload(name, { cache: apiCache }));
+        sendJson(response, 200, await corpusPayload(name, apiOptions));
         return;
       }
 
       if (request.method === 'GET' && url.pathname === '/api/corpus-meta') {
         const name = url.searchParams.get('name') || undefined;
-        sendJson(response, 200, await corpusMetaPayload(name, { cache: apiCache }));
+        sendJson(response, 200, await corpusMetaPayload(name, apiOptions));
         return;
       }
 
       if (request.method === 'GET' && url.pathname === '/api/enhancements') {
         const name = url.searchParams.get('name') || undefined;
-        sendJson(response, 200, await enhancementSummaryPayload(name, { cache: apiCache }));
+        sendJson(response, 200, await enhancementSummaryPayload(name, apiOptions));
         return;
       }
 
       if (request.method === 'GET' && url.pathname === '/api/imports') {
         const name = url.searchParams.get('name') || undefined;
-        sendJson(response, 200, await listImportTasksPayload(name, {
-          cache: apiCache,
-          config: options.config || {}
-        }));
+        sendJson(response, 200, await listImportTasksPayload(name, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/imports') {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request);
-        const payload = await createImportTaskPayload(name, body, {
-          cache: apiCache,
-          config: options.config || {}
-        });
+        const payload = await createImportTaskPayload(name, body, apiOptions);
         importWorker?.pollNow();
         sendJson(response, 202, payload);
         return;
@@ -222,31 +221,27 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const taskId = decodeURIComponent(importTaskMatch[1]);
         if (url.pathname.endsWith('/log')) {
-          sendJson(response, 200, await importTaskLogPayload(name, taskId, {
-            cache: apiCache,
-            config: options.config || {}
-          }));
+          sendJson(response, 200, await importTaskLogPayload(name, taskId, apiOptions));
           return;
         }
 
-        sendJson(response, 200, await importTaskPayload(name, taskId, {
-          cache: apiCache,
-          config: options.config || {}
-        }));
+        sendJson(response, 200, await importTaskPayload(name, taskId, apiOptions));
         return;
       }
 
       if (request.method === 'GET' && url.pathname === '/api/paper-enhancement') {
         const name = url.searchParams.get('name') || undefined;
         const paperId = url.searchParams.get('paperId') || '';
-        sendJson(response, 200, await paperEnhancementPayload(name, paperId, { cache: apiCache }));
+        sendJson(response, 200, await paperEnhancementPayload(name, paperId, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/backup') {
         const name = url.searchParams.get('name') || undefined;
         sendJson(response, 200, await backupCorpusPayload(name, {
-          backupDir: options.backupDir
+          backupDir: options.backupDir,
+          config: options.config || {},
+          configBaseDir: options.configBaseDir || process.cwd()
         }));
         return;
       }

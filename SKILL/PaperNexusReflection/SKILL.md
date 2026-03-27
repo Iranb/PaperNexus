@@ -33,6 +33,7 @@ Use this skill when you need to:
 Reflection data is refreshed through the existing incremental enhancement workflow.
 
 One-off uploaded PDFs or Markdown files should normally enter through queued import tasks under `.papernexus/imports/` first. Let the import worker merge them into the main graph rather than manually moving them into the main paper directory during automation.
+If an import or enhancement pass stalls, report the current stage, recent task log lines, and the likely blocker first. Do not blindly rerun the same operation over and over without new evidence.
 
 When the refresh path needs PDF parsing, prefer the repo default remote MinerU path first. Only fall back to a local parser if the remote PDF backend is unavailable or the task explicitly calls for local parsing.
 Do not add `--force` by default here. Reflection refresh should normally follow incremental graph refresh behavior unless the user explicitly wants a full rebuild.

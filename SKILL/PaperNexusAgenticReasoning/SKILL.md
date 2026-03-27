@@ -283,6 +283,7 @@ papernexus analyze
 This now retries only previously failed LLM-assisted papers and reuses snapshots for papers that already succeeded.
 
 If the new material enters through a UI or API upload, prefer the queued import-task path instead of manually moving files into the main paper source directory. Import tasks keep their own logs under `.papernexus/imports/` and merge into the main single graph after processing.
+If a queued import or staged pipeline appears stalled, pause and report the exact stage, latest log evidence, and likely blocker. Do not keep retrying the same path without new diagnostic evidence.
 
 For ongoing usage:
 

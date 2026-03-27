@@ -148,13 +148,27 @@ export async function listCorporaPayload(options = {}) {
 }
 
 async function resolveCorpusForApi(candidate, options = {}) {
-  if (candidate) {
-    return resolveCorpus(candidate);
-  }
-
   const configuredRoot = getConfiguredRootPath(options);
   if (configuredRoot) {
-    return configuredRoot;
+    if (!candidate) {
+      return configuredRoot;
+    }
+
+    try {
+      const configuredMeta = await loadCorpusMeta(configuredRoot);
+      if (
+        candidate === configuredRoot
+        || candidate === configuredMeta.name
+      ) {
+        return configuredRoot;
+      }
+    } catch {
+      // Fall through to legacy resolution paths when the configured root is unavailable.
+    }
+  }
+
+  if (candidate) {
+    return resolveCorpus(candidate);
   }
 
   const registryPayload = await listCorporaPayload(options);

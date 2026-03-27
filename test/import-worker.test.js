@@ -43,7 +43,7 @@ test('import worker processes queued uploads and merges them into the single gra
 
     const task = await importStore.createImportTask(indexRoot, {
       trigger: 'api',
-      inputPaths: [inputRoot],
+      inputPaths: [path.join(workspaceRoot, 'stale-input-path')],
       files: [
         {
           name: 'uploaded-paper.md',

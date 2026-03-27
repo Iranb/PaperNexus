@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const examplesRoot = path.join(__dirname, '..', 'examples');
 
 test('serveCommand requires a token for all API routes while keeping static UI reachable', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-auth-home-'));
@@ -86,6 +90,90 @@ test('serveCommand returns 503 for API routes when no token is configured', asyn
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand API routes prefer the configured storage index over stale registry roots', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-config-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-config-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 51000 + Math.floor(Math.random() * 1000);
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [ingestion, registryApi, httpApi] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/registry.js'),
+      import('../src/server/http.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'http-config-test',
+      force: true
+    });
+
+    await registryApi.saveRegistry({
+      corpora: [
+        {
+          name: 'stale-macos-corpus',
+          rootPath: '/Users/iranb/.papernexus/index-store',
+          indexedAt: new Date(0).toISOString(),
+          paperCount: 999
+        }
+      ]
+    });
+
+    const serverHandle = await httpApi.serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: false,
+      enableImports: false,
+      config: {
+        storage: {
+          indexDir: indexRoot
+        },
+        serve: {
+          apiToken: 'secret-token'
+        }
+      },
+      configBaseDir: workspaceRoot
+    });
+
+    try {
+      const corpora = await fetch(`http://127.0.0.1:${port}/api/corpora`, {
+        headers: {
+          Authorization: 'Bearer secret-token'
+        }
+      }).then((response) => response.json());
+      assert.equal(corpora.corpora.length, 1);
+      assert.equal(corpora.corpora[0].rootPath, indexRoot);
+
+      const corpus = await fetch(`http://127.0.0.1:${port}/api/corpus?name=http-config-test`, {
+        headers: {
+          Authorization: 'Bearer secret-token'
+        }
+      }).then((response) => response.json());
+      assert.equal(corpus.meta.name, 'http-config-test');
+      assert.ok(Array.isArray(corpus.graph.nodes));
+      assert.ok(corpus.graph.nodes.length > 0);
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
