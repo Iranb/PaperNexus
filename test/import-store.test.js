@@ -10,6 +10,7 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
   try {
     const {
       appendImportTaskLog,
+      completeImportTask,
       createImportTask,
       listActiveImportSourceDirs,
       listImportTasks,
@@ -56,6 +57,13 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
     const afterReserve = await listActiveImportSourceDirs(rootPath);
     assert.deepEqual(afterReserve, [task.sourcesDir]);
 
+    await completeImportTask(rootPath, task.id, {
+      ok: true
+    });
+
+    const afterComplete = await listActiveImportSourceDirs(rootPath);
+    assert.deepEqual(afterComplete, []);
+
     const log = await loadImportTaskLog(rootPath, task.id);
     assert.match(log, /queued for processing/);
   } finally {
@@ -94,6 +102,88 @@ test('createImportTask ignores uploaded metadata files and keeps only real paper
     assert.equal(task.files.length, 1);
     assert.equal(task.files[0].originalName, 'sample-paper.md');
     await fs.access(task.files[0].storedPath);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('createImportTask reuses an existing task for identical uploaded content', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-dedupe-'));
+
+  try {
+    const { createImportTask, listImportTasks } = await import('../src/storage/import-store.js');
+    const contentBase64 = Buffer.from('# Same Paper\n\n## Abstract\n\nSame bytes.\n', 'utf8').toString('base64');
+
+    const firstTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'paper-a.md',
+          contentBase64,
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const secondTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'paper-b.md',
+          contentBase64,
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    assert.equal(firstTask.deduped, false);
+    assert.equal(secondTask.id, firstTask.id);
+    assert.equal(secondTask.deduped, true);
+
+    const listed = await listImportTasks(rootPath);
+    assert.equal(listed.tasks.length, 1);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('failed import tasks are not reused for identical uploaded content', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-failed-dedupe-'));
+
+  try {
+    const { createImportTask, failImportTask } = await import('../src/storage/import-store.js');
+    const contentBase64 = Buffer.from('# Retry Paper\n\n## Abstract\n\nRetry after failure.\n', 'utf8').toString('base64');
+
+    const firstTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'retry-paper.md',
+          contentBase64,
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    await failImportTask(rootPath, firstTask.id, new Error('expected failure'));
+
+    const secondTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'retry-paper-copy.md',
+          contentBase64,
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    assert.notEqual(secondTask.id, firstTask.id);
+    assert.equal(secondTask.deduped, false);
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

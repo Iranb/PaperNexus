@@ -1095,6 +1095,7 @@ export async function createImportTaskPayload(candidate, body = {}, options = {}
   return {
     rootPath,
     task,
+    deduped: Boolean(task?.deduped),
     generatedAt: new Date().toISOString()
   };
 }

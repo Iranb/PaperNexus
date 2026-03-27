@@ -46,7 +46,7 @@ import {
   saveStagedCorpusBuild
 } from '../../storage/corpus-store.js';
 import { enqueuePaperEnhancements, pruneEnhancementsForManifest } from '../../storage/enhancement-store.js';
-import { listActiveImportSourceDirs } from '../../storage/import-store.js';
+import { getImportPaths, listActiveImportSourceDirs } from '../../storage/import-store.js';
 import { registerCorpus } from '../../storage/registry.js';
 import {
   cacheMarkdownSource,
@@ -3523,6 +3523,46 @@ async function collectSourcesFromInput(absoluteInput) {
   };
 }
 
+function isTaskImportSourcePath(rootPath, inputPath) {
+  const normalizedPath = path.resolve(String(inputPath || ''));
+  if (!normalizedPath) return false;
+  const { tasksDir } = getImportPaths(rootPath);
+  return normalizedPath.startsWith(`${tasksDir}${path.sep}`);
+}
+
+async function collectPersistentImportManifestSources(rootPath, manifest, existingSourceKeys = new Set()) {
+  const manifestSources = Array.isArray(manifest?.sources) ? manifest.sources : [];
+  const persistentSources = [];
+
+  for (const entry of manifestSources) {
+    if (!entry?.sourceKey || existingSourceKeys.has(entry.sourceKey)) {
+      continue;
+    }
+
+    const inputPath = path.resolve(String(entry.inputPath || entry.sourcePath || ''));
+    if (!inputPath || !isTaskImportSourcePath(rootPath, inputPath)) {
+      continue;
+    }
+    if (!await fileExists(inputPath)) {
+      continue;
+    }
+
+    const extension = path.extname(inputPath).toLowerCase();
+    const kind = entry.kind || (extension === '.pdf' ? 'pdf' : 'markdown');
+    if (kind !== 'pdf' && kind !== 'markdown') {
+      continue;
+    }
+
+    persistentSources.push({
+      kind,
+      inputPath,
+      sourceKey: entry.sourceKey
+    });
+  }
+
+  return persistentSources.sort((left, right) => left.inputPath.localeCompare(right.inputPath));
+}
+
 async function discoverCorpusSources(inputPath, options = {}) {
   const absoluteInputs = normalizeInputPaths(inputPath);
   const dedupedSources = new Map();
@@ -3559,6 +3599,16 @@ async function discoverCorpusSources(inputPath, options = {}) {
     for (const source of entry.sources) {
       dedupedSources.set(source.sourceKey, source);
     }
+  }
+
+  const manifest = await loadSourceManifest(rootPath);
+  const persistentImportSources = await collectPersistentImportManifestSources(
+    rootPath,
+    manifest,
+    new Set(dedupedSources.keys())
+  );
+  for (const source of persistentImportSources) {
+    dedupedSources.set(source.sourceKey, source);
   }
 
   const kinds = new Set([...dedupedSources.values()].map((source) => source.kind));

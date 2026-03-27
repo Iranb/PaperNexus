@@ -44,6 +44,19 @@ test('import API payload helpers create, list, inspect, and show logs for upload
       ]
     });
     assert.equal(created.task.status, 'pending');
+    assert.equal(created.deduped, false);
+
+    const deduped = await api.createImportTaskPayload(indexRoot, {
+      files: [
+        {
+          name: 'api-upload-copy.md',
+          contentBase64: Buffer.from('# API Upload\n\n## Abstract\n\nCreated through the API helper.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    assert.equal(deduped.task.id, created.task.id);
+    assert.equal(deduped.deduped, true);
 
     const listed = await api.listImportTasksPayload(indexRoot);
     assert.equal(listed.tasks.length, 1);

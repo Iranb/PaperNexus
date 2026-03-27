@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getCorpusPaths } from './corpus-store.js';
@@ -13,12 +14,21 @@ import {
 import { slugify, stableHash } from '../lib/utils.js';
 
 const IMPORT_SCHEMA_VERSION = 1;
+const IMPORT_CONTENT_INDEX_SCHEMA_VERSION = 1;
 
 function createEmptyQueue() {
   return {
     version: IMPORT_SCHEMA_VERSION,
     updatedAt: new Date(0).toISOString(),
     jobs: []
+  };
+}
+
+function createEmptyContentIndex() {
+  return {
+    version: IMPORT_CONTENT_INDEX_SCHEMA_VERSION,
+    updatedAt: new Date(0).toISOString(),
+    entries: {}
   };
 }
 
@@ -40,11 +50,34 @@ function createTaskId(inputPaths = [], files = []) {
   return `imp:${stableHash(`${Date.now()}:${process.pid}:${inputPaths.join('|')}:${files.map((file) => file.name).join('|')}:${Math.random()}`, 18)}`;
 }
 
+function createContentFingerprint(content) {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+function createImportFingerprint(rootPath, files = []) {
+  const normalizedFiles = files
+    .map((file) => ({
+      contentFingerprint: file.contentFingerprint,
+      kind: file.kind,
+      sizeBytes: file.sizeBytes
+    }))
+    .sort((left, right) => {
+      const leftKey = `${left.kind}:${left.contentFingerprint}:${left.sizeBytes}`;
+      const rightKey = `${right.kind}:${right.contentFingerprint}:${right.sizeBytes}`;
+      return leftKey.localeCompare(rightKey);
+    });
+  return crypto.createHash('sha256').update(JSON.stringify({
+    rootPath: path.resolve(rootPath),
+    files: normalizedFiles
+  })).digest('hex');
+}
+
 export function getImportPaths(rootPath) {
   const { corpusDir } = getCorpusPaths(rootPath);
   const importsDir = path.join(corpusDir, 'imports');
   return {
     importsDir,
+    contentIndexPath: path.join(importsDir, 'content-index.json'),
     tasksDir: path.join(importsDir, 'tasks'),
     queuePath: path.join(importsDir, 'queue.json'),
     queueLockPath: path.join(rootPath, '.papernexus-imports.lock'),
@@ -79,6 +112,29 @@ async function saveImportQueue(rootPath, queue) {
     version: IMPORT_SCHEMA_VERSION,
     updatedAt: queue.updatedAt || new Date().toISOString(),
     jobs: Array.isArray(queue.jobs) ? queue.jobs : []
+  });
+}
+
+async function loadImportContentIndex(rootPath) {
+  const { contentIndexPath } = getImportPaths(rootPath);
+  const index = (await readJson(contentIndexPath, createEmptyContentIndex())) || createEmptyContentIndex();
+  return {
+    version: index.version || IMPORT_CONTENT_INDEX_SCHEMA_VERSION,
+    updatedAt: index.updatedAt || new Date(0).toISOString(),
+    entries: (index.entries && typeof index.entries === 'object' && !Array.isArray(index.entries))
+      ? index.entries
+      : {}
+  };
+}
+
+async function saveImportContentIndex(rootPath, index) {
+  const { contentIndexPath } = getImportPaths(rootPath);
+  await writeJson(contentIndexPath, {
+    version: IMPORT_CONTENT_INDEX_SCHEMA_VERSION,
+    updatedAt: index.updatedAt || new Date().toISOString(),
+    entries: (index.entries && typeof index.entries === 'object' && !Array.isArray(index.entries))
+      ? index.entries
+      : {}
   });
 }
 
@@ -125,6 +181,21 @@ export async function loadImportTaskLog(rootPath, taskId) {
   return (await fileExists(logPath)) ? readText(logPath) : '';
 }
 
+async function clearImportFingerprintEntry(rootPath, importFingerprint, taskId = null) {
+  if (!importFingerprint) return false;
+  const { queueLockPath } = getImportPaths(rootPath);
+  return withFileLock(queueLockPath, async () => {
+    const index = await loadImportContentIndex(rootPath);
+    const entry = index.entries?.[importFingerprint];
+    if (!entry) return false;
+    if (taskId && entry.taskId && entry.taskId !== taskId) return false;
+    delete index.entries[importFingerprint];
+    index.updatedAt = new Date().toISOString();
+    await saveImportContentIndex(rootPath, index);
+    return true;
+  });
+}
+
 export async function createImportTask(rootPath, options = {}) {
   const { queueLockPath } = getImportPaths(rootPath);
   const inputPaths = Array.isArray(options.inputPaths)
@@ -138,9 +209,42 @@ export async function createImportTask(rootPath, options = {}) {
     throw new Error('At least one non-metadata uploaded file is required to create an import task.');
   }
 
+  const normalizedFiles = files.map((file, index) => {
+    const originalName = path.basename(String(file.name || '').trim() || `upload-${index + 1}.md`);
+    const kind = getFileKind(originalName);
+    const content = Buffer.from(String(file.contentBase64 || ''), 'base64');
+    return {
+      originalName,
+      kind,
+      content,
+      sizeBytes: content.length,
+      mimeType: String(file.mimeType || '').trim() || (kind === 'pdf' ? 'application/pdf' : 'text/markdown'),
+      contentFingerprint: createContentFingerprint(content)
+    };
+  });
+  const importFingerprint = createImportFingerprint(rootPath, normalizedFiles);
+
   return withFileLock(queueLockPath, async () => {
-    const queue = await loadImportQueue(rootPath);
-    const taskId = createTaskId(inputPaths, files);
+    const [queue, contentIndex] = await Promise.all([
+      loadImportQueue(rootPath),
+      loadImportContentIndex(rootPath)
+    ]);
+    const indexedTaskId = contentIndex.entries?.[importFingerprint]?.taskId || null;
+    if (indexedTaskId) {
+      const existingTask = await loadImportTask(rootPath, indexedTaskId);
+      if (existingTask && ['pending', 'running', 'completed'].includes(existingTask.status)) {
+        return {
+          ...existingTask,
+          deduped: true
+        };
+      }
+
+      delete contentIndex.entries[importFingerprint];
+      contentIndex.updatedAt = new Date().toISOString();
+      await saveImportContentIndex(rootPath, contentIndex);
+    }
+
+    const taskId = createTaskId(inputPaths, normalizedFiles.map((file) => ({ name: file.originalName })));
     const now = new Date().toISOString();
     const { sourcesDir } = getImportTaskPaths(rootPath, taskId);
     await ensureDir(sourcesDir);
@@ -148,10 +252,9 @@ export async function createImportTask(rootPath, options = {}) {
     const storedFiles = [];
     const usedNames = new Set();
 
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      const originalName = path.basename(String(file.name || '').trim() || `upload-${index + 1}.md`);
-      const kind = getFileKind(originalName);
+    for (let index = 0; index < normalizedFiles.length; index += 1) {
+      const file = normalizedFiles[index];
+      const { originalName, kind } = file;
       let storedName = sanitizeUploadedFileName(originalName, index);
       let suffix = 2;
       while (usedNames.has(storedName)) {
@@ -163,20 +266,21 @@ export async function createImportTask(rootPath, options = {}) {
       usedNames.add(storedName);
 
       const storedPath = path.join(sourcesDir, storedName);
-      const content = Buffer.from(String(file.contentBase64 || ''), 'base64');
-      await fs.writeFile(storedPath, content);
+      await fs.writeFile(storedPath, file.content);
       storedFiles.push({
         originalName,
         storedName,
         storedPath,
-        sizeBytes: content.length,
-        mimeType: String(file.mimeType || '').trim() || (kind === 'pdf' ? 'application/pdf' : 'text/markdown'),
-        kind
+        sizeBytes: file.sizeBytes,
+        mimeType: file.mimeType,
+        kind,
+        contentFingerprint: file.contentFingerprint
       });
     }
 
     const task = {
       id: taskId,
+      importFingerprint,
       status: 'pending',
       stage: 'queued',
       includeInGraph: false,
@@ -194,13 +298,24 @@ export async function createImportTask(rootPath, options = {}) {
     await saveImportTask(rootPath, task);
     updateQueuedJob(queue, task);
     queue.updatedAt = now;
-    await saveImportQueue(rootPath, queue);
+    contentIndex.entries[importFingerprint] = {
+      taskId,
+      updatedAt: now
+    };
+    contentIndex.updatedAt = now;
+    await Promise.all([
+      saveImportQueue(rootPath, queue),
+      saveImportContentIndex(rootPath, contentIndex)
+    ]);
     await appendImportTaskLog(rootPath, taskId, {
       level: 'info',
       message: `created import task with ${storedFiles.length} file(s)`
     });
 
-    return task;
+    return {
+      ...task,
+      deduped: false
+    };
   });
 }
 
@@ -220,7 +335,7 @@ export async function listImportTasks(rootPath) {
 export async function listActiveImportSourceDirs(rootPath) {
   const { tasks } = await listImportTasks(rootPath);
   return tasks
-    .filter((task) => task.includeInGraph && (task.status === 'running' || task.status === 'completed'))
+    .filter((task) => task.includeInGraph && task.status === 'running')
     .map((task) => task.sourcesDir);
 }
 
@@ -335,5 +450,6 @@ export async function failImportTask(rootPath, taskId, error) {
     level: 'error',
     message: String(error?.message || error || 'Import task failed')
   });
+  await clearImportFingerprintEntry(rootPath, task.importFingerprint, task.id);
   return task;
 }

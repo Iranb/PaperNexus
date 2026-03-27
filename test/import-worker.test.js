@@ -293,3 +293,83 @@ test('import worker clears the worker lock after timeout and retries once', asyn
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('completed import sources are preserved without remaining active import directories', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-preserve-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-preserve-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      corpusStore,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-preserve-test',
+      force: true
+    });
+
+    const firstTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'first-upload.md',
+          contentBase64: Buffer.from('# First Upload\n\n## Abstract\n\nKeep me in the graph.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    await importWorker.runImportQueueUntilIdle(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      maxPasses: 4
+    });
+
+    assert.deepEqual(await importStore.listActiveImportSourceDirs(indexRoot), []);
+
+    const secondTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'second-upload.md',
+          contentBase64: Buffer.from('# Second Upload\n\n## Abstract\n\nAlso keep me in the graph.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    await importWorker.runImportQueueUntilIdle(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      maxPasses: 4
+    });
+
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
+    assert.equal(corpus.meta.paperCount, 3);
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'First Upload'));
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Second Upload'));
+    assert.notEqual(secondTask.id, firstTask.id);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
