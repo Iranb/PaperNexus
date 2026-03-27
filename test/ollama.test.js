@@ -1,5 +1,8 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   adjudicateCrossPaperCandidates,
   inferPaperResearchSemanticsBatch,
@@ -9,6 +12,10 @@ import {
   loadLlmApiKey,
   resolveLlmConfig
 } from '../src/core/llm/ollama.js';
+import {
+  loadCrossPaperJudgmentCache,
+  saveCrossPaperJudgmentCache
+} from '../src/storage/corpus-store.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -388,6 +395,125 @@ test('adjudicateCrossPaperCandidates batches requests and filters unsupported re
     judgments.map((item) => item.relationType),
     ['TRANSFERABLE_TO', 'COMBINES_WITH']
   );
+});
+
+test('adjudicateCrossPaperCandidates reuses cached judgments for identical candidates and config', async () => {
+  let fetchCount = 0;
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const candidate = /"id":"([^"]+)"/.exec(prompt)?.[1] || 'transfer:1';
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          response: JSON.stringify({
+            judgments: [
+              {
+                id: candidate,
+                accepted: true,
+                relationType: 'TRANSFERABLE_TO',
+                confidence: 0.82,
+                evidenceText: 'Works on a neighboring problem.',
+                rationale: 'Transfer looks justified.'
+              }
+            ]
+          })
+        };
+      }
+    };
+  };
+
+  const cache = new Map();
+  const candidates = [
+    {
+      id: 'transfer:1',
+      relationType: 'TRANSFERABLE_TO',
+      source: { id: 'm1', type: 'Method', name: 'Method A', papers: [] },
+      target: { id: 'p1', type: 'Problem', name: 'Problem A', papers: [] },
+      heuristicScore: 0.75
+    }
+  ];
+  const options = {
+    ollamaRelations: true,
+    ollamaModel: 'qwen2.5:0.5b',
+    ollamaUrl: 'http://127.0.0.1:11434',
+    ollamaBatchSize: 1,
+    crossPaperJudgmentCache: cache
+  };
+
+  const first = await adjudicateCrossPaperCandidates(candidates, options);
+  const second = await adjudicateCrossPaperCandidates(candidates, options);
+
+  assert.equal(fetchCount, 1);
+  assert.equal(first.length, 1);
+  assert.equal(second.length, 1);
+  assert.equal(first[0].id, 'transfer:1');
+  assert.equal(second[0].id, 'transfer:1');
+  assert.equal(cache.size, 1);
+});
+
+test('cross-paper judgment cache persists across process-level reruns', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cross-paper-cache-'));
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return {
+      ok: true,
+      async json() {
+        return {
+          response: JSON.stringify({
+            judgments: [
+              {
+                id: 'transfer:1',
+                accepted: true,
+                relationType: 'TRANSFERABLE_TO',
+                confidence: 0.82,
+                evidenceText: 'Works on a neighboring problem.',
+                rationale: 'Transfer looks justified.'
+              }
+            ]
+          })
+        };
+      }
+    };
+  };
+
+  const candidates = [
+    {
+      id: 'transfer:1',
+      relationType: 'TRANSFERABLE_TO',
+      source: { id: 'm1', type: 'Method', name: 'Method A', papers: ['Paper A'] },
+      target: { id: 'p1', type: 'Problem', name: 'Problem A', papers: ['Paper B'] },
+      heuristicScore: 0.75
+    }
+  ];
+  const options = {
+    ollamaRelations: true,
+    ollamaModel: 'qwen2.5:0.5b',
+    ollamaUrl: 'http://127.0.0.1:11434',
+    ollamaBatchSize: 1
+  };
+
+  const firstCache = new Map();
+  await adjudicateCrossPaperCandidates(candidates, {
+    ...options,
+    crossPaperJudgmentCache: firstCache
+  });
+  await saveCrossPaperJudgmentCache(tempRoot, firstCache);
+
+  const secondCache = await loadCrossPaperJudgmentCache(tempRoot);
+  const second = await adjudicateCrossPaperCandidates(candidates, {
+    ...options,
+    crossPaperJudgmentCache: secondCache
+  });
+
+  assert.equal(fetchCount, 1);
+  assert.equal(second.length, 1);
+  assert.equal(second[0].id, 'transfer:1');
+  assert.equal(secondCache.size, 1);
 });
 
 test('batch LLM inference reports batch progress callbacks', async () => {

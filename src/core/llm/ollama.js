@@ -13,7 +13,7 @@ import {
   getDefaultLlmKeychainService,
   getKeychainSecret
 } from '../../lib/keychain.js';
-import { normalizeText, truncate } from '../../lib/utils.js';
+import { normalizeText, stableHash, truncate } from '../../lib/utils.js';
 
 const require = createRequire(import.meta.url);
 let jsonrepair = null;
@@ -582,6 +582,48 @@ function llmRelationsEnabled(options = {}) {
       process.env.PAPERNEXUS_OLLAMA_RELATIONS
     )
   );
+}
+
+function createCrossPaperJudgmentConfigSignature(options = {}) {
+  const config = resolveLlmConfig(options);
+  return stableHash(JSON.stringify({
+    provider: config.provider || '',
+    model: config.model || '',
+    baseUrl: config.baseUrl || '',
+    batchSize: Number(config.batchSize || 0),
+    timeoutMs: Number(config.timeoutMs || 0),
+    maxTokens: Number(config.maxTokens || 0),
+    relationsEnabled: llmRelationsEnabled(options)
+  }), 20);
+}
+
+function createCrossPaperJudgmentCandidateKey(candidate, options = {}) {
+  const candidateDigest = stableHash(JSON.stringify({
+    id: String(candidate?.id || ''),
+    kind: String(candidate?.kind || ''),
+    relationType: String(candidate?.relationType || ''),
+    heuristicScore: Number(candidate?.heuristicScore || 0),
+    source: {
+      id: String(candidate?.source?.id || ''),
+      type: String(candidate?.source?.type || ''),
+      name: String(candidate?.source?.name || ''),
+      papers: Array.isArray(candidate?.source?.papers) ? candidate.source.papers : []
+    },
+    target: {
+      id: String(candidate?.target?.id || ''),
+      type: String(candidate?.target?.type || ''),
+      name: String(candidate?.target?.name || ''),
+      papers: Array.isArray(candidate?.target?.papers) ? candidate.target.papers : []
+    }
+  }), 20);
+
+  return stableHash(JSON.stringify({
+    sourceId: String(candidate?.source?.id || ''),
+    targetId: String(candidate?.target?.id || ''),
+    relationType: String(candidate?.relationType || ''),
+    candidateDigest,
+    configSignature: createCrossPaperJudgmentConfigSignature(options)
+  }), 24);
 }
 
 function llmConfigSupportsSemanticExtraction(config = {}) {
@@ -1593,11 +1635,36 @@ export async function adjudicateCrossPaperCandidates(candidates, options = {}) {
     return [];
   }
 
+  const cache = options.crossPaperJudgmentCache instanceof Map
+    ? options.crossPaperJudgmentCache
+    : null;
   const judgments = [];
   const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const pendingCandidates = [];
 
-  for (let start = 0; start < candidates.length; start += batchSize) {
-    const batch = candidates.slice(start, start + batchSize);
+  for (const candidate of candidates) {
+    const cacheKey = createCrossPaperJudgmentCandidateKey(candidate, options);
+    const cached = cache?.get(cacheKey);
+    if (cached) {
+      judgments.push({
+        id: String(cached.id || candidate.id || ''),
+        accepted: Boolean(cached.accepted),
+        relationType: cached.relationType,
+        confidence: Number.isFinite(Number(cached.confidence)) ? Number(cached.confidence) : 0.65,
+        evidenceText: cleanText(cached.evidenceText || '', 280),
+        rationale: cleanText(cached.rationale || '', 220)
+      });
+      continue;
+    }
+
+    pendingCandidates.push({
+      ...candidate,
+      __cacheKey: cacheKey
+    });
+  }
+
+  for (let start = 0; start < pendingCandidates.length; start += batchSize) {
+    const batch = pendingCandidates.slice(start, start + batchSize);
 
     try {
       const payload = await requestLlmGenerate(config, buildCrossPaperPrompt(batch));
@@ -1608,14 +1675,20 @@ export async function adjudicateCrossPaperCandidates(candidates, options = {}) {
           continue;
         }
 
-        judgments.push({
+        const normalized = {
           id: String(entry.id || ''),
           accepted: Boolean(entry.accepted),
           relationType,
           confidence: Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : 0.65,
           evidenceText: cleanText(entry.evidenceText || '', 280),
           rationale: cleanText(entry.rationale || '', 220)
-        });
+        };
+
+        judgments.push(normalized);
+        const matchedCandidate = batch.find((candidate) => candidate.id === normalized.id);
+        if (matchedCandidate?.__cacheKey && cache) {
+          cache.set(matchedCandidate.__cacheKey, normalized);
+        }
       }
     } catch {
       continue;

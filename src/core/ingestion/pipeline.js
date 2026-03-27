@@ -23,6 +23,7 @@ import {
   backupExistingCorpusRoot,
   getCorpusLockPath,
   getCorpusPaths,
+  loadCrossPaperJudgmentCache,
   getSemanticPaperSnapshotPath,
   hasCorpusGraphStore,
   loadCorpus,
@@ -38,6 +39,7 @@ import {
   removeSemanticPaperSnapshot,
   saveCorpus,
   saveCorpusFastLocalDelta,
+  saveCrossPaperJudgmentCache,
   saveSemanticPaperSnapshot,
   saveSourceManifest,
   saveStage2JobState,
@@ -2394,6 +2396,7 @@ async function applyCrossPaperOllamaJudgments(graph, methods, problems, semantic
   const config = resolveOllamaConfig(options);
   if (!config.enabled || !config.model) return 0;
   const relationSource = `${config.provider || 'llm'}-cross-paper`;
+  const rootPath = options.rootPath ? path.resolve(options.rootPath) : null;
 
   const paperAbstractsByTitle = new Map(
     semanticPapers.map((paper) => [paper.paperTitle, paper.abstract || ''])
@@ -2408,7 +2411,17 @@ async function applyCrossPaperOllamaJudgments(graph, methods, problems, semantic
   if (!candidates.length) return 0;
 
   const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-  const judgments = await adjudicateCrossPaperCandidates(candidates, options);
+  const crossPaperJudgmentCache = rootPath
+    ? await loadCrossPaperJudgmentCache(rootPath)
+    : new Map();
+  const cacheSizeBefore = crossPaperJudgmentCache.size;
+  const judgments = await adjudicateCrossPaperCandidates(candidates, {
+    ...options,
+    crossPaperJudgmentCache
+  });
+  if (rootPath && crossPaperJudgmentCache.size !== cacheSizeBefore) {
+    await saveCrossPaperJudgmentCache(rootPath, crossPaperJudgmentCache);
+  }
   let accepted = 0;
 
   for (const judgment of judgments) {

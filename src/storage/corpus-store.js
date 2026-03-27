@@ -54,6 +54,7 @@ export function getCorpusPaths(rootPath) {
     stagedManifestPath: path.join(stagedDir, 'sources.json'),
     stagedStatePath: path.join(stagedDir, 'state.json'),
     llmStage2StatePath: path.join(llmJobsDir, 'stage2.json'),
+    crossPaperJudgmentCachePath: path.join(llmJobsDir, 'cross-paper-judgments.json'),
     authoritativeSyncQueuePath: path.join(authoritativeSyncDir, 'queue.json'),
     authoritativeSyncLockPath: path.join(authoritativeSyncDir, 'queue.lock'),
     authoritativeSyncWorkerLockPath: path.join(authoritativeSyncDir, 'worker.lock'),
@@ -430,6 +431,38 @@ export async function saveStage2JobState(rootPath, state) {
 export async function removeStage2JobState(rootPath) {
   const { llmStage2StatePath } = getCorpusPaths(rootPath);
   await removePath(llmStage2StatePath);
+}
+
+export async function loadCrossPaperJudgmentCache(rootPath) {
+  const { crossPaperJudgmentCachePath } = getCorpusPaths(rootPath);
+  const data = await readJson(crossPaperJudgmentCachePath, null);
+  if (!data || typeof data !== 'object') {
+    return new Map();
+  }
+
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  const cache = new Map();
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      continue;
+    }
+    const [key, value] = entry;
+    if (typeof key !== 'string' || !value || typeof value !== 'object') {
+      continue;
+    }
+    cache.set(key, value);
+  }
+  return cache;
+}
+
+export async function saveCrossPaperJudgmentCache(rootPath, cache) {
+  const { llmJobsDir, crossPaperJudgmentCachePath } = getCorpusPaths(rootPath);
+  await ensureDir(llmJobsDir);
+  const entries = cache instanceof Map ? Array.from(cache.entries()) : [];
+  await writeJson(crossPaperJudgmentCachePath, {
+    version: 1,
+    entries
+  });
 }
 
 export async function loadSemanticPaperSnapshot(rootPath, sourceKey) {
