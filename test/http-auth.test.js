@@ -290,3 +290,107 @@ test('serveCommand warms MinerU backends in the background when imports are enab
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('serveCommand accepts server-side single file path imports over HTTP', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-server-file-import-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-server-file-import-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const uploadRoot = path.join(workspaceRoot, 'uploads');
+  const uploadPath = path.join(uploadRoot, 'server-side-upload.md');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 54000 + Math.floor(Math.random() * 1000);
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.mkdir(uploadRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+    await fs.writeFile(uploadPath, '# Server Path Upload\n\n## Abstract\n\nHTTP route import.\n', 'utf8');
+
+    const [ingestion, httpApi] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/server/http.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'http-server-file-import-test',
+      force: true
+    });
+
+    const serverHandle = await httpApi.serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: false,
+      config: {
+        storage: {
+          indexDir: indexRoot
+        },
+        serve: {
+          apiToken: 'secret-token'
+        }
+      },
+      configBaseDir: workspaceRoot
+    });
+
+    try {
+      const created = await fetch(`http://127.0.0.1:${port}/api/imports?name=http-server-file-import-test`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer secret-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          serverFilePath: uploadPath
+        })
+      });
+      assert.equal(created.status, 202);
+      const createdPayload = await created.json();
+      assert.equal(createdPayload.deduped, false);
+      assert.equal(createdPayload.task.files[0].originalName, 'server-side-upload.md');
+
+      const deduped = await fetch(`http://127.0.0.1:${port}/api/imports?name=http-server-file-import-test`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer secret-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          serverFilePath: uploadPath
+        })
+      });
+      assert.equal(deduped.status, 202);
+      const dedupedPayload = await deduped.json();
+      assert.equal(dedupedPayload.deduped, true);
+      assert.equal(dedupedPayload.task.id, createdPayload.task.id);
+
+      const invalid = await fetch(`http://127.0.0.1:${port}/api/imports?name=http-server-file-import-test`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer secret-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          serverFilePath: uploadRoot
+        })
+      });
+      assert.equal(invalid.status, 400);
+      const invalidPayload = await invalid.json();
+      assert.match(invalidPayload.error, /regular file/i);
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { backupCorpus, loadCorpus, loadCorpusLite, loadCorpusMeta, loadSourceManifest, resolveCorpus } from '../storage/corpus-store.js';
 import { resolveLlmConfig, getDefaultLlmApiKeyEnv, getDefaultLlmBaseUrl } from '../core/llm/ollama.js';
 import { getNodeLayer, NODE_TYPES } from '../core/graph/schema.js';
@@ -1063,6 +1064,60 @@ function normalizeImportFiles(files = []) {
   })).filter((file) => file.name && file.contentBase64);
 }
 
+function createApiRequestError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+async function normalizeServerImportFile(serverFilePath = '') {
+  const normalizedPath = String(serverFilePath || '').trim();
+  if (!normalizedPath) {
+    return [];
+  }
+
+  if (!path.isAbsolute(normalizedPath)) {
+    throw createApiRequestError('`serverFilePath` must be an absolute path on the API server.');
+  }
+
+  let stats = null;
+  try {
+    stats = await fs.stat(normalizedPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw createApiRequestError(`No file exists at \`serverFilePath\`: ${normalizedPath}`);
+    }
+    throw error;
+  }
+
+  if (!stats.isFile()) {
+    throw createApiRequestError('`serverFilePath` must point to a regular file. Directory recursion is not supported.');
+  }
+
+  return [
+    {
+      name: path.basename(normalizedPath),
+      mimeType: '',
+      content: await fs.readFile(normalizedPath)
+    }
+  ];
+}
+
+async function normalizeImportRequest(body = {}) {
+  const uploadedFiles = normalizeImportFiles(body.files);
+  const serverFilePath = String(body?.serverFilePath || '').trim();
+
+  if (serverFilePath && uploadedFiles.length) {
+    throw createApiRequestError('Provide either `files` or `serverFilePath`, not both.');
+  }
+
+  if (serverFilePath) {
+    return normalizeServerImportFile(serverFilePath);
+  }
+
+  return uploadedFiles;
+}
+
 async function resolveImportInputPaths(rootPath, options = {}) {
   const manifest = await loadSourceManifest(rootPath);
   const manifestInputs = Array.isArray(manifest?.inputPaths)
@@ -1080,9 +1135,9 @@ async function resolveImportInputPaths(rootPath, options = {}) {
 
 export async function createImportTaskPayload(candidate, body = {}, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
-  const files = normalizeImportFiles(body.files);
+  const files = await normalizeImportRequest(body);
   if (!files.length) {
-    throw new Error('At least one uploaded file is required.');
+    throw createApiRequestError('At least one uploaded file is required.');
   }
 
   const inputPaths = await resolveImportInputPaths(rootPath, options);

@@ -135,7 +135,7 @@ Routes:
 `POST /api/imports` currently accepts JSON, not multipart form data.
 All of these routes require the PaperNexus API token as `Authorization: Bearer <token>` or `x-papernexus-token`.
 
-Body shape:
+Body shape for content upload:
 
 ```json
 {
@@ -149,10 +149,21 @@ Body shape:
 }
 ```
 
+Body shape for server-side single-file import:
+
+```json
+{
+  "serverFilePath": "/absolute/path/on/the/api/server/paper.pdf"
+}
+```
+
 Important behavior:
 
 - uploaded files are written under `.papernexus/imports/tasks/<taskId>/sources/`
 - they stay outside the main paper source directory
+- `serverFilePath` is resolved on the API server machine, not on the client that sent the HTTP request
+- `serverFilePath` must point to a single absolute file path; directories and recursive collection are not supported
+- provide either `files` or `serverFilePath`, not both
 - the import worker processes them asynchronously
 - successful tasks can merge into the main graph
 - task-specific logs are available through `GET /api/imports/:taskId/log`

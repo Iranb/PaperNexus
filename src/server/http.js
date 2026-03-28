@@ -514,7 +514,7 @@ export async function serveCommand(options = {}) {
 
       await sendFile(response, absolutePath);
     } catch (error) {
-      const statusCode = error?.code === 'ENOENT' ? 404 : 500;
+      const statusCode = Number(error?.statusCode || 0) || (error?.code === 'ENOENT' ? 404 : 500);
       sendJson(response, statusCode, {
         error: error.message || 'Internal Server Error'
       });

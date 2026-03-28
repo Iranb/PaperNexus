@@ -14,11 +14,13 @@ PaperNexus is a local-first research knowledge graph system for papers.
 Key capabilities:
 
 - ingest PDF or Markdown sources
-- use remote `mineru` over HTTP as the preferred default PDF-to-Markdown parser, with `docling` and `marker` as switchable fallbacks
+- use `docling` as the repo-default PDF-to-Markdown parser, while allowing deployments to override to remote `mineru` over HTTP or local `marker`
 - build and incrementally update a multilayer research graph
 - store the authoritative graph in Kuzu by default
 - keep a lite JSON graph for fast read paths
+- accept queued API imports with per-task logs and content-fingerprint dedupe
 - run background theory/storyline enhancement workers
+- run import and authoritative-sync background workers behind `serve`
 - expose CLI, local web UI, and MCP server workflows
 
 ## Live Graph Access Policy
@@ -161,9 +163,10 @@ Guidelines:
 - Multiple `sources.inputs` may feed one corpus; that is not the same as cross-corpus federation.
 - `~` expansion in config paths is supported and should resolve to the user home directory.
 - The graph backend defaults to Kuzu when the `kuzu` package is available.
-- The default PDF parser is remote `mineru` in HTTP API mode; agents should prefer this path whenever a task needs PDF materialization.
+- Repo default: `docling` is the default PDF parser unless config overrides it.
+- Deployment policy: do not assume the parser from repo defaults alone. Check `config.json`, CLI flags, or the running service config first. Many deployed corpora pin `analyze.pdfParser = "mineru"` with `analyze.mineruHttpUrl`.
 - For MinerU HTTP API, use `analyze.mineruHttpUrl` or `--mineru-http-url` to specify the remote endpoint (e.g., `http://211.71.76.29:30000`).
-- Agent policy: when the source is a PDF, try the remote MinerU path first; do not switch to local Docling or Marker unless the remote endpoint is unavailable or the task explicitly requires a local parser.
+- If a live deployment is already configured for remote MinerU, prefer staying on that configured path rather than switching parsers ad hoc.
 - Remote MinerU failure handling should default to stopping with a warning. Only use `--mineru-remote-failure docling` when the task explicitly wants an automatic fallback.
 - For local macOS OCR with Docling, use `analyze.doclingOcrEngine = "ocrmac"` or `--docling-ocr-engine ocrmac`.
 - For Docling PDF parsing backend, use `analyze.doclingPdfBackend` or `--docling-pdf-backend`. Available backends: `pypdfium2` (recommended), `pdfplumber`, `fitz`, `pypdf`.
@@ -183,6 +186,12 @@ Guidelines:
 - `papernexus optimize` is still available as a convenience path for stages 2-5 together.
 - Ad hoc PDF/Markdown uploads should normally enter through queued import tasks under `.papernexus/imports/`, not by moving files directly into the main paper source tree during automation.
 - Import tasks keep per-task `events.log` files and stay in a separate directory even after their parsed content is merged into the main graph.
+- `POST /api/imports` supports two input styles:
+  - client-uploaded file content through `files[].contentBase64`
+  - server-side single-file collection through `serverFilePath`
+- `serverFilePath` is resolved on the API server machine, must be an absolute single-file path, and does not support directory recursion.
+- `POST /api/imports` now content-dedupes identical uploads. When the same file content is uploaded again for the same corpus, the API can return the existing task with `deduped: true` instead of creating a new task.
+- Completed import task directories should not be treated as long-lived active scan roots. Completed imported sources are preserved through manifest-backed reuse instead of repeated directory rescans.
 - Agent live-graph policy:
   - ingest new papers through `POST /api/imports`
   - read graph state through the typed query APIs first
@@ -215,6 +224,8 @@ Guidelines:
 - When using `mineru` with a remote HTTP backend, PaperNexus now probes reachability first. Default behavior is to stop on unreachable backends. Set `--mineru-remote-failure docling` or `analyze.mineruRemoteFailureMode = "docling"` to fall back to Docling instead.
 - `watch --force` only matters for the initial startup pass; later file-change reindexes run with `force: false` so background watching stays incremental.
 - `service install` defaults to both `watch` and `serve` if `--services` is omitted.
+- `serve` starts the dashboard/API plus the enhancement worker, import worker, and authoritative sync worker.
+- When a MinerU HTTP backend is configured, `serve` also performs a best-effort background MinerU warmup on startup. This should never block server startup, so warmup success belongs in logs, not startup gating.
 - `papernexus logs watch` prints the current auto-index tmp log path and current log contents.
 - All `/api/*` routes served by `papernexus serve` now require a token.
 - Configure the server token with `serve.apiToken` or `PAPERNEXUS_API_TOKEN`.
@@ -331,7 +342,7 @@ npm test
 
 ## Service Model
 
-PaperNexus background services currently target macOS `launchd`.
+PaperNexus built-in background service installation currently targets macOS `launchd`.
 
 Supported services:
 
@@ -355,6 +366,45 @@ Watch log:
 ```bash
 papernexus logs watch
 ```
+
+### Linux PM2 Operation
+
+On Linux, prefer a process supervisor such as `pm2` instead of `papernexus service install`.
+
+If you only need the UI/API and import processing:
+
+```bash
+pm2 start "node ./src/cli/index.js serve --config /data16T/hyq/.papernexus/config.json" --name papernexus-serve --cwd /data16T/hyq/autoresearch/PaperNexus
+```
+
+If you also want background file watching:
+
+```bash
+pm2 start "node ./src/cli/index.js watch --config /data16T/hyq/.papernexus/config.json" --name papernexus-watch --cwd /data16T/hyq/autoresearch/PaperNexus
+```
+
+Persist across reboot:
+
+```bash
+pm2 save
+pm2 startup systemd -u hyq --hp /data16T/hyq
+```
+
+Operational commands:
+
+```bash
+pm2 status
+pm2 logs papernexus-serve
+pm2 restart papernexus-serve
+pm2 restart papernexus-watch
+```
+
+Notes:
+
+- keep `serve.apiToken` in the config file or provide it through environment
+- use `serve` alone when you only need the API/UI and queued import handling
+- add `watch` only when you also want filesystem-triggered incremental reindexing
+- after `pm2 startup`, run the generated `sudo` command once on the server so PM2 itself is restored on boot
 
 ## Graph Mutation Support
 

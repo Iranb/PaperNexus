@@ -16,6 +16,12 @@ import { slugify, stableHash } from '../lib/utils.js';
 const IMPORT_SCHEMA_VERSION = 1;
 const IMPORT_CONTENT_INDEX_SCHEMA_VERSION = 1;
 
+function createImportValidationError(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
 function createEmptyQueue() {
   return {
     version: IMPORT_SCHEMA_VERSION,
@@ -36,7 +42,7 @@ function getFileKind(fileName) {
   const extension = path.extname(String(fileName || '')).toLowerCase();
   if (extension === '.pdf') return 'pdf';
   if (extension === '.md' || extension === '.markdown') return 'markdown';
-  throw new Error(`Unsupported import file "${fileName}". Expected .pdf, .md, or .markdown.`);
+  throw createImportValidationError(`Unsupported import file "${fileName}". Expected .pdf, .md, or .markdown.`);
 }
 
 function sanitizeUploadedFileName(fileName, index = 0) {
@@ -52,6 +58,18 @@ function createTaskId(inputPaths = [], files = []) {
 
 function createContentFingerprint(content) {
   return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+function resolveImportFileContent(file = {}) {
+  if (Buffer.isBuffer(file.content)) {
+    return file.content;
+  }
+
+  if (file.content instanceof Uint8Array) {
+    return Buffer.from(file.content);
+  }
+
+  return Buffer.from(String(file.contentBase64 || ''), 'base64');
 }
 
 function createImportFingerprint(rootPath, files = []) {
@@ -212,7 +230,7 @@ export async function createImportTask(rootPath, options = {}) {
   const normalizedFiles = files.map((file, index) => {
     const originalName = path.basename(String(file.name || '').trim() || `upload-${index + 1}.md`);
     const kind = getFileKind(originalName);
-    const content = Buffer.from(String(file.contentBase64 || ''), 'base64');
+    const content = resolveImportFileContent(file);
     return {
       originalName,
       kind,

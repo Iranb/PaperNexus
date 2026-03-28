@@ -148,3 +148,132 @@ test('API payload helpers prefer the configured storage index over stale registr
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('import API payload helpers can create tasks from a server-side single file path', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const uploadRoot = path.join(workspaceRoot, 'uploads');
+  const uploadPath = path.join(uploadRoot, 'server-side-upload.md');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.mkdir(uploadRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+    await fs.writeFile(uploadPath, '# Server Path Upload\n\n## Abstract\n\nLoaded from a server-side path.\n', 'utf8');
+
+    const [ingestion, api] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/server/api.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-api-server-path-test',
+      force: true
+    });
+
+    const created = await api.createImportTaskPayload(indexRoot, {
+      serverFilePath: uploadPath
+    });
+    assert.equal(created.task.status, 'pending');
+    assert.equal(created.deduped, false);
+    assert.equal(created.task.files.length, 1);
+    assert.equal(created.task.files[0].originalName, 'server-side-upload.md');
+    assert.notEqual(created.task.files[0].storedPath, uploadPath);
+
+    const deduped = await api.createImportTaskPayload(indexRoot, {
+      serverFilePath: uploadPath
+    });
+    assert.equal(deduped.task.id, created.task.id);
+    assert.equal(deduped.deduped, true);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import API payload helpers reject invalid server-side file path requests', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-invalid-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-invalid-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const uploadRoot = path.join(workspaceRoot, 'uploads');
+  const uploadPath = path.join(uploadRoot, 'server-side-upload.md');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.mkdir(uploadRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+    await fs.writeFile(uploadPath, '# Server Path Upload\n', 'utf8');
+
+    const [ingestion, api] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/server/api.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-api-server-path-invalid-test',
+      force: true
+    });
+
+    await assert.rejects(
+      () => api.createImportTaskPayload(indexRoot, {
+        serverFilePath: 'relative/path/paper.md'
+      }),
+      (error) => {
+        assert.equal(error.statusCode, 400);
+        assert.match(error.message, /absolute path/i);
+        return true;
+      }
+    );
+
+    await assert.rejects(
+      () => api.createImportTaskPayload(indexRoot, {
+        serverFilePath: uploadRoot
+      }),
+      (error) => {
+        assert.equal(error.statusCode, 400);
+        assert.match(error.message, /regular file/i);
+        return true;
+      }
+    );
+
+    await assert.rejects(
+      () => api.createImportTaskPayload(indexRoot, {
+        serverFilePath: uploadPath,
+        files: [
+          {
+            name: 'api-upload.md',
+            contentBase64: Buffer.from('# API Upload\n', 'utf8').toString('base64'),
+            mimeType: 'text/markdown'
+          }
+        ]
+      }),
+      (error) => {
+        assert.equal(error.statusCode, 400);
+        assert.match(error.message, /either `files` or `serverFilePath`/i);
+        return true;
+      }
+    );
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
