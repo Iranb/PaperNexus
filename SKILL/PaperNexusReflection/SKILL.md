@@ -9,8 +9,9 @@ Use this skill when the task is about experiment reflection in the PaperNexus re
 
 ## Live Graph Access Policy
 
-For a running user graph, use authenticated HTTP API requests only.
+For a running user graph, prefer the local Python wrappers in `scripts/` as the default interface. They call the authenticated HTTP API underneath and are the preferred agent path.
 
+If both a remote server API and a local checkout are available, use the remote API path first.
 Do not use local CLI commands such as `papernexus analyze`, `papernexus enhance --once`, or staged pipeline commands against the live graph when the goal is to ingest a paper, inspect a reflection overlay, or answer a graph-backed question.
 
 Allowed live-graph reflection entrypoints:
@@ -66,10 +67,20 @@ Do not add `--force` by default here. Reflection refresh should normally follow 
 
 Typical live-graph update path:
 
-1. Upload the PDF or Markdown through `POST /api/imports?name=<corpus>`.
-2. Poll `GET /api/imports/:taskId` and `GET /api/imports/:taskId/log` until the task completes.
-3. Prefer reading the refreshed reflection view through `POST /api/reflection-chain`.
-4. Use `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>` when you need raw overlay cards or anchors for a specific paper.
+1. If a PDF or Markdown file exists only on the local agent machine, stage it onto the API server with `python3 scripts/pn_stage_sync.py`.
+2. Submit one staged file with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`.
+3. Poll with `python3 scripts/pn_import_queue.py wait <taskId>` until the task completes.
+4. Prefer reading the refreshed reflection view through `python3 scripts/pn_research_chains.py reflection-chain "<topic>"`.
+5. Use `python3 scripts/pn_research_chains.py paper-enhancement --paper-id <paperId>` when you need raw overlay cards or anchors for a specific paper.
+
+Do not default to `files[].contentBase64` for large local PDFs. Prefer stable remote staging such as `rsync` and then use `serverFilePath`.
+
+Read queue state like this:
+
+- `pending` + `queued`: the import is waiting for worker pickup
+- `running`: use `stage` and the newest `/log` lines to see whether it is in `materialize`, `llm-optimize`, or `fast-commit`
+- `completed`: safe to query reflection outputs
+- `failed`: report `error.message`, current `stage`, and recent log lines before retrying
 
 Equivalent repo-local staged path for isolated development only:
 
@@ -133,10 +144,10 @@ At the paper level, look under the enhancement overlay and inspect:
 ## Recommended Reflection Workflow
 
 1. Confirm the import task or corpus data is current through the API.
-2. If a new source is needed, submit it through `POST /api/imports`.
+2. If a new source is needed, use `pn_stage_sync.py` and `pn_import_submit.py`.
 3. Wait until the import task completes.
-4. Read `POST /api/reflection-chain` for typed innovation-experiment-outcome-reflection chains.
-5. Read `POST /api/evidence-chain` or `POST /api/research-brief` if you also need supporting paper claims and limitations.
+4. Read `pn_research_chains.py reflection-chain` for typed innovation-experiment-outcome-reflection chains.
+5. Read `pn_research_chains.py evidence-chain` or `pn_research_chains.py research-brief` if you also need supporting paper claims and limitations.
 6. Summarize in this order:
 
 - innovation
@@ -222,3 +233,10 @@ Useful API checks:
 - `GET /api/imports/:taskId/log`
 - `GET /api/enhancements?name=<corpus>`
 - `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>`
+
+Preferred script checks:
+
+- `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> list`
+- `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> status <taskId>`
+- `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> log <taskId>`
+- `python3 scripts/pn_research_chains.py --api-base <url> --corpus <corpus> reflection-chain "<topic>"`

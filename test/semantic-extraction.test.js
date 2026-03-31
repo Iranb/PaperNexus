@@ -157,6 +157,102 @@ The framework improves robustness to unknown classes on OpenWorldBench.
   }
 });
 
+test('analyzeCorpus runs llm-primary semantic extraction for a fresh markdown corpus without a separate optimize step', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-llm-primary-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-llm-primary-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let fetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper.md'), `# Fresh Markdown LLM Primary
+
+Alice Example
+
+## Abstract
+
+We study direct analyze llm primary activation.
+
+## Method
+
+We use a reproducible semantic extractor.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      fetchCount += 1;
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const paper = extractPromptPapers(prompt)[0];
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: [
+                      {
+                        id: paper?.id || 'paper-1',
+                        problems: [
+                          {
+                            name: 'direct analyze llm primary activation',
+                            type: 'Problem',
+                            evidenceText: 'We study direct analyze llm primary activation.',
+                            sectionHeading: 'Abstract',
+                            sectionRole: 'abstract',
+                            confidence: 0.94
+                          }
+                        ]
+                      }
+                    ]
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [{ analyzeCorpus }, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    const result = await analyzeCorpus(tempCorpusRoot, {
+      name: 'semantic-extraction-llm-primary-test',
+      force: true,
+      semanticExtraction: 'llm-primary',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key'
+    });
+
+    assert.equal(fetchCount, 1);
+    assert.equal(result.meta.llm.semanticExtraction.participatedPaperCount, 1);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionMode, 'llm-primary');
+    assert.equal(snapshot.llm.semanticExtractionModeEffective, 'llm-primary');
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('analyzeCorpus records which papers participated in auto semantic extraction and which fell back', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-auto-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-auto-corpus-'));

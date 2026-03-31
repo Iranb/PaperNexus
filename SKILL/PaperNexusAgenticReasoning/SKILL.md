@@ -9,9 +9,11 @@ Use this skill when the goal is not just to retrieve graph facts, but to reason 
 
 ## Live Graph Access Policy
 
-For a running user graph, use authenticated HTTP API requests only.
+For a running user graph, prefer the local Python wrappers in `scripts/` as the default interface. They still use the authenticated HTTP API underneath, but they are safer for agents than raw `curl`.
 
+If both a remote server API and a local checkout are available, use the remote API path first.
 Do not call local CLI helpers such as `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, `papernexus brainstorm`, or local staged build commands against the live graph.
+If a PDF exists only on the local agent machine, stage it onto the API server first with `python3 scripts/pn_stage_sync.py`, then import it with `python3 scripts/pn_import_submit.py`. Do not default to `files[].contentBase64` for large local PDFs.
 
 Allowed live-graph entrypoints:
 
@@ -110,19 +112,19 @@ Do not start with broad web search if the graph already has enough structure to 
 
 In PaperNexus, the default live-graph reasoning inputs are:
 
-- `POST /api/query`
-- `POST /api/context`
-- `POST /api/impact`
-- `POST /api/ideas`
-- `POST /api/brainstorm`
-- `POST /api/path-trace`
-- `POST /api/evidence-chain`
-- `POST /api/reflection-chain`
-- `POST /api/research-brief`
-- `POST /api/brainstorm-brief`
-- `POST /api/theory-brief`
-- `POST /api/storyline-brief`
-- `GET /api/paper-enhancement` when paper-local overlay detail is still needed
+- `python3 scripts/pn_graph_query.py query`
+- `python3 scripts/pn_graph_query.py context`
+- `python3 scripts/pn_graph_query.py impact`
+- `python3 scripts/pn_graph_query.py ideas`
+- `python3 scripts/pn_graph_query.py brainstorm`
+- `python3 scripts/pn_research_chains.py path-trace`
+- `python3 scripts/pn_research_chains.py evidence-chain`
+- `python3 scripts/pn_research_chains.py reflection-chain`
+- `python3 scripts/pn_research_chains.py research-brief`
+- `python3 scripts/pn_research_chains.py brainstorm-brief`
+- `python3 scripts/pn_research_chains.py theory-brief`
+- `python3 scripts/pn_research_chains.py storyline-brief`
+- `python3 scripts/pn_research_chains.py paper-enhancement` when paper-local overlay detail is still needed
 
 For ideation, prefer the brainstorm-quality node view over the raw full graph. The full graph can still contain supporting nodes that are useful for provenance but too noisy to use as primary anchors.
 
@@ -165,9 +167,9 @@ Do not let the reasoning jump ahead without filling these fields.
 ### A. Understand a topic
 
 ```bash
-curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/query" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":8}}'
-curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/context" --data '{"name":"<corpus>","query":"<topic>","options":{"nodeView":"brainstorm"}}'
-curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/evidence-chain" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":5}}'
+python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" query "<topic>" --limit 8
+python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" context "<topic>" --node-view brainstorm
+python3 scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" evidence-chain "<topic>" --limit 5
 ```
 
 Use this to answer:
@@ -180,9 +182,9 @@ Use this to answer:
 ### B. Generate a new research direction
 
 ```bash
-curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/ideas" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":6}}'
-curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/brainstorm" --data '{"name":"<corpus>","query":"<topic>","options":{"mode":"converge","limit":6}}'
-curl -sS -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" "http://<host>:4821/api/brainstorm-brief" --data '{"name":"<corpus>","query":"<topic>","options":{"limit":6}}'
+python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" ideas "<topic>" --limit 6
+python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" brainstorm "<topic>" --mode converge --limit 6
+python3 scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" brainstorm-brief "<topic>" --limit 6
 ```
 
 Use this to produce:
@@ -304,9 +306,18 @@ If source papers changed, refresh the live graph through the import API before t
 4. `GET /api/corpus?name=<corpus>`
 5. `GET /api/enhancements?name=<corpus>`
 
+Read import state like this:
+
+- `pending` + `queued`: waiting for the worker
+- `running` + `materialize|llm-optimize|fast-commit`: import is active; use `/log` for the freshest evidence
+- `completed` + `completed`: import finished; then inspect graph state
+- `failed`: read `error.message` and the newest log lines before taking any next step
+
 Agent rule:
 
 - prefer the existing remote `serve` + import workflow for PDF ingestion
+- if a PDF exists only on the local agent machine, stage it onto the API server first and then call `POST /api/imports` with `serverFilePath`
+- do not default to `files[].contentBase64` for large local PDFs; prefer stable remote staging such as `rsync`
 - do not replace live-graph import or query requests with local CLI fallback
 - if import or enhancement is blocked by missing API capability, lock contention, or missing data, report the blocker directly
 - do not keep retrying the same live-graph path without new evidence

@@ -1,31 +1,184 @@
 ---
 name: papernexus
-description: Use this skill when working inside the PaperNexus repository to understand its API-first graph workflow, corpus layout, storage backends, enhancement worker, and service model while keeping live-graph operations on authenticated HTTP endpoints.
+description: Use when working in PaperNexus and the task touches a live corpus, remote graph build, queued API import, or authenticated server-backed query flow.
 ---
 
 # PaperNexus
 
-Use this skill when the task is about the PaperNexus codebase itself.
+Use this skill when the task is about the PaperNexus codebase or a running PaperNexus corpus.
 
-## What This Repo Is
+## First Decision
 
-PaperNexus is a local-first research knowledge graph system for papers.
+- live remote corpus or running server: prefer the local Python wrappers in `scripts/` as the default control plane over raw `curl`
+- repo-local isolated development or fixture testing: use CLI stage commands
 
-Key capabilities:
+If both a remote server API and a local repo checkout are available, recommend the remote API path first.
+Do not use local `papernexus analyze`, `papernexus materialize`, `papernexus stage1-4`, `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, or `papernexus brainstorm` as the control plane for a live user graph.
 
-- ingest PDF or Markdown sources
-- use `docling` as the repo-default PDF-to-Markdown parser, while allowing deployments to override to remote `mineru` over HTTP or local `marker`
-- build and incrementally update a multilayer research graph
-- store the authoritative graph in Kuzu by default
-- keep a lite JSON graph for fast read paths
-- accept queued API imports with per-task logs and content-fingerprint dedupe
-- run background theory/storyline enhancement workers
-- run import and authoritative-sync background workers behind `serve`
-- expose CLI, local web UI, and MCP server workflows
+## Default Script Entry Points
+
+For live remote work, prefer these wrappers first:
+
+- `python3 scripts/pn_stage_sync.py`
+- `python3 scripts/pn_import_submit.py`
+- `python3 scripts/pn_import_queue.py`
+- `python3 scripts/pn_graph_query.py`
+- `python3 scripts/pn_research_chains.py`
+
+Why:
+
+- they hide token handling and request shape details
+- they reduce route-shape mistakes
+- they make `rsync + serverFilePath + queue polling` the default import path
+- they are easier for agents to call consistently than raw `curl`
+
+Configuration defaults:
+
+- `PAPERNEXUS_API_BASE_URL`
+- `PAPERNEXUS_API_TOKEN`
+- `PAPERNEXUS_CORPUS`
+- or keychain-backed token lookup via `PAPERNEXUS_API_TOKEN_SOURCE=os_keychain`, `PAPERNEXUS_API_TOKEN_SERVICE`, and `PAPERNEXUS_API_TOKEN_ACCOUNT`
+
+## Remote Graph Build Checklist
+
+1. Resolve connection settings before touching the graph.
+   - Find the API base URL, corpus name, and token source from runtime or workflow config.
+   - Prefer explicit workflow settings such as `papernexusApiBaseUrl`, `papernexusApiTokenSource`, `papernexusApiTokenService`, and `papernexusApiTokenAccount` when they exist.
+   - `GET /api/health` also requires `Authorization: Bearer <token>`.
+2. Confirm the server is reachable.
+   - Call `GET /api/health` or `GET /api/corpora`.
+   - If auth fails, fix token lookup first. Do not guess.
+3. Decide how the PDF reaches the API server machine.
+   - If the file is already on the API server, use `serverFilePath`.
+   - If the file exists only on the local agent machine, sync it to a remote staging directory first, then use `serverFilePath`.
+   - Do not send local PDFs through `files[].contentBase64` by default. Large PDFs easily exceed shell or request limits and are much less reliable than server-side staging.
+   - Treat `files[].contentBase64` as a last resort for small operator-approved uploads, not the default path for local PDFs.
+   - `serverFilePath` must be one absolute file on the API server. It is not a directory input and does not recurse.
+4. Prefer stable file staging for local PDFs.
+   - Most stable default: `rsync` to a remote staging directory on the same machine that serves the API.
+   - Recommended flags that work in this environment: `rsync -avz --partial --partial-dir=.rsync-partial --progress --checksum --timeout=60`.
+   - Use ASCII staging paths such as `/tmp/papernexus-import-staging/<job-id>/`.
+   - If the API host is a gateway, container, or different machine from the SSH target, do not guess. Ask for the real server-side staging path first.
+   - Prefer `python3 scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>` over hand-written `rsync`.
+5. Import and poll.
+   - submit with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`
+   - poll with `python3 scripts/pn_import_queue.py wait <taskId>`
+   - on failure, report the exact stage, recent log lines, and likely blocker; do not retry blindly
+6. Read graph state through typed APIs first.
+   - prefer `python3 scripts/pn_graph_query.py` and `python3 scripts/pn_research_chains.py`
+   - use `GET /api/corpus` only when the typed APIs cannot answer the task
+
+## Queue Status
+
+Use this order when checking import progress:
+
+1. `GET /api/imports?name=<corpus>` to find the newest task id
+2. `GET /api/imports/:taskId` to inspect structured state
+3. `GET /api/imports/:taskId/log` to inspect stage evidence
+
+Read task state like this:
+
+- `status: pending` with `stage: queued`
+  The task exists but the import worker has not reserved it yet.
+- `status: running`
+  The worker is processing it. Read `stage` to know where it is stuck.
+- `status: completed` with `stage: completed`
+  The import pipeline finished. Then check `result.fastCommitted` and `result.authoritativeSync`.
+- `status: failed`
+  The task stopped with `error.message`. Always read the task log before deciding what to do next.
+
+Current stage meanings:
+
+- `queued`
+  Task created, waiting for worker pickup.
+- `materialize`
+  Stage 1 style work: parse PDF or read Markdown, refresh markdown cache, and build heuristic snapshots.
+- `llm-optimize`
+  LLM enrichment is running.
+- `fast-commit`
+  The import path is committing changed sources into the live graph.
+- `completed`
+  Finished successfully.
+
+Fields worth reporting together:
+
+- `id`
+- `status`
+- `stage`
+- `createdAt`
+- `startedAt`
+- `updatedAt`
+- `finishedAt`
+- `includeInGraph`
+- `error.message`
+- `result.materialized`
+- `result.optimized`
+- `result.fastCommitted`
+- `result.authoritativeSync`
+
+Interpretation rules:
+
+- if `status` is `pending` and `stage` is still `queued`, the task is waiting for the worker
+- if `status` is `running`, use the newest `/log` lines as the source of truth for where it is blocked
+- if `status` is `completed` but `result.authoritativeSync.status` is `pending`, the import task finished but authoritative sync is still catching up
+- if `status` is `failed`, report the current `stage`, `error.message`, and the newest log lines; do not blindly resubmit
+- if the same upload returns `deduped: true`, reuse that existing task id instead of expecting a brand-new task
+
+Important debugging rule:
+
+- when a human asks "is it queued, running, or done?", answer from `GET /api/imports/:taskId`
+- when a human asks "what is it doing right now?" or "why is it stuck?", answer from `GET /api/imports/:taskId/log`
+
+## Minimal Remote Example
+
+```bash
+# 1. Stage a local PDF or Markdown directory onto the API server machine.
+python3 scripts/pn_stage_sync.py \
+  --ssh-target hyq@211.71.76.29 \
+  --remote-dir /tmp/papernexus-import-staging/debias-2026-03-30 \
+  "/Users/iranb/Documents/papers/2025/去偏学习/"
+
+# 2. Import one staged file through the API.
+python3 scripts/pn_import_submit.py \
+  --api-base "http://<host>:4821" \
+  --corpus "<corpus>" \
+  --server-file-path "/tmp/papernexus-import-staging/debias-2026-03-30/partial-label-learning-with-a-reject-option.pdf"
+
+# 3. Poll until the task finishes.
+python3 scripts/pn_import_queue.py \
+  --api-base "http://<host>:4821" \
+  --corpus "<corpus>" \
+  wait "<taskId>" --timeout 1800 --interval 2
+
+# 4. Query the live graph.
+python3 scripts/pn_graph_query.py \
+  --api-base "http://<host>:4821" \
+  --corpus "<corpus>" \
+  query "partial label learning" --limit 8
+```
+
+## Script Routing Guide
+
+- local file or directory to remote staging:
+  `python3 scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>`
+- staged single-file import:
+  `python3 scripts/pn_import_submit.py --api-base <url> --corpus <corpus> --server-file-path <remote-file>`
+- queue inspection:
+  `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> list|status|log|wait ...`
+- typed graph query:
+  `python3 scripts/pn_graph_query.py --api-base <url> --corpus <corpus> query|context|impact|ideas|brainstorm ...`
+- typed chains and briefs:
+  `python3 scripts/pn_research_chains.py --api-base <url> --corpus <corpus> path-trace|evidence-chain|reflection-chain|research-brief|theory-brief|storyline-brief|brainstorm-brief|paper-enhancement ...`
+
+Use raw HTTP only when:
+
+- you are debugging the wrappers themselves
+- a new API endpoint is not wrapped yet
+- the user explicitly asks for raw request examples
 
 ## Live Graph Access Policy
 
-When touching a running user graph, use the authenticated HTTP API only.
+When touching a running user graph, use the authenticated HTTP API as the primary and preferred interface.
 
 This applies to:
 
@@ -35,7 +188,7 @@ This applies to:
 - reading enhancement overlays for a paper or corpus
 - performing graph-backed query or reasoning requests
 
-Do not use local CLI commands such as `papernexus analyze`, `papernexus materialize`, `papernexus stage1-4`, `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, or `papernexus brainstorm` against a live user graph.
+Do not recommend local CLI commands such as `papernexus analyze`, `papernexus materialize`, `papernexus stage1-4`, `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, or `papernexus brainstorm` against a live user graph unless the user explicitly asks for isolated local repo testing.
 
 Allowed live-graph entrypoints:
 
@@ -66,95 +219,47 @@ Every `/api/*` request must include:
 
 - `Authorization: Bearer <token>`
 
+## Route Shape Warning
+
+The current PaperNexus API uses flat endpoint names plus query params or JSON bodies.
+
+Do not invent REST-style paths such as:
+
+- `/api/corpora/<corpus>`
+- `/api/corpora/<corpus>/query`
+- `/api/corpora/<corpus>/search`
+- `/api/corpora/<corpus>/papers`
+- `/api/papers/<paperId>`
+- `/api/graph/status`
+- `/api/graph/presence`
+
+Use the current route shapes instead:
+
+- corpus list: `GET /api/corpora`
+- corpus payload: `GET /api/corpus?name=<corpus>`
+- corpus meta: `GET /api/corpus-meta?name=<corpus>`
+- graph search/query: `POST /api/query` with `{ "name": "<corpus>", "query": "<text>" }`
+- paper overlay detail: `GET /api/paper-enhancement?name=<corpus>&paperId=<paperId>`
+
+Important failure signature:
+
+- if an unknown `GET /api/*` path returns `ENOENT` mentioning `web/api/...`, the request likely missed every API route and fell through to the static web file handler
+- treat that as a wrong endpoint shape, not as missing graph data
+- fix the route first; do not keep retrying the same URL
+
 Important query policy:
 
 - prefer the typed HTTP query APIs over raw graph downloads whenever they fit the task
 - use `GET /api/corpus` only when you truly need raw graph inspection beyond what the typed APIs expose
 - if the available API payload is insufficient for the requested reasoning task, report that the server lacks the needed query endpoint; do not fall back to local CLI against the live graph
 
-## Important Paths
+## Defaults To Know
 
-Assume these defaults unless the repo config says otherwise:
-
-- paper source default: `/Users/iranb/.papernexus/papers`
-- index root default: `/Users/iranb/.papernexus/index-store`
-- runtime config default: `/Users/iranb/.papernexus/config.json`
-- launchd logs: `/Users/iranb/.papernexus/logs`
-
-Inside each corpus root, PaperNexus writes:
-
-- `.papernexus/graph.kuzu` as the default authoritative graph
-- `.papernexus/graph.lite.json` as the lite read index
-- `.papernexus/meta.json`
-- `.papernexus/sources.json`
-- `.papernexus/papers/*.json` for per-paper semantic snapshots
-- `.papernexus/markdown/` as the unified markdown working cache for both PDF-derived markdown and copied source markdown
-- `.papernexus/imports/` for queued ad hoc upload tasks, task logs, and upload-specific source files
-
-## Paper Markdown Storage Conventions
-
-If full-paper Markdown files already exist, store them as source inputs under the paper source directory, not inside `.papernexus`.
-
-Recommended location:
-
-- `/Users/iranb/.papernexus/papers`
-
-### File Naming
-
-Prefer stable, readable ASCII filenames:
-
-- use lowercase
-- use hyphen-separated words
-- avoid spaces
-- avoid non-ASCII unless the source collection already uses them consistently
-- prefer the paper title or a short normalized title
-- add a year or venue suffix only when needed to disambiguate
-
-Good examples:
-
-- `retrieval-augmented-experiment-planning.md`
-- `graph-augmented-literature-mapping.md`
-- `self-refine-2023.md`
-
-Avoid:
-
-- `final version!!.md`
-- `Paper Notes.md`
-- `论文1.md` unless the whole collection consistently uses Chinese filenames
-
-### Subdirectory Layout
-
-PaperNexus can recurse through subdirectories, so organize for human maintenance first.
-
-Recommended patterns:
-
-- by topic
-- by project
-- by venue or year
-
-Examples:
-
-```text
-/Users/iranb/.papernexus/papers/
-  llm-reasoning/
-    self-refine-2023.md
-    reflexion-2023.md
-  biomedical-discovery/
-    graph-augmented-literature-mapping.md
-  experiment-planning/
-    retrieval-augmented-experiment-planning.md
-```
-
-Guidelines:
-
-- keep one paper per Markdown file
-- do not place generated graph artifacts under the paper source tree
-- mixed PDF and Markdown source directories are supported; the ingestion pipeline now materializes both and dedupes same-paper pairs before graph construction
-- both PDF inputs and raw Markdown inputs are cached under the corpus markdown cache so later analyzes can reuse the cached markdown path
-- both `papernexus analyze` and `papernexus analyze --force` are cache-first now: they prefer the corpus markdown cache when the source fingerprint is unchanged, and only refresh the cache when the source file itself changed or the cache is missing
-- if you need to force regeneration of every PDF-derived markdown cache, use `papernexus analyze --force --rebuild-pdf-markdown`
-- prefer a clean source tree over deep nesting
-- in `openclaw-research` workflow-owned literature graph refreshes, do **not** use `--force` or `--rebuild-pdf-markdown` unless a human explicitly requests a rebuild; prefer cache-first `papernexus analyze`, and if it fails, hand the exact command to the user
+- project-local staging root: `{PROJ}/researcher/paper-staging`
+- remote service base URL: configured `papernexusApiBaseUrl`
+- remote import queue: `POST /api/imports?name=<corpus>`
+- remote import logs: `GET /api/imports/:taskId/log`
+- runtime config / service logs: only inspect local service files when the task is explicitly about PaperNexus deployment debugging
 
 ## Current Behavior To Know
 
@@ -185,11 +290,14 @@ Guidelines:
   - `papernexus write-index` or `papernexus stage4` for committing the staged graph into the authoritative index
 - `papernexus optimize` is still available as a convenience path for stages 2-5 together.
 - Ad hoc PDF/Markdown uploads should normally enter through queued import tasks under `.papernexus/imports/`, not by moving files directly into the main paper source tree during automation.
+- If a local PDF or Markdown only exists on the agent machine, stage it onto the API server first and then submit it via `serverFilePath`.
+- Do not default to `files[].contentBase64` for large local PDFs; prefer stable remote staging such as `rsync` plus `serverFilePath`.
 - Import tasks keep per-task `events.log` files and stay in a separate directory even after their parsed content is merged into the main graph.
 - `POST /api/imports` supports two input styles:
   - client-uploaded file content through `files[].contentBase64`
   - server-side single-file collection through `serverFilePath`
-- `serverFilePath` is resolved on the API server machine, must be an absolute single-file path, and does not support directory recursion.
+- For local PDFs that live on the agent machine, prefer remote staging plus `serverFilePath`. Do not default to `files[].contentBase64` for large PDFs.
+- `serverFilePath` is resolved on the API server machine, must be an absolute single-file path, and does not support directory recursion. If the human gave you a local directory, sync the files to the API server first and then submit one file per import task.
 - `POST /api/imports` now content-dedupes identical uploads. When the same file content is uploaded again for the same corpus, the API can return the existing task with `deduped: true` instead of creating a new task.
 - Completed import task directories should not be treated as long-lived active scan roots. Completed imported sources are preserved through manifest-backed reuse instead of repeated directory rescans.
 - Agent live-graph policy:

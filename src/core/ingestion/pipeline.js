@@ -1598,6 +1598,7 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
         provider: previousLlm.provider && previousLlm.provider !== 'disabled'
           ? previousLlm.provider
           : semanticObjects.provider,
+        error: semanticObjects.error || null,
         semanticConfigSignature,
         semanticExtractionMode: semanticExtractionPlan.requestedMode,
         semanticExtractionModeEffective: semanticExtractionMode,
@@ -1686,6 +1687,7 @@ function applySemanticBatchResultToRecord(record, semanticObjects, semanticExtra
     provider: previousLlm.provider && previousLlm.provider !== 'disabled'
       ? previousLlm.provider
       : semanticObjects.provider,
+    error: semanticObjects.error || null,
     semanticConfigSignature: createSemanticConfigSignature(options),
     semanticExtractionMode: semanticExtractionPlan.requestedMode,
     semanticExtractionModeEffective: semanticExtractionMode,
@@ -4333,6 +4335,17 @@ export async function analyzeCorpus(inputPath, options = {}) {
     const { metaPath } = getCorpusPaths(rootPath);
     const previousIndexExists = await fileExists(metaPath) && await hasCorpusGraphStore(rootPath);
     const inputLabel = describeInputPaths(absoluteInputs);
+    const freshSourceLlmRefreshState = materializeOnly
+      ? {
+          semanticRequired: false,
+          relationRequired: false,
+          anyRequired: false
+        }
+      : {
+          semanticRequired: resolveSemanticExtractionPlan(analysisOptions).shouldAttempt,
+          relationRequired: canAttemptLlmRelations(analysisOptions),
+          anyRequired: resolveSemanticExtractionPlan(analysisOptions).shouldAttempt || canAttemptLlmRelations(analysisOptions)
+        };
 
     await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(previousManifest));
 
@@ -4357,11 +4370,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
       }
       let llmRefreshState = cachedPaper
         ? summarizeLlmRefreshState(cachedPaper, analysisOptions)
-        : {
-            semanticRequired: false,
-            relationRequired: false,
-            anyRequired: false
-          };
+        : freshSourceLlmRefreshState;
 
       const markdownCachePath = resolveExpectedMarkdownCachePath(rootPath, {
         ...source,
