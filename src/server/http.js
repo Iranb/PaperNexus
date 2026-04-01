@@ -49,6 +49,27 @@ function getServeConfig(options = {}) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function getConfigSection(options = {}, name) {
+  const value = options.config?.[name];
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function firstNumber(...values) {
+  const raw = firstDefined(...values);
+  if (raw === undefined) return undefined;
+  const normalized = Number(raw);
+  return Number.isFinite(normalized) ? normalized : undefined;
+}
+
 function getConfiguredRootPaths(options = {}) {
   const explicit = Array.isArray(options.rootPaths)
     ? options.rootPaths.map((item) => String(item || '').trim()).filter(Boolean)
@@ -195,6 +216,148 @@ function collectMineruWarmupUrls(options = {}) {
   return [...new Set(urls)];
 }
 
+function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
+  const analyzeConfig = getConfigSection(options, 'analyze');
+  const materializeConfig = getConfigSection(options, 'materialize');
+  const watchConfig = getConfigSection(options, 'watch');
+  const llmConfig = getConfigSection(options, 'llm');
+  const ollamaConfig = getConfigSection(options, 'ollama');
+  const llmSshHost = firstDefined(
+    options.llmSshHost,
+    options.ollamaSshHost,
+    llmConfig.sshHost,
+    ollamaConfig.sshHost
+  );
+
+  return {
+    ...options,
+    rootPaths,
+    intervalMs: options.importIntervalMs,
+    logger,
+    name: firstDefined(options.name, analyzeConfig.name, materializeConfig.name, watchConfig.name),
+    force: firstDefined(options.force, analyzeConfig.force, materializeConfig.force, watchConfig.force),
+    quiet: Boolean(firstDefined(options.quiet, analyzeConfig.quiet, materializeConfig.quiet, watchConfig.quiet, true)),
+    analyzeConcurrency: firstNumber(
+      options.analyzeConcurrency,
+      options.concurrency,
+      analyzeConfig.concurrency,
+      analyzeConfig.analyzeConcurrency,
+      materializeConfig.concurrency,
+      materializeConfig.analyzeConcurrency,
+      watchConfig.concurrency,
+      watchConfig.analyzeConcurrency
+    ),
+    semanticExtraction: firstDefined(
+      options.semanticExtraction,
+      materializeConfig.semanticExtraction,
+      analyzeConfig.semanticExtraction,
+      watchConfig.semanticExtraction
+    ),
+    nodeLlmCheck: firstDefined(options.nodeLlmCheck, analyzeConfig.nodeLlmCheck, watchConfig.nodeLlmCheck),
+    rebuildPdfMarkdown: firstDefined(
+      options.rebuildPdfMarkdown,
+      materializeConfig.rebuildPdfMarkdown,
+      analyzeConfig.rebuildPdfMarkdown,
+      watchConfig.rebuildPdfMarkdown
+    ),
+    pdfParser: firstDefined(options.pdfParser, materializeConfig.pdfParser, analyzeConfig.pdfParser, watchConfig.pdfParser),
+    pdfCommand: firstDefined(options.pdfCommand, materializeConfig.pdfCommand, analyzeConfig.pdfCommand, watchConfig.pdfCommand),
+    pdfParserSshHost: firstDefined(
+      options.pdfParserSshHost,
+      materializeConfig.pdfParserSshHost,
+      analyzeConfig.pdfParserSshHost,
+      watchConfig.pdfParserSshHost
+    ),
+    doclingCommand: firstDefined(
+      options.doclingCommand,
+      materializeConfig.doclingCommand,
+      analyzeConfig.doclingCommand,
+      watchConfig.doclingCommand
+    ),
+    doclingSshHost: firstDefined(
+      options.doclingSshHost,
+      materializeConfig.doclingSshHost,
+      analyzeConfig.doclingSshHost,
+      watchConfig.doclingSshHost
+    ),
+    doclingOcrEngine: firstDefined(
+      options.doclingOcrEngine,
+      materializeConfig.doclingOcrEngine,
+      analyzeConfig.doclingOcrEngine,
+      watchConfig.doclingOcrEngine
+    ),
+    doclingPdfBackend: firstDefined(
+      options.doclingPdfBackend,
+      materializeConfig.doclingPdfBackend,
+      analyzeConfig.doclingPdfBackend,
+      watchConfig.doclingPdfBackend
+    ),
+    markerCommand: firstDefined(
+      options.markerCommand,
+      materializeConfig.markerCommand,
+      analyzeConfig.markerCommand,
+      watchConfig.markerCommand
+    ),
+    markerSshHost: firstDefined(
+      options.markerSshHost,
+      materializeConfig.markerSshHost,
+      analyzeConfig.markerSshHost,
+      watchConfig.markerSshHost
+    ),
+    markerConcurrency: firstNumber(
+      options.markerConcurrency,
+      materializeConfig.markerConcurrency,
+      analyzeConfig.markerConcurrency,
+      watchConfig.markerConcurrency
+    ),
+    mineruCommand: firstDefined(
+      options.mineruCommand,
+      materializeConfig.mineruCommand,
+      analyzeConfig.mineruCommand,
+      watchConfig.mineruCommand
+    ),
+    mineruHttpUrl: firstDefined(
+      options.mineruHttpUrl,
+      materializeConfig.mineruHttpUrl,
+      analyzeConfig.mineruHttpUrl,
+      watchConfig.mineruHttpUrl
+    ),
+    mineruRemoteFailureMode: firstDefined(
+      options.mineruRemoteFailureMode,
+      materializeConfig.mineruRemoteFailureMode,
+      analyzeConfig.mineruRemoteFailureMode,
+      watchConfig.mineruRemoteFailureMode
+    ),
+    pageRange: firstDefined(options.pageRange, materializeConfig.pageRange, analyzeConfig.pageRange, watchConfig.pageRange),
+    pdfSshHost: firstDefined(options.pdfSshHost, materializeConfig.pdfSshHost, analyzeConfig.pdfSshHost, watchConfig.pdfSshHost),
+    pdfParseTimeoutMs: firstNumber(
+      options.pdfParseTimeoutMs,
+      materializeConfig.pdfParseTimeoutMs,
+      analyzeConfig.pdfParseTimeoutMs,
+      watchConfig.pdfParseTimeoutMs
+    ),
+    llmProvider: firstDefined(options.llmProvider, llmConfig.provider),
+    llmModel: firstDefined(options.llmModel, llmConfig.model),
+    llmBaseUrl: firstDefined(options.llmBaseUrl, llmConfig.baseUrl),
+    llmApiKey: firstDefined(options.llmApiKey, llmConfig.apiKey),
+    llmApiKeyEnv: firstDefined(options.llmApiKeyEnv, llmConfig.apiKeyEnv),
+    llmApiKeySource: firstDefined(options.llmApiKeySource, llmConfig.apiKeySource),
+    llmApiKeyService: firstDefined(options.llmApiKeyService, llmConfig.apiKeyService),
+    llmApiKeyAccount: firstDefined(options.llmApiKeyAccount, llmConfig.apiKeyAccount),
+    llmSshHost,
+    llmRelations: firstDefined(options.llmRelations, llmConfig.relations, ollamaConfig.relations),
+    llmTimeoutMs: firstNumber(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
+    llmBatchSize: firstNumber(options.llmBatchSize, llmConfig.batchSize, ollamaConfig.batchSize),
+    llmMaxTokens: firstNumber(options.llmMaxTokens, llmConfig.maxTokens),
+    ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),
+    ollamaUrl: firstDefined(options.ollamaUrl, ollamaConfig.url),
+    ollamaSshHost: firstDefined(options.ollamaSshHost, llmSshHost),
+    ollamaRelations: firstDefined(options.ollamaRelations, ollamaConfig.relations, llmConfig.relations),
+    ollamaTimeoutMs: firstNumber(options.ollamaTimeoutMs, ollamaConfig.timeoutMs),
+    ollamaBatchSize: firstNumber(options.ollamaBatchSize, ollamaConfig.batchSize)
+  };
+}
+
 async function warmMineruBackends(options = {}) {
   const urls = collectMineruWarmupUrls(options);
   const attempted = [];
@@ -241,10 +404,13 @@ export async function serveCommand(options = {}) {
   const webRoot = buildWebRoot();
   const apiCache = createApiCache();
   const workerLogger = options.logger || console;
+  const enhancementWorkerStarter = options.startEnhancementWorker || startEnhancementWorker;
+  const authoritativeSyncWorkerStarter = options.startAuthoritativeSyncWorker || startAuthoritativeSyncWorker;
+  const importWorkerStarter = options.startImportWorker || startImportWorker;
   const enhancementWorker = startNamedWorker(
     'enhancement worker',
     options.enableEnhancements !== false,
-    startEnhancementWorker,
+    enhancementWorkerStarter,
     {
       rootPaths,
       intervalMs: options.enhancementIntervalMs,
@@ -256,7 +422,7 @@ export async function serveCommand(options = {}) {
   const authoritativeSyncWorker = startNamedWorker(
     'authoritative sync worker',
     options.enableAuthoritativeSync !== false,
-    startAuthoritativeSyncWorker,
+    authoritativeSyncWorkerStarter,
     {
       rootPaths,
       intervalMs: options.authoritativeSyncIntervalMs,
@@ -267,12 +433,8 @@ export async function serveCommand(options = {}) {
   const importWorker = startNamedWorker(
     'import worker',
     options.enableImports !== false,
-    startImportWorker,
-    {
-      rootPaths,
-      intervalMs: options.importIntervalMs,
-      logger: workerLogger
-    },
+    importWorkerStarter,
+    buildImportWorkerOptions(options, rootPaths, workerLogger),
     workerLogger
   );
   const triggerMineruWarmup = options.warmMineruBackends || warmMineruBackends;

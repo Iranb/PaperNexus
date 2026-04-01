@@ -291,6 +291,57 @@ test('serveCommand warms MinerU backends in the background when imports are enab
   }
 });
 
+test('serveCommand forwards analyze parser config into the import worker', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-import-worker-config-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 53100 + Math.floor(Math.random() * 1000);
+  const calls = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      config: {
+        analyze: {
+          pdfParser: 'mineru',
+          mineruHttpUrl: 'http://127.0.0.1:30000',
+          semanticExtraction: 'llm-primary'
+        },
+        serve: {
+          apiToken: 'secret-token'
+        }
+      },
+      startImportWorker(workerOptions) {
+        calls.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].pdfParser, 'mineru');
+      assert.equal(calls[0].mineruHttpUrl, 'http://127.0.0.1:30000');
+      assert.equal(calls[0].semanticExtraction, 'llm-primary');
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('serveCommand accepts server-side single file path imports over HTTP', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-server-file-import-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-server-file-import-workspace-'));
