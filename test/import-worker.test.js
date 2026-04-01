@@ -137,6 +137,17 @@ test('import worker resumes from the persisted task stage instead of restarting 
     const taskPaths = importStore.getImportTaskPaths(indexRoot, task.id);
     const persistedTask = JSON.parse(await fs.readFile(taskPaths.taskPath, 'utf8'));
     persistedTask.status = 'running';
+    persistedTask.stage = 'materialize';
+    persistedTask.includeInGraph = true;
+    await fs.writeFile(taskPaths.taskPath, JSON.stringify(persistedTask, null, 2));
+
+    await ingestion.materializeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-resume-test',
+      semanticExtraction: 'heuristic-only'
+    });
+
+    persistedTask.status = 'running';
     persistedTask.stage = 'llm-optimize';
     persistedTask.includeInGraph = true;
     await fs.writeFile(taskPaths.taskPath, JSON.stringify(persistedTask, null, 2));
@@ -288,6 +299,77 @@ test('import worker clears the worker lock after timeout and retries once', asyn
     const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
     assert.equal(loadedTask.status, 'completed');
     await assert.rejects(fs.access(workerLockPath));
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker fails tasks whose uploaded files never enter the source manifest', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-missing-source-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-missing-source-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      corpusStore,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-missing-source-test',
+      force: true
+    });
+
+    const task = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'missing-upload.md',
+          contentBase64: Buffer.from('# Missing Upload\n\n## Abstract\n\nThis file disappears before materialize.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    await fs.rm(task.files[0].storedPath, { force: true });
+
+    const result = await importWorker.runImportQueueUntilIdle(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      maxPasses: 4
+    });
+
+    assert.equal(result.failedCount, 1);
+
+    const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
+    assert.equal(loadedTask.status, 'failed');
+    assert.match(
+      loadedTask.error?.message || '',
+      /not materialized into the source manifest/i
+    );
+
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
+    assert.equal(corpus.meta.paperCount, 1);
+    assert.equal(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Missing Upload'), false);
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

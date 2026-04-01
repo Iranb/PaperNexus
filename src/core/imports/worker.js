@@ -35,10 +35,38 @@ async function resolveTaskInputPath(rootPath, task) {
   return manifestInputPaths.length === 1 ? manifestInputPaths[0] : manifestInputPaths;
 }
 
+async function resolveTaskChangedSourceKeys(rootPath, task) {
+  const manifest = await loadSourceManifest(rootPath);
+  const manifestEntriesByKey = new Map(
+    (manifest?.sources || []).map((entry) => [entry.sourceKey, entry])
+  );
+  const taskFiles = Array.isArray(task?.files) ? task.files : [];
+  const changedSourceKeys = [];
+  const missingFiles = [];
+
+  for (const file of taskFiles) {
+    const storedPath = String(file?.storedPath || '').trim();
+    if (!storedPath) continue;
+    if (manifestEntriesByKey.has(storedPath)) {
+      changedSourceKeys.push(storedPath);
+      continue;
+    }
+    missingFiles.push(file?.originalName || storedPath);
+  }
+
+  if (missingFiles.length) {
+    throw new Error(
+      `Imported files were not materialized into the source manifest: ${missingFiles.join(', ')}. ` +
+      'The uploaded source may be missing, unreadable, or failed during parsing.'
+    );
+  }
+
+  return changedSourceKeys;
+}
+
 async function processImportTask(rootPath, task, options = {}) {
   const corpusMeta = await loadCorpusMeta(rootPath);
   const inputPath = await resolveTaskInputPath(rootPath, task);
-  const changedSourceKeys = (task.files || []).map((file) => file.storedPath).filter(Boolean);
   const startStage = (() => {
     switch (task.stage) {
       case 'llm-optimize':
@@ -73,6 +101,8 @@ async function processImportTask(rootPath, task, options = {}) {
       timings: materialized?.timings || null
     };
   }
+
+  const changedSourceKeys = await resolveTaskChangedSourceKeys(rootPath, task);
 
   await markImportTaskStage(rootPath, task.id, 'llm-optimize', 'stage llm-optimize');
   const optimized = await llmOptimizeCorpus(inputPath, sharedOptions);
