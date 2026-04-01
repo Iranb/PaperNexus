@@ -13,7 +13,9 @@ For a running user graph, prefer the local Python wrappers in `scripts/` as the 
 
 If both a remote server API and a local checkout are available, use the remote API path first.
 Do not call local CLI helpers such as `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, `papernexus brainstorm`, or local staged build commands against the live graph.
-If a PDF exists only on the local agent machine, stage it onto the API server first with `python3 scripts/pn_stage_sync.py`, then import it with `python3 scripts/pn_import_submit.py`. Do not default to `files[].contentBase64` for large local PDFs.
+If a single PDF or Markdown file exists only on the local agent machine, prefer `python3 scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and submits the import in one step.
+If you need explicit staging control for a directory or batch, use `python3 scripts/pn_stage_sync.py` first and then import the chosen remote file with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`.
+Do not default to `files[].contentBase64` for large local PDFs.
 
 Allowed live-graph entrypoints:
 
@@ -316,7 +318,7 @@ Read import state like this:
 Agent rule:
 
 - prefer the existing remote `serve` + import workflow for PDF ingestion
-- if a PDF exists only on the local agent machine, stage it onto the API server first and then call `POST /api/imports` with `serverFilePath`
+- if a single PDF exists only on the local agent machine, prefer `pn_import_submit.py --source <local-file> --ssh-target <ssh-target>` so staging and `serverFilePath` submission stay coupled
 - do not default to `files[].contentBase64` for large local PDFs; prefer stable remote staging such as `rsync`
 - do not replace live-graph import or query requests with local CLI fallback
 - if import or enhancement is blocked by missing API capability, lock contention, or missing data, report the blocker directly

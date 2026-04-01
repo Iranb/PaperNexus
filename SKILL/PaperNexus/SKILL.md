@@ -50,19 +50,23 @@ Configuration defaults:
    - If auth fails, fix token lookup first. Do not guess.
 3. Decide how the PDF reaches the API server machine.
    - If the file is already on the API server, use `serverFilePath`.
-   - If the file exists only on the local agent machine, sync it to a remote staging directory first, then use `serverFilePath`.
+   - If the file exists only on the local agent machine and it is a single PDF or Markdown file, prefer `python3 scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and then submits `serverFilePath` for you.
+   - If the file exists only on the local agent machine and you need explicit staging control for a directory or batch, sync it to a remote staging directory first, then use `serverFilePath`.
    - Do not send local PDFs through `files[].contentBase64` by default. Large PDFs easily exceed shell or request limits and are much less reliable than server-side staging.
    - Treat `files[].contentBase64` as a last resort for small operator-approved uploads, not the default path for local PDFs.
    - `serverFilePath` must be one absolute file on the API server. It is not a directory input and does not recurse.
 4. Prefer stable file staging for local PDFs.
+   - Default for one local file: let `pn_import_submit.py --source ... --ssh-target ...` do the staging automatically.
    - Most stable default: `rsync` to a remote staging directory on the same machine that serves the API.
    - Recommended flags that work in this environment: `rsync -avz --partial --partial-dir=.rsync-partial --progress --checksum --timeout=60`.
    - Use ASCII staging paths such as `/tmp/papernexus-import-staging/<job-id>/`.
    - If the API host is a gateway, container, or different machine from the SSH target, do not guess. Ask for the real server-side staging path first.
-   - Prefer `python3 scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>` over hand-written `rsync`.
+   - Prefer `python3 scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>` over hand-written `rsync` when you need explicit remote staging output.
 5. Import and poll.
-   - submit with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`
-   - poll with `python3 scripts/pn_import_queue.py wait <taskId>`
+   - for one local file, submit with `python3 scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`
+   - for a pre-staged remote file, submit with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`
+   - poll with `python3 scripts/pn_import_queue.py wait --paper-id <paper-id>` or `--source <local-file>`
+   - prefer `--paper-id` or `--source` over hand-entering a task id; the wrapper keeps a local temp registry of submitted tasks
    - on failure, report the exact stage, recent log lines, and likely blocker; do not retry blindly
 6. Read graph state through typed APIs first.
    - prefer `python3 scripts/pn_graph_query.py` and `python3 scripts/pn_research_chains.py`
@@ -72,9 +76,10 @@ Configuration defaults:
 
 Use this order when checking import progress:
 
-1. `GET /api/imports?name=<corpus>` to find the newest task id
-2. `GET /api/imports/:taskId` to inspect structured state
-3. `GET /api/imports/:taskId/log` to inspect stage evidence
+1. Prefer `python3 scripts/pn_import_queue.py status --paper-id <paper-id>` or `--source <local-file>` to resolve the task automatically
+2. If the wrapper cannot resolve the task, use `GET /api/imports?name=<corpus>` to find the newest task id
+3. `GET /api/imports/:taskId` to inspect structured state
+4. `GET /api/imports/:taskId/log` to inspect stage evidence
 
 Read task state like this:
 
@@ -123,6 +128,7 @@ Interpretation rules:
 - if `status` is `completed` but `result.authoritativeSync.status` is `pending`, the import task finished but authoritative sync is still catching up
 - if `status` is `failed`, report the current `stage`, `error.message`, and the newest log lines; do not blindly resubmit
 - if the same upload returns `deduped: true`, reuse that existing task id instead of expecting a brand-new task
+- `pn_import_submit.py` and `pn_import_queue.py` keep a temp task registry, so `wait --paper-id ...` and `status --source ...` should usually work without manually copying the task id
 
 Important debugging rule:
 
@@ -132,39 +138,52 @@ Important debugging rule:
 ## Minimal Remote Example
 
 ```bash
-# 1. Stage a local PDF or Markdown directory onto the API server machine.
-python3 scripts/pn_stage_sync.py \
-  --ssh-target hyq@211.71.76.29 \
-  --remote-dir /tmp/papernexus-import-staging/debias-2026-03-30 \
-  "/Users/iranb/Documents/papers/2025/去偏学习/"
-
-# 2. Import one staged file through the API.
+# 1. Preferred single-file path: submit one local file and let the wrapper stage it.
 python3 scripts/pn_import_submit.py \
   --api-base "http://<host>:4821" \
   --corpus "<corpus>" \
-  --server-file-path "/tmp/papernexus-import-staging/debias-2026-03-30/partial-label-learning-with-a-reject-option.pdf"
+  --paper-id "data-shapley-iclr-2025" \
+  --source "/Users/iranb/Documents/papers/2025/ICLR2025 oral/Data Shapley in One Training Run.pdf" \
+  --ssh-target "hyq@211.71.76.29"
 
-# 3. Poll until the task finishes.
+# 2. Poll until the task finishes.
 python3 scripts/pn_import_queue.py \
   --api-base "http://<host>:4821" \
   --corpus "<corpus>" \
-  wait "<taskId>" --timeout 1800 --interval 2
+  wait --paper-id "data-shapley-iclr-2025" --timeout 1800 --interval 15
 
-# 4. Query the live graph.
+# 3. Query the live graph.
 python3 scripts/pn_graph_query.py \
   --api-base "http://<host>:4821" \
   --corpus "<corpus>" \
-  query "partial label learning" --limit 8
+  query "Data Shapley in One Training Run" --limit 8
+```
+
+Alternative explicit two-step path for a directory or batch:
+
+```bash
+python3 scripts/pn_stage_sync.py \
+  --ssh-target hyq@211.71.76.29 \
+  --remote-dir /tmp/papernexus-import-staging/iclr2025-oral \
+  "/Users/iranb/Documents/papers/2025/ICLR2025 oral/"
+
+python3 scripts/pn_import_submit.py \
+  --api-base "http://<host>:4821" \
+  --corpus "<corpus>" \
+  --server-file-path "/tmp/papernexus-import-staging/iclr2025-oral/Data Shapley in One Training Run.pdf"
 ```
 
 ## Script Routing Guide
 
+- local single-file import from the agent machine:
+  `python3 scripts/pn_import_submit.py --api-base <url> --corpus <corpus> --paper-id <paper-id> --source <local-file> --ssh-target <ssh-target>`
 - local file or directory to remote staging:
   `python3 scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>`
 - staged single-file import:
   `python3 scripts/pn_import_submit.py --api-base <url> --corpus <corpus> --server-file-path <remote-file>`
 - queue inspection:
   `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> list|status|log|wait ...`
+  Prefer `status|wait --paper-id <paper-id>` or `--source <local-file>` when possible.
 - typed graph query:
   `python3 scripts/pn_graph_query.py --api-base <url> --corpus <corpus> query|context|impact|ideas|brainstorm ...`
 - typed chains and briefs:
@@ -290,13 +309,13 @@ Important query policy:
   - `papernexus write-index` or `papernexus stage4` for committing the staged graph into the authoritative index
 - `papernexus optimize` is still available as a convenience path for stages 2-5 together.
 - Ad hoc PDF/Markdown uploads should normally enter through queued import tasks under `.papernexus/imports/`, not by moving files directly into the main paper source tree during automation.
-- If a local PDF or Markdown only exists on the agent machine, stage it onto the API server first and then submit it via `serverFilePath`.
+- If a local PDF or Markdown only exists on the agent machine and it is a single file, prefer `pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. Use explicit staging plus `serverFilePath` when you need directory or batch control.
 - Do not default to `files[].contentBase64` for large local PDFs; prefer stable remote staging such as `rsync` plus `serverFilePath`.
 - Import tasks keep per-task `events.log` files and stay in a separate directory even after their parsed content is merged into the main graph.
 - `POST /api/imports` supports two input styles:
   - client-uploaded file content through `files[].contentBase64`
   - server-side single-file collection through `serverFilePath`
-- For local PDFs that live on the agent machine, prefer remote staging plus `serverFilePath`. Do not default to `files[].contentBase64` for large PDFs.
+- For local PDFs that live on the agent machine, prefer the wrapper path that stages automatically and submits `serverFilePath` for you. Do not default to `files[].contentBase64` for large PDFs.
 - `serverFilePath` is resolved on the API server machine, must be an absolute single-file path, and does not support directory recursion. If the human gave you a local directory, sync the files to the API server first and then submit one file per import task.
 - `POST /api/imports` now content-dedupes identical uploads. When the same file content is uploaded again for the same corpus, the API can return the existing task with `deduped: true` instead of creating a new task.
 - Completed import task directories should not be treated as long-lived active scan roots. Completed imported sources are preserved through manifest-backed reuse instead of repeated directory rescans.
