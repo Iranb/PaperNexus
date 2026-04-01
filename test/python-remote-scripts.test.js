@@ -153,6 +153,48 @@ exit 0
   }
 });
 
+test('pn_stage_sync.py supports corpus-root compatibility args without requiring a corpus name', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-stage-compat-'));
+  const fakeBin = path.join(tempDir, 'bin');
+  const callsDir = path.join(tempDir, 'calls');
+  const localDir = path.join(tempDir, 'literature');
+  await fs.mkdir(fakeBin, { recursive: true });
+  await fs.mkdir(callsDir, { recursive: true });
+  await fs.mkdir(localDir, { recursive: true });
+  await fs.writeFile(path.join(localDir, '2305.18909.md'), '# Demo\n', 'utf8');
+
+  await fs.writeFile(path.join(fakeBin, 'ssh'), `#!/bin/sh
+printf '%s\n' "$@" > "${path.join(callsDir, 'ssh.txt')}"
+exit 0
+`, { mode: 0o755 });
+
+  await fs.writeFile(path.join(fakeBin, 'rsync'), `#!/bin/sh
+printf '%s\n' "$@" > "${path.join(callsDir, 'rsync.txt')}"
+exit 0
+`, { mode: 0o755 });
+
+  try {
+    const result = await runPython('pn_stage_sync.py', [
+      '--json',
+      '--ssh-target', 'hyq@example.com',
+      '--corpus-root', localDir,
+      '--mode', 'incremental'
+    ], {
+      env: {
+        PATH: `${fakeBin}:${process.env.PATH || ''}`,
+        PAPERNEXUS_REMOTE_STAGING_ROOT: '/tmp/papernexus-import-staging'
+      }
+    });
+
+    const payload = JSON.parse(result.stdout);
+    assert.match(payload.remoteDir, /^\/tmp\/papernexus-import-staging\//);
+    assert.equal(payload.fileCount, 1);
+    assert.match(payload.remoteFiles[0], /2305\.18909\.md$/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('pn_import_submit.py and pn_import_queue.py submit a server-side file and wait for completion', async () => {
   const fixture = await createImportFixture();
   const port = 54000 + Math.floor(Math.random() * 500);
@@ -212,6 +254,83 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
     }
   } finally {
     await cleanupFixture(fixture);
+  }
+});
+
+test('pn_import_submit.py records task ids in a temp registry and pn_import_queue.py can resolve status by paper-id', async () => {
+  const fixture = await createImportFixture();
+  const port = 55200 + Math.floor(Math.random() * 500);
+  const registryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-registry-'));
+  const registryPath = path.join(registryDir, 'task-registry.json');
+
+  try {
+    const server = await startServer(fixture, port, { enableImports: true });
+    try {
+      const submit = await runPython('pn_import_submit.py', [
+        '--json',
+        '--api-base', `http://127.0.0.1:${port}`,
+        '--token', 'secret-token',
+        '--paper-id', '2305.18909',
+        '--source', fixture.markdownUploadPath,
+        '--source-kind', 'markdown'
+      ], {
+        env: {
+          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
+        }
+      });
+      const submitted = JSON.parse(submit.stdout);
+      assert.equal(submitted.paperId, '2305.18909');
+      assert.equal(submitted.synced, false);
+      assert.ok(submitted.task.id);
+      assert.equal(submitted.registry.path, registryPath);
+
+      const registryPayload = JSON.parse(await fs.readFile(registryPath, 'utf8'));
+      assert.ok(Array.isArray(registryPayload.tasks));
+      assert.equal(registryPayload.tasks[0].paperId, '2305.18909');
+      assert.equal(registryPayload.tasks[0].taskId, submitted.task.id);
+
+      const status = await runPython('pn_import_queue.py', [
+        '--json',
+        '--api-base', `http://127.0.0.1:${port}`,
+        '--token', 'secret-token',
+        '--paper-id', '2305.18909',
+        '--status'
+      ], {
+        env: {
+          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
+        }
+      });
+      const statusPayload = JSON.parse(status.stdout);
+      assert.equal(statusPayload.paperId, '2305.18909');
+      assert.equal(statusPayload.task.id, submitted.task.id);
+      assert.equal(statusPayload.registry.matchedBy, 'paper-id');
+
+      const wait = await runPython('pn_import_queue.py', [
+        '--json',
+        '--api-base', `http://127.0.0.1:${port}`,
+        '--token', 'secret-token',
+        'wait',
+        '--paper-id', '2305.18909',
+        '--timeout', '30',
+        '--interval', '0.2'
+      ], {
+        env: {
+          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
+        }
+      });
+      const waitPayload = JSON.parse(wait.stdout);
+      assert.equal(waitPayload.task.status, 'completed');
+
+      const refreshedRegistry = JSON.parse(await fs.readFile(registryPath, 'utf8'));
+      assert.equal(refreshedRegistry.tasks[0].status, 'completed');
+      assert.equal(refreshedRegistry.tasks[0].paperId, '2305.18909');
+      assert.ok(refreshedRegistry.tasks[0].finishedAt);
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+    await fs.rm(registryDir, { recursive: true, force: true });
   }
 });
 
