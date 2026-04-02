@@ -1,9 +1,10 @@
-import { loadCorpusMeta, loadSourceManifest } from '../../storage/corpus-store.js';
+import { getCorpusPaths, loadCorpusMeta, loadSourceManifest } from '../../storage/corpus-store.js';
 import {
+  appendImportTaskLog,
   completeImportTask,
   failImportTask,
   getImportPaths,
-  loadImportTask,
+  listImportTasks,
   markImportTaskStage,
   reserveNextImportTask
 } from '../../storage/import-store.js';
@@ -14,11 +15,152 @@ import {
 } from '../ingestion/pipeline.js';
 import { removePath, withFileLock } from '../../lib/fs.js';
 import { loadRegistry } from '../../storage/registry.js';
+import { cacheMarkdownSource, convertPdfToMarkdown } from '../ingestion/marker.js';
 
 const DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS = 20_000;
+const DEFAULT_IMPORT_PREPARSE_CONCURRENCY = 4;
+const importPreparseInFlight = new Map();
 
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
+}
+
+function createImportPreparseKey(rootPath, taskId) {
+  return `${rootPath}::${taskId}`;
+}
+
+function resolveImportPreparseConcurrency(options = {}) {
+  const raw = Number(options.importPreparseConcurrency || options.preparseConcurrency || DEFAULT_IMPORT_PREPARSE_CONCURRENCY);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DEFAULT_IMPORT_PREPARSE_CONCURRENCY;
+  }
+  return Math.max(1, Math.min(8, Math.floor(raw)));
+}
+
+async function mapWithConcurrency(items, concurrency, iteratee) {
+  if (!Array.isArray(items) || !items.length) return [];
+
+  const results = new Array(items.length);
+  const workerCount = Math.min(Math.max(1, Math.floor(concurrency || 1)), items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) return;
+      results[currentIndex] = await iteratee(items[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+async function waitForImportTaskPreparse(rootPath, taskId) {
+  const promise = importPreparseInFlight.get(createImportPreparseKey(rootPath, taskId));
+  if (promise) {
+    await promise;
+  }
+}
+
+async function preparseImportTaskSources(rootPath, task, options = {}) {
+  const { markdownDir, markerDir } = getCorpusPaths(rootPath);
+  const files = Array.isArray(task?.files) ? task.files : [];
+  let generatedCount = 0;
+
+  for (const file of files) {
+    const storedPath = String(file?.storedPath || '').trim();
+    const kind = String(file?.kind || '').trim().toLowerCase();
+    const originalName = String(file?.originalName || storedPath || 'uploaded file').trim();
+    if (!storedPath || (kind !== 'pdf' && kind !== 'markdown')) {
+      continue;
+    }
+
+    try {
+      if (kind === 'pdf') {
+        const prepared = await convertPdfToMarkdown(storedPath, {
+          pdfParser: options.pdfParser,
+          pdfCommand: options.pdfCommand,
+          doclingCommand: options.doclingCommand,
+          doclingOcrEngine: options.doclingOcrEngine,
+          doclingSshHost: options.doclingSshHost,
+          doclingPdfBackend: options.doclingPdfBackend,
+          pdfParserSshHost: options.pdfParserSshHost,
+          markerCommand: options.markerCommand,
+          markerSshHost: options.markerSshHost,
+          markerConcurrency: options.markerConcurrency,
+          mineruCommand: options.mineruCommand,
+          mineruHttpUrl: options.mineruHttpUrl,
+          mineruRemoteFailureMode: options.mineruRemoteFailureMode,
+          pageRange: options.pageRange,
+          pdfSshHost: options.pdfSshHost,
+          pdfParseTimeoutMs: options.pdfParseTimeoutMs,
+          markerDir,
+          markdownDir
+        });
+        if (prepared?.generated) {
+          generatedCount += 1;
+          await appendImportTaskLog(rootPath, task.id, {
+            level: 'info',
+            message: `background preparse prepared PDF markdown cache for ${originalName}`
+          });
+        }
+        continue;
+      }
+
+      const prepared = await cacheMarkdownSource(storedPath, {
+        markdownDir,
+        force: false
+      });
+      if (prepared?.generated) {
+        generatedCount += 1;
+        await appendImportTaskLog(rootPath, task.id, {
+          level: 'info',
+          message: `background preparse cached markdown source for ${originalName}`
+        });
+      }
+    } catch (error) {
+      await appendImportTaskLog(rootPath, task.id, {
+        level: 'warn',
+        message: `background preparse failed for ${originalName}: ${error.message}`
+      });
+    }
+  }
+
+  return {
+    taskId: task.id,
+    generatedCount
+  };
+}
+
+async function startQueuedImportPreparse(rootPath, options = {}, currentTaskId = '') {
+  const payload = await listImportTasks(rootPath);
+  const pendingTasks = (payload.tasks || [])
+    .filter((task) => task?.status === 'pending' && task?.id !== currentTaskId)
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.createdAt || 0) || 0;
+      const rightTime = Date.parse(right.createdAt || 0) || 0;
+      return leftTime - rightTime;
+    });
+
+  const tasksToStart = [];
+  for (const task of pendingTasks) {
+    const key = createImportPreparseKey(rootPath, task.id);
+    if (importPreparseInFlight.has(key)) continue;
+    tasksToStart.push(task);
+  }
+
+  await mapWithConcurrency(tasksToStart, resolveImportPreparseConcurrency(options), async (task) => {
+    const key = createImportPreparseKey(rootPath, task.id);
+    const promise = preparseImportTaskSources(rootPath, task, options)
+      .catch(() => null)
+      .finally(() => {
+        importPreparseInFlight.delete(key);
+      });
+    importPreparseInFlight.set(key, promise);
+    await promise;
+  });
 }
 
 async function resolveTaskInputPath(rootPath, task) {
@@ -65,6 +207,7 @@ async function resolveTaskChangedSourceKeys(rootPath, task) {
 }
 
 async function processImportTask(rootPath, task, options = {}) {
+  await waitForImportTaskPreparse(rootPath, task.id);
   const corpusMeta = await loadCorpusMeta(rootPath);
   const inputPath = await resolveTaskInputPath(rootPath, task);
   const startStage = (() => {
@@ -148,6 +291,7 @@ export async function runImportQueueOnce(rootPath, options = {}, retryState = { 
       }
 
       try {
+        void startQueuedImportPreparse(rootPath, options, reserved.task.id).catch(() => {});
         const result = await processImportTask(rootPath, reserved.task, options);
         return {
           processed: true,

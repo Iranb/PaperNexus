@@ -9,7 +9,7 @@ Use this skill when the task is about the PaperNexus codebase or a running Paper
 
 ## First Decision
 
-- live remote corpus or running server: prefer the local Python wrappers in `scripts/` as the default control plane over raw `curl`
+- live remote corpus or running server: prefer the skill-local Python wrappers in `SKILL/PaperNexus/scripts/` as the default control plane over raw `curl`
 - repo-local isolated development or fixture testing: use CLI stage commands
 
 If both a remote server API and a local repo checkout are available, recommend the remote API path first.
@@ -19,17 +19,19 @@ Do not use local `papernexus analyze`, `papernexus materialize`, `papernexus sta
 
 For live remote work, prefer these wrappers first:
 
-- `python3 scripts/pn_stage_sync.py`
-- `python3 scripts/pn_import_submit.py`
-- `python3 scripts/pn_import_queue.py`
-- `python3 scripts/pn_graph_query.py`
-- `python3 scripts/pn_research_chains.py`
+- `python3 SKILL/PaperNexus/scripts/pn_batch_import.py`
+- `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
+- `python3 SKILL/PaperNexus/scripts/pn_import_submit.py`
+- `python3 SKILL/PaperNexus/scripts/pn_import_queue.py`
+- `python3 SKILL/PaperNexus/scripts/pn_graph_query.py`
+- `python3 SKILL/PaperNexus/scripts/pn_research_chains.py`
 
 Why:
 
 - they hide token handling and request shape details
 - they reduce route-shape mistakes
 - they make `rsync + serverFilePath + queue polling` the default import path
+- they give batch imports one fixed JSON manifest instead of fragile ad-hoc shell loops
 - they are easier for agents to call consistently than raw `curl`
 
 Configuration defaults:
@@ -50,33 +52,36 @@ Configuration defaults:
    - If auth fails, fix token lookup first. Do not guess.
 3. Decide how the PDF reaches the API server machine.
    - If the file is already on the API server, use `serverFilePath`.
-   - If the file exists only on the local agent machine and it is a single PDF or Markdown file, prefer `python3 scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and then submits `serverFilePath` for you.
+   - If the file exists only on the local agent machine and it is a single PDF or Markdown file, prefer `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and then submits `serverFilePath` for you.
    - If the file exists only on the local agent machine and you need explicit staging control for a directory or batch, sync it to a remote staging directory first, then use `serverFilePath`.
    - Do not send local PDFs through `files[].contentBase64` by default. Large PDFs easily exceed shell or request limits and are much less reliable than server-side staging.
    - Treat `files[].contentBase64` as a last resort for small operator-approved uploads, not the default path for local PDFs.
    - `serverFilePath` must be one absolute file on the API server. It is not a directory input and does not recurse.
 4. Prefer stable file staging for local PDFs.
-   - Default for one local file: let `pn_import_submit.py --source ... --ssh-target ...` do the staging automatically.
+   - Default for one local file: let `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source ... --ssh-target ...` do the staging automatically.
+   - Default for many local files: use `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> submit` and let the wrapper stage each item.
    - Most stable default: `rsync` to a remote staging directory on the same machine that serves the API.
    - Recommended flags that work in this environment: `rsync -avz --partial --partial-dir=.rsync-partial --progress --checksum --timeout=60`.
    - Use ASCII staging paths such as `/tmp/papernexus-import-staging/<job-id>/`.
    - If the API host is a gateway, container, or different machine from the SSH target, do not guess. Ask for the real server-side staging path first.
-   - Prefer `python3 scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>` over hand-written `rsync` when you need explicit remote staging output.
+   - Prefer `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>` over hand-written `rsync` when you need explicit remote staging output.
 5. Import and poll.
-   - for one local file, submit with `python3 scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`
-   - for a pre-staged remote file, submit with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`
-   - poll with `python3 scripts/pn_import_queue.py wait --paper-id <paper-id>` or `--source <local-file>`
+   - for one local file, submit with `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`
+   - for 2 or more local files, prefer `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> submit`
+   - for a pre-staged remote file, submit with `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --server-file-path <remote-file>`
+   - for a batch manifest, inspect progress with `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> status|wait`
+   - poll with `python3 SKILL/PaperNexus/scripts/pn_import_queue.py wait --paper-id <paper-id>` or `--source <local-file>`
    - prefer `--paper-id` or `--source` over hand-entering a task id; the wrapper keeps a local temp registry of submitted tasks
    - on failure, report the exact stage, recent log lines, and likely blocker; do not retry blindly
 6. Read graph state through typed APIs first.
-   - prefer `python3 scripts/pn_graph_query.py` and `python3 scripts/pn_research_chains.py`
+   - prefer `python3 SKILL/PaperNexus/scripts/pn_graph_query.py` and `python3 SKILL/PaperNexus/scripts/pn_research_chains.py`
    - use `GET /api/corpus` only when the typed APIs cannot answer the task
 
 ## Queue Status
 
 Use this order when checking import progress:
 
-1. Prefer `python3 scripts/pn_import_queue.py status --paper-id <paper-id>` or `--source <local-file>` to resolve the task automatically
+1. Prefer `python3 SKILL/PaperNexus/scripts/pn_import_queue.py status --paper-id <paper-id>` or `--source <local-file>` to resolve the task automatically
 2. If the wrapper cannot resolve the task, use `GET /api/imports?name=<corpus>` to find the newest task id
 3. `GET /api/imports/:taskId` to inspect structured state
 4. `GET /api/imports/:taskId/log` to inspect stage evidence
@@ -128,18 +133,67 @@ Interpretation rules:
 - if `status` is `completed` but `result.authoritativeSync.status` is `pending`, the import task finished but authoritative sync is still catching up
 - if `status` is `failed`, report the current `stage`, `error.message`, and the newest log lines; do not blindly resubmit
 - if the same upload returns `deduped: true`, reuse that existing task id instead of expecting a brand-new task
-- `pn_import_submit.py` and `pn_import_queue.py` keep a temp task registry, so `wait --paper-id ...` and `status --source ...` should usually work without manually copying the task id
+- `python3 SKILL/PaperNexus/scripts/pn_import_submit.py` and `python3 SKILL/PaperNexus/scripts/pn_import_queue.py` keep a temp task registry, so `wait --paper-id ...` and `status --source ...` should usually work without manually copying the task id
 
 Important debugging rule:
 
 - when a human asks "is it queued, running, or done?", answer from `GET /api/imports/:taskId`
 - when a human asks "what is it doing right now?" or "why is it stuck?", answer from `GET /api/imports/:taskId/log`
 
+## Batch Import Manifest
+
+When ingesting multiple local papers, use one fixed JSON manifest and one wrapper command.
+
+Default command:
+
+```bash
+python3 SKILL/PaperNexus/scripts/pn_batch_import.py \
+  --api-base "http://<host>:4821" \
+  --corpus "<corpus>" \
+  --manifest "/absolute/path/batch-import.json" \
+  submit
+```
+
+Preferred manifest shape:
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "apiBase": "http://211.71.76.29:4821",
+    "corpus": "GCD",
+    "sshTarget": "hyq@211.71.76.29",
+    "remoteStagingRoot": "/tmp/papernexus-import-staging",
+    "trigger": "api"
+  },
+  "papers": [
+    {
+      "paperId": "paper-1",
+      "source": "/absolute/local/path/paper-1.pdf",
+      "sourceKind": "pdf"
+    },
+    {
+      "paperId": "paper-2",
+      "source": "/absolute/local/path/paper-2.md",
+      "sourceKind": "markdown"
+    }
+  ]
+}
+```
+
+Batch rules:
+
+- prefer one manifest file over shell loops
+- each item should carry a stable `paperId`
+- `status` and `wait` should use the same manifest file
+- read `summary` for batch progress and `items` for per-paper state
+- only call a paper synchronized when that item returns `synced=true`
+
 ## Minimal Remote Example
 
 ```bash
 # 1. Preferred single-file path: submit one local file and let the wrapper stage it.
-python3 scripts/pn_import_submit.py \
+python3 SKILL/PaperNexus/scripts/pn_import_submit.py \
   --api-base "http://<host>:4821" \
   --corpus "<corpus>" \
   --paper-id "data-shapley-iclr-2025" \
@@ -147,13 +201,13 @@ python3 scripts/pn_import_submit.py \
   --ssh-target "hyq@211.71.76.29"
 
 # 2. Poll until the task finishes.
-python3 scripts/pn_import_queue.py \
+python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
   --api-base "http://<host>:4821" \
   --corpus "<corpus>" \
   wait --paper-id "data-shapley-iclr-2025" --timeout 1800 --interval 15
 
 # 3. Query the live graph.
-python3 scripts/pn_graph_query.py \
+python3 SKILL/PaperNexus/scripts/pn_graph_query.py \
   --api-base "http://<host>:4821" \
   --corpus "<corpus>" \
   query "Data Shapley in One Training Run" --limit 8
@@ -162,32 +216,52 @@ python3 scripts/pn_graph_query.py \
 Alternative explicit two-step path for a directory or batch:
 
 ```bash
-python3 scripts/pn_stage_sync.py \
+python3 SKILL/PaperNexus/scripts/pn_stage_sync.py \
   --ssh-target hyq@211.71.76.29 \
   --remote-dir /tmp/papernexus-import-staging/iclr2025-oral \
   "/Users/iranb/Documents/papers/2025/ICLR2025 oral/"
 
-python3 scripts/pn_import_submit.py \
+python3 SKILL/PaperNexus/scripts/pn_import_submit.py \
   --api-base "http://<host>:4821" \
   --corpus "<corpus>" \
   --server-file-path "/tmp/papernexus-import-staging/iclr2025-oral/Data Shapley in One Training Run.pdf"
 ```
 
+Preferred manifest-driven path for a real batch:
+
+```bash
+python3 SKILL/PaperNexus/scripts/pn_batch_import.py template > /tmp/papernexus-batch.json
+
+python3 SKILL/PaperNexus/scripts/pn_batch_import.py \
+  --api-base "http://<host>:4821" \
+  --corpus "<corpus>" \
+  --manifest /tmp/papernexus-batch.json \
+  submit
+
+python3 SKILL/PaperNexus/scripts/pn_batch_import.py \
+  --api-base "http://<host>:4821" \
+  --corpus "<corpus>" \
+  --manifest /tmp/papernexus-batch.json \
+  wait --timeout 1800 --interval 15
+```
+
 ## Script Routing Guide
 
 - local single-file import from the agent machine:
-  `python3 scripts/pn_import_submit.py --api-base <url> --corpus <corpus> --paper-id <paper-id> --source <local-file> --ssh-target <ssh-target>`
+  `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --api-base <url> --corpus <corpus> --paper-id <paper-id> --source <local-file> --ssh-target <ssh-target>`
+- local multi-file import from the agent machine:
+  `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --api-base <url> --corpus <corpus> --manifest <json> submit|status|wait`
 - local file or directory to remote staging:
-  `python3 scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>`
+  `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py --ssh-target <ssh-target> --remote-dir <remote-dir> <local-path>`
 - staged single-file import:
-  `python3 scripts/pn_import_submit.py --api-base <url> --corpus <corpus> --server-file-path <remote-file>`
+  `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --api-base <url> --corpus <corpus> --server-file-path <remote-file>`
 - queue inspection:
-  `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> list|status|log|wait ...`
+  `python3 SKILL/PaperNexus/scripts/pn_import_queue.py --api-base <url> --corpus <corpus> list|status|log|wait ...`
   Prefer `status|wait --paper-id <paper-id>` or `--source <local-file>` when possible.
 - typed graph query:
-  `python3 scripts/pn_graph_query.py --api-base <url> --corpus <corpus> query|context|impact|ideas|brainstorm ...`
+  `python3 SKILL/PaperNexus/scripts/pn_graph_query.py --api-base <url> --corpus <corpus> query|context|impact|ideas|brainstorm ...`
 - typed chains and briefs:
-  `python3 scripts/pn_research_chains.py --api-base <url> --corpus <corpus> path-trace|evidence-chain|reflection-chain|research-brief|theory-brief|storyline-brief|brainstorm-brief|paper-enhancement ...`
+  `python3 SKILL/PaperNexus/scripts/pn_research_chains.py --api-base <url> --corpus <corpus> path-trace|evidence-chain|reflection-chain|research-brief|theory-brief|storyline-brief|brainstorm-brief|paper-enhancement ...`
 
 Use raw HTTP only when:
 
@@ -309,7 +383,7 @@ Important query policy:
   - `papernexus write-index` or `papernexus stage4` for committing the staged graph into the authoritative index
 - `papernexus optimize` is still available as a convenience path for stages 2-5 together.
 - Ad hoc PDF/Markdown uploads should normally enter through queued import tasks under `.papernexus/imports/`, not by moving files directly into the main paper source tree during automation.
-- If a local PDF or Markdown only exists on the agent machine and it is a single file, prefer `pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. Use explicit staging plus `serverFilePath` when you need directory or batch control.
+- If a local PDF or Markdown only exists on the agent machine and it is a single file, prefer `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. Use explicit staging plus `serverFilePath` when you need directory or batch control.
 - Do not default to `files[].contentBase64` for large local PDFs; prefer stable remote staging such as `rsync` plus `serverFilePath`.
 - Import tasks keep per-task `events.log` files and stay in a separate directory even after their parsed content is merged into the main graph.
 - `POST /api/imports` supports two input styles:

@@ -25,7 +25,7 @@ These are easier to validate, easier to summarize, and less likely to drift into
 
 ## Live Graph Access Policy
 
-For a running user graph, prefer the local Python wrappers in `scripts/` first. They call the authenticated HTTP API and are easier for agents to use correctly than raw `curl`.
+For a running user graph, prefer the skill-local Python wrappers in `SKILL/PaperNexusResearchChains/scripts/` first. They call the authenticated HTTP API and are easier for agents to use correctly than raw `curl`.
 
 Do not use local CLI graph-query commands against the live graph.
 
@@ -39,8 +39,8 @@ Start from the narrowest API that directly answers the task.
 
 Default script mapping:
 
-- anchor resolution: `python3 scripts/pn_graph_query.py`
-- chains and briefs: `python3 scripts/pn_research_chains.py`
+- anchor resolution: `python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py`
+- chains and briefs: `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py`
 
 ### 1. Anchor resolution
 
@@ -75,7 +75,7 @@ Only fall back to `GET /api/corpus` or `GET /api/paper-enhancement` when the typ
 
 Use:
 
-- `python3 scripts/pn_research_chains.py path-trace`
+- `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py path-trace`
 
 Best for:
 
@@ -87,7 +87,7 @@ Best for:
 
 Use:
 
-- `python3 scripts/pn_research_chains.py evidence-chain`
+- `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py evidence-chain`
 
 Best for:
 
@@ -99,7 +99,7 @@ Best for:
 
 Use:
 
-- `python3 scripts/pn_research_chains.py reflection-chain`
+- `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py reflection-chain`
 
 Best for:
 
@@ -111,7 +111,7 @@ Best for:
 
 Use:
 
-- `python3 scripts/pn_research_chains.py theory-brief`
+- `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py theory-brief`
 
 Best for:
 
@@ -124,7 +124,7 @@ Best for:
 
 Use:
 
-- `python3 scripts/pn_research_chains.py storyline-brief`
+- `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py storyline-brief`
 
 Best for:
 
@@ -136,7 +136,7 @@ Best for:
 
 Use:
 
-- `python3 scripts/pn_research_chains.py research-brief`
+- `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py research-brief`
 
 Best for:
 
@@ -146,15 +146,15 @@ Best for:
 
 Use:
 
-- `python3 scripts/pn_research_chains.py brainstorm-brief`
+- `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py brainstorm-brief`
 
 ## Minimal Script Examples
 
 ```bash
-python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" query "<topic>" --limit 8
-python3 scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" evidence-chain "<topic>" --limit 5
-python3 scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" reflection-chain "<topic>" --limit 5
-python3 scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" research-brief "<topic>" --limit 5
+python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" query "<topic>" --limit 8
+python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" evidence-chain "<topic>" --limit 5
+python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" reflection-chain "<topic>" --limit 5
+python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" research-brief "<topic>" --limit 5
 ```
 
 Best for:

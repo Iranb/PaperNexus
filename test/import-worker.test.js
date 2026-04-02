@@ -8,6 +8,17 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const examplesRoot = path.join(__dirname, '..', 'examples');
 
+async function waitFor(check, { timeoutMs = 2000, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
 test('import worker processes queued uploads and merges them into the single graph', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-workspace-'));
@@ -84,6 +95,123 @@ test('import worker processes queued uploads and merges them into the single gra
     assert.match(log, /stage fast-commit/i);
     assert.doesNotMatch(log, /stage build-graph/i);
     assert.doesNotMatch(log, /stage write-index/i);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker pre-parses the next queued PDF without pulling it into the graph early', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-preparse-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-preparse-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const fakeDoclingPath = path.join(workspaceRoot, 'fake-docling.sh');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+    await fs.writeFile(fakeDoclingPath, `#!/bin/sh
+input="$1"
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    out="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+base=$(basename "$input" .pdf)
+mkdir -p "$out"
+sleep 0.2
+printf '# %s\\n\\n## Abstract\\n\\nPrepared by fake docling.\\n' "$base" > "$out/$base.md"
+`, { mode: 0o755 });
+
+    const [
+      ingestion,
+      corpusStore,
+      importStore,
+      importWorker,
+      marker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js'),
+      import('../src/core/ingestion/marker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-preparse-test',
+      force: true
+    });
+
+    const firstTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'first-queued.pdf',
+          contentBase64: Buffer.from('fake pdf one', 'utf8').toString('base64'),
+          mimeType: 'application/pdf'
+        }
+      ]
+    });
+    const secondTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'second-queued.pdf',
+          contentBase64: Buffer.from('fake pdf two', 'utf8').toString('base64'),
+          mimeType: 'application/pdf'
+        }
+      ]
+    });
+
+    const { markdownDir, markerDir } = corpusStore.getCorpusPaths(indexRoot);
+    const secondCachePath = marker.getPdfMarkdownCachePath(secondTask.files[0].storedPath, {
+      markerDir,
+      markdownDir,
+      pdfParser: 'docling'
+    });
+
+    const result = await importWorker.runImportQueueOnce(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      pdfParser: 'docling',
+      doclingCommand: fakeDoclingPath
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.taskId, firstTask.id);
+
+    const preparsed = await waitFor(async () => {
+      try {
+        await fs.access(secondCachePath);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    assert.equal(preparsed, true);
+
+    const loadedFirstTask = await importStore.loadImportTask(indexRoot, firstTask.id);
+    const loadedSecondTask = await importStore.loadImportTask(indexRoot, secondTask.id);
+    assert.equal(loadedFirstTask.status, 'completed');
+    assert.equal(loadedSecondTask.status, 'pending');
+
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
+    assert.equal(corpus.meta.paperCount, 2);
+    assert.equal(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'second-queued'), false);
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

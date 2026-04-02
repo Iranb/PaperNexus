@@ -9,7 +9,7 @@ Use this skill when the task is about experiment reflection in the PaperNexus re
 
 ## Live Graph Access Policy
 
-For a running user graph, prefer the local Python wrappers in `scripts/` as the default interface. They call the authenticated HTTP API underneath and are the preferred agent path.
+For a running user graph, prefer the skill-local Python wrappers in `SKILL/PaperNexusReflection/scripts/` as the default interface. They call the authenticated HTTP API underneath and are the preferred agent path.
 
 If both a remote server API and a local checkout are available, use the remote API path first.
 Do not use local CLI commands such as `papernexus analyze`, `papernexus enhance --once`, or staged pipeline commands against the live graph when the goal is to ingest a paper, inspect a reflection overlay, or answer a graph-backed question.
@@ -67,11 +67,12 @@ Do not add `--force` by default here. Reflection refresh should normally follow 
 
 Typical live-graph update path:
 
-1. If a single PDF or Markdown file exists only on the local agent machine, prefer `python3 scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and submits the import in one step.
-2. If you need explicit control for a directory or batch, stage it first with `python3 scripts/pn_stage_sync.py`, then submit one staged file with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`.
-3. Poll with `python3 scripts/pn_import_queue.py wait --paper-id <paperId>` or `--source <local-file>` until the task completes.
-4. Prefer reading the refreshed reflection view through `python3 scripts/pn_research_chains.py reflection-chain "<topic>"`.
-5. Use `python3 scripts/pn_research_chains.py paper-enhancement --paper-id <paperId>` when you need raw overlay cards or anchors for a specific paper.
+1. If a single PDF or Markdown file exists only on the local agent machine, prefer `python3 SKILL/PaperNexusReflection/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and submits the import in one step.
+2. If you need to ingest many local files, prefer `python3 SKILL/PaperNexusReflection/scripts/pn_batch_import.py --manifest <json> submit`, then use `status` or `wait` with the same manifest.
+3. If you need explicit control for a directory, stage it first with `python3 SKILL/PaperNexusReflection/scripts/pn_stage_sync.py`, then submit one staged file with `python3 SKILL/PaperNexusReflection/scripts/pn_import_submit.py --server-file-path <remote-file>`.
+4. Poll with `python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py wait --paper-id <paperId>` or `--source <local-file>` until the task completes.
+5. Prefer reading the refreshed reflection view through `python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py reflection-chain "<topic>"`.
+6. Use `python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py paper-enhancement --paper-id <paperId>` when you need raw overlay cards or anchors for a specific paper.
 
 Do not default to `files[].contentBase64` for large local PDFs. Prefer stable remote staging such as `rsync` and then use `serverFilePath`.
 
@@ -144,10 +145,10 @@ At the paper level, look under the enhancement overlay and inspect:
 ## Recommended Reflection Workflow
 
 1. Confirm the import task or corpus data is current through the API.
-2. If a new source is needed, prefer `pn_import_submit.py --source <local-file> --ssh-target <ssh-target>` for one local file, or `pn_stage_sync.py` plus `pn_import_submit.py --server-file-path ...` for explicit staging control.
+2. If a new source is needed, prefer `python3 SKILL/PaperNexusReflection/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>` for one local file, or `python3 SKILL/PaperNexusReflection/scripts/pn_stage_sync.py` plus `python3 SKILL/PaperNexusReflection/scripts/pn_import_submit.py --server-file-path ...` for explicit staging control.
 3. Wait until the import task completes.
-4. Read `pn_research_chains.py reflection-chain` for typed innovation-experiment-outcome-reflection chains.
-5. Read `pn_research_chains.py evidence-chain` or `pn_research_chains.py research-brief` if you also need supporting paper claims and limitations.
+4. Read `python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py reflection-chain` for typed innovation-experiment-outcome-reflection chains.
+5. Read `python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py evidence-chain` or `python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py research-brief` if you also need supporting paper claims and limitations.
 6. Summarize in this order:
 
 - innovation
@@ -236,8 +237,8 @@ Useful API checks:
 
 Preferred script checks:
 
-- `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> list`
-- `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> status --paper-id <paperId>`
-- `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> status --source <local-file>`
-- `python3 scripts/pn_import_queue.py --api-base <url> --corpus <corpus> log <taskId>`
-- `python3 scripts/pn_research_chains.py --api-base <url> --corpus <corpus> reflection-chain "<topic>"`
+- `python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --api-base <url> --corpus <corpus> list`
+- `python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --api-base <url> --corpus <corpus> status --paper-id <paperId>`
+- `python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --api-base <url> --corpus <corpus> status --source <local-file>`
+- `python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --api-base <url> --corpus <corpus> log <taskId>`
+- `python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py --api-base <url> --corpus <corpus> reflection-chain "<topic>"`

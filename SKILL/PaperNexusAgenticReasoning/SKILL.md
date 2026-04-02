@@ -9,12 +9,14 @@ Use this skill when the goal is not just to retrieve graph facts, but to reason 
 
 ## Live Graph Access Policy
 
-For a running user graph, prefer the local Python wrappers in `scripts/` as the default interface. They still use the authenticated HTTP API underneath, but they are safer for agents than raw `curl`.
+For a running user graph, prefer the skill-local Python wrappers in `SKILL/PaperNexusAgenticReasoning/scripts/` as the default interface. They still use the authenticated HTTP API underneath, but they are safer for agents than raw `curl`.
 
 If both a remote server API and a local checkout are available, use the remote API path first.
 Do not call local CLI helpers such as `papernexus query`, `papernexus context`, `papernexus impact`, `papernexus ideas`, `papernexus brainstorm`, or local staged build commands against the live graph.
-If a single PDF or Markdown file exists only on the local agent machine, prefer `python3 scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and submits the import in one step.
-If you need explicit staging control for a directory or batch, use `python3 scripts/pn_stage_sync.py` first and then import the chosen remote file with `python3 scripts/pn_import_submit.py --server-file-path <remote-file>`.
+If a single PDF or Markdown file exists only on the local agent machine, prefer `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`. That wrapper stages the file and submits the import in one step.
+If you need to ingest multiple local files before reasoning, prefer `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_batch_import.py --manifest <json> submit` and then `status` or `wait` with that same manifest.
+If you need explicit staging control for a directory, use `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_stage_sync.py` first and then import the chosen remote file with `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_import_submit.py --server-file-path <remote-file>`.
+Do not write ad-hoc shell loops for batch imports.
 Do not default to `files[].contentBase64` for large local PDFs.
 
 Allowed live-graph entrypoints:
@@ -114,19 +116,19 @@ Do not start with broad web search if the graph already has enough structure to 
 
 In PaperNexus, the default live-graph reasoning inputs are:
 
-- `python3 scripts/pn_graph_query.py query`
-- `python3 scripts/pn_graph_query.py context`
-- `python3 scripts/pn_graph_query.py impact`
-- `python3 scripts/pn_graph_query.py ideas`
-- `python3 scripts/pn_graph_query.py brainstorm`
-- `python3 scripts/pn_research_chains.py path-trace`
-- `python3 scripts/pn_research_chains.py evidence-chain`
-- `python3 scripts/pn_research_chains.py reflection-chain`
-- `python3 scripts/pn_research_chains.py research-brief`
-- `python3 scripts/pn_research_chains.py brainstorm-brief`
-- `python3 scripts/pn_research_chains.py theory-brief`
-- `python3 scripts/pn_research_chains.py storyline-brief`
-- `python3 scripts/pn_research_chains.py paper-enhancement` when paper-local overlay detail is still needed
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py query`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py context`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py impact`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py ideas`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py brainstorm`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py path-trace`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py evidence-chain`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py reflection-chain`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py research-brief`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py brainstorm-brief`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py theory-brief`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py storyline-brief`
+- `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py paper-enhancement` when paper-local overlay detail is still needed
 
 For ideation, prefer the brainstorm-quality node view over the raw full graph. The full graph can still contain supporting nodes that are useful for provenance but too noisy to use as primary anchors.
 
@@ -169,9 +171,9 @@ Do not let the reasoning jump ahead without filling these fields.
 ### A. Understand a topic
 
 ```bash
-python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" query "<topic>" --limit 8
-python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" context "<topic>" --node-view brainstorm
-python3 scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" evidence-chain "<topic>" --limit 5
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" query "<topic>" --limit 8
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" context "<topic>" --node-view brainstorm
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" evidence-chain "<topic>" --limit 5
 ```
 
 Use this to answer:
@@ -184,9 +186,9 @@ Use this to answer:
 ### B. Generate a new research direction
 
 ```bash
-python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" ideas "<topic>" --limit 6
-python3 scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" brainstorm "<topic>" --mode converge --limit 6
-python3 scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" brainstorm-brief "<topic>" --limit 6
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" ideas "<topic>" --limit 6
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py --api-base "http://<host>:4821" --corpus "<corpus>" brainstorm "<topic>" --mode converge --limit 6
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py --api-base "http://<host>:4821" --corpus "<corpus>" brainstorm-brief "<topic>" --limit 6
 ```
 
 Use this to produce:
@@ -318,7 +320,7 @@ Read import state like this:
 Agent rule:
 
 - prefer the existing remote `serve` + import workflow for PDF ingestion
-- if a single PDF exists only on the local agent machine, prefer `pn_import_submit.py --source <local-file> --ssh-target <ssh-target>` so staging and `serverFilePath` submission stay coupled
+- if a single PDF exists only on the local agent machine, prefer `python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>` so staging and `serverFilePath` submission stay coupled
 - do not default to `files[].contentBase64` for large local PDFs; prefer stable remote staging such as `rsync`
 - do not replace live-graph import or query requests with local CLI fallback
 - if import or enhancement is blocked by missing API capability, lock contention, or missing data, report the blocker directly

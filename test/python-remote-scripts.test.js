@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(__dirname, '..');
 const examplesRoot = path.join(repoRoot, 'examples');
+const skillRoot = path.join(repoRoot, 'SKILL');
 
 async function runPython(scriptName, args = [], options = {}) {
   const scriptPath = path.join(repoRoot, 'scripts', scriptName);
@@ -26,6 +27,52 @@ async function runPython(scriptName, args = [], options = {}) {
     stderr: stderr.trim()
   };
 }
+
+function getSkillScriptPath(...segments) {
+  return path.join(skillRoot, ...segments);
+}
+
+test('PaperNexus skill scripts live under skill directories and skills do not point agents at top-level scripts', async () => {
+  const canonicalSkillScripts = [
+    ['PaperNexus', 'scripts', 'pn_common.py'],
+    ['PaperNexus', 'scripts', 'pn_stage_sync.py'],
+    ['PaperNexus', 'scripts', 'pn_import_submit.py'],
+    ['PaperNexus', 'scripts', 'pn_import_queue.py'],
+    ['PaperNexus', 'scripts', 'pn_graph_query.py'],
+    ['PaperNexus', 'scripts', 'pn_research_chains.py'],
+    ['PaperNexus', 'scripts', 'pn_batch_import.py'],
+  ];
+  const localEntryPoints = [
+    ['PaperNexusAgenticReasoning', 'scripts', 'pn_import_submit.py'],
+    ['PaperNexusAgenticReasoning', 'scripts', 'pn_batch_import.py'],
+    ['PaperNexusAgenticReasoning', 'scripts', 'pn_stage_sync.py'],
+    ['PaperNexusAgenticReasoning', 'scripts', 'pn_graph_query.py'],
+    ['PaperNexusAgenticReasoning', 'scripts', 'pn_research_chains.py'],
+    ['PaperNexusBatchImport', 'scripts', 'pn_batch_import.py'],
+    ['PaperNexusReflection', 'scripts', 'pn_batch_import.py'],
+    ['PaperNexusReflection', 'scripts', 'pn_stage_sync.py'],
+    ['PaperNexusReflection', 'scripts', 'pn_import_submit.py'],
+    ['PaperNexusReflection', 'scripts', 'pn_import_queue.py'],
+    ['PaperNexusReflection', 'scripts', 'pn_research_chains.py'],
+    ['PaperNexusResearchChains', 'scripts', 'pn_graph_query.py'],
+    ['PaperNexusResearchChains', 'scripts', 'pn_research_chains.py'],
+  ];
+
+  for (const segments of [...canonicalSkillScripts, ...localEntryPoints]) {
+    await fs.access(getSkillScriptPath(...segments));
+  }
+
+  for (const skillDoc of [
+    'PaperNexus/SKILL.md',
+    'PaperNexusAgenticReasoning/SKILL.md',
+    'PaperNexusBatchImport/SKILL.md',
+    'PaperNexusReflection/SKILL.md',
+    'PaperNexusResearchChains/SKILL.md',
+  ]) {
+    const text = await fs.readFile(getSkillScriptPath(skillDoc), 'utf8');
+    assert.doesNotMatch(text, /\bpython3 scripts\/pn_/);
+  }
+});
 
 async function createImportFixture() {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-remote-home-'));
@@ -374,6 +421,117 @@ test('pn_graph_query.py exposes query and brainstorm through the remote API', as
   } finally {
     await cleanupFixture(fixture);
   }
+});
+
+test('pn_batch_import.py submits a JSON manifest and supports batch wait/status', async () => {
+  const fixture = await createImportFixture();
+  const port = 55600 + Math.floor(Math.random() * 500);
+  const registryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-batch-registry-'));
+  const registryPath = path.join(registryDir, 'task-registry.json');
+  const secondUploadPath = path.join(fixture.uploadRoot, 'second-upload.md');
+  const manifestPath = path.join(fixture.uploadRoot, 'batch-import.json');
+
+  try {
+    await fs.writeFile(
+      secondUploadPath,
+      '# Second Upload\n\n## Abstract\n\nA second batch upload for the Python remote scripts.\n',
+      'utf8'
+    );
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        defaults: {
+          corpus: 'python-remote-test'
+        },
+        papers: [
+          {
+            paperId: 'batch-paper-1',
+            source: fixture.markdownUploadPath,
+            sourceKind: 'markdown'
+          },
+          {
+            paperId: 'batch-paper-2',
+            source: secondUploadPath,
+            sourceKind: 'markdown'
+          }
+        ]
+      }, null, 2),
+      'utf8'
+    );
+
+    const server = await startServer(fixture, port, { enableImports: true });
+    try {
+      const submit = await runPython('pn_batch_import.py', [
+        '--json',
+        '--api-base', `http://127.0.0.1:${port}`,
+        '--token', 'secret-token',
+        '--manifest', manifestPath,
+        'submit'
+      ], {
+        env: {
+          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
+        }
+      });
+      const submitted = JSON.parse(submit.stdout);
+      assert.equal(submitted.summary.total, 2);
+      assert.equal(submitted.summary.submitted, 2);
+      assert.equal(submitted.items.length, 2);
+      assert.ok(submitted.items.every((item) => item.taskId));
+
+      const wait = await runPython('pn_batch_import.py', [
+        '--json',
+        '--api-base', `http://127.0.0.1:${port}`,
+        '--token', 'secret-token',
+        '--manifest', manifestPath,
+        'wait',
+        '--timeout', '30',
+        '--interval', '0.2'
+      ], {
+        env: {
+          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
+        }
+      });
+      const waited = JSON.parse(wait.stdout);
+      assert.equal(waited.summary.total, 2);
+      assert.equal(waited.summary.completed, 2);
+      assert.ok(waited.items.every((item) => item.status === 'completed'));
+
+      const status = await runPython('pn_batch_import.py', [
+        '--json',
+        '--api-base', `http://127.0.0.1:${port}`,
+        '--token', 'secret-token',
+        '--manifest', manifestPath,
+        'status'
+      ], {
+        env: {
+          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
+        }
+      });
+      const statusPayload = JSON.parse(status.stdout);
+      assert.equal(statusPayload.summary.completed, 2);
+      assert.ok(statusPayload.items.every((item) => item.taskId));
+      assert.ok(statusPayload.items.every((item) => item.registry.matchedBy === 'paper-id'));
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+    await fs.rm(registryDir, { recursive: true, force: true });
+  }
+});
+
+test('pn_batch_import.py template emits the fixed manifest schema', async () => {
+  const result = await runPython('pn_batch_import.py', [
+    '--json',
+    'template'
+  ]);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.version, 1);
+  assert.ok(payload.defaults);
+  assert.ok(Array.isArray(payload.papers));
+  assert.equal(payload.papers.length, 1);
+  assert.equal(typeof payload.papers[0].source, 'string');
 });
 
 test('pn_research_chains.py exposes evidence, reflection, and brief endpoints through the remote API', async () => {
