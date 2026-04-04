@@ -4,8 +4,29 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { enrichGraphWithDomainAndMechanismNodes } from '../graph/domain-bridges.js';
 import { applyNodeCheckDecisions, mergeSimilarGraphNodes } from '../graph/merge-similar.js';
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from '../graph/schema.js';
+import { normalizeDomainTags, normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
+import {
+  normalizeAbstractMechanismNames,
+  normalizeAbstractMechanismRecords
+} from '../graph/abstract-mechanisms.js';
+import {
+  buildResearchQuestionNode,
+  normalizeResearchQuestionRecords
+} from '../graph/research-questions.js';
+import {
+  buildChallengeNode,
+  buildChallengeVariantRecords
+} from '../graph/challenges.js';
+import {
+  buildIdeaFragmentNode,
+  buildTakeawayNode,
+  normalizeEvidenceSnippetRecord,
+  normalizeIdeaFragmentRecord,
+  normalizeTakeawayRecord
+} from '../graph/takeaways.js';
 import { applyGraphDeltaPayload, buildGraphDeltaPayload } from '../graph/delta-commit.js';
 import {
   adjudicateCrossPaperCandidates,
@@ -106,9 +127,10 @@ const BRAINSTORM_SCORE_THRESHOLDS = {
 
 const NODE_LLM_CHECK_ENABLED = false;
 const SNAPSHOT_STATE_SIGNATURE_VERSION = 1;
-const SEMANTIC_LLM_SIGNATURE_VERSION = 1;
+const SEMANTIC_LLM_SIGNATURE_VERSION = 2;
 const RELATION_LLM_SIGNATURE_VERSION = 1;
 const STAGE2_JOB_STATE_VERSION = 1;
+const CATALYST_METADATA_CONTRACT_VERSION = 1;
 
 const PROBLEM_SENTENCE_PATTERNS = [
   /\b(?:we|this paper|this work)\s+(?:study|address(?:es)?|tackle(?:s|d)?|focus(?:es)? on|investigate(?:s|d)?)\s+(.+?)(?:\.|,|;| while | by | with )/i,
@@ -1170,6 +1192,10 @@ function buildSemanticPaperView(paper) {
     claims,
     findings,
     researchGoals,
+    researchQuestions: [],
+    openChallenges: [],
+    takeaways: [],
+    ideaFragments: [],
     limitations,
     assumptions,
     evidences: extractEvidence(paper, datasets, metrics),
@@ -1205,7 +1231,13 @@ function buildSemanticPaperView(paper) {
       futureDirections: [],
       benchmarks: [],
       datasets: [],
-      metrics: []
+      metrics: [],
+      abstractMechanisms: [],
+      abstractMechanismObjects: [],
+      researchQuestions: [],
+      openChallenges: [],
+      takeaways: [],
+      ideaFragments: []
     },
     llmRelations: []
   };
@@ -1242,6 +1274,10 @@ function countSemanticObjectEntries(payload = {}) {
     payload.claims,
     payload.findings,
     payload.researchGoals,
+    payload.researchQuestions,
+    payload.openChallenges,
+    payload.takeaways,
+    payload.ideaFragments,
     payload.limitations,
     payload.assumptions,
     payload.evidences,
@@ -1313,18 +1349,30 @@ function canAttemptLlmRelations(options = {}) {
 function createSemanticConfigSignature(options = {}) {
   const plan = resolveSemanticExtractionPlan(options);
   if (!plan.shouldAttempt || plan.requestedMode === 'heuristic-only') {
-    return `semantic:${SEMANTIC_LLM_SIGNATURE_VERSION}:disabled:${plan.requestedMode}`;
+    return `semantic:${SEMANTIC_LLM_SIGNATURE_VERSION}:disabled:${plan.requestedMode}:catalyst:${CATALYST_METADATA_CONTRACT_VERSION}`;
   }
 
   return JSON.stringify({
     kind: 'semantic',
     version: SEMANTIC_LLM_SIGNATURE_VERSION,
+    catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
     requestedMode: plan.requestedMode,
     effectiveMode: plan.effectiveMode,
     provider: plan.config?.provider || 'disabled',
     model: plan.config?.model || '',
     baseUrl: plan.config?.baseUrl || ''
   });
+}
+
+function hasCatalystMetadataContract(snapshot = null) {
+  const semanticObjects = snapshot?.llmSemanticObjects;
+  if (!semanticObjects || typeof semanticObjects !== 'object') return false;
+  return (
+    Object.prototype.hasOwnProperty.call(semanticObjects, 'fieldOfStudy')
+    && Object.prototype.hasOwnProperty.call(semanticObjects, 'fieldCandidates')
+    && Object.prototype.hasOwnProperty.call(semanticObjects, 'domainTags')
+    && Object.prototype.hasOwnProperty.call(semanticObjects, 'abstractMechanisms')
+  );
 }
 
 function createRelationConfigSignature(options = {}) {
@@ -1353,6 +1401,74 @@ function serializeSnapshotSlotEntries(entries = []) {
     }))
     .filter((entry) => entry.name || entry.evidenceText)
     .sort((left, right) => `${left.name}:${left.evidenceText}`.localeCompare(`${right.name}:${right.evidenceText}`));
+}
+
+function serializeSnapshotQuestionEntries(entries = []) {
+  return (entries || [])
+    .map((entry) => ({
+      name: String(entry?.name || '').trim(),
+      domainSpecificText: String(entry?.domainSpecificText || '').trim(),
+      domainAgnosticText: String(entry?.domainAgnosticText || '').trim(),
+      relatedProblems: Array.isArray(entry?.relatedProblems) ? [...entry.relatedProblems].sort() : [],
+      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : []
+    }))
+    .filter((entry) => entry.name)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function serializeSnapshotChallengeEntries(entries = []) {
+  return (entries || [])
+    .map((entry) => ({
+      name: String(entry?.name || '').trim(),
+      domainSpecificText: String(entry?.domainSpecificText || '').trim(),
+      domainAgnosticText: String(entry?.domainAgnosticText || '').trim(),
+      challengeType: String(entry?.challengeType || '').trim(),
+      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : []
+    }))
+    .filter((entry) => entry.name)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function serializeSnapshotSnippetEntries(entries = []) {
+  return (entries || [])
+    .map((entry) => ({
+      text: String(entry?.text || entry?.evidenceText || '').trim(),
+      sectionHeading: String(entry?.sectionHeading || '').trim(),
+      sectionRole: String(entry?.sectionRole || '').trim(),
+      confidence: Number.isFinite(Number(entry?.confidence)) ? Number(entry.confidence) : null
+    }))
+    .filter((entry) => entry.text)
+    .sort((left, right) => `${left.sectionHeading}:${left.text}`.localeCompare(`${right.sectionHeading}:${right.text}`));
+}
+
+function serializeSnapshotTakeawayEntries(entries = []) {
+  return (entries || [])
+    .map((entry) => ({
+      name: String(entry?.name || '').trim(),
+      text: String(entry?.text || '').trim(),
+      sourceDomains: Array.isArray(entry?.sourceDomains) ? [...entry.sourceDomains].sort() : [],
+      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : [],
+      relatedChallenges: Array.isArray(entry?.relatedChallenges) ? [...entry.relatedChallenges].sort() : [],
+      supportingSnippets: serializeSnapshotSnippetEntries(entry?.supportingSnippets || [])
+    }))
+    .filter((entry) => entry.name || entry.text)
+    .sort((left, right) => `${left.name}:${left.text}`.localeCompare(`${right.name}:${right.text}`));
+}
+
+function serializeSnapshotIdeaFragmentEntries(entries = []) {
+  return (entries || [])
+    .map((entry) => ({
+      name: String(entry?.name || '').trim(),
+      text: String(entry?.text || '').trim(),
+      targetDomain: String(entry?.targetDomain || '').trim(),
+      sourceDomains: Array.isArray(entry?.sourceDomains) ? [...entry.sourceDomains].sort() : [],
+      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : [],
+      sourceTakeaways: Array.isArray(entry?.sourceTakeaways) ? [...entry.sourceTakeaways].sort() : [],
+      addressesChallenges: Array.isArray(entry?.addressesChallenges) ? [...entry.addressesChallenges].sort() : [],
+      supportingSnippets: serializeSnapshotSnippetEntries(entry?.supportingSnippets || [])
+    }))
+    .filter((entry) => entry.name || entry.text)
+    .sort((left, right) => `${left.name}:${left.text}`.localeCompare(`${right.name}:${right.text}`));
 }
 
 function serializeSnapshotRelations(relations = []) {
@@ -1386,6 +1502,10 @@ function createSemanticPaperSnapshotStateSignature(semanticPaper = {}) {
       claims: serializeSnapshotSlotEntries(semanticPaper.claims),
       findings: serializeSnapshotSlotEntries(semanticPaper.findings),
       researchGoals: serializeSnapshotSlotEntries(semanticPaper.researchGoals),
+      researchQuestions: serializeSnapshotQuestionEntries(semanticPaper.researchQuestions),
+      openChallenges: serializeSnapshotChallengeEntries(semanticPaper.openChallenges),
+      takeaways: serializeSnapshotTakeawayEntries(semanticPaper.takeaways),
+      ideaFragments: serializeSnapshotIdeaFragmentEntries(semanticPaper.ideaFragments),
       limitations: serializeSnapshotSlotEntries(semanticPaper.limitations),
       assumptions: serializeSnapshotSlotEntries(semanticPaper.assumptions),
       evidences: serializeSnapshotSlotEntries(semanticPaper.evidences),
@@ -1429,6 +1549,8 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
   const semanticConfiguredNow = semanticPlan.shouldAttempt && semanticPlan.requestedMode !== 'heuristic-only';
   const semanticMissingForCurrentConfig = semanticConfiguredNow
     && snapshotSemanticSignature !== currentSemanticSignature;
+  const semanticMissingCatalystMetadata = semanticConfiguredNow
+    && !hasCatalystMetadataContract(snapshot);
   const semanticRetryableFailure = semanticConfiguredNow
     && semanticRetryCount < maxRetries
     && !semanticSummary.participated
@@ -1446,7 +1568,7 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
     && Boolean(snapshot.llm?.error)
     && Number(snapshot.llm?.relationCount || 0) === 0;
 
-  const semanticRequired = semanticMissingForCurrentConfig || semanticRetryableFailure;
+  const semanticRequired = semanticMissingForCurrentConfig || semanticMissingCatalystMetadata || semanticRetryableFailure;
   const relationRequired = relationMissingForCurrentConfig || relationRetryableFailure;
 
   return {
@@ -1470,6 +1592,10 @@ function applySemanticObjectInference(semanticPaper, semanticObjects, semanticEx
     semanticPaper.claims = mergeSemanticSlotsByMode(semanticPaper.claims, semanticObjects.claims, 5, semanticExtractionMode);
     semanticPaper.findings = mergeSemanticSlotsByMode(semanticPaper.findings, semanticObjects.findings, 6, semanticExtractionMode);
     semanticPaper.researchGoals = mergeSemanticSlotsByMode(semanticPaper.researchGoals, semanticObjects.researchGoals, 4, semanticExtractionMode);
+    semanticPaper.researchQuestions = mergeSemanticSlotsByMode(semanticPaper.researchQuestions, semanticObjects.researchQuestions, 4, semanticExtractionMode);
+    semanticPaper.openChallenges = mergeSemanticSlotsByMode(semanticPaper.openChallenges, semanticObjects.openChallenges, 5, semanticExtractionMode);
+    semanticPaper.takeaways = mergeSemanticSlotsByMode(semanticPaper.takeaways, semanticObjects.takeaways, 6, semanticExtractionMode);
+    semanticPaper.ideaFragments = mergeSemanticSlotsByMode(semanticPaper.ideaFragments, semanticObjects.ideaFragments, 6, semanticExtractionMode);
     semanticPaper.limitations = mergeSemanticSlotsByMode(semanticPaper.limitations, semanticObjects.limitations, 5, semanticExtractionMode);
     semanticPaper.assumptions = mergeSemanticSlotsByMode(semanticPaper.assumptions, semanticObjects.assumptions, 5, semanticExtractionMode);
     semanticPaper.evidences = mergeSemanticSlotsByMode(semanticPaper.evidences, semanticObjects.evidences, 8, semanticExtractionMode);
@@ -1477,6 +1603,21 @@ function applySemanticObjectInference(semanticPaper, semanticObjects, semanticEx
     semanticPaper.benchmarks = mergeSemanticSlotsByMode(semanticPaper.benchmarks, semanticObjects.benchmarks, 8, semanticExtractionMode);
     semanticPaper.datasets = mergeSemanticSlotsByMode(semanticPaper.datasets, semanticObjects.datasets, 6, semanticExtractionMode);
     semanticPaper.metrics = mergeSemanticSlotsByMode(semanticPaper.metrics, semanticObjects.metrics, 6, semanticExtractionMode);
+    if (semanticObjects.fieldOfStudy) {
+      semanticPaper.fieldOfStudy = semanticObjects.fieldOfStudy;
+    }
+    if (Array.isArray(semanticObjects.fieldCandidates) && semanticObjects.fieldCandidates.length) {
+      semanticPaper.fieldCandidates = semanticObjects.fieldCandidates;
+    }
+    if (Array.isArray(semanticObjects.domainTags) && semanticObjects.domainTags.length) {
+      semanticPaper.domainTags = semanticObjects.domainTags;
+    }
+    if (Array.isArray(semanticObjects.abstractMechanisms) && semanticObjects.abstractMechanisms.length) {
+      semanticPaper.abstractMechanisms = semanticObjects.abstractMechanisms;
+    }
+    if (Array.isArray(semanticObjects.abstractMechanismObjects) && semanticObjects.abstractMechanismObjects.length) {
+      semanticPaper.abstractMechanismObjects = semanticObjects.abstractMechanismObjects;
+    }
   }
 
   return {
@@ -1520,13 +1661,24 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
     claims: semanticObjects.claims,
     findings: semanticObjects.findings,
     researchGoals: semanticObjects.researchGoals,
+    researchQuestions: semanticObjects.researchQuestions,
+    openChallenges: semanticObjects.openChallenges,
+    takeaways: semanticObjects.takeaways,
+    ideaFragments: semanticObjects.ideaFragments,
     limitations: semanticObjects.limitations,
     assumptions: semanticObjects.assumptions,
     evidences: semanticObjects.evidences,
     futureDirections: semanticObjects.futureDirections,
     benchmarks: semanticObjects.benchmarks,
     datasets: semanticObjects.datasets,
-    metrics: semanticObjects.metrics
+    metrics: semanticObjects.metrics,
+    fieldOfStudy: semanticObjects.fieldOfStudy || null,
+    fieldCandidates: Array.isArray(semanticObjects.fieldCandidates) ? semanticObjects.fieldCandidates : [],
+    domainTags: Array.isArray(semanticObjects.domainTags) ? semanticObjects.domainTags : [],
+    abstractMechanisms: Array.isArray(semanticObjects.abstractMechanisms) ? semanticObjects.abstractMechanisms : [],
+    abstractMechanismObjects: Array.isArray(semanticObjects.abstractMechanismObjects)
+      ? semanticObjects.abstractMechanismObjects
+      : []
   };
   semanticPaper.llmRelations = inference.relations;
   applySemanticAdmissionPolicy(semanticPaper);
@@ -2013,6 +2165,12 @@ function upsertGlobalNode(graph, cache, nodesByType, type, name, properties = {}
 }
 
 function aggregateGlobalContributions(fragments = []) {
+  const mergeStringSet = (target, values = []) => {
+    for (const value of values || []) {
+      if (value) target.add(value);
+    }
+  };
+
   const groups = new Map();
 
   for (const fragment of fragments) {
@@ -2033,7 +2191,27 @@ function aggregateGlobalContributions(fragments = []) {
           nodeType: node.properties?.type,
           category: node.properties?.category,
           higherIsBetter: node.properties?.higherIsBetter,
-          description: node.properties?.description
+          description: node.properties?.description,
+          text: node.properties?.text || '',
+          canonicalId: node.properties?.canonicalId || '',
+          normalizedName: node.properties?.normalizedName || '',
+          challengeType: node.properties?.challengeType || '',
+          abstractionLevel: node.properties?.abstractionLevel || '',
+          domainSpecificText: node.properties?.domainSpecificText || '',
+          domainAgnosticText: node.properties?.domainAgnosticText || '',
+          retrievalText: node.properties?.retrievalText || '',
+          analogyText: node.properties?.analogyText || '',
+          bridgeRetrievalText: node.properties?.bridgeRetrievalText || '',
+          targetDomain: node.properties?.targetDomain || '',
+          fieldOfStudy: node.properties?.fieldOfStudy || '',
+          fieldCandidates: new Set(node.properties?.fieldCandidates || []),
+          domainTags: new Set(node.properties?.domainTags || []),
+          abstractMechanisms: new Set(node.properties?.abstractMechanisms || []),
+          relatedProblems: new Set(node.properties?.relatedProblems || []),
+          sourceDomains: new Set(node.properties?.sourceDomains || []),
+          relatedChallenges: new Set(node.properties?.relatedChallenges || []),
+          sourceTakeaways: new Set(node.properties?.sourceTakeaways || []),
+          addressesChallenges: new Set(node.properties?.addressesChallenges || [])
         });
       }
 
@@ -2063,6 +2241,26 @@ function aggregateGlobalContributions(fragments = []) {
         group.higherIsBetter = node.properties.higherIsBetter;
       }
       if (!group.description && node.properties?.description) group.description = node.properties.description;
+      if (!group.text && node.properties?.text) group.text = node.properties.text;
+      if (!group.canonicalId && node.properties?.canonicalId) group.canonicalId = node.properties.canonicalId;
+      if (!group.normalizedName && node.properties?.normalizedName) group.normalizedName = node.properties.normalizedName;
+      if (!group.challengeType && node.properties?.challengeType) group.challengeType = node.properties.challengeType;
+      if (!group.abstractionLevel && node.properties?.abstractionLevel) group.abstractionLevel = node.properties.abstractionLevel;
+      if (!group.domainSpecificText && node.properties?.domainSpecificText) group.domainSpecificText = node.properties.domainSpecificText;
+      if (!group.domainAgnosticText && node.properties?.domainAgnosticText) group.domainAgnosticText = node.properties.domainAgnosticText;
+      if (!group.retrievalText && node.properties?.retrievalText) group.retrievalText = node.properties.retrievalText;
+      if (!group.analogyText && node.properties?.analogyText) group.analogyText = node.properties.analogyText;
+      if (!group.bridgeRetrievalText && node.properties?.bridgeRetrievalText) group.bridgeRetrievalText = node.properties.bridgeRetrievalText;
+      if (!group.targetDomain && node.properties?.targetDomain) group.targetDomain = node.properties.targetDomain;
+      if (!group.fieldOfStudy && node.properties?.fieldOfStudy) group.fieldOfStudy = node.properties.fieldOfStudy;
+      mergeStringSet(group.fieldCandidates, node.properties?.fieldCandidates);
+      mergeStringSet(group.domainTags, node.properties?.domainTags);
+      mergeStringSet(group.abstractMechanisms, node.properties?.abstractMechanisms);
+      mergeStringSet(group.relatedProblems, node.properties?.relatedProblems);
+      mergeStringSet(group.sourceDomains, node.properties?.sourceDomains);
+      mergeStringSet(group.relatedChallenges, node.properties?.relatedChallenges);
+      mergeStringSet(group.sourceTakeaways, node.properties?.sourceTakeaways);
+      mergeStringSet(group.addressesChallenges, node.properties?.addressesChallenges);
     }
   }
 
@@ -2081,7 +2279,27 @@ function aggregateGlobalContributions(fragments = []) {
           ...(group.nodeType ? { type: group.nodeType } : {}),
           ...(group.category ? { category: group.category } : {}),
           ...(typeof group.higherIsBetter === 'boolean' ? { higherIsBetter: group.higherIsBetter } : {}),
-          ...(group.description ? { description: group.description } : {})
+          ...(group.description ? { description: group.description } : {}),
+          ...(group.text ? { text: group.text } : {}),
+          ...(group.canonicalId ? { canonicalId: group.canonicalId } : {}),
+          ...(group.normalizedName ? { normalizedName: group.normalizedName } : {}),
+          ...(group.challengeType ? { challengeType: group.challengeType } : {}),
+          ...(group.abstractionLevel ? { abstractionLevel: group.abstractionLevel } : {}),
+          ...(group.domainSpecificText ? { domainSpecificText: group.domainSpecificText } : {}),
+          ...(group.domainAgnosticText ? { domainAgnosticText: group.domainAgnosticText } : {}),
+          ...(group.retrievalText ? { retrievalText: group.retrievalText } : {}),
+          ...(group.analogyText ? { analogyText: group.analogyText } : {}),
+          ...(group.bridgeRetrievalText ? { bridgeRetrievalText: group.bridgeRetrievalText } : {}),
+          ...(group.targetDomain ? { targetDomain: group.targetDomain } : {}),
+          ...(group.fieldOfStudy ? { fieldOfStudy: group.fieldOfStudy } : {}),
+          ...(group.fieldCandidates.size ? { fieldCandidates: [...group.fieldCandidates].sort() } : {}),
+          ...(group.domainTags.size ? { domainTags: [...group.domainTags].sort() } : {}),
+          ...(group.abstractMechanisms.size ? { abstractMechanisms: [...group.abstractMechanisms].sort() } : {}),
+          ...(group.relatedProblems.size ? { relatedProblems: [...group.relatedProblems].sort() } : {}),
+          ...(group.sourceDomains.size ? { sourceDomains: [...group.sourceDomains].sort() } : {}),
+          ...(group.relatedChallenges.size ? { relatedChallenges: [...group.relatedChallenges].sort() } : {}),
+          ...(group.sourceTakeaways.size ? { sourceTakeaways: [...group.sourceTakeaways].sort() } : {}),
+          ...(group.addressesChallenges.size ? { addressesChallenges: [...group.addressesChallenges].sort() } : {})
         }
       },
       paperRelationships: group.paperRelationships
@@ -2474,6 +2692,16 @@ async function applyCrossPaperOllamaJudgments(graph, methods, problems, semantic
 }
 
 function buildPaperNode(paper) {
+  const domainTags = normalizeDomainTags(paper.domainTags || []);
+  const fieldCandidates = normalizeDomainTags(paper.fieldCandidates || []);
+  const fieldOfStudy = normalizeFieldOfStudy(paper.fieldOfStudy, [
+    ...domainTags,
+    ...fieldCandidates
+  ]);
+  const abstractMechanismObjects = normalizeAbstractMechanismRecords(
+    paper.abstractMechanismObjects || paper.abstractMechanisms || paper.mechanismHints || []
+  );
+  const abstractMechanisms = normalizeAbstractMechanismNames(abstractMechanismObjects);
   return {
     id: paper.paperId,
     type: NODE_TYPES.PAPER,
@@ -2488,7 +2716,12 @@ function buildPaperNode(paper) {
       sourceMarkdownPath: paper.sourceMarkdownPath,
       sourcePdfPath: paper.sourcePdfPath,
       sourceKind: paper.sourceKind,
-      sourceFingerprint: paper.sourceFingerprint
+      sourceFingerprint: paper.sourceFingerprint,
+      fieldOfStudy,
+      fieldCandidates,
+      domainTags,
+      abstractMechanisms,
+      abstractMechanismObjects
     }
   };
 }
@@ -2593,6 +2826,8 @@ async function buildGraphFromSemanticPapers({ corpusName, rootPath, semanticPape
     addOllamaRelations(graph, [localNodeRegistry, nodeRegistry], paper, paper.llmRelations);
     progress.tick();
   }
+
+  enrichGraphWithDomainAndMechanismNodes(graph);
 
   postprocessInput.problems = nodesByType.get(NODE_TYPES.PROBLEM) || [];
   postprocessInput.methods = nodesByType.get(NODE_TYPES.METHOD) || [];
@@ -2887,6 +3122,7 @@ function buildLlmOptimizationState(manifest, options = {}) {
   return {
     version: 1,
     completedAt: new Date().toISOString(),
+    catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
     token: createLlmOptimizationToken(manifest, options)
@@ -2895,7 +3131,22 @@ function buildLlmOptimizationState(manifest, options = {}) {
 
 function manifestHasReusableLlmOptimization(manifest, options = {}) {
   if (!manifest?.llmOptimization?.token) return false;
+  if (manifest.llmOptimization.catalystMetadataContractVersion !== CATALYST_METADATA_CONTRACT_VERSION) {
+    return false;
+  }
   return manifest.llmOptimization.token === createLlmOptimizationToken(manifest, options);
+}
+
+function manifestNeedsCatalystMetadataBackfill(manifest) {
+  if (!manifest?.sources?.length) return false;
+  if (!manifest.llmOptimization?.token) return true;
+  return manifest.llmOptimization.catalystMetadataContractVersion !== CATALYST_METADATA_CONTRACT_VERSION;
+}
+
+function backfillSemanticExtractionMode(options = {}) {
+  return normalizeSemanticExtractionMode(
+    firstDefinedValue(options.semanticExtraction, options.llmSemanticExtraction, 'llm-assisted')
+  );
 }
 
 function createStage2JobToken(manifest, options = {}) {
@@ -5212,6 +5463,30 @@ export async function writeIndexCorpus(inputPath, options = {}) {
     enhancement,
     stage: 'index-written'
   };
+}
+
+export async function backfillCatalystMetadataCorpus(inputPath, options = {}) {
+  const semanticExtraction = backfillSemanticExtractionMode(options);
+  const analysisOptions = {
+    ...options,
+    semanticExtraction
+  };
+  const semanticPlan = resolveSemanticExtractionPlan(analysisOptions);
+  if (!semanticPlan.shouldAttempt) {
+    throw new Error(
+      'Catalyst metadata backfill requires an LLM-enabled semantic extraction mode. '
+      + 'Configure an LLM provider/model or pass `--semantic-extraction heuristic-only` only when you do not expect catalyst metadata backfill.'
+    );
+  }
+
+  await llmOptimizeCorpus(inputPath, analysisOptions);
+  await buildGraphCorpus(inputPath, analysisOptions);
+  await mergeGraphCorpus(inputPath, analysisOptions);
+  return writeIndexCorpus(inputPath, analysisOptions);
+}
+
+export async function corpusNeedsCatalystMetadataBackfill(rootPath) {
+  return manifestNeedsCatalystMetadataBackfill(await loadSourceManifest(rootPath));
 }
 
 async function refreshWatchedCorpus(inputPath, options = {}) {

@@ -1,6 +1,18 @@
 import os from 'node:os';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from '../graph/schema.js';
+import { normalizeDomainTags, normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
+import {
+  normalizeAbstractMechanismNames,
+  normalizeAbstractMechanismRecords
+} from '../graph/abstract-mechanisms.js';
+import { normalizeResearchQuestionRecords } from '../graph/research-questions.js';
+import { buildChallengeVariantRecords } from '../graph/challenges.js';
+import {
+  normalizeEvidenceSnippetRecord,
+  normalizeIdeaFragmentRecord,
+  normalizeTakeawayRecord
+} from '../graph/takeaways.js';
 import { jaccardSimilarity, normalizeText, slugify, stableHash, unique } from '../../lib/utils.js';
 
 function firstDefinedValue(...values) {
@@ -125,6 +137,27 @@ function buildGlobalNodePayload(type, name, properties = {}) {
   if (properties.category) node.properties.category = properties.category;
   if (typeof properties.higherIsBetter === 'boolean') node.properties.higherIsBetter = properties.higherIsBetter;
   if (properties.description) node.properties.description = properties.description;
+  if (properties.text) node.properties.text = properties.text;
+  if (properties.canonicalId) node.properties.canonicalId = properties.canonicalId;
+  if (properties.normalizedName) node.properties.normalizedName = properties.normalizedName;
+  if (properties.challengeType) node.properties.challengeType = properties.challengeType;
+  if (properties.domainSpecificText) node.properties.domainSpecificText = properties.domainSpecificText;
+  if (properties.domainAgnosticText) node.properties.domainAgnosticText = properties.domainAgnosticText;
+  if (properties.abstractionLevel) node.properties.abstractionLevel = properties.abstractionLevel;
+  if (properties.retrievalText) node.properties.retrievalText = properties.retrievalText;
+  if (properties.analogyText) node.properties.analogyText = properties.analogyText;
+  if (properties.bridgeRetrievalText) node.properties.bridgeRetrievalText = properties.bridgeRetrievalText;
+  if (properties.relatedProblems?.length) node.properties.relatedProblems = properties.relatedProblems;
+  if (properties.sourceDomains?.length) node.properties.sourceDomains = properties.sourceDomains;
+  if (properties.targetDomain) node.properties.targetDomain = properties.targetDomain;
+  if (properties.relatedChallenges?.length) node.properties.relatedChallenges = properties.relatedChallenges;
+  if (properties.sourceTakeaways?.length) node.properties.sourceTakeaways = properties.sourceTakeaways;
+  if (properties.addressesChallenges?.length) node.properties.addressesChallenges = properties.addressesChallenges;
+  if (properties.fieldOfStudy) node.properties.fieldOfStudy = properties.fieldOfStudy;
+  if (properties.fieldCandidates?.length) node.properties.fieldCandidates = properties.fieldCandidates;
+  if (properties.domainTags?.length) node.properties.domainTags = properties.domainTags;
+  if (properties.abstractMechanisms?.length) node.properties.abstractMechanisms = properties.abstractMechanisms;
+  if (properties.abstractMechanismObjects?.length) node.properties.abstractMechanismObjects = properties.abstractMechanismObjects;
   if (typeof properties.brainstormEligible === 'boolean') node.properties.brainstormEligible = properties.brainstormEligible;
   if (typeof properties.brainstormScore === 'number') node.properties.brainstormScore = properties.brainstormScore;
   if (properties.brainstormTier) node.properties.brainstormTier = properties.brainstormTier;
@@ -145,11 +178,36 @@ function createGlobalContribution(type, paper, record, paperRelationType, option
     category: options.category,
     higherIsBetter: options.higherIsBetter,
     description: options.description,
+    text: options.text ?? record.text ?? record.name,
+    canonicalId: options.canonicalId,
+    normalizedName: options.normalizedName,
+    challengeType: options.challengeType,
+    abstractionLevel: options.abstractionLevel,
+    domainSpecificText: options.domainSpecificText,
+    domainAgnosticText: options.domainAgnosticText,
+    retrievalText: options.retrievalText,
+    analogyText: options.analogyText,
+    fieldOfStudy: normalizeFieldOfStudy(record.fieldOfStudy, record.domainTags || []),
+    fieldCandidates: normalizeDomainTags(record.fieldCandidates || []),
+    domainTags: normalizeDomainTags(record.domainTags || []),
+    abstractMechanismObjects: normalizeAbstractMechanismRecords(
+      record.abstractMechanismObjects || record.abstractMechanisms || record.mechanismHints || []
+    ),
+    abstractMechanisms: normalizeAbstractMechanismNames(
+      record.abstractMechanismObjects || record.abstractMechanisms || record.mechanismHints || []
+    ),
     brainstormEligible: record.brainstormEligible,
     brainstormScore: record.brainstormScore,
     brainstormTier: record.brainstormTier,
     admissionSource: record.admissionSource,
-    admissionReason: record.admissionReason
+    admissionReason: record.admissionReason,
+    relatedProblems: options.relatedProblems,
+    bridgeRetrievalText: options.bridgeRetrievalText,
+    sourceDomains: options.sourceDomains,
+    targetDomain: options.targetDomain,
+    relatedChallenges: options.relatedChallenges,
+    sourceTakeaways: options.sourceTakeaways,
+    addressesChallenges: options.addressesChallenges
   });
 
   return {
@@ -178,7 +236,51 @@ function createScopedContribution(node, paperRelationshipType, record, paper, al
   };
 }
 
+function matchContributionNodesByNames(contributions = [], names = []) {
+  const wanted = new Set(
+    (names || [])
+      .map((entry) => normalizeText(entry))
+      .filter(Boolean)
+  );
+  if (!wanted.size) return [];
+  return contributions
+    .filter((entry) => wanted.has(normalizeText(entry.node?.name || '')))
+    .map((entry) => entry.node);
+}
+
+function createEvidenceSnippetContribution(paper, snippet, index, aliases = []) {
+  const normalized = normalizeEvidenceSnippetRecord(snippet);
+  if (!normalized) return null;
+
+  const node = buildPaperScopedNodePayload(
+    NODE_TYPES.EVIDENCE_SNIPPET,
+    paper,
+    `evidence-snippet:${index}`,
+    cleanSemanticName(normalized.name, `${paper.paperTitle} evidence snippet`),
+    {
+      text: normalized.text,
+      evidenceText: normalized.text,
+      sectionHeading: normalized.sectionHeading,
+      sectionRole: normalized.sectionRole,
+      confidence: normalized.confidence,
+      abstractMechanisms: normalized.supportsMechanisms
+    }
+  );
+
+  return createScopedContribution(node, EDGE_TYPES.CONTAINS, normalized, paper, aliases);
+}
+
 export function precomputePaperGraphFragment(paper) {
+  const paperDomainTags = normalizeDomainTags(paper.domainTags || []);
+  const paperFieldCandidates = normalizeDomainTags(paper.fieldCandidates || []);
+  const paperFieldOfStudy = normalizeFieldOfStudy(paper.fieldOfStudy, [
+    ...paperDomainTags,
+    ...paperFieldCandidates
+  ]);
+  const paperAbstractMechanismObjects = normalizeAbstractMechanismRecords(
+    paper.abstractMechanismObjects || paper.abstractMechanisms || paper.mechanismHints || []
+  );
+  const paperAbstractMechanisms = normalizeAbstractMechanismNames(paperAbstractMechanismObjects);
   const paperNode = {
     id: paper.paperId,
     type: NODE_TYPES.PAPER,
@@ -193,7 +295,12 @@ export function precomputePaperGraphFragment(paper) {
       sourceMarkdownPath: paper.sourceMarkdownPath,
       sourcePdfPath: paper.sourcePdfPath,
       sourceKind: paper.sourceKind,
-      sourceFingerprint: paper.sourceFingerprint
+      sourceFingerprint: paper.sourceFingerprint,
+      fieldOfStudy: paperFieldOfStudy,
+      fieldCandidates: paperFieldCandidates,
+      domainTags: paperDomainTags,
+      abstractMechanisms: paperAbstractMechanisms,
+      abstractMechanismObjects: paperAbstractMechanismObjects
     }
   };
 
@@ -232,6 +339,109 @@ export function precomputePaperGraphFragment(paper) {
   const researchGoals = (paper.researchGoals || [])
     .map((researchGoal) => createGlobalContribution(NODE_TYPES.RESEARCH_GOAL, paper, researchGoal, EDGE_TYPES.LEADS_TO))
     .filter(Boolean);
+  const researchQuestionRecords = normalizeResearchQuestionRecords(paper.researchQuestions || [], {
+    fieldOfStudy: paperFieldOfStudy,
+    domainTags: paperDomainTags
+  });
+  const researchQuestions = researchQuestionRecords
+    .map((question) => createGlobalContribution(NODE_TYPES.RESEARCH_QUESTION, paper, question, EDGE_TYPES.CONTAINS, {
+      text: question.domainSpecificText || question.name,
+      description: question.domainSpecificText || question.name,
+      fieldOfStudy: question.fieldOfStudy,
+      domainTags: question.domainTags,
+      abstractMechanisms: question.relatedMechanisms,
+      canonicalId: question.canonicalId,
+      normalizedName: question.normalizedName,
+      relatedProblems: question.relatedProblems,
+      domainSpecificText: question.domainSpecificText,
+      domainAgnosticText: question.domainAgnosticText,
+      retrievalText: question.retrievalText,
+      analogyText: question.analogyText,
+      aliases: unique([question.name, question.domainSpecificText, question.domainAgnosticText].filter(Boolean))
+    }))
+    .filter(Boolean);
+  const challengeGroups = (paper.openChallenges || []).map((challenge) => {
+    const variants = buildChallengeVariantRecords(challenge, {
+      fieldOfStudy: paperFieldOfStudy,
+      domainTags: paperDomainTags
+    });
+    const contributions = variants
+      .map((variant) => createGlobalContribution(NODE_TYPES.CHALLENGE, paper, variant, EDGE_TYPES.CONTAINS, {
+        text: variant.domainSpecificText || variant.name,
+        category: variant.abstractionLevel,
+        description: variant.domainAgnosticText || variant.domainSpecificText || variant.name,
+        fieldOfStudy: variant.fieldOfStudy,
+        domainTags: variant.domainTags,
+        abstractMechanisms: variant.relatedMechanisms,
+        canonicalId: variant.canonicalId,
+        normalizedName: variant.normalizedName,
+        abstractionLevel: variant.abstractionLevel,
+        challengeType: variant.challengeType,
+        domainSpecificText: variant.domainSpecificText,
+        domainAgnosticText: variant.domainAgnosticText,
+        retrievalText: variant.bridgeRetrievalText,
+        bridgeRetrievalText: variant.bridgeRetrievalText,
+        analogyText: variant.analogyText,
+        aliases: unique([variant.name, variant.domainSpecificText, variant.domainAgnosticText].filter(Boolean))
+      }))
+      .filter(Boolean);
+    return {
+      record: challenge,
+      variants,
+      contributions
+    };
+  });
+  const takeawayGroups = (paper.takeaways || [])
+    .map((takeaway) => normalizeTakeawayRecord(takeaway, {
+      fieldOfStudy: paperFieldOfStudy,
+      sourceDomains: paperDomainTags
+    }))
+    .filter(Boolean)
+    .map((takeaway) => ({
+      record: takeaway,
+      contribution: createGlobalContribution(NODE_TYPES.TAKEAWAY, paper, takeaway, EDGE_TYPES.HAS_TAKEAWAY, {
+        text: takeaway.text,
+        description: takeaway.text,
+        fieldOfStudy: takeaway.sourceDomains[0] || paperFieldOfStudy,
+        domainTags: takeaway.sourceDomains,
+        sourceDomains: takeaway.sourceDomains,
+        abstractMechanisms: takeaway.relatedMechanisms,
+        relatedChallenges: takeaway.relatedChallenges,
+        canonicalId: takeaway.canonicalId,
+        normalizedName: takeaway.normalizedName,
+        retrievalText: takeaway.retrievalText,
+        analogyText: takeaway.analogyText,
+        aliases: unique([takeaway.name, takeaway.text].filter(Boolean))
+      })
+    }))
+    .filter((entry) => entry.contribution);
+  const takeaways = takeawayGroups.map((entry) => entry.contribution);
+  const ideaFragmentGroups = (paper.ideaFragments || [])
+    .map((fragment) => normalizeIdeaFragmentRecord(fragment, {
+      sourceDomains: paperDomainTags
+    }))
+    .filter(Boolean)
+    .map((fragment) => ({
+      record: fragment,
+      contribution: createGlobalContribution(NODE_TYPES.IDEA_FRAGMENT, paper, fragment, EDGE_TYPES.CONTAINS, {
+        text: fragment.text,
+        description: fragment.text,
+        fieldOfStudy: fragment.targetDomain || paperFieldOfStudy,
+        domainTags: unique([fragment.targetDomain, ...fragment.sourceDomains].filter(Boolean)),
+        sourceDomains: fragment.sourceDomains,
+        targetDomain: fragment.targetDomain,
+        abstractMechanisms: fragment.relatedMechanisms,
+        sourceTakeaways: fragment.sourceTakeaways,
+        addressesChallenges: fragment.addressesChallenges,
+        canonicalId: fragment.canonicalId,
+        normalizedName: fragment.normalizedName,
+        retrievalText: fragment.retrievalText,
+        analogyText: fragment.analogyText,
+        aliases: unique([fragment.name, fragment.text].filter(Boolean))
+      })
+    }))
+    .filter((entry) => entry.contribution);
+  const ideaFragments = ideaFragmentGroups.map((entry) => entry.contribution);
 
   const datasetByName = new Map(datasets.map((entry) => [entry.node.name, entry.node]));
   const benchmarkByName = new Map(benchmarks.map((entry) => [entry.node.name, entry.node]));
@@ -241,6 +451,11 @@ export function precomputePaperGraphFragment(paper) {
   const methodNodes = methods.map((entry) => entry.node);
   const limitationNodes = limitations.map((entry) => entry.node);
   const futureDirectionNodes = futureDirections.map((entry) => entry.node);
+  const researchQuestionNodes = researchQuestions.map((entry) => entry.node);
+  const specificChallengeEntries = challengeGroups
+    .flatMap((entry) => entry.contributions)
+    .filter((entry) => entry.node.properties?.abstractionLevel === 'specific');
+  const specificChallengeNodes = specificChallengeEntries.map((entry) => entry.node);
 
   const claimEntries = paper.claims.map((claim, index) => {
     const node = buildPaperScopedNodePayload(
@@ -379,6 +594,177 @@ export function precomputePaperGraphFragment(paper) {
   const claimNodes = claimEntries.map((entry) => entry.node);
   const findingNodes = findingEntries.map((entry) => entry.node);
   const evidenceNodes = evidenceEntries.map((entry) => entry.node);
+  const relationBaseProperties = {
+    sourcePaperId: paper.paperId,
+    sourcePaperTitle: paper.paperTitle,
+    relationSource: 'catalyst-metadata-v1'
+  };
+
+  const challengeGroupMatchKeys = challengeGroups.map((entry) => {
+    const keys = new Set();
+    const specificContribution = entry.contributions.find(
+      (contribution) => contribution.node.properties?.abstractionLevel === 'specific'
+    );
+    const agnosticContribution = entry.contributions.find(
+      (contribution) => contribution.node.properties?.abstractionLevel === 'agnostic'
+    );
+    for (const candidate of [
+      entry.record?.name,
+      entry.record?.domainSpecificText,
+      entry.record?.domainAgnosticText,
+      ...entry.variants.map((variant) => variant.name)
+    ]) {
+      const normalized = normalizeText(candidate);
+      if (normalized) keys.add(normalized);
+    }
+    return {
+      keys,
+      specificNode: specificContribution?.node || null,
+      agnosticNode: agnosticContribution?.node || null,
+      allNodes: entry.contributions.map((contribution) => contribution.node)
+    };
+  });
+
+  function resolveProblemNodesByNames(names = []) {
+    const matched = matchContributionNodesByNames(problems, names);
+    if (matched.length) return matched;
+    return problemNodes.length === 1 ? problemNodes : [];
+  }
+
+  function resolveChallengeNodesByNames(names = [], preferredAbstractionLevel = 'specific') {
+    const wanted = new Set(
+      (names || [])
+        .map((entry) => normalizeText(entry))
+        .filter(Boolean)
+    );
+    if (!wanted.size) {
+      return preferredAbstractionLevel === 'specific'
+        ? specificChallengeNodes
+        : challengeGroups.flatMap((entry) => entry.contributions).map((entry) => entry.node);
+    }
+
+    const matches = [];
+    for (const group of challengeGroupMatchKeys) {
+      const hit = [...group.keys].some((key) => wanted.has(key));
+      if (!hit) continue;
+      if (preferredAbstractionLevel === 'specific' && group.specificNode) {
+        matches.push(group.specificNode);
+        continue;
+      }
+      if (preferredAbstractionLevel === 'agnostic' && group.agnosticNode) {
+        matches.push(group.agnosticNode);
+        continue;
+      }
+      matches.push(...group.allNodes);
+    }
+    return unique(matches.map((node) => node?.id).filter(Boolean))
+      .map((nodeId) => matches.find((node) => node.id === nodeId))
+      .filter(Boolean);
+  }
+
+  function registerSupportingSnippets(ownerNode, snippets = [], ownerAliases = []) {
+    const contributions = [];
+    for (let index = 0; index < snippets.length; index += 1) {
+      const snippet = snippets[index];
+      const contribution = createEvidenceSnippetContribution(
+        paper,
+        snippet,
+        `${ownerNode.id}:${index}`,
+        ownerAliases
+      );
+      if (!contribution) continue;
+      contributions.push(contribution);
+      localRelationships.push(createRelationship(
+        ownerNode.id,
+        contribution.node.id,
+        EDGE_TYPES.SUPPORTED_BY_SNIPPET,
+        {
+          ...relationBaseProperties,
+          evidenceText: contribution.node.properties?.evidenceText || snippet.text || '',
+          sectionHeading: contribution.node.properties?.sectionHeading || snippet.sectionHeading || '',
+          sectionRole: contribution.node.properties?.sectionRole || snippet.sectionRole || '',
+          confidence: contribution.node.properties?.confidence ?? snippet.confidence ?? 0.72
+        }
+      ));
+    }
+    return contributions;
+  }
+
+  for (const question of researchQuestions) {
+    const sourceProblems = resolveProblemNodesByNames(question.node.properties?.relatedProblems || []);
+    for (const problemNode of sourceProblems) {
+      localRelationships.push(createRelationship(problemNode.id, question.node.id, EDGE_TYPES.DECOMPOSES_TO, {
+        ...relationBaseProperties,
+        evidenceText: question.node.properties?.domainSpecificText || question.node.name
+      }));
+    }
+  }
+
+  if (researchQuestionNodes.length && specificChallengeNodes.length) {
+    for (const questionNode of researchQuestionNodes) {
+      for (const challengeNode of specificChallengeNodes) {
+        localRelationships.push(createRelationship(questionNode.id, challengeNode.id, EDGE_TYPES.HAS_OPEN_CHALLENGE, {
+          ...relationBaseProperties,
+          evidenceText: challengeNode.properties?.domainSpecificText || challengeNode.name
+        }));
+      }
+    }
+  }
+
+  for (const group of challengeGroups) {
+    const specificNode = group.contributions.find((entry) => entry.node.properties?.abstractionLevel === 'specific')?.node;
+    const agnosticNode = group.contributions.find((entry) => entry.node.properties?.abstractionLevel === 'agnostic')?.node;
+    if (specificNode && agnosticNode) {
+      localRelationships.push(createRelationship(specificNode.id, agnosticNode.id, EDGE_TYPES.ABSTRACTS_TO, {
+        ...relationBaseProperties,
+        evidenceText: agnosticNode.properties?.domainAgnosticText || agnosticNode.name
+      }));
+    }
+  }
+
+  const evidenceSnippetEntries = [];
+  for (const takeawayGroup of takeawayGroups) {
+    const takeawayNode = takeawayGroup.contribution.node;
+    localRelationships.push(takeawayGroup.contribution.paperRelationship);
+    for (const challengeNode of resolveChallengeNodesByNames(takeawayGroup.record.relatedChallenges, 'specific')) {
+      localRelationships.push(createRelationship(takeawayNode.id, challengeNode.id, EDGE_TYPES.ADDRESSES, {
+        ...relationBaseProperties,
+        evidenceText: takeawayGroup.record.text
+      }));
+    }
+    evidenceSnippetEntries.push(
+      ...registerSupportingSnippets(
+        takeawayNode,
+        takeawayGroup.record.supportingSnippets,
+        [takeawayGroup.record.name, takeawayGroup.record.text]
+      )
+    );
+  }
+
+  for (const ideaFragmentGroup of ideaFragmentGroups) {
+    const fragmentNode = ideaFragmentGroup.contribution.node;
+    localRelationships.push(ideaFragmentGroup.contribution.paperRelationship);
+    const sourceTakeawayNodes = matchContributionNodesByNames(takeaways, ideaFragmentGroup.record.sourceTakeaways);
+    for (const takeawayNode of sourceTakeawayNodes) {
+      localRelationships.push(createRelationship(takeawayNode.id, fragmentNode.id, EDGE_TYPES.RECONTEXTUALIZES_TO, {
+        ...relationBaseProperties,
+        evidenceText: ideaFragmentGroup.record.text
+      }));
+    }
+    for (const challengeNode of resolveChallengeNodesByNames(ideaFragmentGroup.record.addressesChallenges, 'specific')) {
+      localRelationships.push(createRelationship(fragmentNode.id, challengeNode.id, EDGE_TYPES.ADDRESSES, {
+        ...relationBaseProperties,
+        evidenceText: ideaFragmentGroup.record.text
+      }));
+    }
+    evidenceSnippetEntries.push(
+      ...registerSupportingSnippets(
+        fragmentNode,
+        ideaFragmentGroup.record.supportingSnippets,
+        [ideaFragmentGroup.record.name, ideaFragmentGroup.record.text]
+      )
+    );
+  }
 
   for (const claimNode of claimNodes) {
     for (const evidenceNode of evidenceNodes) {
@@ -503,12 +889,17 @@ export function precomputePaperGraphFragment(paper) {
       ...limitations,
       ...assumptions,
       ...futureDirections,
-      ...researchGoals
+      ...researchGoals,
+      ...researchQuestions,
+      ...challengeGroups.flatMap((entry) => entry.contributions),
+      ...takeaways,
+      ...ideaFragments
     ],
     paperScopedContributions: [
       ...claimEntries,
       ...findingEntries,
-      ...evidenceEntries
+      ...evidenceEntries,
+      ...evidenceSnippetEntries
     ],
     localRelationships
   };

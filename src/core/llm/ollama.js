@@ -2,6 +2,13 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { EDGE_TYPES, NODE_TYPES } from '../graph/schema.js';
 import {
+  normalizeAbstractMechanismNames,
+  normalizeAbstractMechanismRecords
+} from '../graph/abstract-mechanisms.js';
+import { normalizeResearchQuestionRecords } from '../graph/research-questions.js';
+import { normalizeChallengeRecord } from '../graph/challenges.js';
+import { normalizeIdeaFragmentRecord, normalizeTakeawayRecord } from '../graph/takeaways.js';
+import {
   ALLOWED_NODE_TYPES,
   ALLOWED_RELATION_TYPES,
   normalizeNodeTypeName,
@@ -59,6 +66,85 @@ function cleanText(value, maxLength = 320) {
   }
 
   return truncate(text, maxLength);
+}
+
+function sanitizeStringList(values, maxLength = 80) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(
+    values
+      .map((value) => cleanText(value, maxLength))
+      .filter(Boolean)
+  )];
+}
+
+function sanitizeSemanticMetadata(raw) {
+  const abstractMechanismObjects = normalizeAbstractMechanismRecords(
+    raw?.abstractMechanisms
+    || raw?.abstractMechanismObjects
+    || raw?.mechanismHints
+    || raw?.mechanisms
+    || []
+  );
+
+  return {
+    fieldOfStudy: cleanText(raw?.fieldOfStudy || raw?.field || raw?.domain || '', 96) || null,
+    fieldCandidates: sanitizeStringList(raw?.fieldCandidates || raw?.fields || [], 96),
+    domainTags: sanitizeStringList(raw?.domainTags || raw?.domains || [], 96),
+    abstractMechanisms: normalizeAbstractMechanismNames(abstractMechanismObjects),
+    abstractMechanismObjects
+  };
+}
+
+function sanitizeResearchQuestionRecord(record) {
+  const normalized = normalizeResearchQuestionRecords([record])[0];
+  if (!normalized) return null;
+  return {
+    name: normalized.name,
+    domainSpecificText: normalized.domainSpecificText,
+    domainAgnosticText: normalized.domainAgnosticText,
+    relatedProblems: normalized.relatedProblems,
+    relatedMechanisms: normalized.relatedMechanisms
+  };
+}
+
+function sanitizeChallengeRecord(record) {
+  const normalized = normalizeChallengeRecord(record);
+  if (!normalized) return null;
+  return {
+    name: normalized.name,
+    domainSpecificText: normalized.domainSpecificText,
+    domainAgnosticText: normalized.domainAgnosticText,
+    challengeType: normalized.challengeType,
+    relatedMechanisms: normalized.relatedMechanisms
+  };
+}
+
+function sanitizeTakeawayRecord(record) {
+  const normalized = normalizeTakeawayRecord(record);
+  if (!normalized) return null;
+  return {
+    name: normalized.name,
+    text: normalized.text,
+    sourceDomains: normalized.sourceDomains,
+    relatedMechanisms: normalized.relatedMechanisms,
+    relatedChallenges: normalized.relatedChallenges,
+    supportingSnippets: normalized.supportingSnippets
+  };
+}
+
+function sanitizeIdeaFragmentRecord(record) {
+  const normalized = normalizeIdeaFragmentRecord(record);
+  if (!normalized) return null;
+  return {
+    name: normalized.name,
+    text: normalized.text,
+    targetDomain: normalized.targetDomain,
+    sourceDomains: normalized.sourceDomains,
+    relatedMechanisms: normalized.relatedMechanisms,
+    sourceTakeaways: normalized.sourceTakeaways,
+    addressesChallenges: normalized.addressesChallenges,
+    supportingSnippets: normalized.supportingSnippets
+  };
 }
 
 function sanitizeEntityRecord(record, fallbackType) {
@@ -244,7 +330,18 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
     '  "futureDirections": [{"name":"...", "type":"FutureDirection", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
     '  "benchmarks": [{"name":"...", "type":"Benchmark", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
     '  "datasets": [{"name":"...", "type":"Dataset", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
-    '  "metrics": [{"name":"...", "type":"Metric", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}]',
+    '  "metrics": [{"name":"...", "type":"Metric", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '  "fieldOfStudy": "Computer Science",',
+    '  "fieldCandidates": ["Computer Science", "Psychology"],',
+    '  "domainTags": ["Computer Science", "Psychology"],',
+    '  "abstractMechanisms": [',
+    '    "memory preservation",',
+    '    {"name":"metacontrol policy", "type":"control-policy", "category":"adaptive-control", "description":"adaptive trade-off between persistence and flexibility", "aliases":["cognitive control trade-off"]}',
+    '  ]',
+    '  "researchQuestions": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "relatedProblems":["..."], "relatedMechanisms":["..."]}],',
+    '  "openChallenges": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "challengeType":"mixed", "relatedMechanisms":["..."]}],',
+    '  "takeaways": [{"name":"...", "text":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "relatedChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}],',
+    '  "ideaFragments": [{"name":"...", "text":"...", "targetDomain":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "sourceTakeaways":["..."], "addressesChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}]',
     '}',
     '',
     'Guidelines:',
@@ -255,7 +352,13 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
     '- ResearchGoals: capture the overarching goal or vision driving the research (often found in introduction/conclusion).',
     '- Limitations and assumptions: keep them specific and falsifiable.',
     '- Evidence: extract compact evidence units, not the entire paragraph.',
-    '- If a category is unsupported, return an empty list.'
+    '- If a category is unsupported, return an empty list.',
+    '- `abstractMechanisms` may mix strings and structured objects.',
+    '- Prefer the object form when you can infer mechanism type, category, description, or aliases confidently.',
+    '- `researchQuestions` should decompose the paper problem into reusable research questions.',
+    '- `openChallenges` should capture unresolved obstacles and provide both domain-specific and domain-agnostic wording when possible.',
+    '- `takeaways` should capture reusable insights grounded in the paper text and linked to challenges or mechanisms when possible.',
+    '- `ideaFragments` should capture transfer-ready idea atoms grounded in the paper takeaways, not freeform speculation.'
   ].join('\n');
 }
 
@@ -313,7 +416,18 @@ function buildSemanticExtractionBatchPrompt(entries) {
     '      "futureDirections": [{"name":"...", "type":"FutureDirection", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
     '      "benchmarks": [{"name":"...", "type":"Benchmark", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
     '      "datasets": [{"name":"...", "type":"Dataset", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
-    '      "metrics": [{"name":"...", "type":"Metric", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}]',
+    '      "metrics": [{"name":"...", "type":"Metric", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "fieldOfStudy": "Computer Science",',
+    '      "fieldCandidates": ["Computer Science", "Psychology"],',
+    '      "domainTags": ["Computer Science", "Psychology"],',
+    '      "abstractMechanisms": [',
+    '        "memory preservation",',
+    '        {"name":"metacontrol policy", "type":"control-policy", "category":"adaptive-control", "description":"adaptive trade-off between persistence and flexibility", "aliases":["cognitive control trade-off"]}',
+    '      ]',
+    '      "researchQuestions": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "relatedProblems":["..."], "relatedMechanisms":["..."]}],',
+    '      "openChallenges": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "challengeType":"mixed", "relatedMechanisms":["..."]}],',
+    '      "takeaways": [{"name":"...", "text":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "relatedChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}],',
+    '      "ideaFragments": [{"name":"...", "text":"...", "targetDomain":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "sourceTakeaways":["..."], "addressesChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}]',
     '    }',
     '  ]',
     '}',
@@ -327,6 +441,12 @@ function buildSemanticExtractionBatchPrompt(entries) {
     '- Limitations and assumptions: keep them specific and falsifiable.',
     '- Evidence: extract compact evidence units, not the entire paragraph.',
     '- If a category is unsupported, return an empty list.',
+    '- `abstractMechanisms` may mix strings and structured objects.',
+    '- Prefer the object form when you can infer mechanism type, category, description, or aliases confidently.',
+    '- `researchQuestions` should decompose the paper problem into reusable research questions.',
+    '- `openChallenges` should capture unresolved obstacles and provide both domain-specific and domain-agnostic wording when possible.',
+    '- `takeaways` should capture reusable insights grounded in the paper text and linked to challenges or mechanisms when possible.',
+    '- `ideaFragments` should capture transfer-ready idea atoms grounded in the paper takeaways, not freeform speculation.',
     '',
     'Papers:',
     JSON.stringify(papers, null, 2)
@@ -685,7 +805,16 @@ function createSemanticObjectInferenceResult({
   futureDirections = [],
   benchmarks = [],
   datasets = [],
-  metrics = []
+  metrics = [],
+  fieldOfStudy = null,
+  fieldCandidates = [],
+  domainTags = [],
+  abstractMechanisms = [],
+  abstractMechanismObjects = [],
+  researchQuestions = [],
+  openChallenges = [],
+  takeaways = [],
+  ideaFragments = []
 } = {}) {
   return {
     provider,
@@ -706,6 +835,15 @@ function createSemanticObjectInferenceResult({
     benchmarks,
     datasets,
     metrics,
+    fieldOfStudy,
+    fieldCandidates,
+    domainTags,
+    abstractMechanisms,
+    abstractMechanismObjects,
+    researchQuestions,
+    openChallenges,
+    takeaways,
+    ideaFragments,
     error
   };
 }
@@ -1107,6 +1245,30 @@ function sanitizeEntityGroup(raw, key, fallbackType) {
     .filter(Boolean);
 }
 
+function sanitizeResearchQuestionGroup(raw, key = 'researchQuestions') {
+  return (raw?.[key] || [])
+    .map((record) => sanitizeResearchQuestionRecord(record))
+    .filter(Boolean);
+}
+
+function sanitizeChallengeGroup(raw, key = 'openChallenges') {
+  return (raw?.[key] || [])
+    .map((record) => sanitizeChallengeRecord(record))
+    .filter(Boolean);
+}
+
+function sanitizeTakeawayGroup(raw, key = 'takeaways') {
+  return (raw?.[key] || [])
+    .map((record) => sanitizeTakeawayRecord(record))
+    .filter(Boolean);
+}
+
+function sanitizeIdeaFragmentGroup(raw, key = 'ideaFragments') {
+  return (raw?.[key] || [])
+    .map((record) => sanitizeIdeaFragmentRecord(record))
+    .filter(Boolean);
+}
+
 function sanitizeNodeCheckRecord(record, fallbackId = '', fallbackName = '') {
   const id = String(record?.id || fallbackId || '').trim();
   if (!id) return null;
@@ -1153,6 +1315,7 @@ export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, opti
       attempted: true,
       participated: true,
       reason: null,
+      ...sanitizeSemanticMetadata(raw),
       problems: sanitizeEntityGroup(raw, 'problems', NODE_TYPES.PROBLEM),
       methods: sanitizeEntityGroup(raw, 'methods', NODE_TYPES.METHOD),
       claims: sanitizeEntityGroup(raw, 'claims', NODE_TYPES.CLAIM),
@@ -1165,6 +1328,10 @@ export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, opti
       benchmarks: sanitizeEntityGroup(raw, 'benchmarks', NODE_TYPES.BENCHMARK),
       datasets: sanitizeEntityGroup(raw, 'datasets', NODE_TYPES.DATASET),
       metrics: sanitizeEntityGroup(raw, 'metrics', NODE_TYPES.METRIC),
+      researchQuestions: sanitizeResearchQuestionGroup(raw),
+      openChallenges: sanitizeChallengeGroup(raw),
+      takeaways: sanitizeTakeawayGroup(raw),
+      ideaFragments: sanitizeIdeaFragmentGroup(raw),
       error: null
     });
   } catch (error) {
@@ -1255,6 +1422,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           attempted: true,
           participated: true,
           reason: null,
+          ...sanitizeSemanticMetadata(rawPaper),
           problems: sanitizeEntityGroup(rawPaper, 'problems', NODE_TYPES.PROBLEM),
           methods: sanitizeEntityGroup(rawPaper, 'methods', NODE_TYPES.METHOD),
           claims: sanitizeEntityGroup(rawPaper, 'claims', NODE_TYPES.CLAIM),
@@ -1267,6 +1435,10 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           benchmarks: sanitizeEntityGroup(rawPaper, 'benchmarks', NODE_TYPES.BENCHMARK),
           datasets: sanitizeEntityGroup(rawPaper, 'datasets', NODE_TYPES.DATASET),
           metrics: sanitizeEntityGroup(rawPaper, 'metrics', NODE_TYPES.METRIC),
+          researchQuestions: sanitizeResearchQuestionGroup(rawPaper),
+          openChallenges: sanitizeChallengeGroup(rawPaper),
+          takeaways: sanitizeTakeawayGroup(rawPaper),
+          ideaFragments: sanitizeIdeaFragmentGroup(rawPaper),
           error: null
         });
       }

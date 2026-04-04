@@ -11,7 +11,8 @@ import { getWatchTmpLogPath } from '../lib/watch-log.js';
 const HELP_TEXT = `
 PaperNexus
 
-Serverless knowledge graph framework for academic PDFs, inspired by GitNexus.
+Analysis and knowledge-graph engine for already-provided academic papers and corpora.
+PaperNexus does not discover external literature or orchestrate multi-agent research workflows for you.
 
 Global options:
   --config <path>     Use an explicit config JSON file
@@ -34,6 +35,8 @@ Commands:
   papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
+  papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
+  papernexus catalyst-backfill [<path>] [--name <corpus>] [--semantic-extraction <llm-assisted|llm-primary>] [--force]
   papernexus backup-export <archive-path> [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -41,6 +44,11 @@ Commands:
   papernexus setup
   papernexus serve [--host 127.0.0.1] [--port 4821] [--api-token <token>]
   papernexus mcp
+
+Scope boundary:
+  - `analyze`, `materialize`, and `import` process papers, corpora, or manifests you already provide.
+  - `query`, `catalyst`, and enhancement APIs operate on already-indexed graph state.
+  - Discovery, external search, and orchestration live outside PaperNexus.
 
 Docling PDF Backend Options:
   --docling-pdf-backend <backend>
@@ -75,6 +83,8 @@ Examples:
   papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
   papernexus auth llm set --provider openai --base-url https://coding.dashscope.aliyuncs.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
+  papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback" --mechanism "metacontrol policy" --corpus ml-papers
+  papernexus catalyst-backfill ./papers --name ml-papers --semantic-extraction llm-assisted
   papernexus impact "semi-supervised learning" --corpus ml-papers --layers ProblemLayer,MethodLayer --layer-mode cross
   papernexus context "knowledge graph" --corpus ml-papers
   papernexus impact "Graph-Augmented Literature Mapping for Biomedical Discovery" --corpus ml-papers
@@ -129,6 +139,16 @@ function firstDefined(...values) {
     }
   }
   return undefined;
+}
+
+function parseCommaSeparatedList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function maybeWarnAboutForceUsage(command, flags = {}) {
@@ -421,6 +441,28 @@ function buildBrainstormOptions(flags, config) {
   };
 }
 
+function buildCatalystOptions(flags, config) {
+  const commandConfig = getSection(config, 'catalyst');
+  return {
+    limit: toNumber(firstDefined(flags.limit, commandConfig.limit), 5),
+    targetDomain: firstDefined(flags['target-domain'], flags.domain, commandConfig.targetDomain),
+    abstractChallenge: firstDefined(flags.challenge, commandConfig.challenge),
+    mechanisms: parseCommaSeparatedList(firstDefined(flags.mechanisms, flags.mechanism, commandConfig.mechanisms))
+  };
+}
+
+function buildCatalystBackfillOptions(flags, config) {
+  const commandConfig = getSection(config, 'catalystBackfill');
+  return {
+    ...buildAnalyzeOptions(flags, config, 'analyze'),
+    semanticExtraction: firstDefined(
+      flags['semantic-extraction'],
+      commandConfig.semanticExtraction,
+      'llm-assisted'
+    )
+  };
+}
+
 function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = null) {
   const commandConfig = getSection(config, 'serve');
   const storageConfig = getStorageConfig(config);
@@ -436,6 +478,7 @@ function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = 
     enableEnhancements: firstDefined(flags.enhance, enhanceConfig.enabled, true) !== false,
     enhancementIntervalMs: toNumber(firstDefined(flags['interval-ms'], enhanceConfig.intervalMs), 5000),
     enhancementBackfillLimit: toNumber(firstDefined(flags['backfill-limit'], enhanceConfig.backfillLimit), 0),
+    enhancementCatalystBackfill: firstDefined(flags['catalyst-backfill'], enhanceConfig.catalystBackfill, false) !== false,
     config,
     configBaseDir: baseDir,
     configPath
@@ -445,10 +488,20 @@ function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = 
 function buildEnhanceOptions(flags, config) {
   const commandConfig = getSection(config, 'enhance');
   return {
+    ...buildLlmOptions(flags, config),
     once: Boolean(firstDefined(flags.once, commandConfig.once, false)),
     intervalMs: toNumber(firstDefined(flags['interval-ms'], commandConfig.intervalMs), 5000),
     backfillLimit: toNumber(firstDefined(flags['backfill-limit'], commandConfig.backfillLimit), 2),
-    maxPasses: toNumber(firstDefined(flags['max-passes'], commandConfig.maxPasses), 32)
+    maxPasses: toNumber(firstDefined(flags['max-passes'], commandConfig.maxPasses), 32),
+    catalystBackfill: firstDefined(flags['catalyst-backfill'], commandConfig.catalystBackfill, true) !== false,
+    catalystSemanticExtraction: firstDefined(
+      flags['semantic-extraction'],
+      flags['catalyst-semantic-extraction'],
+      commandConfig.semanticExtraction,
+      commandConfig.catalystSemanticExtraction,
+      getSection(config, 'analyze').semanticExtraction,
+      'llm-assisted'
+    )
   };
 }
 
@@ -484,6 +537,7 @@ async function loadRuntimeModules() {
   const [
     ingestion,
     search,
+    catalyst,
     render,
     mcpServer,
     httpServer,
@@ -495,6 +549,7 @@ async function loadRuntimeModules() {
   ] = await Promise.all([
     import('../core/ingestion/pipeline.js'),
     import('../core/search/search.js'),
+    import('../core/graph/catalyst-adapter.js'),
     import('../lib/render.js'),
     import('../mcp/server.js'),
     import('../server/http.js'),
@@ -508,6 +563,7 @@ async function loadRuntimeModules() {
   return {
     ...ingestion,
     ...search,
+    ...catalyst,
     ...render,
     ...mcpServer,
     ...httpServer,
@@ -1453,6 +1509,50 @@ async function main() {
 
     const { graph } = await loadSelectedCorpusLite(runtime, resolveConfiguredCorpus(flags, config, undefined, configBaseDir));
     console.log(runtime.renderQueryResult(runtime.searchGraph(graph, query, buildQueryOptions(flags, config))));
+    return;
+  }
+
+  if (command === 'catalyst') {
+    const catalystOptions = buildCatalystOptions(flags, config);
+    const targetDomain = String(catalystOptions.targetDomain || '').trim();
+    if (!targetDomain) {
+      throw new Error('Missing `--target-domain <domain>`.');
+    }
+
+    const abstractChallenge = String(
+      catalystOptions.abstractChallenge || positionals.join(' ').trim()
+    ).trim();
+
+    const { graph } = await loadSelectedCorpusLite(runtime, resolveConfiguredCorpus(flags, config, undefined, configBaseDir));
+    console.log(runtime.renderCatalystResult(runtime.buildCatalystQuery(graph, {
+      targetDomain,
+      abstractChallenge,
+      mechanisms: catalystOptions.mechanisms,
+      limit: catalystOptions.limit
+    })));
+    return;
+  }
+
+  if (command === 'catalyst-backfill') {
+    const target = resolveAnalyzeInput(config, configBaseDir, positionals[0]);
+    if (!target.input) {
+      throw new Error('Missing catalyst-backfill path. Example: `papernexus catalyst-backfill ./papers --semantic-extraction llm-assisted`.');
+    }
+
+    const backfillOptions = {
+      ...buildCatalystBackfillOptions(flags, config),
+      rootPath: target.rootPath
+    };
+    const result = await runtime.backfillCatalystMetadataCorpus(target.input, backfillOptions);
+    const quiet = Boolean(flags.quiet);
+
+    if (quiet) {
+      console.log(`Backfilled catalyst metadata for "${result.meta.name}" - ${result.meta.paperCount} papers, ${result.meta.relationshipCount} relationships`);
+    } else {
+      console.log(`Backfilled catalyst metadata for "${result.meta.name}" at ${result.rootPath}`);
+      console.log(runtime.renderStatus(result.meta));
+    }
+    logChangeSummary(result, quiet);
     return;
   }
 

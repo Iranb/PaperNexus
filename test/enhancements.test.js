@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const examplesRoot = path.join(__dirname, '..', 'examples');
+const originalFetch = globalThis.fetch;
 
 let sharedHome;
 let previousHome;
@@ -56,6 +57,18 @@ async function createTempCorpus() {
 
 async function cleanupTempCorpus(context) {
   await fs.rm(context.tempCorpusRoot, { recursive: true, force: true });
+}
+
+function extractPromptPapers(prompt) {
+  const marker = 'Papers:\n';
+  const markerIndex = String(prompt || '').lastIndexOf(marker);
+  if (markerIndex === -1) return [];
+
+  try {
+    return JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+  } catch {
+    return [];
+  }
 }
 
 test('analyzeCorpus enqueues theory/storyline enhancement jobs without blocking the base graph build', async () => {
@@ -198,6 +211,115 @@ test('runEnhancementQueueOnce stays idle when automatic backfill is disabled', a
     assert.equal(summary.queue.pending, 0);
     assert.equal(summary.ready, 0);
   } finally {
+    await cleanupTempCorpus(context);
+  }
+});
+
+test('enhance backfill refreshes stale catalyst metadata for an existing corpus before overlays', async () => {
+  const context = await createTempCorpus();
+  let fetchCount = 0;
+
+  try {
+    globalThis.fetch = async (_url, options) => {
+      fetchCount += 1;
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const papers = extractPromptPapers(prompt);
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      fieldOfStudy: 'Psychology',
+                      fieldCandidates: ['Psychology', 'Learning Sciences'],
+                      domainTags: ['Psychology', 'Education'],
+                      abstractMechanisms: ['metacontrol policy']
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    await context.ingestion.analyzeCorpus(context.tempCorpusRoot, {
+      name: 'enhancement-catalyst-backfill-test',
+      force: true,
+      semanticExtraction: 'llm-primary',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      enqueueEnhancements: false
+    });
+
+    const manifest = await context.corpusStore.loadSourceManifest(context.tempCorpusRoot);
+    const firstEntry = manifest.sources[0];
+    const snapshot = await context.corpusStore.loadSemanticPaperSnapshot(context.tempCorpusRoot, firstEntry.sourceKey);
+    const oldSemanticSignature = JSON.stringify({
+      version: 0,
+      mode: 'llm-primary',
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      baseUrl: 'https://api.openai.com/v1'
+    });
+
+    delete snapshot.fieldOfStudy;
+    delete snapshot.fieldCandidates;
+    delete snapshot.domainTags;
+    delete snapshot.abstractMechanisms;
+    snapshot.llmSemanticObjects = {
+      ...snapshot.llmSemanticObjects,
+      fieldOfStudy: null,
+      fieldCandidates: [],
+      domainTags: [],
+      abstractMechanisms: [],
+      configSignature: oldSemanticSignature
+    };
+    snapshot.llm = {
+      ...snapshot.llm,
+      semanticConfigSignature: oldSemanticSignature
+    };
+    await context.corpusStore.saveSemanticPaperSnapshot(context.tempCorpusRoot, firstEntry.sourceKey, snapshot);
+
+    manifest.llmOptimization = {
+      ...manifest.llmOptimization,
+      catalystMetadataContractVersion: 0
+    };
+    await context.corpusStore.saveSourceManifest(context.tempCorpusRoot, manifest);
+
+    const result = await context.worker.runEnhancementQueueOnce(context.tempCorpusRoot, {
+      backfillLimit: 0,
+      catalystBackfill: true,
+      semanticExtraction: 'llm-primary',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key'
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.failed, false);
+    assert.equal(result.catalystBackfilled, true);
+    assert.ok(fetchCount > 0, 'expected LLM semantic extraction to rerun during backfill');
+
+    const nextManifest = await context.corpusStore.loadSourceManifest(context.tempCorpusRoot);
+    const nextSnapshot = await context.corpusStore.loadSemanticPaperSnapshot(context.tempCorpusRoot, firstEntry.sourceKey);
+
+    assert.equal(nextManifest.llmOptimization.catalystMetadataContractVersion, 1);
+    assert.equal(nextSnapshot.fieldOfStudy, 'Psychology');
+    assert.ok(nextSnapshot.domainTags.includes('Education'));
+    assert.ok(nextSnapshot.abstractMechanisms.includes('metacontrol policy'));
+  } finally {
+    globalThis.fetch = originalFetch;
     await cleanupTempCorpus(context);
   }
 });

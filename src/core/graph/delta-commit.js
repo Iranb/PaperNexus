@@ -14,6 +14,12 @@ function createRelationship(sourceId, targetId, type, properties = {}) {
 }
 
 function aggregateGlobalContributions(fragments = []) {
+  const mergeStringSet = (target, values = []) => {
+    for (const value of values || []) {
+      if (value) target.add(value);
+    }
+  };
+
   const groups = new Map();
 
   for (const fragment of fragments) {
@@ -29,7 +35,15 @@ function aggregateGlobalContributions(fragments = []) {
           paperTitles: new Set(node.properties?.paperTitles || []),
           paperRelationships: [],
           confidence: Number(node.properties?.confidence || 0),
-          mentionCount: 0
+          mentionCount: 0,
+          fieldCandidates: new Set(node.properties?.fieldCandidates || []),
+          domainTags: new Set(node.properties?.domainTags || []),
+          abstractMechanisms: new Set(node.properties?.abstractMechanisms || []),
+          relatedProblems: new Set(node.properties?.relatedProblems || []),
+          sourceDomains: new Set(node.properties?.sourceDomains || []),
+          relatedChallenges: new Set(node.properties?.relatedChallenges || []),
+          sourceTakeaways: new Set(node.properties?.sourceTakeaways || []),
+          addressesChallenges: new Set(node.properties?.addressesChallenges || [])
         });
       }
 
@@ -53,6 +67,14 @@ function aggregateGlobalContributions(fragments = []) {
 
       group.confidence = Math.max(group.confidence, Number(node.properties?.confidence || 0));
       group.mentionCount += 1;
+      mergeStringSet(group.fieldCandidates, node.properties?.fieldCandidates);
+      mergeStringSet(group.domainTags, node.properties?.domainTags);
+      mergeStringSet(group.abstractMechanisms, node.properties?.abstractMechanisms);
+      mergeStringSet(group.relatedProblems, node.properties?.relatedProblems);
+      mergeStringSet(group.sourceDomains, node.properties?.sourceDomains);
+      mergeStringSet(group.relatedChallenges, node.properties?.relatedChallenges);
+      mergeStringSet(group.sourceTakeaways, node.properties?.sourceTakeaways);
+      mergeStringSet(group.addressesChallenges, node.properties?.addressesChallenges);
     }
   }
 
@@ -64,7 +86,15 @@ function aggregateGlobalContributions(fragments = []) {
         paperTitles: [...group.paperTitles].sort(),
         aliases: unique([group.node.name, ...group.aliases]),
         mentionCount: Math.max(1, group.mentionCount),
-        confidence: group.confidence
+        confidence: group.confidence,
+        ...(group.fieldCandidates.size ? { fieldCandidates: [...group.fieldCandidates].sort() } : {}),
+        ...(group.domainTags.size ? { domainTags: [...group.domainTags].sort() } : {}),
+        ...(group.abstractMechanisms.size ? { abstractMechanisms: [...group.abstractMechanisms].sort() } : {}),
+        ...(group.relatedProblems.size ? { relatedProblems: [...group.relatedProblems].sort() } : {}),
+        ...(group.sourceDomains.size ? { sourceDomains: [...group.sourceDomains].sort() } : {}),
+        ...(group.relatedChallenges.size ? { relatedChallenges: [...group.relatedChallenges].sort() } : {}),
+        ...(group.sourceTakeaways.size ? { sourceTakeaways: [...group.sourceTakeaways].sort() } : {}),
+        ...(group.addressesChallenges.size ? { addressesChallenges: [...group.addressesChallenges].sort() } : {})
       }
     },
     paperRelationships: group.paperRelationships
@@ -98,6 +128,7 @@ function sortStrings(values = []) {
 function mergeGlobalNode(existingNode, nextNode) {
   const existingProperties = existingNode?.properties || {};
   const nextProperties = nextNode?.properties || {};
+  const mergeList = (left, right) => sortStrings([...(left || []), ...(right || [])]);
   return {
     ...existingNode,
     ...nextNode,
@@ -109,7 +140,15 @@ function mergeGlobalNode(existingNode, nextNode) {
       paperTitles: sortStrings([...(existingProperties.paperTitles || []), ...(nextProperties.paperTitles || [])]),
       aliases: sortStrings([...(existingProperties.aliases || []), ...(nextProperties.aliases || []), nextNode.name]),
       mentionCount: Number(existingProperties.mentionCount || 0) + Number(nextProperties.mentionCount || 0),
-      confidence: Math.max(Number(existingProperties.confidence || 0), Number(nextProperties.confidence || 0))
+      confidence: Math.max(Number(existingProperties.confidence || 0), Number(nextProperties.confidence || 0)),
+      fieldCandidates: mergeList(existingProperties.fieldCandidates, nextProperties.fieldCandidates),
+      domainTags: mergeList(existingProperties.domainTags, nextProperties.domainTags),
+      abstractMechanisms: mergeList(existingProperties.abstractMechanisms, nextProperties.abstractMechanisms),
+      relatedProblems: mergeList(existingProperties.relatedProblems, nextProperties.relatedProblems),
+      sourceDomains: mergeList(existingProperties.sourceDomains, nextProperties.sourceDomains),
+      relatedChallenges: mergeList(existingProperties.relatedChallenges, nextProperties.relatedChallenges),
+      sourceTakeaways: mergeList(existingProperties.sourceTakeaways, nextProperties.sourceTakeaways),
+      addressesChallenges: mergeList(existingProperties.addressesChallenges, nextProperties.addressesChallenges)
     }
   };
 }

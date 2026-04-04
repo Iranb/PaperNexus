@@ -1,4 +1,5 @@
 import { parsePaperMarkdown } from '../ingestion/markdown.js';
+import { backfillCatalystMetadataCorpus, corpusNeedsCatalystMetadataBackfill } from '../ingestion/pipeline.js';
 import { readText, withFileLock } from '../../lib/fs.js';
 import { loadRegistry } from '../../storage/registry.js';
 import { loadCorpus } from '../../storage/corpus-store.js';
@@ -66,12 +67,46 @@ async function processEnhancementJob(rootPath, job, options = {}) {
   };
 }
 
+async function runCatalystBackfillIfNeeded(rootPath, options = {}) {
+  if (options.catalystBackfill === false) {
+    return null;
+  }
+
+  if (!await corpusNeedsCatalystMetadataBackfill(rootPath)) {
+    return null;
+  }
+
+  const semanticExtraction = String(
+    options.catalystSemanticExtraction
+    || options.semanticExtraction
+    || 'llm-assisted'
+  ).trim();
+  const result = await backfillCatalystMetadataCorpus(rootPath, {
+    ...options,
+    rootPath,
+    semanticExtraction
+  });
+
+  return {
+    processed: true,
+    failed: false,
+    catalystBackfilled: true,
+    stage: result.stage,
+    summary: await summarizeEnhancements(rootPath)
+  };
+}
+
 export async function runEnhancementQueueOnce(rootPath, options = {}) {
   const { workerLockPath } = getEnhancementPaths(rootPath);
   const allowBackfill = Number(options.backfillLimit) > 0;
 
   try {
     return await withFileLock(workerLockPath, async () => {
+      const catalystBackfill = await runCatalystBackfillIfNeeded(rootPath, options);
+      if (catalystBackfill) {
+        return catalystBackfill;
+      }
+
       let reserved = await reserveNextEnhancementJob(rootPath);
 
       if (!reserved && allowBackfill) {
@@ -205,7 +240,13 @@ export function startEnhancementWorker(options = {}) {
       const results = await runEnhancementsForAllCorporaOnce(options);
       for (const result of results) {
         if (!result.processed) continue;
-        if (result.failed) {
+        if (result.catalystBackfilled) {
+          if (result.failed) {
+            logger.error?.(`[enhance] ${result.corpusName || result.rootPath}: catalyst metadata backfill failed (${result.error})`);
+          } else {
+            logger.log?.(`[enhance] ${result.corpusName || result.rootPath}: catalyst metadata backfill refreshed`);
+          }
+        } else if (result.failed) {
           logger.error?.(`[enhance] ${result.corpusName || result.rootPath}: ${result.paperTitle} failed (${result.error})`);
         } else {
           logger.log?.(`[enhance] ${result.corpusName || result.rootPath}: refreshed ${result.paperTitle}`);

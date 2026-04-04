@@ -2,6 +2,29 @@
 
 PaperNexus can run as a foreground CLI tool, a local dashboard server, or a macOS background service pair.
 
+## Scope Boundary
+
+PaperNexus owns analysis and knowledge-graph construction for papers and corpora you already provide.
+
+It is responsible for:
+
+- PDF / Markdown ingestion
+- semantic extraction
+- evidence grounding
+- graph construction and graph-native analysis views
+
+It is not responsible for:
+
+- finding papers from external literature sources
+- web search, Semantic Scholar, or arXiv discovery flows
+- multi-agent workflow orchestration outside the graph
+
+In practice:
+
+- use `analyze`, `materialize`, or `POST /api/imports` with already-provided files, corpora, or manifests
+- use `query`, `catalyst`, `context`, `impact`, and enhancement APIs on already-indexed graph state
+- keep discovery and orchestration in the surrounding system that calls PaperNexus
+
 ## Dashboard
 
 Start the local UI with:

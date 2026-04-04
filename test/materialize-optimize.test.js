@@ -6,6 +6,18 @@ import path from 'node:path';
 
 const originalFetch = globalThis.fetch;
 
+function extractPromptPapers(prompt) {
+  const marker = 'Papers:\n';
+  const markerIndex = String(prompt || '').lastIndexOf(marker);
+  if (markerIndex === -1) return [];
+
+  try {
+    return JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+  } catch {
+    return [];
+  }
+}
+
 test('materializeCorpus prepares markdown cache and optimizeCorpus batches LLM graph optimization', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
@@ -838,6 +850,163 @@ We study resumable batch checkpoints for paper C.
     );
     const secondParticipatedCount = secondSnapshots.filter((snapshot) => snapshot.llm?.semanticExtractionParticipated).length;
     assert.equal(secondParticipatedCount, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('backfillCatalystMetadataCorpus refreshes an old corpus and rebuilds domain/mechanism graph primitives', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-catalyst-backfill-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-catalyst-backfill-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let semanticFetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper.md'), `# Cross-Domain Bias Mitigation
+
+Jane Doe
+
+## Abstract
+
+We study bias mitigation in tutoring feedback and reuse metacontrol ideas from psychology.
+
+## Method
+
+We propose a metacontrol policy transfer framework.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      semanticFetchCount += 1;
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const paper = extractPromptPapers(prompt)[0];
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: [
+                      {
+                        id: paper?.id || 'paper-1',
+                        fieldOfStudy: 'Education',
+                        fieldCandidates: ['Education', 'Psychology'],
+                        domainTags: ['Education', 'Psychology'],
+                        abstractMechanisms: ['metacontrol policy'],
+                        problems: [
+                          {
+                            name: 'bias mitigation in tutoring feedback',
+                            type: 'Problem',
+                            evidenceText: 'We study bias mitigation in tutoring feedback.',
+                            sectionHeading: 'Abstract',
+                            sectionRole: 'abstract',
+                            confidence: 0.93
+                          }
+                        ],
+                        methods: [
+                          {
+                            name: 'metacontrol policy transfer framework',
+                            type: 'Method',
+                            evidenceText: 'We propose a metacontrol policy transfer framework.',
+                            sectionHeading: 'Method',
+                            sectionRole: 'method',
+                            confidence: 0.91
+                          }
+                        ]
+                      }
+                    ]
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'catalyst-backfill-test',
+      force: true
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'catalyst-backfill-test',
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key'
+    });
+    assert.equal(semanticFetchCount, 1);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const sourceKey = manifest.sources[0].sourceKey;
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, sourceKey);
+    delete snapshot.fieldOfStudy;
+    delete snapshot.fieldCandidates;
+    delete snapshot.domainTags;
+    delete snapshot.abstractMechanisms;
+    delete snapshot.llmSemanticObjects.fieldOfStudy;
+    delete snapshot.llmSemanticObjects.fieldCandidates;
+    delete snapshot.llmSemanticObjects.domainTags;
+    delete snapshot.llmSemanticObjects.abstractMechanisms;
+    const oldSemanticSignature = JSON.stringify({
+      kind: 'semantic',
+      version: 0,
+      requestedMode: 'llm-assisted',
+      effectiveMode: 'llm-assisted',
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      baseUrl: 'https://api.openai.com/v1'
+    });
+    snapshot.llmSemanticObjects.configSignature = oldSemanticSignature;
+    snapshot.llm.semanticConfigSignature = oldSemanticSignature;
+    await corpusStore.saveSemanticPaperSnapshot(tempCorpusRoot, sourceKey, snapshot);
+
+    manifest.llmOptimization = {
+      ...manifest.llmOptimization,
+      catalystMetadataContractVersion: 0
+    };
+    await corpusStore.saveSourceManifest(tempCorpusRoot, manifest);
+
+    const result = await ingestion.backfillCatalystMetadataCorpus(tempCorpusRoot, {
+      name: 'catalyst-backfill-test',
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key'
+    });
+
+    assert.equal(result.stage, 'index-written');
+    assert.equal(semanticFetchCount, 2);
+    assert.ok(result.graph.nodes.some((node) => node.type === 'Domain' && node.name === 'Psychology'));
+    assert.ok(result.graph.nodes.some((node) => node.type === 'AbstractMechanism' && node.name === 'metacontrol policy'));
+
+    const nextManifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const nextSnapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, sourceKey);
+    assert.equal(nextManifest.llmOptimization.catalystMetadataContractVersion, 1);
+    assert.equal(nextSnapshot.llmSemanticObjects.fieldOfStudy, 'Education');
+    assert.deepEqual(nextSnapshot.llmSemanticObjects.domainTags, ['Education', 'Psychology']);
+    assert.deepEqual(nextSnapshot.llmSemanticObjects.abstractMechanisms, ['metacontrol policy']);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;

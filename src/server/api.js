@@ -22,6 +22,7 @@ import {
   buildResearchIdeas,
   buildBrainstorm
 } from '../core/search/search.js';
+import { buildCatalystQuery } from '../core/graph/catalyst-adapter.js';
 
 function countBy(items, keyFn) {
   const counts = {};
@@ -183,7 +184,10 @@ async function resolveCorpusForApi(candidate, options = {}) {
 
   const registryPayload = await listCorporaPayload(options);
   if (!registryPayload.corpora.length) {
-    throw new Error('No indexed corpora found. Run `papernexus analyze <path>` first.');
+    throw new Error(
+      'No indexed corpora found. Analyze or import an already-provided paper/corpus first; '
+      + 'PaperNexus does not discover external literature for you.'
+    );
   }
 
   return registryPayload.corpora[0].rootPath;
@@ -295,6 +299,36 @@ function normalizeBrainstormOptions(options = {}) {
   };
 }
 
+function normalizeMechanismList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function normalizeCatalystRequestBody(body = {}) {
+  const targetDomain = String(body?.targetDomain || body?.domain || '').trim();
+  if (!targetDomain) {
+    throw new Error('targetDomain is required.');
+  }
+
+  const rawOptions = body?.options && typeof body.options === 'object' && !Array.isArray(body.options)
+    ? body.options
+    : {};
+  const abstractChallenge = String(body?.abstractChallenge || body?.challenge || body?.query || '').trim();
+
+  return {
+    candidate: typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : undefined,
+    targetDomain,
+    abstractChallenge,
+    mechanisms: normalizeMechanismList(body?.mechanisms || body?.mechanism || rawOptions.mechanisms),
+    options: rawOptions
+  };
+}
+
 async function buildGraphSearchPayload(candidate, body, options, buildResult) {
   const request = normalizeGraphRequestBody(body);
   const effectiveCandidate = request.candidate || candidate;
@@ -335,6 +369,24 @@ export async function brainstormGraphPayload(candidate, body = {}, options = {})
   return buildGraphSearchPayload(candidate, body, options, (graph, query, rawOptions) => (
     buildBrainstorm(graph, query, normalizeBrainstormOptions(rawOptions))
   ));
+}
+
+export async function catalystGraphPayload(candidate, body = {}, options = {}) {
+  const request = normalizeCatalystRequestBody(body);
+  const effectiveCandidate = request.candidate || candidate;
+  const rootPath = await resolveCorpusForApi(effectiveCandidate, options);
+  const { graph } = await loadCorpusLiteForApi(rootPath, options);
+
+  return {
+    rootPath,
+    result: buildCatalystQuery(graph, {
+      targetDomain: request.targetDomain,
+      abstractChallenge: request.abstractChallenge,
+      mechanisms: request.mechanisms,
+      limit: Number(request.options.limit || 5)
+    }),
+    generatedAt: new Date().toISOString()
+  };
 }
 
 function normalizeLayerFilter(value) {

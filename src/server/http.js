@@ -7,6 +7,7 @@ import {
   backupCorpusPayload,
   brainstormBriefPayload,
   brainstormGraphPayload,
+  catalystGraphPayload,
   contextGraphPayload,
   corpusMetaPayload,
   corpusPayload,
@@ -358,6 +359,46 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
   };
 }
 
+function buildEnhancementWorkerOptions(options = {}, rootPaths, logger = console) {
+  const enhanceConfig = getConfigSection(options, 'enhance');
+  const analyzeConfig = getConfigSection(options, 'analyze');
+  const llmConfig = getConfigSection(options, 'llm');
+  const ollamaConfig = getConfigSection(options, 'ollama');
+
+  return {
+    ...options,
+    rootPaths,
+    logger,
+    intervalMs: options.enhancementIntervalMs,
+    backfillLimit: options.enhancementBackfillLimit,
+    catalystBackfill: firstDefined(options.enhancementCatalystBackfill, enhanceConfig.catalystBackfill, false) !== false,
+    catalystSemanticExtraction: firstDefined(
+      options.catalystSemanticExtraction,
+      enhanceConfig.catalystSemanticExtraction,
+      enhanceConfig.semanticExtraction,
+      analyzeConfig.semanticExtraction,
+      'llm-assisted'
+    ),
+    llmProvider: firstDefined(options.llmProvider, llmConfig.provider),
+    llmModel: firstDefined(options.llmModel, llmConfig.model, ollamaConfig.model),
+    llmBaseUrl: firstDefined(options.llmBaseUrl, llmConfig.baseUrl, llmConfig.url, ollamaConfig.url),
+    llmApiKey: firstDefined(options.llmApiKey, llmConfig.apiKey, process.env[llmConfig.apiKeyEnv || '']),
+    llmApiKeyEnv: firstDefined(options.llmApiKeyEnv, llmConfig.apiKeyEnv),
+    llmKeychainService: firstDefined(options.llmKeychainService, llmConfig.keychainService),
+    llmKeychainAccount: firstDefined(options.llmKeychainAccount, llmConfig.keychainAccount),
+    llmSshHost: firstDefined(options.llmSshHost, llmConfig.sshHost, ollamaConfig.sshHost),
+    llmRelations: firstDefined(options.llmRelations, llmConfig.relations, ollamaConfig.relations),
+    llmTimeoutMs: firstDefined(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
+    llmBatchSize: firstDefined(options.llmBatchSize, llmConfig.batchSize, ollamaConfig.batchSize),
+    ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),
+    ollamaUrl: firstDefined(options.ollamaUrl, ollamaConfig.url),
+    ollamaSshHost: firstDefined(options.ollamaSshHost, ollamaConfig.sshHost),
+    ollamaRelations: firstDefined(options.ollamaRelations, ollamaConfig.relations),
+    ollamaTimeoutMs: firstDefined(options.ollamaTimeoutMs, ollamaConfig.timeoutMs),
+    ollamaBatchSize: firstDefined(options.ollamaBatchSize, ollamaConfig.batchSize)
+  };
+}
+
 async function warmMineruBackends(options = {}) {
   const urls = collectMineruWarmupUrls(options);
   const attempted = [];
@@ -411,12 +452,7 @@ export async function serveCommand(options = {}) {
     'enhancement worker',
     options.enableEnhancements !== false,
     enhancementWorkerStarter,
-    {
-      rootPaths,
-      intervalMs: options.enhancementIntervalMs,
-      backfillLimit: options.enhancementBackfillLimit,
-      logger: workerLogger
-    },
+    buildEnhancementWorkerOptions(options, rootPaths, workerLogger),
     workerLogger
   );
   const authoritativeSyncWorker = startNamedWorker(
@@ -549,6 +585,13 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request);
         sendJson(response, 200, await brainstormGraphPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/catalyst') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await catalystGraphPayload(name, body, apiOptions));
         return;
       }
 

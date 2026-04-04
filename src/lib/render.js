@@ -295,6 +295,100 @@ export function renderImpactResult(result) {
   return lines.join('\n');
 }
 
+export function renderCatalystResult(result) {
+  const lines = [
+    `Catalyst query for "${result.targetDomain}"`,
+    `Contract: ${result.contractVersion}`
+  ];
+
+  if (result.abstractChallenge) {
+    lines.push(`Challenge: ${truncate(result.abstractChallenge, 220)}`);
+  }
+
+  if (result.targetMechanisms?.length) {
+    lines.push(`Target mechanisms: ${result.targetMechanisms.join(', ')}`);
+  }
+
+  if (result.coverage?.targetDomain) {
+    const coverage = result.coverage.targetDomain;
+    lines.push(
+      `Target coverage: ${coverage.paperCount} papers, ${coverage.problemCount} problems, ${coverage.methodCount} methods, ${coverage.limitationCount} limitations`
+    );
+    if (coverage.topMechanisms?.length) {
+      lines.push(`Top mechanisms: ${coverage.topMechanisms.map((entry) => `${entry.mechanism} (${entry.supportCount})`).join(', ')}`);
+    }
+    if (coverage.missingMechanisms?.length) {
+      lines.push(`Missing mechanisms: ${coverage.missingMechanisms.join(', ')}`);
+    }
+  }
+
+  if (result.candidateDomains?.length) {
+    lines.push('Candidate domains:');
+    for (const entry of result.candidateDomains.slice(0, 8)) {
+      const coverage = entry.coverage;
+      lines.push(
+        `- ${entry.domain} (score ${entry.score.toFixed(2)}, bridges ${entry.bridgeCount}, papers ${coverage?.paperCount || 0}, mechanisms ${coverage?.mechanismCount || 0})`
+      );
+    }
+  }
+
+  if (result.bridgeNodes?.length) {
+    lines.push('Bridge nodes:');
+    for (const entry of result.bridgeNodes.slice(0, 8)) {
+      lines.push(`- ${entry.nodeType}: ${entry.nodeName} [${entry.domain}]`);
+    }
+  }
+
+  if (result.mechanismTraversal?.matches?.length) {
+    lines.push('Mechanism traversal:');
+    for (const entry of result.mechanismTraversal.matches.slice(0, 8)) {
+      if (!entry.matched) {
+        lines.push(`- ${entry.mechanism}: no direct graph matches`);
+        continue;
+      }
+      lines.push(`- ${entry.mechanism}: ${entry.supportingNodeCount} supporting nodes across ${entry.relatedDomains.length} domains`);
+    }
+  }
+
+  if (result.mechanismBridgeAnalysis?.candidateMechanismCommunities?.length) {
+    lines.push('Mechanism bridge communities:');
+    for (const entry of result.mechanismBridgeAnalysis.candidateMechanismCommunities.slice(0, 6)) {
+      lines.push(
+        `- ${entry.mechanism}: ${entry.sourceDomains.join(', ')} -> ${entry.targetDomain} (strength ${entry.bridgeStrength.toFixed(2)})`
+      );
+    }
+  }
+
+  if (result.bridgeRetrieval?.candidateBridgePaths?.length) {
+    lines.push('Bridge retrieval:');
+    for (const entry of result.bridgeRetrieval.candidateBridgePaths.slice(0, 6)) {
+      lines.push(
+        `- ${entry.candidateNodeType}: ${entry.candidateNodeName} [${entry.sourceDomain} -> ${entry.targetDomain}] (score ${entry.combinedScore.toFixed(2)})`
+      );
+    }
+  }
+
+  if (result.structuralAnalogy?.alignments?.length) {
+    lines.push('Structural analogies:');
+    for (const entry of result.structuralAnalogy.alignments.slice(0, 6)) {
+      lines.push(
+        `- ${entry.candidateNodeType}: ${entry.candidateNodeName} [${entry.sourceDomain}] (score ${entry.analogyScore.toFixed(2)}, motifs ${entry.matchedMotifs.join(', ') || 'none'})`
+      );
+    }
+  }
+
+  if (result.interdisciplinaryPotentialRanking?.rankedCandidates?.length) {
+    lines.push('Interdisciplinary potential:');
+    for (const entry of result.interdisciplinaryPotentialRanking.rankedCandidates.slice(0, 6)) {
+      lines.push(
+        `- ${entry.candidateNodeType}: ${entry.candidateNodeName} [${entry.sourceDomain}] (potential ${entry.interdisciplinaryPotential.toFixed(2)}, novelty ${entry.noveltyProxy.toFixed(2)}, grounding ${entry.groundingScore.toFixed(2)})`
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export function renderMutationResult(result) {
   const lines = [
     `Graph mutation ${result.dryRun ? 'preview' : 'applied'} for "${result.corpusName}"`,
