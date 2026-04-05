@@ -212,15 +212,69 @@ function refreshMechanismSupportContracts(graph) {
 }
 
 function buildTransferEdgeProperties(mechanismNode, sourceDomain, targetDomain) {
-  const supportCount = Number(mechanismNode?.properties?.supportingPaperCount || 0);
+  const mechanismNodes = Array.isArray(mechanismNode) ? mechanismNode.filter(Boolean) : [mechanismNode].filter(Boolean);
+  const primaryMechanism = mechanismNodes[0] || null;
+  const supportCount = Math.max(
+    0,
+    ...mechanismNodes.map((node) => Number(node?.properties?.supportingPaperCount || 0))
+  );
   return {
     relationSource: 'idea-catalyst-transfer-enrichment',
-    viaMechanism: mechanismNode?.id || null,
-    viaMechanismName: mechanismNode?.name || '',
+    viaMechanism: primaryMechanism?.id || null,
+    viaMechanismName: primaryMechanism?.name || '',
+    viaMechanismIds: mechanismNodes.map((node) => node.id),
+    sharedMechanisms: mechanismNodes.map((node) => node.name),
     sourceDomain,
     targetDomain,
-    score: Number(Math.min(0.95, 0.3 + (supportCount * 0.08)).toFixed(4))
+    score: Number(Math.min(0.95, 0.3 + (supportCount * 0.08) + (mechanismNodes.length > 1 ? 0.05 : 0)).toFixed(4))
   };
+}
+
+const TRANSFERABLE_CONCEPT_TYPES = new Set([
+  NODE_TYPES.PROBLEM,
+  NODE_TYPES.RESEARCH_QUESTION,
+  NODE_TYPES.CHALLENGE,
+  NODE_TYPES.METHOD,
+  NODE_TYPES.TAKEAWAY,
+  NODE_TYPES.IDEA_FRAGMENT,
+  NODE_TYPES.LIMITATION,
+  NODE_TYPES.ASSUMPTION
+]);
+
+const TRANSFER_DIRECTION_PRIORITY = new Map([
+  [NODE_TYPES.IDEA_FRAGMENT, 1],
+  [NODE_TYPES.TAKEAWAY, 2],
+  [NODE_TYPES.METHOD, 3],
+  [NODE_TYPES.RESEARCH_QUESTION, 4],
+  [NODE_TYPES.PROBLEM, 5],
+  [NODE_TYPES.CHALLENGE, 6],
+  [NODE_TYPES.LIMITATION, 7],
+  [NODE_TYPES.ASSUMPTION, 8]
+]);
+
+function collectTransferableInstantiators(graph, mechanismNode) {
+  return graph.getIncoming(mechanismNode.id)
+    .filter((relationship) => (
+      relationship.type === EDGE_TYPES.INSTANTIATES
+      || relationship.type === EDGE_TYPES.IMPLEMENTS
+      || relationship.type === EDGE_TYPES.CONSTRAINS
+    ))
+    .map((relationship) => graph.getNode(relationship.sourceId))
+    .filter((node) => node && TRANSFERABLE_CONCEPT_TYPES.has(node.type));
+}
+
+function orderTransferPair(leftNode, rightNode) {
+  if (!leftNode || !rightNode) return null;
+  const leftPriority = TRANSFER_DIRECTION_PRIORITY.get(leftNode.type) || 999;
+  const rightPriority = TRANSFER_DIRECTION_PRIORITY.get(rightNode.type) || 999;
+
+  if (leftPriority !== rightPriority) {
+    return leftPriority < rightPriority ? [leftNode, rightNode] : [rightNode, leftNode];
+  }
+
+  return leftNode.id.localeCompare(rightNode.id) <= 0
+    ? [leftNode, rightNode]
+    : [rightNode, leftNode];
 }
 
 export function populateTransferableEdgesFromMechanisms(graph) {
@@ -231,41 +285,60 @@ export function populateTransferableEdgesFromMechanisms(graph) {
   }
 
   let created = 0;
+  const pairMechanisms = new Map();
   for (const mechanismNode of graph.getNodesByType(NODE_TYPES.ABSTRACT_MECHANISM)) {
-    const incoming = graph.getIncoming(mechanismNode.id)
-      .filter((relationship) => (
-        relationship.type === EDGE_TYPES.INSTANTIATES
-        || relationship.type === EDGE_TYPES.IMPLEMENTS
-      ));
-    const methods = incoming
-      .map((relationship) => graph.getNode(relationship.sourceId))
-      .filter((node) => node?.type === NODE_TYPES.METHOD);
-    const problems = incoming
-      .map((relationship) => graph.getNode(relationship.sourceId))
-      .filter((node) => node?.type === NODE_TYPES.PROBLEM);
+    const instantiators = collectTransferableInstantiators(graph, mechanismNode)
+      .map((node) => ({
+        node,
+        domain: normalizeFieldOfStudy(node.properties?.fieldOfStudy, node.properties?.domainTags || [])
+      }))
+      .filter((entry) => entry.domain);
 
-    for (const method of methods) {
-      const methodDomain = normalizeFieldOfStudy(method.properties?.fieldOfStudy, method.properties?.domainTags || []);
-      if (!methodDomain) continue;
+    for (let leftIndex = 0; leftIndex < instantiators.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < instantiators.length; rightIndex += 1) {
+        const left = instantiators[leftIndex];
+        const right = instantiators[rightIndex];
+        if (left.domain === right.domain) continue;
 
-      for (const problem of problems) {
-        const problemDomain = normalizeFieldOfStudy(problem.properties?.fieldOfStudy, problem.properties?.domainTags || []);
-        if (!problemDomain || problemDomain === methodDomain) continue;
+        const orderedNodes = orderTransferPair(left.node, right.node);
+        if (!orderedNodes) continue;
+        const [sourceNode, targetNode] = orderedNodes;
+        const sourceDomain = sourceNode.id === left.node.id ? left.domain : right.domain;
+        const targetDomain = targetNode.id === right.node.id ? right.domain : left.domain;
+        const pairKey = `${sourceNode.id}:${targetNode.id}`;
 
-        const exists = graph.getOutgoing(method.id).some((relationship) => (
-          relationship.type === EDGE_TYPES.TRANSFERABLE_TO && relationship.targetId === problem.id
-        ));
-        if (exists) continue;
+        if (!pairMechanisms.has(pairKey)) {
+          pairMechanisms.set(pairKey, {
+            sourceNode,
+            targetNode,
+            sourceDomain,
+            targetDomain,
+            mechanismNodes: []
+          });
+        }
 
-        graph.addRelationship(createRelationship(
-          method.id,
-          problem.id,
-          EDGE_TYPES.TRANSFERABLE_TO,
-          buildTransferEdgeProperties(mechanismNode, methodDomain, problemDomain)
-        ));
-        created += 1;
+        pairMechanisms.get(pairKey).mechanismNodes.push(mechanismNode);
       }
     }
+  }
+
+  for (const pair of pairMechanisms.values()) {
+    const exists = graph.getOutgoing(pair.sourceNode.id).some((relationship) => (
+      relationship.type === EDGE_TYPES.TRANSFERABLE_TO && relationship.targetId === pair.targetNode.id
+    ));
+    if (exists) continue;
+
+    graph.addRelationship(createRelationship(
+      pair.sourceNode.id,
+      pair.targetNode.id,
+      EDGE_TYPES.TRANSFERABLE_TO,
+      {
+        ...buildTransferEdgeProperties(pair.mechanismNodes, pair.sourceDomain, pair.targetDomain),
+        sourceNodeType: pair.sourceNode.type,
+        targetNodeType: pair.targetNode.type
+      }
+    ));
+    created += 1;
   }
 
   return created;

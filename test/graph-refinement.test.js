@@ -58,6 +58,40 @@ test('postIngestionRefinement propagates domain tags, merges near-duplicate mech
       ]
     }
   });
+  graph.addNode({
+    id: 'takeaway:psych-transfer',
+    type: NODE_TYPES.TAKEAWAY,
+    name: 'reflective prompts improve belief calibration',
+    properties: {
+      fieldOfStudy: 'Psychology',
+      domainTags: ['Psychology'],
+      paperTitles: ['Reflective Prompt Transfer for Belief Updating'],
+      abstractMechanismObjects: [
+        {
+          name: 'attention-based mechanism',
+          mechanismType: 'control-policy',
+          mechanismCategory: 'adaptive-control'
+        }
+      ]
+    }
+  });
+  graph.addNode({
+    id: 'challenge:edu-open',
+    type: NODE_TYPES.CHALLENGE,
+    name: 'teacher feedback loops reinforce prior beliefs',
+    properties: {
+      fieldOfStudy: 'Education',
+      domainTags: ['Education'],
+      paperTitles: ['Reducing Confirmation Bias in Tutoring'],
+      abstractMechanismObjects: [
+        {
+          name: 'attention mechanism',
+          mechanismType: 'control-policy',
+          mechanismCategory: 'adaptive-control'
+        }
+      ]
+    }
+  });
 
   graph.addRelationship({
     id: 'rel:paper-method',
@@ -71,6 +105,20 @@ test('postIngestionRefinement propagates domain tags, merges near-duplicate mech
     sourceId: 'paper:edu',
     targetId: 'problem:edu-bias',
     type: EDGE_TYPES.SOLVES,
+    properties: {}
+  });
+  graph.addRelationship({
+    id: 'rel:paper-takeaway',
+    sourceId: 'paper:psych',
+    targetId: 'takeaway:psych-transfer',
+    type: EDGE_TYPES.HAS_TAKEAWAY,
+    properties: {}
+  });
+  graph.addRelationship({
+    id: 'rel:paper-challenge',
+    sourceId: 'paper:edu',
+    targetId: 'challenge:edu-open',
+    type: EDGE_TYPES.HAS_OPEN_CHALLENGE,
     properties: {}
   });
 
@@ -95,6 +143,12 @@ test('postIngestionRefinement propagates domain tags, merges near-duplicate mech
     relationship.type === EDGE_TYPES.TRANSFERABLE_TO
       && relationship.sourceId === 'method:psych-reflective'
       && relationship.targetId === 'problem:edu-bias'
+      && relationship.properties?.relationSource === 'idea-catalyst-transfer-enrichment'
+  )));
+  assert.ok(graph.relationships.some((relationship) => (
+    relationship.type === EDGE_TYPES.TRANSFERABLE_TO
+      && relationship.sourceId === 'takeaway:psych-transfer'
+      && relationship.targetId === 'challenge:edu-open'
       && relationship.properties?.relationSource === 'idea-catalyst-transfer-enrichment'
   )));
   assert.ok(refinement.summary.mergedMechanismCount >= 1);

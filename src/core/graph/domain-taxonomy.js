@@ -98,6 +98,106 @@ function ensureDomainEntitySet(map, domain) {
   return map.get(domain);
 }
 
+function normalizeMechanismLabel(value) {
+  const cleaned = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return cleaned || null;
+}
+
+function collectNodeDomains(node) {
+  return normalizeDomainTags([
+    node.properties?.fieldOfStudy,
+    ...(node.properties?.fieldCandidates || []),
+    ...(node.properties?.domainTags || []),
+    ...(node.properties?.sourceDomains || []),
+    node.properties?.targetDomain
+  ]);
+}
+
+function collectNodeMechanisms(graph, node) {
+  const mechanisms = new Set();
+
+  for (const relationship of graph.getOutgoing(node.id)) {
+    if (
+      relationship.type !== EDGE_TYPES.INSTANTIATES
+      && relationship.type !== EDGE_TYPES.IMPLEMENTS
+      && relationship.type !== EDGE_TYPES.CONSTRAINS
+    ) {
+      continue;
+    }
+    const mechanismNode = graph.getNode(relationship.targetId);
+    if (mechanismNode?.type !== NODE_TYPES.ABSTRACT_MECHANISM) continue;
+    const label = normalizeMechanismLabel(
+      mechanismNode.properties?.canonicalForm
+      || mechanismNode.properties?.normalizedName
+      || mechanismNode.name
+    );
+    if (label) mechanisms.add(label);
+  }
+
+  for (const value of [
+    ...(Array.isArray(node.properties?.abstractMechanisms) ? node.properties.abstractMechanisms : []),
+    ...(Array.isArray(node.properties?.mechanismHints) ? node.properties.mechanismHints : [])
+  ]) {
+    const label = normalizeMechanismLabel(value);
+    if (label) mechanisms.add(label);
+  }
+
+  for (const record of Array.isArray(node.properties?.abstractMechanismObjects)
+    ? node.properties.abstractMechanismObjects
+    : []) {
+    const label = normalizeMechanismLabel(
+      record?.name
+      || record?.normalizedName
+      || record?.canonicalName
+      || record?.label
+    );
+    if (label) mechanisms.add(label);
+  }
+
+  return [...mechanisms].sort((left, right) => left.localeCompare(right));
+}
+
+function deriveDomainMechanismCoverage(graph) {
+  const coverageByDomain = new Map();
+  const candidateTypes = new Set([
+    NODE_TYPES.PROBLEM,
+    NODE_TYPES.RESEARCH_QUESTION,
+    NODE_TYPES.CHALLENGE,
+    NODE_TYPES.METHOD,
+    NODE_TYPES.TAKEAWAY,
+    NODE_TYPES.IDEA_FRAGMENT,
+    NODE_TYPES.LIMITATION,
+    NODE_TYPES.ASSUMPTION
+  ]);
+
+  for (const node of graph.nodes || []) {
+    if (!candidateTypes.has(node.type)) continue;
+    const domains = collectNodeDomains(node);
+    const mechanisms = collectNodeMechanisms(graph, node);
+    if (!domains.length || !mechanisms.length) continue;
+
+    for (const domain of domains) {
+      if (!coverageByDomain.has(domain)) {
+        coverageByDomain.set(domain, new Map());
+      }
+      const domainCoverage = coverageByDomain.get(domain);
+      for (const mechanism of mechanisms) {
+        if (!domainCoverage.has(mechanism)) {
+          domainCoverage.set(mechanism, {
+            count: 0,
+            nodeTypes: new Set()
+          });
+        }
+        const entry = domainCoverage.get(mechanism);
+        entry.count += 1;
+        entry.nodeTypes.add(node.type);
+      }
+    }
+  }
+
+  return coverageByDomain;
+}
+
 export function deriveDomainTaxonomyFromGraph(graph) {
   const domainEntitySets = new Map();
 
@@ -136,7 +236,39 @@ export function deriveDomainTaxonomyFromGraph(graph) {
     };
   });
 
-  return buildDomainDistanceMatrix(rows);
+  const matrix = buildDomainDistanceMatrix(rows);
+  const mechanismCoverage = deriveDomainMechanismCoverage(graph);
+
+  return {
+    ...matrix,
+    mechanismCoverage: Object.fromEntries(
+      matrix.domains.map((domain) => {
+        const coverage = mechanismCoverage.get(domain);
+        const mechanisms = coverage
+          ? [...coverage.keys()].sort((left, right) => left.localeCompare(right))
+          : [];
+        const topMechanisms = coverage
+          ? [...coverage.entries()]
+            .map(([mechanism, entry]) => ({
+              mechanism,
+              count: entry.count,
+              nodeTypes: [...entry.nodeTypes].sort((left, right) => left.localeCompare(right))
+            }))
+            .sort((left, right) => right.count - left.count || left.mechanism.localeCompare(right.mechanism))
+            .slice(0, 12)
+          : [];
+
+        return [
+          domain,
+          {
+            mechanismCount: mechanisms.length,
+            mechanisms,
+            topMechanisms
+          }
+        ];
+      })
+    )
+  };
 }
 
 export function scoreDomainDistance(matrix, left, right) {

@@ -13,6 +13,7 @@ import {
 } from '../../storage/corpus-store.js';
 import { loadRegistry } from '../../storage/registry.js';
 import { applyGraphDeltaPayload } from '../graph/delta-commit.js';
+import { summarizeCorpusGraph } from '../graph/summary.js';
 
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
@@ -41,8 +42,7 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
   const nextMeta = {
     ...runningMeta,
     indexedAt: new Date().toISOString(),
-    nodeCount: nextGraph.nodeCount,
-    relationshipCount: nextGraph.relationshipCount
+    ...summarizeCorpusGraph(nextGraph)
   };
 
   await saveCorpus(rootPath, nextGraph, nextMeta, {

@@ -76,7 +76,9 @@ export async function readResourcePayload(uri) {
   }
 
   if (view === 'domain-taxonomy') {
-    const matrix = deriveDomainTaxonomyFromGraph(graph);
+    const matrix = meta.domainDistanceMatrix?.mechanismCoverage
+      ? meta.domainDistanceMatrix
+      : deriveDomainTaxonomyFromGraph(graph);
     return {
       mimeType: 'application/json',
       text: JSON.stringify({

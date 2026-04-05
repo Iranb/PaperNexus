@@ -1,6 +1,14 @@
 import { tokenizeWithoutStopwords, truncate, unique } from '../../lib/utils.js';
 import { buildBrainstormViewPayload } from './brainstorm-view.js';
 
+function pickLiteDerivedPayload(derived = {}) {
+  const payload = {};
+  if (derived?.domainDistanceMatrix) {
+    payload.domainDistanceMatrix = derived.domainDistanceMatrix;
+  }
+  return payload;
+}
+
 function pickNodeProperties(properties = {}) {
   const selected = {};
   const keys = [
@@ -177,9 +185,10 @@ export function buildTokenIndex(nodes) {
   );
 }
 
-export function createLiteGraphPayload(graph) {
+export function createLiteGraphPayload(graph, options = {}) {
   const nodes = graph.nodes.map((node) => createLiteNodePayload(node));
   const relationships = graph.relationships.map((relationship) => createLiteRelationshipPayload(relationship));
+  const derived = pickLiteDerivedPayload(options.derived);
 
   return {
     nodes,
@@ -189,6 +198,7 @@ export function createLiteGraphPayload(graph) {
     },
     views: {
       brainstorm: buildBrainstormViewPayload(nodes)
-    }
+    },
+    ...(Object.keys(derived).length ? { derived } : {})
   };
 }

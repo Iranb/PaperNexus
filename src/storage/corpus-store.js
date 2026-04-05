@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getNodeLayer } from '../core/graph/schema.js';
 import { applyGraphMutations } from '../core/graph/mutations.js';
+import { summarizeCorpusGraph } from '../core/graph/summary.js';
 import { ensureDir, fileExists, readJson, removePath, withFileLock, writeJson } from '../lib/fs.js';
 import { loadKnowledgeGraph } from '../core/graph/graph.js';
 import { slugify, stableHash } from '../lib/utils.js';
@@ -128,6 +128,9 @@ export async function saveCorpus(rootPath, graph, meta, options = {}) {
     liteStatePath,
     currentSources: options.liteViewSources || null,
     incremental: options.liteViewMode === 'incremental',
+    derived: {
+      domainDistanceMatrix: meta.domainDistanceMatrix || null
+    },
     onProgress
   });
   onProgress?.({
@@ -185,6 +188,9 @@ export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, man
     await applyLiteDeltaCommit(rootPath, deltaPayload, {
       liteGraphPath,
       liteStatePath,
+      derived: {
+        domainDistanceMatrix: meta.domainDistanceMatrix || null
+      },
       onProgress
     });
 
@@ -240,25 +246,7 @@ export async function saveCorpusFastLocalDelta(rootPath, deltaPayload, meta, man
 }
 
 function summarizeGraph(graph) {
-  const layers = {};
-  const layerPaths = {};
-
-  for (const node of graph.nodes) {
-    const layer = node.properties?.layer || getNodeLayer(node.type);
-    layers[layer] = (layers[layer] || 0) + 1;
-  }
-
-  for (const relationship of graph.relationships) {
-    const path = relationship.properties?.layerPath || 'unknown';
-    layerPaths[path] = (layerPaths[path] || 0) + 1;
-  }
-
-  return {
-    nodeCount: graph.nodeCount,
-    relationshipCount: graph.relationshipCount,
-    layers,
-    layerPaths
-  };
+  return summarizeCorpusGraph(graph);
 }
 
 export async function loadCorpus(rootPath) {

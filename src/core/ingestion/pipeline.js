@@ -26,7 +26,8 @@ import {
   normalizeIdeaFragmentRecord,
   normalizeTakeawayRecord
 } from '../graph/takeaways.js';
-import { applyGraphDeltaPayload, buildGraphDeltaPayload } from '../graph/delta-commit.js';
+import { summarizeCorpusGraph } from '../graph/summary.js';
+import { applyGraphDeltaPayload, buildGraphDeltaPayload, buildGraphDiffPayload } from '../graph/delta-commit.js';
 import {
   adjudicateCrossPaperCandidates,
   inferGraphNodeChecksBatch,
@@ -68,6 +69,7 @@ import {
 import { enqueuePaperEnhancements, pruneEnhancementsForManifest } from '../../storage/enhancement-store.js';
 import { getImportPaths, listActiveImportSourceDirs } from '../../storage/import-store.js';
 import { registerCorpus } from '../../storage/registry.js';
+import { buildLiteStateSnapshot, GLOBAL_SOURCE_KEY } from '../../storage/lite-view.js';
 import {
   cacheMarkdownSource,
   convertPdfToMarkdown,
@@ -2892,22 +2894,7 @@ async function createMeta({ name, rootPath, graph, sourceMode, problems, semanti
   }, {});
   const semanticExtractionParticipated = semanticExtractionPapers.filter((paper) => paper.participated);
   const semanticExtractionSkipped = semanticExtractionPapers.filter((paper) => !paper.participated);
-  const layerCounts = {};
-  const layerPathCounts = {};
-  const brainstormNodeCounts = {};
-
-  for (const node of graph.nodes) {
-    const layer = node.properties?.layer || getNodeLayer(node.type);
-    layerCounts[layer] = (layerCounts[layer] || 0) + 1;
-    if (node.properties?.brainstormEligible) {
-      brainstormNodeCounts[node.type] = (brainstormNodeCounts[node.type] || 0) + 1;
-    }
-  }
-
-  for (const relationship of graph.relationships) {
-    const path = relationship.properties?.layerPath || 'unknown';
-    layerPathCounts[path] = (layerPathCounts[path] || 0) + 1;
-  }
+  const graphSummary = summarizeCorpusGraph(graph);
 
   return {
     name,
@@ -2920,21 +2907,13 @@ async function createMeta({ name, rootPath, graph, sourceMode, problems, semanti
     storageMode: await resolveGraphStorageMode(),
     paperCount: semanticPapers.length,
     sourceCount,
-    nodeCount: graph.nodeCount,
-    relationshipCount: graph.relationshipCount,
+    ...graphSummary,
     topProblems,
-    topDomains: topProblems,
     pdfParser: pdfParser || null,
     pdfCommand: pdfCommand || null,
     semanticExtractionMode,
     markerCommand: pdfParser === 'marker' ? (pdfCommand || null) : null,
     mineruCommand: pdfParser === 'mineru' ? (pdfCommand || null) : null,
-    layers: layerCounts,
-    layerPaths: layerPathCounts,
-    brainstormView: {
-      eligibleNodeCount: Object.values(brainstormNodeCounts).reduce((total, count) => total + count, 0),
-      nodeTypes: brainstormNodeCounts
-    },
     llm: {
       enabled: llmEnabled,
       providers: llmProviders,
@@ -2956,39 +2935,12 @@ async function createMeta({ name, rootPath, graph, sourceMode, problems, semanti
 }
 
 function refreshMetaFromGraph(previousMeta, graph, mergeSummary = null, nodeLlmCheckSummary = null) {
-  const layerCounts = {};
-  const layerPathCounts = {};
-  const brainstormNodeCounts = {};
-  const problemNodes = graph.nodes
-    .filter((node) => node.type === NODE_TYPES.PROBLEM)
-    .sort((left, right) => (right.properties?.paperTitles?.length || 0) - (left.properties?.paperTitles?.length || 0));
-
-  for (const node of graph.nodes) {
-    const layer = node.properties?.layer || getNodeLayer(node.type);
-    layerCounts[layer] = (layerCounts[layer] || 0) + 1;
-    if (node.properties?.brainstormEligible) {
-      brainstormNodeCounts[node.type] = (brainstormNodeCounts[node.type] || 0) + 1;
-    }
-  }
-
-  for (const relationship of graph.relationships) {
-    const pathKey = relationship.properties?.layerPath || 'unknown';
-    layerPathCounts[pathKey] = (layerPathCounts[pathKey] || 0) + 1;
-  }
+  const graphSummary = summarizeCorpusGraph(graph);
 
   return {
     ...previousMeta,
     indexedAt: new Date().toISOString(),
-    nodeCount: graph.nodeCount,
-    relationshipCount: graph.relationshipCount,
-    topProblems: problemNodes.slice(0, 12).map((problem) => problem.name),
-    topDomains: problemNodes.slice(0, 12).map((problem) => problem.name),
-    layers: layerCounts,
-    layerPaths: layerPathCounts,
-    brainstormView: {
-      eligibleNodeCount: Object.values(brainstormNodeCounts).reduce((total, count) => total + count, 0),
-      nodeTypes: brainstormNodeCounts
-    },
+    ...graphSummary,
     nodeLlmCheck: nodeLlmCheckSummary || previousMeta.nodeLlmCheck || {
       requested: false,
       checkedNodeCount: 0,
@@ -5349,7 +5301,7 @@ export async function fastCommitCorpus(inputPath, options = {}) {
     }
   }
 
-  const deltaPayload = await buildGraphDeltaPayload({
+  const paperDeltaPayload = await buildGraphDeltaPayload({
     corpusName: manifest.corpusName || options.name || currentCorpus.meta.name || path.basename(rootPath),
     rootPath,
     committedGraph: currentCorpus.graph,
@@ -5358,8 +5310,25 @@ export async function fastCommitCorpus(inputPath, options = {}) {
     changedSourceKeys,
     options
   });
-  const nextGraph = applyGraphDeltaPayload(currentCorpus.graph, deltaPayload);
+  const nextGraph = applyGraphDeltaPayload(currentCorpus.graph, paperDeltaPayload);
+  postIngestionRefinement(nextGraph);
   const activeManifestSources = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false);
+  const nextLiteState = buildLiteStateSnapshot(nextGraph, activeManifestSources);
+  const liteSourceKeys = unique([
+    ...Object.keys(liteState?.sources || {}),
+    ...Object.keys(nextLiteState?.sources || {})
+  ]);
+  const affectedLiteSourceKeys = liteSourceKeys.filter((sourceKey) => (
+    JSON.stringify(liteState?.sources?.[sourceKey] || null) !== JSON.stringify(nextLiteState?.sources?.[sourceKey] || null)
+  ));
+  const deltaPayload = buildGraphDiffPayload(currentCorpus.graph, nextGraph, {
+    changedSourceKeys,
+    liteChangedSourceKeys: affectedLiteSourceKeys.length ? affectedLiteSourceKeys : [GLOBAL_SOURCE_KEY],
+    sourceEntries: (affectedLiteSourceKeys.length ? affectedLiteSourceKeys : [GLOBAL_SOURCE_KEY])
+      .map((sourceKey) => nextLiteState.sources?.[sourceKey])
+      .filter(Boolean),
+    removalState: paperDeltaPayload.removalState
+  });
   const nextMeta = {
     ...refreshMetaFromGraph(currentCorpus.meta, nextGraph, currentCorpus.meta.similarNodeMerge, currentCorpus.meta.nodeLlmCheck),
     name: currentCorpus.meta.name || manifest.corpusName || options.name || path.basename(rootPath),

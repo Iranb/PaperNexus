@@ -157,6 +157,43 @@ function sameRecord(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+export function buildGraphDiffPayload(previousGraph, nextGraph, options = {}) {
+  const previousNodesById = new Map((previousGraph?.nodes || []).map((node) => [node.id, node]));
+  const nextNodesById = new Map((nextGraph?.nodes || []).map((node) => [node.id, node]));
+  const previousRelationshipsById = new Map((previousGraph?.relationships || []).map((relationship) => [relationship.id, relationship]));
+  const nextRelationshipsById = new Map((nextGraph?.relationships || []).map((relationship) => [relationship.id, relationship]));
+
+  const upsertNodes = (nextGraph?.nodes || [])
+    .filter((node) => {
+      const previous = previousNodesById.get(node.id);
+      return !previous || !sameRecord(previous, node);
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const upsertRelationships = (nextGraph?.relationships || [])
+    .filter((relationship) => {
+      const previous = previousRelationshipsById.get(relationship.id);
+      return !previous || !sameRecord(previous, relationship);
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const deleteNodeIds = [...previousNodesById.keys()]
+    .filter((nodeId) => !nextNodesById.has(nodeId))
+    .sort();
+  const deleteRelationshipIds = [...previousRelationshipsById.keys()]
+    .filter((relationshipId) => !nextRelationshipsById.has(relationshipId))
+    .sort();
+
+  return {
+    changedSourceKeys: sortStrings(options.changedSourceKeys || []),
+    liteChangedSourceKeys: sortStrings(options.liteChangedSourceKeys || options.changedSourceKeys || []),
+    upsertNodes,
+    upsertRelationships,
+    deleteNodeIds,
+    deleteRelationshipIds,
+    removalState: options.removalState || null,
+    sourceEntries: options.sourceEntries || []
+  };
+}
+
 function buildCorpusId(corpusName, rootPath) {
   return `corpus:${slugify(corpusName)}:${stableHash(rootPath)}`;
 }
@@ -285,6 +322,8 @@ export async function buildGraphDeltaPayload({
 
   const deltaGraph = createKnowledgeGraph();
   const corpusId = buildCorpusId(corpusName, rootPath);
+  const deletions = computeDeletionIds(liteState, changedSourceKeys);
+  const deletedNodeIds = new Set(deletions.deleteNodeIds || []);
   const fragments = changedPapers.length
     ? await precomputePaperGraphFragments(changedPapers, {
         graphPrecomputeConcurrency: options.graphPrecomputeConcurrency,
@@ -311,7 +350,9 @@ export async function buildGraphDeltaPayload({
   }
 
   for (const contributionGroup of aggregatedGlobalContributions) {
-    const existingNode = committedGraph?.getNode(contributionGroup.node.id) || null;
+    const existingNode = deletedNodeIds.has(contributionGroup.node.id)
+      ? null
+      : (committedGraph?.getNode(contributionGroup.node.id) || null);
     const nextNode = existingNode
       ? mergeGlobalNode(existingNode, contributionGroup.node)
       : contributionGroup.node;
@@ -378,10 +419,9 @@ export async function buildGraphDeltaPayload({
     }
   }
 
-  const deletions = computeDeletionIds(liteState, changedSourceKeys);
-
   return {
     changedSourceKeys,
+    liteChangedSourceKeys: changedSourceKeys,
     upsertNodes,
     upsertRelationships,
     deleteNodeIds: deletions.deleteNodeIds,

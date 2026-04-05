@@ -9,7 +9,15 @@ import { buildBrainstormViewPayload } from '../core/graph/brainstorm-view.js';
 import { readJson, writeJson } from '../lib/fs.js';
 
 const LITE_VIEW_VERSION = 1;
-const GLOBAL_SOURCE_KEY = '__global__';
+export const GLOBAL_SOURCE_KEY = '__global__';
+
+function pickLiteDerivedPayload(derived = {}) {
+  const payload = {};
+  if (derived?.domainDistanceMatrix) {
+    payload.domainDistanceMatrix = derived.domainDistanceMatrix;
+  }
+  return payload;
+}
 
 function cloneIdList(value) {
   return Array.isArray(value) ? [...new Set(value.filter(Boolean))].sort() : [];
@@ -246,17 +254,20 @@ function hydratePayloadMaps(payload = {}) {
   const nodes = new Map((payload.nodes || []).map((node) => [node.id, node]));
   const relationships = new Map((payload.relationships || []).map((relationship) => [relationship.id, relationship]));
   const tokenIndex = buildTokenSetIndex([...nodes.values()]);
+  const derived = pickLiteDerivedPayload(payload.derived);
 
   return {
     nodes,
     relationships,
-    tokenIndex
+    tokenIndex,
+    derived
   };
 }
 
 function serializePayload(payloadMaps) {
   const nodes = [...payloadMaps.nodes.values()].sort((left, right) => left.id.localeCompare(right.id));
   const relationships = [...payloadMaps.relationships.values()].sort((left, right) => left.id.localeCompare(right.id));
+  const derived = pickLiteDerivedPayload(payloadMaps.derived);
   return {
     nodes,
     relationships,
@@ -265,7 +276,8 @@ function serializePayload(payloadMaps) {
     },
     views: {
       brainstorm: buildBrainstormViewPayload(nodes)
-    }
+    },
+    ...(Object.keys(derived).length ? { derived } : {})
   };
 }
 
@@ -339,6 +351,10 @@ function buildFullLiteState(graph, currentSources = []) {
   return state;
 }
 
+export function buildLiteStateSnapshot(graph, currentSources = []) {
+  return buildFullLiteState(graph, currentSources);
+}
+
 export async function saveLiteGraphMaterializedView(rootPath, graph, options = {}) {
   const liteGraphPath = options.liteGraphPath;
   const liteStatePath = options.liteStatePath;
@@ -354,7 +370,9 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
 
   if (!incremental || !liteGraphPath || !liteStatePath) {
     reportProgress('writing full lite graph payload');
-    await writeJson(liteGraphPath, createLiteGraphPayload(graph));
+    await writeJson(liteGraphPath, createLiteGraphPayload(graph, {
+      derived: options.derived
+    }));
     if (liteStatePath && currentSources) {
       reportProgress('writing full lite graph state');
       await writeJson(liteStatePath, buildFullLiteState(graph, currentSources));
@@ -370,7 +388,9 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
 
   if (!previousPayload || !previousStateRaw || previousStateRaw.version !== LITE_VIEW_VERSION) {
     reportProgress('rebuilding lite graph payload from scratch');
-    await writeJson(liteGraphPath, createLiteGraphPayload(graph));
+    await writeJson(liteGraphPath, createLiteGraphPayload(graph, {
+      derived: options.derived
+    }));
     reportProgress('rebuilding lite graph state from scratch');
     await writeJson(liteStatePath, buildFullLiteState(graph, currentSources));
     return;
@@ -378,6 +398,9 @@ export async function saveLiteGraphMaterializedView(rootPath, graph, options = {
 
   const previousState = normalizeLiteState(previousStateRaw);
   const payloadMaps = hydratePayloadMaps(previousPayload);
+  payloadMaps.derived = Object.keys(pickLiteDerivedPayload(options.derived)).length
+    ? pickLiteDerivedPayload(options.derived)
+    : payloadMaps.derived;
   const nextState = normalizeLiteState(previousState);
   const currentSourceMap = new Map((currentSources || []).map((source) => [escapeKey(source.sourceKey), source]));
   reportProgress('computing lite graph membership');
@@ -521,10 +544,13 @@ export async function applyLiteDeltaCommit(rootPath, deltaPayload, options = {})
 
   const previousState = normalizeLiteState(previousStateRaw);
   const payloadMaps = hydratePayloadMaps(previousPayload);
+  payloadMaps.derived = Object.keys(pickLiteDerivedPayload(options.derived)).length
+    ? pickLiteDerivedPayload(options.derived)
+    : payloadMaps.derived;
   const nextState = normalizeLiteState(previousState);
   const sourceEntries = (deltaPayload.sourceEntries || []).map((entry) => normalizeSourceEntry(entry));
   const sourceEntryByKey = new Map(sourceEntries.map((entry) => [entry.sourceKey, entry]));
-  const changedSourceKeys = cloneIdList(deltaPayload.changedSourceKeys || sourceEntries.map((entry) => entry.sourceKey));
+  const changedSourceKeys = cloneIdList(deltaPayload.liteChangedSourceKeys || deltaPayload.changedSourceKeys || sourceEntries.map((entry) => entry.sourceKey));
   const upsertNodesById = new Map((deltaPayload.upsertNodes || []).map((node) => [node.id, node]));
   const upsertRelationshipsById = new Map((deltaPayload.upsertRelationships || []).map((relationship) => [relationship.id, relationship]));
   const impactedNodeIds = new Set(deltaPayload.deleteNodeIds || []);

@@ -208,6 +208,7 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   const taxonomy = JSON.parse(domainTaxonomyResource.contents[0].text);
   assert.equal(taxonomy.version, 'idea-catalyst-domain-distance-v1');
   assert.ok(Array.isArray(taxonomy.domains));
+  assert.equal(typeof taxonomy.mechanismCoverage, 'object');
 
   const brainstormResult = await pending.request('tools/call', {
     name: 'brainstorm',
@@ -223,6 +224,22 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   assert.equal(brainstormResult.content[0].type, 'text');
   assert.match(brainstormResult.content[0].text, /Mode: converge/);
   assert.match(brainstormResult.content[0].text, /Converged directions:/);
+
+  const brainstormDivergeResult = await pending.request('tools/call', {
+    name: 'brainstorm',
+    arguments: {
+      corpus: tempCorpusRoot,
+      query: 'experiment planning',
+      mode: 'diverge',
+      maxHops: 2
+    }
+  });
+  assert.equal(brainstormDivergeResult.content[0].type, 'text');
+  assert.match(brainstormDivergeResult.content[0].text, /Mode: diverge/);
+  assert.equal(brainstormDivergeResult.content[1].type, 'text');
+  const brainstormDivergePayload = JSON.parse(brainstormDivergeResult.content[1].text);
+  assert.equal(brainstormDivergePayload.domainProfile.contractVersion, 'idea-catalyst-domain-community-profile-v1');
+  assert.ok(Array.isArray(brainstormDivergePayload.domainProfile.topBridgeDomains));
 
   const queryResult = await pending.request('tools/call', {
     name: 'query',

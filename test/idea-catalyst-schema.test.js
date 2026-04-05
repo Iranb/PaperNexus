@@ -67,7 +67,8 @@ test('deriveDomainTaxonomyFromGraph builds a domain distance matrix from graph c
     name: 'reflective uncertainty prompt',
     properties: {
       fieldOfStudy: 'Psychology',
-      domainTags: ['Psychology', 'Human-Computer Interaction']
+      domainTags: ['Psychology', 'Human-Computer Interaction'],
+      abstractMechanisms: ['reflective control policy']
     }
   });
 
@@ -85,6 +86,9 @@ test('deriveDomainTaxonomyFromGraph builds a domain distance matrix from graph c
     scoreDomainDistance(matrix, 'Education', 'Human-Computer Interaction')
     >= scoreDomainDistance(matrix, 'Education', 'Psychology')
   );
+  assert.equal(matrix.mechanismCoverage.Psychology.mechanismCount, 1);
+  assert.ok(matrix.mechanismCoverage.Psychology.mechanisms.includes('reflective control policy'));
+  assert.equal(matrix.mechanismCoverage['Human-computer Interaction'].mechanismCount, 1);
 });
 
 test('precomputePaperGraphFragment preserves domain and mechanism metadata on graph contributions', () => {

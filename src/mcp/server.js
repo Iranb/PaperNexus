@@ -73,19 +73,39 @@ async function executeTool(name, args) {
   if (name === 'brainstorm') {
     const rootPath = await resolveCorpus(args.corpus);
     const { graph } = await loadCorpusLite(rootPath);
-    return renderBrainstormResult(buildBrainstorm(graph, args.query, {
+    const result = buildBrainstorm(graph, args.query, {
       mode: args.mode || 'diverge',
       maxHops: args.maxHops,
       limit: args.limit,
       layers: args.layers,
       layerMode: args.layerMode || 'any'
-    }));
+    });
+
+    if ((args.mode || 'diverge') === 'diverge') {
+      return [
+        {
+          type: 'text',
+          text: renderBrainstormResult(result)
+        },
+        {
+          type: 'text',
+          text: JSON.stringify({
+            domainProfile: result.domainProfile,
+            communityAnalysis: result.communityAnalysis
+          }, null, 2)
+        }
+      ];
+    }
+
+    return renderBrainstormResult(result);
   }
 
   if (name === 'domain_distance') {
     const rootPath = await resolveCorpus(args.corpus);
-    const { graph } = await loadCorpusLite(rootPath);
-    const matrix = deriveDomainTaxonomyFromGraph(graph);
+    const { graph, meta } = await loadCorpusLite(rootPath);
+    const matrix = meta.domainDistanceMatrix?.mechanismCoverage
+      ? meta.domainDistanceMatrix
+      : deriveDomainTaxonomyFromGraph(graph);
     const targetDomain = normalizeFieldOfStudy(args.targetDomain);
     const distances = targetDomain
       ? Object.entries(matrix.distances?.[targetDomain] || {})
@@ -139,6 +159,23 @@ async function executeTool(name, args) {
   throw new Error(`Unknown tool: ${name}`);
 }
 
+function normalizeToolContent(result) {
+  if (Array.isArray(result)) {
+    return result;
+  }
+
+  if (result && typeof result === 'object' && Array.isArray(result.content)) {
+    return result.content;
+  }
+
+  return [
+    {
+      type: 'text',
+      text: typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+    }
+  ];
+}
+
 async function handleRequest(message) {
   switch (message.method) {
     case 'initialize':
@@ -155,12 +192,7 @@ async function handleRequest(message) {
       return { tools: PAPERNEXUS_TOOLS };
     case 'tools/call':
       return {
-        content: [
-          {
-            type: 'text',
-            text: await executeTool(message.params?.name, message.params?.arguments || {})
-          }
-        ]
+        content: normalizeToolContent(await executeTool(message.params?.name, message.params?.arguments || {}))
       };
     case 'resources/list':
       return { resources: await listResources() };
