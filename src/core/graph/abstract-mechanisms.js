@@ -1,4 +1,5 @@
 import { stableHash, slugify } from '../../lib/utils.js';
+import { normalizeFieldOfStudy } from './domain-taxonomy.js';
 import { getNodeLayer, NODE_TYPES } from './schema.js';
 
 export const ABSTRACT_MECHANISM_SUPPORT_VERSION = 'idea-catalyst-mechanism-support-v1';
@@ -167,12 +168,17 @@ export function buildAbstractMechanismNode(value, properties = {}) {
     properties: {
       layer: getNodeLayer(NODE_TYPES.ABSTRACT_MECHANISM),
       canonicalId: merged.canonicalId,
+      canonicalForm: merged.name,
       normalizedName: merged.normalizedName,
       mechanismType: merged.mechanismType,
       mechanismCategory: merged.mechanismCategory,
       category: merged.mechanismCategory,
       description: merged.description,
-      aliases: merged.aliases
+      aliases: merged.aliases,
+      domainCount: Number(properties.domainCount || 0),
+      instanceCount: Number(properties.instanceCount || 0),
+      transferPotential: properties.transferPotential || null,
+      relatedMechanisms: Array.isArray(properties.relatedMechanisms) ? properties.relatedMechanisms : []
     }
   };
 }
@@ -206,5 +212,40 @@ export function buildAbstractMechanismSupportProperties(entries = [], options = 
       domains: Array.isArray(entry.domains) ? [...entry.domains] : [],
       paperTitles: Array.isArray(entry.paperTitles) ? [...entry.paperTitles] : []
     }))
+  };
+}
+
+export function scoreMechanismTransferability(graph, mechanismNode) {
+  const incoming = graph.getIncoming(mechanismNode.id)
+    .filter((relationship) => (
+      relationship.type === 'INSTANTIATES'
+      || relationship.type === 'IMPLEMENTS'
+      || relationship.type === 'CONSTRAINS'
+    ));
+
+  const instantiators = incoming
+    .map((relationship) => graph.getNode(relationship.sourceId))
+    .filter(Boolean);
+  const domains = [...new Set(
+    instantiators
+      .map((node) => normalizeFieldOfStudy(node.properties?.fieldOfStudy, node.properties?.domainTags || []))
+      .filter(Boolean)
+  )].sort((left, right) => left.localeCompare(right));
+  const relatedMechanisms = normalizeAbstractMechanismNames(
+    instantiators.flatMap((node) => [
+      ...(Array.isArray(node.properties?.abstractMechanismObjects) ? node.properties.abstractMechanismObjects : []),
+      ...(Array.isArray(node.properties?.abstractMechanisms) ? node.properties.abstractMechanisms : []),
+      ...(Array.isArray(node.properties?.mechanismHints) ? node.properties.mechanismHints : [])
+    ])
+  )
+    .filter((mechanism) => mechanism !== mechanismNode.name)
+    .slice(0, 8);
+
+  return {
+    domainCount: domains.length,
+    instanceCount: instantiators.length,
+    domains,
+    relatedMechanisms,
+    transferPotential: domains.length >= 3 ? 'high' : domains.length >= 2 ? 'medium' : 'low'
   };
 }

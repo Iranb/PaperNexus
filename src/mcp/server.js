@@ -1,9 +1,12 @@
 import { buildBrainstorm, buildContext, buildImpact, buildResearchIdeas, searchGraph } from '../core/search/search.js';
+import { deriveDomainTaxonomyFromGraph, normalizeFieldOfStudy } from '../core/graph/domain-taxonomy.js';
+import { buildInterdisciplinaryPotentialReport } from '../core/graph/interdisciplinary-potential.js';
+import { extractTakeawaysFromBridgeNodes } from '../core/graph/takeaway-extraction.js';
 import { renderBrainstormResult, renderContextResult, renderCorpusList, renderIdeasResult, renderImpactResult, renderMutationResult, renderQueryResult, renderStatus } from '../lib/render.js';
 import { applyCorpusMutations, loadCorpus, loadCorpusLite, resolveCorpus } from '../storage/corpus-store.js';
 import { loadRegistry } from '../storage/registry.js';
 import { PAPERNEXUS_PROMPTS, getPrompt } from './prompts.js';
-import { listResources, readResource } from './resources.js';
+import { listResources, readResourcePayload } from './resources.js';
 import { PAPERNEXUS_TOOLS } from './tools.js';
 
 const SERVER_INFO = {
@@ -79,6 +82,47 @@ async function executeTool(name, args) {
     }));
   }
 
+  if (name === 'domain_distance') {
+    const rootPath = await resolveCorpus(args.corpus);
+    const { graph } = await loadCorpusLite(rootPath);
+    const matrix = deriveDomainTaxonomyFromGraph(graph);
+    const targetDomain = normalizeFieldOfStudy(args.targetDomain);
+    const distances = targetDomain
+      ? Object.entries(matrix.distances?.[targetDomain] || {})
+        .map(([domain, distance]) => ({ domain, distance }))
+        .sort((left, right) => right.distance - left.distance || left.domain.localeCompare(right.domain))
+      : [];
+
+    return JSON.stringify({
+      ...matrix,
+      targetDomain,
+      distances
+    }, null, 2);
+  }
+
+  if (name === 'extract_takeaways') {
+    const rootPath = await resolveCorpus(args.corpus);
+    const { graph } = await loadCorpusLite(rootPath);
+    return JSON.stringify(extractTakeawaysFromBridgeNodes(graph, {
+      targetDomain: args.targetDomain,
+      agnosticChallenges: args.agnosticChallenges,
+      limit: args.limit,
+      minDomainDistance: args.minDomainDistance
+    }), null, 2);
+  }
+
+  if (name === 'interdisciplinary_potential') {
+    const rootPath = await resolveCorpus(args.corpus);
+    const { graph } = await loadCorpusLite(rootPath);
+    return JSON.stringify(buildInterdisciplinaryPotentialReport(graph, {
+      targetDomain: args.targetDomain,
+      query: args.query,
+      agnosticChallenges: args.agnosticChallenges,
+      excludeProximalDomains: args.excludeProximalDomains,
+      limit: args.limit
+    }), null, 2);
+  }
+
   if (name === 'mutate_graph') {
     const rootPath = await resolveCorpus(args.corpus);
     const { meta, mutationResult } = await applyCorpusMutations(rootPath, args.operations, {
@@ -121,15 +165,18 @@ async function handleRequest(message) {
     case 'resources/list':
       return { resources: await listResources() };
     case 'resources/read':
-      return {
-        contents: [
-          {
-            uri: message.params?.uri,
-            mimeType: 'text/markdown',
-            text: await readResource(message.params?.uri)
-          }
-        ]
-      };
+      {
+        const payload = await readResourcePayload(message.params?.uri);
+        return {
+          contents: [
+            {
+              uri: message.params?.uri,
+              mimeType: payload.mimeType,
+              text: payload.text
+            }
+          ]
+        };
+      }
     case 'prompts/list':
       return { prompts: PAPERNEXUS_PROMPTS };
     case 'prompts/get':

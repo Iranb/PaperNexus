@@ -5,6 +5,7 @@ import { createKnowledgeGraph } from '../src/core/graph/graph.js';
 import { EDGE_TYPES, NODE_TYPES } from '../src/core/graph/schema.js';
 import {
   buildDomainDistanceMatrix,
+  deriveDomainTaxonomyFromGraph,
   normalizeDomainTags,
   scoreDomainDistance
 } from '../src/core/graph/domain-taxonomy.js';
@@ -47,6 +48,43 @@ test('buildDomainDistanceMatrix scores farther domains higher than identical one
   assert.equal(scoreDomainDistance(matrix, 'Computer Science', 'Computer Science'), 0);
   assert.ok(scoreDomainDistance(matrix, 'Computer Science', 'Psychology') > 0);
   assert.ok(scoreDomainDistance(matrix, 'Computer Science', 'Neuroscience') >= 0);
+});
+
+test('deriveDomainTaxonomyFromGraph builds a domain distance matrix from graph connectivity instead of static config rows', () => {
+  const graph = createKnowledgeGraph();
+  graph.addNode({
+    id: 'paper:edu-psych',
+    type: NODE_TYPES.PAPER,
+    name: 'Feedback Calibration Across Learning Contexts',
+    properties: {
+      fieldOfStudy: 'Education',
+      domainTags: ['Education', 'Psychology']
+    }
+  });
+  graph.addNode({
+    id: 'method:psych-hci',
+    type: NODE_TYPES.METHOD,
+    name: 'reflective uncertainty prompt',
+    properties: {
+      fieldOfStudy: 'Psychology',
+      domainTags: ['Psychology', 'Human-Computer Interaction']
+    }
+  });
+
+  enrichGraphWithDomainAndMechanismNodes(graph);
+  const matrix = deriveDomainTaxonomyFromGraph(graph);
+
+  assert.equal(matrix.version, 'idea-catalyst-domain-distance-v1');
+  assert.ok(matrix.domains.includes('Education'));
+  assert.ok(matrix.domains.includes('Psychology'));
+  assert.ok(matrix.domains.includes('Human-computer Interaction'));
+  assert.ok(matrix.neighbors.Education.includes('Psychology'));
+  assert.ok(matrix.neighbors['Human-computer Interaction'].includes('Psychology'));
+  assert.ok(scoreDomainDistance(matrix, 'Education', 'Psychology') > 0);
+  assert.ok(
+    scoreDomainDistance(matrix, 'Education', 'Human-Computer Interaction')
+    >= scoreDomainDistance(matrix, 'Education', 'Psychology')
+  );
 });
 
 test('precomputePaperGraphFragment preserves domain and mechanism metadata on graph contributions', () => {
@@ -155,6 +193,8 @@ test('queryCrossDomainBridges returns a stable bridge contract with pruned and r
   const result = queryCrossDomainBridges(graph, {
     targetDomain: 'Computer Science',
     abstractChallenge: 'preserve old knowledge while integrating new knowledge',
+    agnosticChallenges: ['preserve old knowledge while integrating new knowledge'],
+    minDomainDistance: 0,
     domainDistanceMatrix: matrix,
     limit: 5
   });
@@ -177,6 +217,9 @@ test('queryCrossDomainBridges returns a stable bridge contract with pruned and r
   assert.ok(mechanismNode.properties.supportingNodeTypes.includes('Problem'));
   assert.ok(mechanismNode.properties.supportingNodeTypes.includes('Method'));
   assert.ok(mechanismNode.properties.supportingSourceNodes.some((entry) => entry.nodeName === 'catastrophic forgetting'));
+  assert.equal(mechanismNode.properties.domainCount, 2);
+  assert.equal(mechanismNode.properties.instanceCount, 2);
+  assert.equal(mechanismNode.properties.transferPotential, 'medium');
 
   const psychologyDomain = result.candidateSourceDomains.find((entry) => entry.domain === 'Psychology');
   assert.equal(Number.isFinite(psychologyDomain.distanceScore), true);
@@ -187,6 +230,9 @@ test('queryCrossDomainBridges returns a stable bridge contract with pruned and r
   assert.equal(bridgeNode.pruned, false);
   assert.equal(Number.isFinite(bridgeNode.distanceScore), true);
   assert.ok(bridgeNode.bridgeEvidence.sharedMechanisms.includes('memory preservation'));
+  assert.equal(bridgeNode.matchedChallenge, 'preserve old knowledge while integrating new knowledge');
+  assert.ok(Array.isArray(bridgeNode.evidence.paperTitles));
+  assert.ok(Object.prototype.hasOwnProperty.call(bridgeNode.evidence, 'evidenceText'));
 
   const mechanismMatch = result.mechanismMatches.find((entry) => entry.mechanism === 'memory preservation');
   assert.equal(mechanismMatch.provenanceVersion, 'idea-catalyst-mechanism-support-v1');
@@ -248,4 +294,6 @@ test('enrichGraphWithDomainAndMechanismNodes merges alias-linked mechanism recor
   assert.ok(mechanismNodes[0].properties.aliases.includes('metacontrol policy'));
   assert.ok(mechanismNodes[0].properties.aliases.includes('cognitive control trade-off'));
   assert.equal(mechanismNodes[0].properties.supportingNodeCount, 2);
+  assert.equal(mechanismNodes[0].properties.domainCount, 2);
+  assert.equal(mechanismNodes[0].properties.transferPotential, 'medium');
 });

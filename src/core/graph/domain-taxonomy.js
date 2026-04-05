@@ -1,3 +1,5 @@
+import { EDGE_TYPES, NODE_TYPES } from './schema.js';
+
 function canonicalizeTag(value) {
   const cleaned = String(value || '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return null;
@@ -68,6 +70,73 @@ export function buildDomainDistanceMatrix(rows = []) {
     ),
     distances
   };
+}
+
+const DOMAIN_CONNECTIVITY_EDGE_TYPES = new Set([
+  EDGE_TYPES.BELONGS_TO_DOMAIN,
+  EDGE_TYPES.STUDIED_IN,
+  EDGE_TYPES.ORIGINATED_IN
+]);
+
+const DOMAIN_CONNECTIVITY_NODE_TYPES = new Set([
+  NODE_TYPES.PAPER,
+  NODE_TYPES.PROBLEM,
+  NODE_TYPES.RESEARCH_QUESTION,
+  NODE_TYPES.CHALLENGE,
+  NODE_TYPES.METHOD,
+  NODE_TYPES.TAKEAWAY,
+  NODE_TYPES.IDEA_FRAGMENT,
+  NODE_TYPES.LIMITATION,
+  NODE_TYPES.ASSUMPTION
+]);
+
+function ensureDomainEntitySet(map, domain) {
+  if (!domain) return null;
+  if (!map.has(domain)) {
+    map.set(domain, new Set());
+  }
+  return map.get(domain);
+}
+
+export function deriveDomainTaxonomyFromGraph(graph) {
+  const domainEntitySets = new Map();
+
+  for (const domainNode of graph.getNodesByType(NODE_TYPES.DOMAIN)) {
+    const entitySet = ensureDomainEntitySet(domainEntitySets, normalizeFieldOfStudy(domainNode.name));
+    for (const relationship of graph.getIncoming(domainNode.id)) {
+      if (!DOMAIN_CONNECTIVITY_EDGE_TYPES.has(relationship.type)) continue;
+      entitySet?.add(relationship.sourceId);
+    }
+  }
+
+  for (const node of graph.nodes || []) {
+    if (!DOMAIN_CONNECTIVITY_NODE_TYPES.has(node.type)) continue;
+    const domains = normalizeDomainTags([
+      node.properties?.fieldOfStudy,
+      ...(node.properties?.fieldCandidates || []),
+      ...(node.properties?.domainTags || []),
+      ...(node.properties?.sourceDomains || []),
+      node.properties?.targetDomain
+    ]);
+    for (const domain of domains) {
+      ensureDomainEntitySet(domainEntitySets, domain)?.add(node.id);
+    }
+  }
+
+  const rows = [...domainEntitySets.entries()].map(([targetDomain, entitySet]) => {
+    const relatedDomains = [...domainEntitySets.entries()]
+      .filter(([otherDomain]) => otherDomain !== targetDomain)
+      .filter(([, otherEntitySet]) => [...entitySet].some((entityId) => otherEntitySet.has(entityId)))
+      .map(([otherDomain]) => otherDomain)
+      .sort((left, right) => left.localeCompare(right));
+
+    return {
+      targetDomain,
+      relatedDomains
+    };
+  });
+
+  return buildDomainDistanceMatrix(rows);
 }
 
 export function scoreDomainDistance(matrix, left, right) {

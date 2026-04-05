@@ -188,6 +188,90 @@ export const PAPERNEXUS_TOOLS = [
     }
   },
   {
+    name: 'domain_distance',
+    description: 'Compute the graph-derived domain distance matrix for an indexed corpus, optionally centered on a target domain.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        targetDomain: {
+          type: 'string',
+          description: 'Optional domain name to return ranked distances from.'
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'extract_takeaways',
+    description: 'Extract structured cross-domain takeaways from bridge nodes for a target domain and conceptual challenges.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        targetDomain: {
+          type: 'string',
+          description: 'The target research domain.'
+        },
+        agnosticChallenges: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Domain-agnostic challenge formulations to retrieve takeaways for.'
+        },
+        limit: {
+          type: 'number',
+          default: 8
+        },
+        minDomainDistance: {
+          type: 'number',
+          default: 0.3
+        }
+      },
+      required: ['targetDomain', 'agnosticChallenges']
+    }
+  },
+  {
+    name: 'interdisciplinary_potential',
+    description: 'Rank source domains by interdisciplinary potential using community structure, cross-domain bridges, and structured takeaways.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        targetDomain: {
+          type: 'string',
+          description: 'The target research domain.'
+        },
+        query: {
+          type: 'string',
+          description: 'Research problem statement or target challenge.'
+        },
+        agnosticChallenges: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional domain-agnostic challenge formulations.'
+        },
+        excludeProximalDomains: {
+          type: 'boolean',
+          default: true
+        },
+        limit: {
+          type: 'number',
+          default: 5
+        }
+      },
+      required: ['targetDomain', 'query']
+    }
+  },
+  {
     name: 'mutate_graph',
     description: 'Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk.',
     inputSchema: {

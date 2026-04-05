@@ -165,6 +165,15 @@ export function renderBrainstormResult(result) {
     }
   }
 
+  if (result.domainProfile?.topBridgeDomains?.length) {
+    lines.push('Top bridge domains:');
+    for (const entry of result.domainProfile.topBridgeDomains.slice(0, 6)) {
+      lines.push(
+        `- ${entry.domain} (score ${entry.score.toFixed(2)}, bridge weight ${entry.communityBridgeWeight.toFixed(2)}, bridges ${entry.bridgeCount})`
+      );
+    }
+  }
+
   if (lines.length === 3) {
     lines.push('No brainstorming branches found. Try a broader topic, larger hop count, or index more papers first.');
   }

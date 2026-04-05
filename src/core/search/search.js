@@ -1,6 +1,7 @@
 import { EDGE_TYPES, IMPACT_RELATION_TYPES, NODE_TYPES } from '../graph/schema.js';
 import { isBrainstormEligibleNode, isBrainstormSupportNode } from '../graph/brainstorm-view.js';
-import { buildBrainstormCommunityContext } from './brainstorm-communities.js';
+import { normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
+import { buildBrainstormCommunityContext, deriveDomainCommunityProfile } from './brainstorm-communities.js';
 import { scoreTokenOverlap, tokenizeWithoutStopwords, truncate, jaccardSimilarity, unique } from '../../lib/utils.js';
 
 function pushToMap(map, key, value) {
@@ -102,6 +103,13 @@ function nodeMatchesView(node, view = 'all') {
     return isBrainstormSupportNode(node);
   }
   return true;
+}
+
+function primaryNodeDomain(node) {
+  return normalizeFieldOfStudy(
+    node?.properties?.fieldOfStudy,
+    node?.properties?.domainTags || []
+  );
 }
 
 function resolveNodeTypePriority(type) {
@@ -919,6 +927,27 @@ function buildDivergence(graph, query, options = {}) {
       potentialConstraints: [],
       transferableMethods: [],
       combinableMethods: [],
+      communityAnalysis: {
+        communities: [],
+        subcommunities: [],
+        latentNeighbors: [],
+        boundaryNodes: [],
+        crossCommunityBridges: [],
+        stats: {
+          fallback: true,
+          reason: 'no-seeds'
+        }
+      },
+      domainProfile: {
+        contractVersion: 'idea-catalyst-domain-community-profile-v1',
+        communityDomains: {},
+        crossDomainBridges: [],
+        domainBridgeScores: {},
+        domainBridgeCounts: {},
+        domainLatentNeighborCounts: {},
+        domainBoundaryCounts: {},
+        topBridgeDomains: []
+      },
       exploredHops: Number(options.maxHops || 2)
     };
   }
@@ -932,6 +961,92 @@ function buildDivergence(graph, query, options = {}) {
     ...[...buckets.values()].flat()
   ]
     .filter((entry) => isBrainstormEligibleNode(entry.node));
+
+  const buildFallbackCommunityAnalysis = () => {
+    const communitiesByDomain = new Map();
+    const discoveredNodeIds = new Set(discovered.map((entry) => entry.node.id));
+    const seedNodeIds = new Set(seedNodes.map((node) => node.id));
+
+    for (const entry of discovered) {
+      const domain = primaryNodeDomain(entry.node);
+      if (!domain) continue;
+      if (!communitiesByDomain.has(domain)) {
+        communitiesByDomain.set(domain, []);
+      }
+      communitiesByDomain.get(domain).push(entry.node.id);
+    }
+
+    const crossCommunityBridges = [];
+    const seenBridgeKeys = new Set();
+    const boundaryNodeIds = new Set();
+
+    for (const entry of discovered) {
+      const sourceNode = entry.node;
+      const sourceDomain = primaryNodeDomain(sourceNode);
+      if (!sourceDomain) continue;
+
+      for (const relationship of relationIndex.outgoing.get(sourceNode.id) || []) {
+        if (!discoveredNodeIds.has(relationship.targetId)) continue;
+        const targetNode = graph.getNode(relationship.targetId);
+        const targetDomain = primaryNodeDomain(targetNode);
+        if (!targetDomain || sourceDomain === targetDomain) continue;
+        const key = `${relationship.type}:${sourceNode.id}:${relationship.targetId}`;
+        if (seenBridgeKeys.has(key)) continue;
+        seenBridgeKeys.add(key);
+        boundaryNodeIds.add(sourceNode.id);
+        boundaryNodeIds.add(targetNode.id);
+        crossCommunityBridges.push({
+          kind: `fallback:${relationship.type.toLowerCase()}`,
+          sourceId: sourceNode.id,
+          targetId: targetNode.id,
+          score: Number(relationship.properties?.score || 1)
+        });
+      }
+    }
+
+    const boundaryNodes = [...boundaryNodeIds]
+      .map((nodeId) => graph.getNode(nodeId))
+      .filter(Boolean)
+      .map((node) => ({
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        layer: node.properties?.layer || '',
+        via: 'fallback-boundary',
+        score: 1,
+        support: Array.isArray(node.properties?.paperTitles) ? node.properties.paperTitles.length : 0
+      }));
+    const latentNeighbors = discovered
+      .filter((entry) => !seedNodeIds.has(entry.node.id))
+      .filter((entry) => {
+        const domain = primaryNodeDomain(entry.node);
+        return Boolean(domain) && communitiesByDomain.size > 1;
+      })
+      .map((entry) => ({
+        id: entry.node.id,
+        name: entry.node.name,
+        type: entry.node.type,
+        layer: entry.node.properties?.layer || '',
+        via: 'fallback-community',
+        score: 1,
+        support: Array.isArray(entry.node.properties?.paperTitles) ? entry.node.properties.paperTitles.length : 0
+      }));
+
+    return {
+      communities: [...communitiesByDomain.entries()].map(([domain, nodeIds]) => ({
+        id: `fallback:${domain}`,
+        nodeIds: unique(nodeIds).sort((left, right) => left.localeCompare(right))
+      })),
+      subcommunities: [],
+      latentNeighbors,
+      boundaryNodes,
+      crossCommunityBridges,
+      stats: {
+        fallback: true,
+        reason: 'small-graph-domain-projection'
+      }
+    };
+  };
 
   let similarProblems = discovered
     .filter((entry) => entry.node.type === NODE_TYPES.PROBLEM)
@@ -999,7 +1114,9 @@ function buildDivergence(graph, query, options = {}) {
       paperCount: Array.isArray(entry.node.properties?.paperTitles) ? entry.node.properties.paperTitles.length : 0
     }));
 
-  const community = session.getCommunityContext();
+  const rawCommunity = session.getCommunityContext();
+  const community = rawCommunity.stats?.fallback ? buildFallbackCommunityAnalysis() : rawCommunity;
+  const domainProfile = deriveDomainCommunityProfile(graph, community);
   if (!community.stats?.fallback) {
     const communityDerivedIds = new Set([
       ...community.latentNeighbors.map((entry) => entry.id),
@@ -1072,6 +1189,18 @@ function buildDivergence(graph, query, options = {}) {
     potentialConstraints,
     transferableMethods,
     combinableMethods,
+    communityAnalysis: {
+      communities: community.communities || [],
+      subcommunities: community.subcommunities || [],
+      latentNeighbors: community.latentNeighbors || [],
+      boundaryNodes: community.boundaryNodes || [],
+      crossCommunityBridges: community.crossCommunityBridges || [],
+      stats: community.stats || {
+        fallback: true,
+        reason: 'missing'
+      }
+    },
+    domainProfile,
     exploredHops: Number(options.maxHops || 2)
   };
 }

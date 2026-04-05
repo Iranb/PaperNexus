@@ -87,7 +87,9 @@ async function createCatalystApiFixture() {
       paperTitles: ['Reducing Confirmation Bias in Tutoring'],
       fieldOfStudy: 'Education',
       domainTags: ['Education'],
-      abstractMechanisms: ['metacontrol policy']
+      abstractMechanisms: ['metacontrol policy'],
+      brainstormEligible: true,
+      brainstormScore: 0.94
     }
   });
   graph.addNode({
@@ -98,7 +100,9 @@ async function createCatalystApiFixture() {
       paperTitles: ['Belief Updating Under Uncertainty'],
       fieldOfStudy: 'Psychology',
       domainTags: ['Psychology'],
-      abstractMechanisms: ['metacontrol policy']
+      abstractMechanisms: ['metacontrol policy'],
+      brainstormEligible: true,
+      brainstormScore: 0.89
     }
   });
   graph.addNode({
@@ -114,7 +118,9 @@ async function createCatalystApiFixture() {
       domainAgnosticText: 'Interactive systems need to calibrate beliefs without locking users into asymmetric feedback loops.',
       abstractMechanisms: ['metacontrol policy'],
       retrievalText: 'interactive systems calibrate beliefs tutoring feedback metacontrol policy',
-      analogyText: 'Interactive systems need to calibrate beliefs without locking users into asymmetric feedback loops.'
+      analogyText: 'Interactive systems need to calibrate beliefs without locking users into asymmetric feedback loops.',
+      brainstormEligible: true,
+      brainstormScore: 0.87
     }
   });
   graph.addNode({
@@ -130,7 +136,9 @@ async function createCatalystApiFixture() {
       domainAgnosticText: 'Interactive systems need to calibrate beliefs without locking users into asymmetric feedback loops.',
       abstractMechanisms: ['metacontrol policy'],
       retrievalText: 'interactive systems calibrate beliefs biased priors metacontrol policy',
-      analogyText: 'Interactive systems need to calibrate beliefs without locking users into asymmetric feedback loops.'
+      analogyText: 'Interactive systems need to calibrate beliefs without locking users into asymmetric feedback loops.',
+      brainstormEligible: true,
+      brainstormScore: 0.84
     }
   });
   graph.addNode({
@@ -145,7 +153,9 @@ async function createCatalystApiFixture() {
       abstractMechanisms: ['metacontrol policy'],
       relatedChallenges: ['adaptive belief calibration under asymmetric feedback'],
       retrievalText: 'reflective prompts improve uncertainty-aware belief revision metacontrol policy',
-      analogyText: 'Reflective prompts improve uncertainty-aware belief revision.'
+      analogyText: 'Reflective prompts improve uncertainty-aware belief revision.',
+      brainstormEligible: true,
+      brainstormScore: 0.86
     }
   });
   graph.addNode({
@@ -162,7 +172,9 @@ async function createCatalystApiFixture() {
       sourceTakeaways: ['reflective prompts stabilize belief updating'],
       addressesChallenges: ['adaptive belief calibration under asymmetric feedback'],
       retrievalText: 'adapt reflective prompts tutoring feedback confirmation bias metacontrol policy',
-      analogyText: 'Transfer reflective prompt control into tutoring feedback loops.'
+      analogyText: 'Transfer reflective prompt control into tutoring feedback loops.',
+      brainstormEligible: true,
+      brainstormScore: 0.9
     }
   });
   graph.addNode({
@@ -493,6 +505,31 @@ test('catalyst API payload helper and HTTP route expose a stable scout-oriented 
     } finally {
       await serverHandle.stop();
     }
+  } finally {
+    await cleanupQueryApiFixture(fixture);
+  }
+});
+
+test('brainstorm API payload exposes a domain-aware community profile for diverge mode', async () => {
+  const fixture = await createCatalystApiFixture();
+
+  try {
+    const api = await import('../src/server/api.js');
+    const brainstorm = await api.brainstormGraphPayload(fixture.rootPath, {
+      query: 'confirmation bias in tutoring feedback',
+      options: {
+        mode: 'diverge',
+        maxHops: 2,
+        limit: 6
+      }
+    });
+
+    assert.equal(brainstorm.rootPath, fixture.rootPath);
+    assert.equal(brainstorm.result.mode, 'diverge');
+    assert.equal(brainstorm.result.domainProfile.contractVersion, 'idea-catalyst-domain-community-profile-v1');
+    assert.ok(Array.isArray(brainstorm.result.domainProfile.topBridgeDomains));
+    assert.ok(brainstorm.result.domainProfile.topBridgeDomains.some((entry) => entry.domain === 'Psychology'));
+    assert.ok(Array.isArray(brainstorm.result.communityAnalysis.crossCommunityBridges));
   } finally {
     await cleanupQueryApiFixture(fixture);
   }

@@ -1,5 +1,6 @@
 import createGraph from 'ngraph.graph';
 import { detectClusters } from 'ngraph.leiden';
+import { normalizeDomainTags, normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
 import { EDGE_TYPES, NODE_TYPES } from '../graph/schema.js';
 import { isBrainstormEligibleNode } from '../graph/brainstorm-view.js';
 import { jaccardSimilarity, scoreTokenOverlap, tokenizeWithoutStopwords, unique } from '../../lib/utils.js';
@@ -57,6 +58,8 @@ const DEFAULT_OPTIONS = {
   randomSeed: 42
 };
 
+export const DOMAIN_COMMUNITY_PROFILE_CONTRACT_VERSION = 'idea-catalyst-domain-community-profile-v1';
+
 function nodeTypePriority(type) {
   const priorities = {
     [NODE_TYPES.PROBLEM]: 4,
@@ -74,6 +77,16 @@ function nodeTypePriority(type) {
 
 function relationshipWeight(type) {
   return EXPLICIT_EDGE_WEIGHTS[type] || 0;
+}
+
+function collectNodeDomains(node) {
+  return normalizeDomainTags([
+    node?.properties?.fieldOfStudy,
+    ...(node?.properties?.fieldCandidates || []),
+    ...(node?.properties?.domainTags || []),
+    ...(node?.properties?.sourceDomains || []),
+    node?.properties?.targetDomain
+  ]);
 }
 
 function pairKey(leftId, rightId) {
@@ -521,6 +534,132 @@ function buildCommunityAdjacency(projected, membership) {
   }
 
   return adjacency;
+}
+
+function addDomainCounter(counterMap, domain, amount = 1) {
+  if (!domain) return;
+  counterMap[domain] = Number(((counterMap[domain] || 0) + amount).toFixed(4));
+}
+
+function addDomainId(map, domain, value) {
+  if (!domain || !value) return;
+  if (!map.has(domain)) map.set(domain, new Set());
+  map.get(domain).add(value);
+}
+
+function countDomainsForNodes(graph, entries = []) {
+  const counts = {};
+  for (const entry of entries) {
+    const node = graph.getNode(entry.id);
+    const domains = collectNodeDomains(node);
+    for (const domain of domains.length ? domains : [normalizeFieldOfStudy(node?.properties?.fieldOfStudy)]) {
+      if (!domain) continue;
+      addDomainCounter(counts, domain, 1);
+    }
+  }
+  return counts;
+}
+
+export function deriveDomainCommunityProfile(graph, communityContext = {}) {
+  const communities = Array.isArray(communityContext.communities) ? communityContext.communities : [];
+  const crossCommunityBridges = Array.isArray(communityContext.crossCommunityBridges)
+    ? communityContext.crossCommunityBridges
+    : [];
+  const latentNeighbors = Array.isArray(communityContext.latentNeighbors) ? communityContext.latentNeighbors : [];
+  const boundaryNodes = Array.isArray(communityContext.boundaryNodes) ? communityContext.boundaryNodes : [];
+  const communityDomains = {};
+  const communityIdsByDomain = new Map();
+
+  for (const community of communities) {
+    const domainCounts = {};
+    for (const nodeId of community.nodeIds || []) {
+      const node = graph.getNode(nodeId);
+      const domains = collectNodeDomains(node);
+      for (const domain of domains) {
+        addDomainCounter(domainCounts, domain, 1);
+        addDomainId(communityIdsByDomain, domain, community.id);
+      }
+    }
+
+    const total = Object.values(domainCounts).reduce((sum, value) => sum + value, 0) || 1;
+    communityDomains[community.id] = Object.fromEntries(
+      Object.entries(domainCounts)
+        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+        .map(([domain, count]) => [domain, {
+          count,
+          share: Number((count / total).toFixed(4))
+        }])
+    );
+  }
+
+  const domainBridgeScores = {};
+  const domainBridgeCounts = {};
+  const enrichedCrossDomainBridges = [];
+
+  for (const bridge of crossCommunityBridges) {
+    const sourceNode = graph.getNode(bridge.sourceId);
+    const targetNode = graph.getNode(bridge.targetId);
+    const sourceDomain = normalizeFieldOfStudy(
+      sourceNode?.properties?.fieldOfStudy,
+      sourceNode?.properties?.domainTags || []
+    );
+    const targetDomain = normalizeFieldOfStudy(
+      targetNode?.properties?.fieldOfStudy,
+      targetNode?.properties?.domainTags || []
+    );
+    if (!sourceDomain || !targetDomain || sourceDomain === targetDomain) continue;
+
+    const enriched = {
+      ...bridge,
+      sourceDomain,
+      targetDomain,
+      bridgeType: 'cross-domain'
+    };
+    enrichedCrossDomainBridges.push(enriched);
+
+    addDomainCounter(domainBridgeScores, sourceDomain, bridge.score || 0);
+    addDomainCounter(domainBridgeScores, targetDomain, bridge.score || 0);
+    addDomainCounter(domainBridgeCounts, sourceDomain, 1);
+    addDomainCounter(domainBridgeCounts, targetDomain, 1);
+  }
+
+  const domainLatentNeighborCounts = countDomainsForNodes(graph, latentNeighbors);
+  const domainBoundaryCounts = countDomainsForNodes(graph, boundaryNodes);
+  const topBridgeDomains = unique([
+    ...Object.keys(domainBridgeScores),
+    ...Object.keys(domainLatentNeighborCounts),
+    ...Object.keys(domainBoundaryCounts)
+  ])
+    .map((domain) => ({
+      domain,
+      score: Number((
+        (domainBridgeScores[domain] || 0)
+        + ((domainLatentNeighborCounts[domain] || 0) * 0.65)
+        + ((domainBoundaryCounts[domain] || 0) * 0.4)
+      ).toFixed(4)),
+      communityBridgeWeight: Number((domainBridgeScores[domain] || 0).toFixed(4)),
+      bridgeCount: Number(domainBridgeCounts[domain] || 0),
+      latentNeighborCount: Number(domainLatentNeighborCounts[domain] || 0),
+      boundaryNodeCount: Number(domainBoundaryCounts[domain] || 0),
+      communities: [...(communityIdsByDomain.get(domain) || [])].sort((left, right) => left.localeCompare(right))
+    }))
+    .sort((left, right) => (
+      right.score - left.score
+      || right.communityBridgeWeight - left.communityBridgeWeight
+      || left.domain.localeCompare(right.domain)
+    ))
+    .slice(0, 10);
+
+  return {
+    contractVersion: DOMAIN_COMMUNITY_PROFILE_CONTRACT_VERSION,
+    communityDomains,
+    crossDomainBridges: enrichedCrossDomainBridges,
+    domainBridgeScores,
+    domainBridgeCounts,
+    domainLatentNeighborCounts,
+    domainBoundaryCounts,
+    topBridgeDomains
+  };
 }
 
 function deriveBoundaryNodes(projected, partition) {

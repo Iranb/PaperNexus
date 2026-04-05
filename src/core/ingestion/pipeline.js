@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { createKnowledgeGraph } from '../graph/graph.js';
-import { enrichGraphWithDomainAndMechanismNodes } from '../graph/domain-bridges.js';
 import { applyNodeCheckDecisions, mergeSimilarGraphNodes } from '../graph/merge-similar.js';
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from '../graph/schema.js';
 import { normalizeDomainTags, normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
@@ -77,7 +76,7 @@ import {
   normalizePdfParser
 } from './marker.js';
 import { extractConceptCandidates, parsePaperMarkdown } from './markdown.js';
-import { precomputePaperGraphFragments } from './graph-precompute.js';
+import { postIngestionRefinement, precomputePaperGraphFragments } from './graph-precompute.js';
 import { countGraphPostprocessTasks, precomputeGraphPostprocess } from './graph-postprocess.js';
 
 const GENERIC_TERMS = new Set([
@@ -2827,7 +2826,7 @@ async function buildGraphFromSemanticPapers({ corpusName, rootPath, semanticPape
     progress.tick();
   }
 
-  enrichGraphWithDomainAndMechanismNodes(graph);
+  postIngestionRefinement(graph);
 
   postprocessInput.problems = nodesByType.get(NODE_TYPES.PROBLEM) || [];
   postprocessInput.methods = nodesByType.get(NODE_TYPES.METHOD) || [];

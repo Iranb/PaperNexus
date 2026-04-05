@@ -46,8 +46,8 @@ Commands:
   papernexus mcp
 
 Scope boundary:
-  - `analyze`, `materialize`, and `import` process papers, corpora, or manifests you already provide.
-  - `query`, `catalyst`, and enhancement APIs operate on already-indexed graph state.
+  - analyze, materialize, and import process papers, corpora, or manifests you already provide.
+  - query, catalyst, and enhancement APIs operate on already-indexed graph state.
   - Discovery, external search, and orchestration live outside PaperNexus.
 
 Docling PDF Backend Options:

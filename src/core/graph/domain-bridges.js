@@ -11,9 +11,11 @@ import {
   buildAbstractMechanismSupportProperties,
   normalizeAbstractMechanismNames,
   normalizeAbstractMechanismRecord,
-  normalizeAbstractMechanismRecords
+  normalizeAbstractMechanismRecords,
+  scoreMechanismTransferability
 } from './abstract-mechanisms.js';
 import {
+  deriveDomainTaxonomyFromGraph,
   normalizeDomainTags,
   normalizeFieldOfStudy,
   scoreDomainDistance
@@ -193,14 +195,80 @@ function refreshMechanismSupportContracts(graph) {
       .filter(Boolean)
       .sort((left, right) => left.nodeName.localeCompare(right.nodeName));
 
+    const transferability = scoreMechanismTransferability(graph, mechanismNode);
     graph.updateNode({
       ...mechanismNode,
       properties: {
         ...mechanismNode.properties,
-        ...buildAbstractMechanismSupportProperties(supportEntries)
+        ...buildAbstractMechanismSupportProperties(supportEntries),
+        canonicalForm: mechanismNode.properties?.canonicalForm || mechanismNode.name,
+        domainCount: transferability.domainCount,
+        instanceCount: transferability.instanceCount,
+        transferPotential: transferability.transferPotential,
+        relatedMechanisms: transferability.relatedMechanisms
       }
     });
   }
+}
+
+function buildTransferEdgeProperties(mechanismNode, sourceDomain, targetDomain) {
+  const supportCount = Number(mechanismNode?.properties?.supportingPaperCount || 0);
+  return {
+    relationSource: 'idea-catalyst-transfer-enrichment',
+    viaMechanism: mechanismNode?.id || null,
+    viaMechanismName: mechanismNode?.name || '',
+    sourceDomain,
+    targetDomain,
+    score: Number(Math.min(0.95, 0.3 + (supportCount * 0.08)).toFixed(4))
+  };
+}
+
+export function populateTransferableEdgesFromMechanisms(graph) {
+  for (const relationship of [...graph.relationships]) {
+    if (relationship.type !== EDGE_TYPES.TRANSFERABLE_TO) continue;
+    if (relationship.properties?.relationSource !== 'idea-catalyst-transfer-enrichment') continue;
+    graph.removeRelationship(relationship.id);
+  }
+
+  let created = 0;
+  for (const mechanismNode of graph.getNodesByType(NODE_TYPES.ABSTRACT_MECHANISM)) {
+    const incoming = graph.getIncoming(mechanismNode.id)
+      .filter((relationship) => (
+        relationship.type === EDGE_TYPES.INSTANTIATES
+        || relationship.type === EDGE_TYPES.IMPLEMENTS
+      ));
+    const methods = incoming
+      .map((relationship) => graph.getNode(relationship.sourceId))
+      .filter((node) => node?.type === NODE_TYPES.METHOD);
+    const problems = incoming
+      .map((relationship) => graph.getNode(relationship.sourceId))
+      .filter((node) => node?.type === NODE_TYPES.PROBLEM);
+
+    for (const method of methods) {
+      const methodDomain = normalizeFieldOfStudy(method.properties?.fieldOfStudy, method.properties?.domainTags || []);
+      if (!methodDomain) continue;
+
+      for (const problem of problems) {
+        const problemDomain = normalizeFieldOfStudy(problem.properties?.fieldOfStudy, problem.properties?.domainTags || []);
+        if (!problemDomain || problemDomain === methodDomain) continue;
+
+        const exists = graph.getOutgoing(method.id).some((relationship) => (
+          relationship.type === EDGE_TYPES.TRANSFERABLE_TO && relationship.targetId === problem.id
+        ));
+        if (exists) continue;
+
+        graph.addRelationship(createRelationship(
+          method.id,
+          problem.id,
+          EDGE_TYPES.TRANSFERABLE_TO,
+          buildTransferEdgeProperties(mechanismNode, methodDomain, problemDomain)
+        ));
+        created += 1;
+      }
+    }
+  }
+
+  return created;
 }
 
 export function enrichGraphWithDomainAndMechanismNodes(graph) {
@@ -250,6 +318,7 @@ export function enrichGraphWithDomainAndMechanismNodes(graph) {
   }
 
   refreshMechanismSupportContracts(graph);
+  populateTransferableEdgesFromMechanisms(graph);
 
   return graph;
 }
@@ -312,7 +381,11 @@ function buildBridgeEvidence(sharedMechanisms, node) {
   return {
     sharedMechanisms,
     evidenceNodeIds: [node.id],
-    evidenceNodeNames: [node.name]
+    evidenceNodeNames: [node.name],
+    abstract: node.properties?.abstract || null,
+    text: node.properties?.text || null,
+    evidenceText: node.properties?.evidenceText || node.properties?.text || null,
+    paperTitles: collectNodePaperTitles(node)
   };
 }
 
@@ -324,11 +397,18 @@ function buildMechanismSupportContract(graph, mechanism) {
   const mechanismNode = findMechanismNode(graph, mechanism);
   return {
     mechanismNodeId: mechanismNode?.id || null,
+    canonicalForm: mechanismNode?.properties?.canonicalForm || mechanism,
     mechanismType: mechanismNode?.properties?.mechanismType || 'general',
     mechanismCategory: mechanismNode?.properties?.mechanismCategory || mechanismNode?.properties?.category || null,
     description: mechanismNode?.properties?.description || mechanism,
     aliases: Array.isArray(mechanismNode?.properties?.aliases) ? mechanismNode.properties.aliases : [],
     provenanceVersion: mechanismNode?.properties?.provenanceVersion || null,
+    domainCount: Number(mechanismNode?.properties?.domainCount || 0),
+    instanceCount: Number(mechanismNode?.properties?.instanceCount || 0),
+    transferPotential: mechanismNode?.properties?.transferPotential || null,
+    relatedMechanisms: Array.isArray(mechanismNode?.properties?.relatedMechanisms)
+      ? mechanismNode.properties.relatedMechanisms
+      : [],
     supportingNodeCount: Number(mechanismNode?.properties?.supportingNodeCount || 0),
     supportingPaperCount: Number(mechanismNode?.properties?.supportingPaperCount || 0),
     supportingDomains: Array.isArray(mechanismNode?.properties?.supportingDomains)
@@ -346,6 +426,13 @@ function buildMechanismSupportContract(graph, mechanism) {
 export function queryCrossDomainBridges(graph, params = {}) {
   const targetDomain = normalizeFieldOfStudy(params.targetDomain);
   const limit = Math.max(1, Number(params.limit || 8));
+  const agnosticChallenges = (Array.isArray(params.agnosticChallenges) ? params.agnosticChallenges : [])
+    .map((challenge) => String(challenge || '').trim())
+    .filter(Boolean);
+  const minDomainDistance = Number.isFinite(Number(params.minDomainDistance))
+    ? Number(params.minDomainDistance)
+    : 0;
+  const domainDistanceMatrix = params.domainDistanceMatrix || deriveDomainTaxonomyFromGraph(graph);
   const candidateTypes = new Set([
     NODE_TYPES.PROBLEM,
     NODE_TYPES.RESEARCH_QUESTION,
@@ -380,13 +467,38 @@ export function queryCrossDomainBridges(graph, params = {}) {
       }
       const mechanisms = collectMechanismNodes(graph, node).map((entry) => entry.name);
       const sharedMechanisms = mechanisms.filter((mechanism) => targetDomainMechanisms.has(mechanism));
-      const scoring = scoreBridgeNode(node, {
+      const challengeQueries = unique([
+        ...agnosticChallenges,
+        String(params.abstractChallenge || '').trim()
+      ].filter(Boolean));
+      const challengeScores = (challengeQueries.length ? challengeQueries : [''])
+        .map((challenge) => ({
+          challenge,
+          ...scoreBridgeNode(node, {
+            abstractChallenge: challenge,
+            targetDomain,
+            domainDistanceMatrix,
+            mechanisms,
+            sharedMechanisms
+          })
+        }))
+        .sort((left, right) => right.score - left.score);
+      const scoring = challengeScores[0] || scoreBridgeNode(node, {
         abstractChallenge: params.abstractChallenge || '',
         targetDomain,
-        domainDistanceMatrix: params.domainDistanceMatrix,
+        domainDistanceMatrix,
         mechanisms,
         sharedMechanisms
       });
+      if (scoring.distance < minDomainDistance) {
+        prunedDomains.push({
+          domain,
+          nodeId: node.id,
+          nodeName: node.name,
+          reason: 'proximal-domain-excluded'
+        });
+        return null;
+      }
       return {
         nodeId: node.id,
         nodeName: node.name,
@@ -398,6 +510,9 @@ export function queryCrossDomainBridges(graph, params = {}) {
         distanceScore: scoring.distance,
         score: scoring.score,
         relevanceRatio: scoring.relevanceRatio,
+        matchedChallenge: scoring.challenge || null,
+        challengeScores,
+        evidence: buildBridgeEvidence(sharedMechanisms, node),
         bridgeEvidence: buildBridgeEvidence(sharedMechanisms, node),
         pruned: false
       };
@@ -437,6 +552,9 @@ export function queryCrossDomainBridges(graph, params = {}) {
       existing.score += entry.score;
       existing.bridgeCount += 1;
       existing.relevanceRatio += entry.relevanceRatio;
+      if (entry.matchedChallenge && !existing.matchedChallenges?.includes(entry.matchedChallenge)) {
+        existing.matchedChallenges = [...(existing.matchedChallenges || []), entry.matchedChallenge];
+      }
       for (const mechanism of entry.sharedMechanisms.length ? entry.sharedMechanisms : entry.mechanisms) {
         if (!existing.bridgeEvidence.some((item) => item.mechanism === mechanism)) {
           existing.bridgeEvidence.push({
@@ -463,10 +581,12 @@ export function queryCrossDomainBridges(graph, params = {}) {
     contractVersion: BRIDGE_CONTRACT_VERSION,
     targetDomain,
     abstractChallenge: params.abstractChallenge || '',
-    relevancePolicy: {
+      relevancePolicy: {
       targetDomainExclusion: 'same-domain-excluded',
+      minDomainDistance,
       sourceDomainRanking: 'average-bridge-score',
-      mechanismEvidence: 'shared-abstract-mechanisms'
+      mechanismEvidence: 'shared-abstract-mechanisms',
+      challengeMatching: agnosticChallenges.length ? 'domain-agnostic-challenge-aware' : 'single-challenge'
     },
     prunedDomains,
     candidateSourceDomains: candidateDomains,

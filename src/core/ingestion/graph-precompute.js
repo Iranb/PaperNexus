@@ -4,8 +4,14 @@ import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from '../graph/schema.js';
 import { normalizeDomainTags, normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
 import {
   normalizeAbstractMechanismNames,
+  normalizeAbstractMechanismRecord,
   normalizeAbstractMechanismRecords
 } from '../graph/abstract-mechanisms.js';
+import { deriveDomainTaxonomyFromGraph } from '../graph/domain-taxonomy.js';
+import {
+  enrichGraphWithDomainAndMechanismNodes,
+  populateTransferableEdgesFromMechanisms
+} from '../graph/domain-bridges.js';
 import { normalizeResearchQuestionRecords } from '../graph/research-questions.js';
 import { buildChallengeVariantRecords } from '../graph/challenges.js';
 import {
@@ -15,6 +21,18 @@ import {
 } from '../graph/takeaways.js';
 import { jaccardSimilarity, normalizeText, slugify, stableHash, unique } from '../../lib/utils.js';
 
+const GENERIC_MECHANISM_TOKENS = new Set([
+  'mechanism',
+  'mechanisms',
+  'based',
+  'strategy',
+  'strategies',
+  'module',
+  'modules',
+  'policy',
+  'policies'
+]);
+
 function firstDefinedValue(...values) {
   for (const value of values) {
     if (value !== undefined && value !== null && value !== '') {
@@ -22,6 +40,235 @@ function firstDefinedValue(...values) {
     }
   }
   return undefined;
+}
+
+function mechanismMergeKey(record) {
+  const normalized = normalizeText(record?.name || '').replace(/-/g, ' ');
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => !GENERIC_MECHANISM_TOKENS.has(token));
+  return tokens.join(' ');
+}
+
+function canonicalMechanismRank(node) {
+  return (
+    (Number(node?.properties?.supportingPaperCount || 0) * 10)
+    + (Number(node?.properties?.supportingNodeCount || 0) * 4)
+    - (String(node?.name || '').length / 1000)
+  );
+}
+
+function collectNodeDomainsFromPapers(graph, node) {
+  const paperTitles = unique([
+    node.properties?.paperTitle,
+    ...(Array.isArray(node.properties?.paperTitles) ? node.properties.paperTitles : []),
+    ...graph.getIncoming(node.id)
+      .map((relationship) => graph.getNode(relationship.sourceId))
+      .filter((candidate) => candidate?.type === NODE_TYPES.PAPER)
+      .map((paper) => paper.name),
+    ...graph.getOutgoing(node.id)
+      .map((relationship) => graph.getNode(relationship.targetId))
+      .filter((candidate) => candidate?.type === NODE_TYPES.PAPER)
+      .map((paper) => paper.name)
+  ]);
+  const papersByTitle = new Map(
+    graph.getNodesByType(NODE_TYPES.PAPER).map((paper) => [paper.name, paper])
+  );
+  const domains = unique(
+    paperTitles.flatMap((title) => {
+      const paper = papersByTitle.get(title);
+      if (!paper) return [];
+      return normalizeDomainTags([
+        paper.properties?.fieldOfStudy,
+        ...(paper.properties?.fieldCandidates || []),
+        ...(paper.properties?.domainTags || [])
+      ]);
+    })
+  );
+
+  return {
+    domains,
+    primaryDomain: normalizeFieldOfStudy(node.properties?.fieldOfStudy, domains)
+  };
+}
+
+function rewriteNodeMechanismReferences(node, oldMechanismKeys, canonicalRecord) {
+  const normalizeMechanismEntry = (entry) => {
+    const record = normalizeAbstractMechanismRecord(entry);
+    if (!record) return entry;
+    const aliases = [record.name, ...(record.aliases || [])].map((value) => normalizeText(value));
+    return aliases.some((alias) => oldMechanismKeys.has(alias)) ? canonicalRecord : entry;
+  };
+
+  const mechanismObjects = normalizeAbstractMechanismRecords(
+    (node.properties?.abstractMechanismObjects || []).map((entry) => normalizeMechanismEntry(entry))
+  );
+  const abstractMechanisms = normalizeAbstractMechanismNames([
+    ...(node.properties?.abstractMechanisms || []).map((entry) => normalizeMechanismEntry(entry)),
+    ...mechanismObjects
+  ]);
+  const mechanismHints = normalizeAbstractMechanismNames(
+    (node.properties?.mechanismHints || []).map((entry) => normalizeMechanismEntry(entry))
+  );
+
+  return {
+    ...node,
+    properties: {
+      ...node.properties,
+      ...(mechanismObjects.length ? { abstractMechanismObjects: mechanismObjects } : {}),
+      ...(abstractMechanisms.length ? { abstractMechanisms } : {}),
+      ...(mechanismHints.length ? { mechanismHints } : {})
+    }
+  };
+}
+
+function mergeNearDuplicateMechanisms(graph) {
+  const groups = new Map();
+  for (const mechanismNode of graph.getNodesByType(NODE_TYPES.ABSTRACT_MECHANISM)) {
+    const record = normalizeAbstractMechanismRecord({
+      name: mechanismNode.name,
+      aliases: mechanismNode.properties?.aliases,
+      mechanismType: mechanismNode.properties?.mechanismType,
+      mechanismCategory: mechanismNode.properties?.mechanismCategory,
+      description: mechanismNode.properties?.description
+    });
+    const key = mechanismMergeKey(record) || normalizeText(mechanismNode.name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ node: mechanismNode, record });
+  }
+
+  let mergedMechanismCount = 0;
+  for (const entries of groups.values()) {
+    if (entries.length < 2) continue;
+    const sorted = [...entries].sort((left, right) => (
+      canonicalMechanismRank(right.node) - canonicalMechanismRank(left.node)
+      || left.node.name.localeCompare(right.node.name)
+    ));
+    const canonicalEntry = sorted[0];
+    const canonicalRecord = normalizeAbstractMechanismRecords(sorted.map((entry) => entry.record))[0] || canonicalEntry.record;
+    const canonicalNode = graph.getNode(canonicalEntry.node.id);
+    graph.updateNode({
+      ...canonicalNode,
+      name: canonicalRecord.name,
+      properties: {
+        ...canonicalNode.properties,
+        canonicalForm: canonicalRecord.name,
+        aliases: canonicalRecord.aliases,
+        mechanismType: canonicalRecord.mechanismType,
+        mechanismCategory: canonicalRecord.mechanismCategory,
+        category: canonicalRecord.mechanismCategory,
+        description: canonicalRecord.description
+      }
+    });
+
+    for (const duplicateEntry of sorted.slice(1)) {
+      const duplicateNode = graph.getNode(duplicateEntry.node.id);
+      if (!duplicateNode) continue;
+      const oldMechanismKeys = new Set(
+        [duplicateEntry.record.name, ...(duplicateEntry.record.aliases || [])]
+          .map((value) => normalizeText(value))
+          .filter(Boolean)
+      );
+
+      for (const relationship of [...graph.getIncoming(duplicateNode.id)]) {
+        const sourceNode = graph.getNode(relationship.sourceId);
+        if (sourceNode) {
+          graph.updateNode(rewriteNodeMechanismReferences(sourceNode, oldMechanismKeys, canonicalRecord));
+        }
+        graph.addRelationship({
+          ...relationship,
+          id: `rel:${stableHash(`${relationship.sourceId}:${relationship.type}:${canonicalEntry.node.id}:${JSON.stringify(relationship.properties || {})}`)}`,
+          targetId: canonicalEntry.node.id
+        });
+        graph.removeRelationship(relationship.id);
+      }
+
+      for (const relationship of [...graph.getOutgoing(duplicateNode.id)]) {
+        graph.addRelationship({
+          ...relationship,
+          id: `rel:${stableHash(`${canonicalEntry.node.id}:${relationship.type}:${relationship.targetId}:${JSON.stringify(relationship.properties || {})}`)}`,
+          sourceId: canonicalEntry.node.id
+        });
+        graph.removeRelationship(relationship.id);
+      }
+
+      graph.removeNode(duplicateNode.id);
+      mergedMechanismCount += 1;
+    }
+  }
+
+  return mergedMechanismCount;
+}
+
+function propagateDomainTagsFromPapers(graph) {
+  let updatedNodeCount = 0;
+  const candidateTypes = new Set([
+    NODE_TYPES.PROBLEM,
+    NODE_TYPES.RESEARCH_QUESTION,
+    NODE_TYPES.CHALLENGE,
+    NODE_TYPES.METHOD,
+    NODE_TYPES.TAKEAWAY,
+    NODE_TYPES.IDEA_FRAGMENT,
+    NODE_TYPES.LIMITATION,
+    NODE_TYPES.ASSUMPTION
+  ]);
+
+  for (const node of graph.nodes) {
+    if (!candidateTypes.has(node.type)) continue;
+    const { domains, primaryDomain } = collectNodeDomainsFromPapers(graph, node);
+    if (!domains.length) continue;
+
+    const nextDomainTags = unique([
+      ...(Array.isArray(node.properties?.domainTags) ? node.properties.domainTags : []),
+      ...domains
+    ]);
+    const nextFieldCandidates = unique([
+      ...(Array.isArray(node.properties?.fieldCandidates) ? node.properties.fieldCandidates : []),
+      ...domains
+    ]);
+    const nextFieldOfStudy = normalizeFieldOfStudy(node.properties?.fieldOfStudy, domains) || primaryDomain;
+    const changed = (
+      nextFieldOfStudy !== (node.properties?.fieldOfStudy || null)
+      || nextDomainTags.length !== (node.properties?.domainTags || []).length
+      || nextFieldCandidates.length !== (node.properties?.fieldCandidates || []).length
+    );
+    if (!changed) continue;
+
+    graph.updateNode({
+      ...node,
+      properties: {
+        ...node.properties,
+        fieldOfStudy: nextFieldOfStudy,
+        domainTags: nextDomainTags,
+        fieldCandidates: nextFieldCandidates
+      }
+    });
+    updatedNodeCount += 1;
+  }
+
+  return updatedNodeCount;
+}
+
+export function postIngestionRefinement(graph) {
+  const propagatedNodeCount = propagateDomainTagsFromPapers(graph);
+  enrichGraphWithDomainAndMechanismNodes(graph);
+  const mergedMechanismCount = mergeNearDuplicateMechanisms(graph);
+  enrichGraphWithDomainAndMechanismNodes(graph);
+  const transferableEdgeCount = populateTransferableEdgesFromMechanisms(graph);
+  const domainDistanceMatrix = deriveDomainTaxonomyFromGraph(graph);
+
+  return {
+    contractVersion: 'idea-catalyst-post-ingestion-refinement-v1',
+    graph,
+    domainDistanceMatrix,
+    summary: {
+      propagatedNodeCount,
+      mergedMechanismCount,
+      transferableEdgeCount
+    }
+  };
 }
 
 function resolveAvailableParallelism(options = {}) {

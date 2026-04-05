@@ -176,6 +176,9 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(tools.tools.some((tool) => tool.name === 'brainstorm'));
   assert.ok(tools.tools.some((tool) => tool.name === 'query'));
   assert.ok(tools.tools.some((tool) => tool.name === 'mutate_graph'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'domain_distance'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'extract_takeaways'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'interdisciplinary_potential'));
 
   const prompts = await pending.request('prompts/list', {});
   assert.ok(prompts.prompts.some((prompt) => prompt.name === 'brainstorm_topic'));
@@ -188,6 +191,7 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(resources.resources.some((resource) => resource.uri === 'papernexus://corpora'));
   assert.ok(resources.resources.some((resource) => resource.uri.includes('/context')));
   assert.ok(resources.resources.some((resource) => resource.uri.includes('/methods')));
+  assert.ok(resources.resources.some((resource) => resource.uri.includes('/domain-taxonomy')));
 });
 
 test('MCP tool calls and resource reads work against an indexed corpus', async () => {
@@ -196,6 +200,14 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   });
   assert.equal(methodsResource.contents[0].mimeType, 'text/markdown');
   assert.match(methodsResource.contents[0].text, /Methods:/);
+
+  const domainTaxonomyResource = await pending.request('resources/read', {
+    uri: 'papernexus://corpus/mcp-papers/domain-taxonomy'
+  });
+  assert.equal(domainTaxonomyResource.contents[0].mimeType, 'application/json');
+  const taxonomy = JSON.parse(domainTaxonomyResource.contents[0].text);
+  assert.equal(taxonomy.version, 'idea-catalyst-domain-distance-v1');
+  assert.ok(Array.isArray(taxonomy.domains));
 
   const brainstormResult = await pending.request('tools/call', {
     name: 'brainstorm',
@@ -229,6 +241,45 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
     }
   });
   assert.match(statusResult.content[0].text, /Graph mode: explicit-multilayer/);
+
+  const domainDistanceResult = await pending.request('tools/call', {
+    name: 'domain_distance',
+    arguments: {
+      corpus: tempCorpusRoot,
+      targetDomain: 'Computer Science'
+    }
+  });
+  const parsedDomainDistance = JSON.parse(domainDistanceResult.content[0].text);
+  assert.equal(parsedDomainDistance.version, 'idea-catalyst-domain-distance-v1');
+  assert.equal(parsedDomainDistance.targetDomain, 'Computer Science');
+  assert.ok(Array.isArray(parsedDomainDistance.distances));
+
+  const takeawayResult = await pending.request('tools/call', {
+    name: 'extract_takeaways',
+    arguments: {
+      corpus: tempCorpusRoot,
+      targetDomain: 'Computer Science',
+      agnosticChallenges: ['experiment planning under retrieval constraints'],
+      limit: 5
+    }
+  });
+  const parsedTakeaways = JSON.parse(takeawayResult.content[0].text);
+  assert.ok(Array.isArray(parsedTakeaways.takeaways));
+
+  const interdisciplinaryResult = await pending.request('tools/call', {
+    name: 'interdisciplinary_potential',
+    arguments: {
+      corpus: tempCorpusRoot,
+      targetDomain: 'Computer Science',
+      query: 'experiment planning under retrieval constraints',
+      agnosticChallenges: ['experiment planning under retrieval constraints'],
+      limit: 5
+    }
+  });
+  const parsedInterdisciplinary = JSON.parse(interdisciplinaryResult.content[0].text);
+  assert.equal(parsedInterdisciplinary.contractVersion, 'idea-catalyst-interdisciplinary-potential-v1');
+  assert.equal(parsedInterdisciplinary.targetDomain, 'Computer Science');
+  assert.ok(Array.isArray(parsedInterdisciplinary.rankedSourceDomains));
 });
 
 test('MCP mutate_graph previews and applies validated graph edits', async () => {
