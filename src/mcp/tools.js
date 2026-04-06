@@ -306,9 +306,11 @@ export const PAPERNEXUS_TOOLS = [
                   'create_node',
                   'update_node',
                   'create_relationship',
-                  'update_relationship'
+                  'update_relationship',
+                  'create',
+                  'create_edge'
                 ],
-                description: 'Mutation action. create/update aliases map to upsert.'
+                description: 'Mutation action. create/update/create_edge aliases map to upsert. Bare "create" auto-detects node vs relationship from fields.'
               },
               id: {
                 type: 'string',
@@ -321,7 +323,15 @@ export const PAPERNEXUS_TOOLS = [
               },
               type: {
                 type: 'string',
-                description: 'Node type for node operations, or relationship type for relationship operations.'
+                description: 'Node type for node operations, or relationship type for relationship operations. Aliases: nodeType (for nodes), edgeType or relationType (for relationships).'
+              },
+              nodeType: {
+                type: 'string',
+                description: 'Alias for type in node operations.'
+              },
+              edgeType: {
+                type: 'string',
+                description: 'Alias for type in relationship operations.'
               },
               name: {
                 type: 'string',
@@ -347,6 +357,14 @@ export const PAPERNEXUS_TOOLS = [
                 description: 'Relationship target reference. Use {id} or {type,name}.',
                 additionalProperties: true
               },
+              from: {
+                type: ['object', 'string'],
+                description: 'Alias for source. Can be {id} or {type,name} object, or a name string.'
+              },
+              to: {
+                type: ['object', 'string'],
+                description: 'Alias for target. Can be {id} or {type,name} object, or a name string.'
+              },
               bidirectional: {
                 type: 'boolean',
                 description: 'For symmetric relations like COMBINES_WITH or RELATED_TO, also create/delete the reverse edge.',
@@ -358,6 +376,29 @@ export const PAPERNEXUS_TOOLS = [
         }
       },
       required: ['operations']
+    }
+  },
+  {
+    name: 'refresh_corpus',
+    description: 'Trigger incremental re-analysis of a corpus to pick up new or changed papers. Returns the updated corpus status after refresh.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or root path. Omit to use the default corpus.'
+        },
+        incremental: {
+          type: 'boolean',
+          description: 'When true (default), only process papers added since last analysis. When false, rebuild the entire graph.',
+          default: true
+        },
+        force: {
+          type: 'boolean',
+          description: 'Force re-analysis even if no changes detected.',
+          default: false
+        }
+      }
     }
   }
 ];

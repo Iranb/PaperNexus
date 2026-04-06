@@ -156,6 +156,19 @@ async function executeTool(name, args) {
     });
   }
 
+  if (name === 'refresh_corpus') {
+    const rootPath = await resolveCorpus(args.corpus);
+    const { analyzeCorpus } = await import('../core/ingestion/pipeline.js');
+    const inputRoot = rootPath.replace(/[/\\]\.papernexus$/, '');
+    await analyzeCorpus(inputRoot, {
+      rootPath,
+      incremental: args.incremental !== false,
+      force: args.force === true
+    });
+    const { meta } = await loadCorpus(rootPath);
+    return renderStatus(meta);
+  }
+
   throw new Error(`Unknown tool: ${name}`);
 }
 

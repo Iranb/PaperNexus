@@ -11,11 +11,13 @@ import {
 } from './rules.js';
 
 const ACTION_ALIASES = {
+  create: 'upsert_node',
   create_node: 'upsert_node',
   update_node: 'upsert_node',
   edit_node: 'upsert_node',
   upsert_node: 'upsert_node',
   delete_node: 'delete_node',
+  create_edge: 'upsert_relationship',
   create_relationship: 'upsert_relationship',
   update_relationship: 'upsert_relationship',
   edit_relationship: 'upsert_relationship',
@@ -31,9 +33,20 @@ const BIDIRECTIONAL_RELATION_TYPES = new Set([
   EDGE_TYPES.CONTRADICTS
 ]);
 
-function normalizeAction(value) {
+function normalizeAction(value, operation = null) {
   const key = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  return ACTION_ALIASES[key] || null;
+  const resolved = ACTION_ALIASES[key] || null;
+  // Disambiguate bare "create" — if the operation has relationship-like fields
+  // (edgeType, from, to, source, target, relationType), route to upsert_relationship.
+  if (resolved === 'upsert_node' && key === 'create' && operation) {
+    const hasRelFields = operation.edgeType || operation.relationType ||
+      operation.from || operation.to || operation.source || operation.target ||
+      operation.sourceId || operation.targetId;
+    if (hasRelFields) {
+      return 'upsert_relationship';
+    }
+  }
+  return resolved;
 }
 
 function cleanName(value, maxLength = 180) {
@@ -134,6 +147,12 @@ function findRelationshipByShape(graph, draft) {
   }) || null;
 }
 
+function getDraftRelationshipType(draft, fallbackType = null) {
+  return normalizeRelationTypeName(
+    draft?.type || draft?.edgeType || draft?.relationType || fallbackType
+  );
+}
+
 function withAuditProperties(existingProperties, nextProperties, actor, isCreate) {
   const timestamp = new Date().toISOString();
   return {
@@ -151,7 +170,7 @@ function withAuditProperties(existingProperties, nextProperties, actor, isCreate
 }
 
 function prepareNodeDraft(existingNode, draft, actor) {
-  const nextType = normalizeNodeTypeName(draft.type || existingNode?.type);
+  const nextType = normalizeNodeTypeName(draft.type || draft.nodeType || existingNode?.type);
   const nextName = cleanName(draft.name || existingNode?.name);
   if (!nextType) {
     throw new Error('Node type is required and must match the PaperNexus schema.');
@@ -226,16 +245,16 @@ function deleteNode(graph, operation) {
 function prepareRelationshipDraft(graph, existingRelationship, draft, actor) {
   const sourceNode = resolveNodeReference(
     graph,
-    draft.source || (draft.sourceId ? { id: draft.sourceId } : null),
+    draft.source || draft.from || (draft.sourceId ? { id: draft.sourceId } : null),
     'relationship source'
   );
   const targetNode = resolveNodeReference(
     graph,
-    draft.target || (draft.targetId ? { id: draft.targetId } : null),
+    draft.target || draft.to || (draft.targetId ? { id: draft.targetId } : null),
     'relationship target'
   );
 
-  const proposedType = normalizeRelationTypeName(draft.type || draft.relationType || existingRelationship?.type);
+  const proposedType = getDraftRelationshipType(draft, existingRelationship?.type);
   if (!proposedType) {
     throw new Error('Relationship type is required and must match the PaperNexus schema.');
   }
@@ -273,7 +292,7 @@ function upsertSingleRelationship(graph, operation, actor, sourceRef = null, tar
     id: draft.id,
     sourceId: sourceRef?.id || draft.sourceId,
     targetId: targetRef?.id || draft.targetId,
-    type: normalizeRelationTypeName(draft.type || draft.relationType)
+    type: getDraftRelationshipType(draft)
   });
   const relationship = prepareRelationshipDraft(graph, existingRelationship, seededDraft, actor);
   relationship.id = relationship.id || createRelationshipId(graph, relationship.sourceId, relationship.type, relationship.targetId);
@@ -307,15 +326,15 @@ function upsertRelationship(graph, operation, actor) {
   const draft = operation.relationship || operation;
   const forwardSource = resolveNodeReference(
     graph,
-    draft.source || (draft.sourceId ? { id: draft.sourceId } : null),
+    draft.source || draft.from || (draft.sourceId ? { id: draft.sourceId } : null),
     'relationship source'
   );
   const forwardTarget = resolveNodeReference(
     graph,
-    draft.target || (draft.targetId ? { id: draft.targetId } : null),
+    draft.target || draft.to || (draft.targetId ? { id: draft.targetId } : null),
     'relationship target'
   );
-  const relationType = normalizeRelationTypeName(draft.type || draft.relationType);
+  const relationType = getDraftRelationshipType(draft);
   if (draft.bidirectional) {
     if (!BIDIRECTIONAL_RELATION_TYPES.has(relationType)) {
       throw new Error(`Relationship type ${relationType} does not support bidirectional mutation mode.`);
@@ -339,9 +358,9 @@ function upsertRelationship(graph, operation, actor) {
 
 function deleteRelationship(graph, operation) {
   const draft = operation.relationship || operation;
-  const relationType = normalizeRelationTypeName(draft.type || draft.relationType);
-  const sourceNode = draft.source || draft.sourceId ? resolveNodeReference(graph, draft.source || { id: draft.sourceId }, 'relationship source') : null;
-  const targetNode = draft.target || draft.targetId ? resolveNodeReference(graph, draft.target || { id: draft.targetId }, 'relationship target') : null;
+  const relationType = getDraftRelationshipType(draft);
+  const sourceNode = draft.source || draft.from || draft.sourceId ? resolveNodeReference(graph, draft.source || draft.from || { id: draft.sourceId }, 'relationship source') : null;
+  const targetNode = draft.target || draft.to || draft.targetId ? resolveNodeReference(graph, draft.target || draft.to || { id: draft.targetId }, 'relationship target') : null;
   const relationship = findRelationshipByShape(graph, {
     id: draft.id,
     sourceId: sourceNode?.id,
@@ -403,7 +422,7 @@ export function applyGraphMutations(graph, operations, options = {}) {
   };
 
   operations.forEach((operation, index) => {
-    const action = normalizeAction(operation?.action);
+    const action = normalizeAction(operation?.action, operation);
     if (!action) {
       throw new Error(`Unsupported mutation action at index ${index}: ${operation?.action || 'unknown'}`);
     }

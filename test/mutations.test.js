@@ -119,3 +119,48 @@ test('graph mutations can create and delete bidirectional symmetric relationship
   assert.equal(deleted.graph.relationshipCount, 0);
   assert.equal(deleted.summary.relationshipsDeleted, 2);
 });
+
+test('graph mutations dedupe create_edge retries that use edgeType aliases', () => {
+  const graph = createKnowledgeGraph();
+  graph.addNode(makeNode('claim:1', NODE_TYPES.CLAIM, 'support routing improves stability'));
+  graph.addNode(makeNode('finding:1', NODE_TYPES.FINDING, 'finding_exp_1'));
+
+  const created = applyGraphMutations(graph, [
+    {
+      action: 'create_edge',
+      edgeType: 'SUPPORTED_BY',
+      from: 'claim:1',
+      to: 'finding:1',
+      properties: {
+        experimentId: 'exp-1',
+        confidence: 0.71
+      }
+    }
+  ], {
+    actor: 'mutation-test'
+  });
+
+  assert.equal(created.graph.relationshipCount, 1);
+  assert.equal(created.summary.relationshipsCreated, 1);
+  assert.equal(created.summary.relationshipsUpdated, 0);
+
+  const retried = applyGraphMutations(created.graph, [
+    {
+      action: 'create_edge',
+      edgeType: 'SUPPORTED_BY',
+      from: 'claim:1',
+      to: 'finding:1',
+      properties: {
+        experimentId: 'exp-1',
+        confidence: 0.93
+      }
+    }
+  ], {
+    actor: 'mutation-test'
+  });
+
+  assert.equal(retried.graph.relationshipCount, 1);
+  assert.equal(retried.summary.relationshipsCreated, 0);
+  assert.equal(retried.summary.relationshipsUpdated, 1);
+  assert.equal(retried.graph.relationships[0].properties.confidence, 0.93);
+});
