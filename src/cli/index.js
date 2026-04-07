@@ -3,6 +3,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFile as nodeExecFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileExists } from '../lib/fs.js';
 import { applyProcessConfig, getDefaultRuntimeConfigPath, getDefaultRuntimeConfigRoot, loadRuntimeConfig, resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
 import { toNumber } from '../lib/utils.js';
@@ -1243,8 +1245,7 @@ async function loadSelectedCorpusLite(runtime, corpusFlag) {
 }
 
 async function handleUpdateCommand(flags) {
-  const git = require('child_process');
-  const execFile = require('util').promisify(git.execFile);
+  const execFile = promisify(nodeExecFile);
   
   console.log('Updating PaperNexus to latest version from GitHub...');
   
@@ -1274,9 +1275,8 @@ async function handleUpdateCommand(flags) {
     
     if (currentBranch !== 'main') {
       console.warn(`Warning: You are on branch "${currentBranch}", not "main".`);
-      const shouldSwitch = await require('../lib/prompt.js').then(mod => 
-        mod.createPromptSession().promptConfirm('Switch to main and update?', true)
-      ).catch(() => false);
+      const { createPromptSession } = await import('../lib/prompt.js');
+      const shouldSwitch = await createPromptSession().promptConfirm('Switch to main and update?', true);
       
       if (!shouldSwitch && !flags.force) {
         console.log('Update cancelled.');
