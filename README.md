@@ -133,6 +133,18 @@ Optional PaddleOCR-VL remote parser config:
 }
 ```
 
+Optional Marker text-only parser config:
+
+```json
+{
+  "analyze": {
+    "pdfParser": "marker",
+    "markerCommand": "marker_single",
+    "markerBlockBlacklist": ["table", "image"]
+  }
+}
+```
+
 ## Manual Walkthrough
 
 This section folds the old `manual/README.md` into the main entrypoint so you can exercise the full product from top to bottom in one place.

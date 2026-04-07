@@ -194,6 +194,82 @@ function resolveRemoteMarkerHost(options = {}) {
     || '';
 }
 
+function normalizeMarkerBlockName(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (['table', 'tables'].includes(normalized)) return 'table';
+  if (['image', 'images', 'picture', 'pictures', 'figure', 'figures'].includes(normalized)) return 'image';
+  return '';
+}
+
+function resolveMarkerBlockBlacklist(options = {}) {
+  const raw = options.markerBlockBlacklist ?? process.env.PAPERNEXUS_MARKER_BLOCK_BLACKLIST ?? [];
+  const values = Array.isArray(raw) ? raw : String(raw).split(',');
+  const normalized = [];
+  for (const value of values) {
+    const candidate = normalizeMarkerBlockName(value);
+    if (candidate && !normalized.includes(candidate)) {
+      normalized.push(candidate);
+    }
+  }
+  return normalized;
+}
+
+function isMarkdownTableBlock(block) {
+  const lines = String(block || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return false;
+  if (/<table[\s>]/i.test(block)) return true;
+  if (lines.length < 2) return false;
+  const separatorPattern = /^\|?\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)*\s*\|?$/;
+  const separatorIndex = lines.findIndex((line) => separatorPattern.test(line));
+  if (separatorIndex <= 0) return false;
+  return lines.every((line) => line.includes('|') || separatorPattern.test(line));
+}
+
+function isImageBlock(block) {
+  const trimmed = String(block || '').trim();
+  if (!trimmed) return false;
+  return /^!\[[^\]]*\]\([^)]+\)(?:\s*\n.*)?$/s.test(trimmed)
+    || /^<img[\s\S]*?>$/i.test(trimmed)
+    || /^<figure[\s\S]*<\/figure>$/i.test(trimmed);
+}
+
+function filterMarkerMarkdown(markdown, blacklist = []) {
+  const normalizedBlacklist = Array.isArray(blacklist) ? blacklist : resolveMarkerBlockBlacklist({
+    markerBlockBlacklist: blacklist
+  });
+  if (!normalizedBlacklist.length) {
+    return markdown;
+  }
+
+  const dropTables = normalizedBlacklist.includes('table');
+  const dropImages = normalizedBlacklist.includes('image');
+  const blocks = String(markdown || '').replace(/\r\n/g, '\n').split(/\n{2,}/);
+  const filteredBlocks = [];
+
+  for (const block of blocks) {
+    let nextBlock = String(block || '').trim();
+    if (!nextBlock) continue;
+    if (dropTables && isMarkdownTableBlock(nextBlock)) continue;
+    if (dropImages && isImageBlock(nextBlock)) continue;
+    if (dropImages) {
+      nextBlock = nextBlock
+        .replace(/<figure[\s\S]*?<\/figure>/gi, '')
+        .replace(/^\s*!\[[^\]]*\]\([^)]+\)\s*$/gm, '')
+        .replace(/^\s*<img[\s\S]*?>\s*$/gim, '')
+        .trim();
+    }
+    if (nextBlock) {
+      filteredBlocks.push(nextBlock);
+    }
+  }
+
+  return filteredBlocks.length ? `${filteredBlocks.join('\n\n').trim()}\n` : '';
+}
+
 function resolveRemoteDoclingHost(options = {}) {
   return options.doclingSshHost
     || options.pdfParserSshHost
@@ -606,8 +682,13 @@ async function convertPdfToMarkdownViaRemoteMarker(pdfPath, options = {}) {
     throw new Error(`Remote Marker returned empty markdown for ${pdfPath}.`);
   }
 
+  const filteredMarkdown = filterMarkerMarkdown(markdown, resolveMarkerBlockBlacklist(options));
+  if (!filteredMarkdown.trim()) {
+    throw new Error(`Remote Marker returned empty markdown for ${pdfPath} after applying the marker block blacklist.`);
+  }
+
   return {
-    markdown,
+    markdown: filteredMarkdown,
     markerCommand: `${markerCommand} (remote@${markerSshHost})`
   };
 }
@@ -762,6 +843,7 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`marker:${basename}`);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const markerBlockBlacklist = resolveMarkerBlockBlacklist(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKER, basename, {
     markerDir,
     markdownDir
@@ -857,7 +939,13 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
   }
 
   const generatedMarkdownPath = await findGeneratedMarkdown(runDir, basename);
-  await writeText(cachedMarkdownPath, await readText(generatedMarkdownPath));
+  const filteredMarkdown = filterMarkerMarkdown(await readText(generatedMarkdownPath), markerBlockBlacklist);
+  if (!filteredMarkdown.trim()) {
+    throw new Error(
+      `Marker finished for ${pdfPath} but the configured marker block blacklist removed all markdown content.`
+    );
+  }
+  await writeText(cachedMarkdownPath, filteredMarkdown);
 
   return {
     markdownPath: cachedMarkdownPath,
@@ -1255,9 +1343,11 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
 export const __markerTestables = {
   shellQuote,
   normalizePdfParser,
+  resolveMarkerBlockBlacklist,
   resolvePaddleOcrVlPython,
   resolvePaddleOcrVlServerUrl,
   resolveRemoteMarkerHost,
+  filterMarkerMarkdown,
   resolveMineruRemoteFailureMode,
   resolveMineruProbeCacheTtlMs,
   resolvePdfParseTimeoutMs,

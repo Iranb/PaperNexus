@@ -73,6 +73,7 @@ function buildPdfOptions(flags, config) {
     doclingPdfBackend: firstDefined(flags['docling-pdf-backend'], materializeConfig.doclingPdfBackend, analyzeConfig.doclingPdfBackend),
     markerCommand: firstDefined(flags['marker-cmd'], materializeConfig.markerCommand, analyzeConfig.markerCommand),
     markerSshHost: firstDefined(flags['marker-ssh-host'], materializeConfig.markerSshHost, analyzeConfig.markerSshHost, materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
+    markerBlockBlacklist: firstDefined(flags['marker-block-blacklist'], materializeConfig.markerBlockBlacklist, analyzeConfig.markerBlockBlacklist),
     mineruCommand: firstDefined(flags['mineru-cmd'], materializeConfig.mineruCommand, analyzeConfig.mineruCommand),
     mineruHttpUrl: firstDefined(flags['mineru-http-url'], materializeConfig.mineruHttpUrl, analyzeConfig.mineruHttpUrl, materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
     mineruRemoteFailureMode: firstDefined(flags['mineru-remote-failure'], materializeConfig.mineruRemoteFailureMode, analyzeConfig.mineruRemoteFailureMode, 'error'),

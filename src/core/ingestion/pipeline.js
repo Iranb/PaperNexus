@@ -4016,6 +4016,7 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       pdfParserSshHost: options.pdfParserSshHost,
       markerCommand: options.markerCommand,
       markerSshHost: options.markerSshHost,
+      markerBlockBlacklist: options.markerBlockBlacklist,
       mineruCommand: options.mineruCommand,
       mineruHttpUrl: options.mineruHttpUrl,
       paddleocrVlPython: options.paddleocrVlPython,

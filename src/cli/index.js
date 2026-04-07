@@ -388,6 +388,7 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     doclingPdfBackend: firstDefined(flags['docling-pdf-backend'], commandConfig.doclingPdfBackend),
     markerCommand: firstDefined(flags['marker-cmd'], commandConfig.markerCommand),
     markerSshHost: firstDefined(flags['marker-ssh-host'], commandConfig.markerSshHost, commandConfig.pdfParserSshHost, commandConfig.pdfSshHost),
+    markerBlockBlacklist: firstDefined(flags['marker-block-blacklist'], commandConfig.markerBlockBlacklist),
     markerConcurrency: toNumber(firstDefined(flags['marker-concurrency'], commandConfig.markerConcurrency), undefined),
     mineruCommand: firstDefined(flags['mineru-cmd'], commandConfig.mineruCommand),
     mineruHttpUrl: firstDefined(flags['mineru-http-url'], commandConfig.mineruHttpUrl, commandConfig.pdfCommand),

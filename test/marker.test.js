@@ -31,6 +31,46 @@ test('normalizePdfParser defaults to mineru and accepts marker', () => {
   assert.equal(__markerTestables.normalizePdfParser('unexpected'), 'docling');
 });
 
+test('resolveMarkerBlockBlacklist normalizes configured marker block names', () => {
+  assert.deepEqual(
+    __markerTestables.resolveMarkerBlockBlacklist({
+      markerBlockBlacklist: ['table', 'images', 'Figure', 'unknown', 'table']
+    }),
+    ['table', 'image']
+  );
+
+  assert.deepEqual(
+    __markerTestables.resolveMarkerBlockBlacklist({
+      markerBlockBlacklist: 'tables, picture ,ignored'
+    }),
+    ['table', 'image']
+  );
+});
+
+test('filterMarkerMarkdown removes blacklisted tables and images while preserving body text', () => {
+  const markdown = [
+    '# Title',
+    '',
+    'Intro paragraph.',
+    '',
+    '![Figure 1](figure.png)',
+    'Figure 1 caption.',
+    '',
+    '| Metric | Value |',
+    '| --- | --- |',
+    '| Acc | 90 |',
+    '',
+    'Conclusion paragraph.',
+    ''
+  ].join('\n');
+
+  const filtered = __markerTestables.filterMarkerMarkdown(markdown, ['table', 'image']);
+  assert.match(filtered, /Intro paragraph\./);
+  assert.match(filtered, /Conclusion paragraph\./);
+  assert.doesNotMatch(filtered, /Figure 1/);
+  assert.doesNotMatch(filtered, /\| Metric \| Value \|/);
+});
+
 test('buildRemoteMarkerScript includes marker command, paths, and optional page range', () => {
   const script = __markerTestables.buildRemoteMarkerScript({
     markerCommand: '/opt/marker/bin/python -m marker_single',
@@ -239,6 +279,63 @@ test('convertPdfToMarkdown fails with a clear timeout error when the parser exce
       }),
       /timed out after 100ms/i
     );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown with marker can blacklist table and image blocks', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-marker-text-only-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const markerScriptPath = path.join(tempDir, 'fake-marker.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      markerScriptPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'output_dir=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output_dir) output_dir="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'base=$(basename "$pdf_path" .pdf)',
+        'mkdir -p "$output_dir"',
+        'cat > "$output_dir/$base.md" <<\'EOF\'',
+        '# Marker Parsed',
+        '',
+        '正文第一段。',
+        '',
+        '![Figure 1](figure.png)',
+        'Figure 1 caption.',
+        '',
+        '| Method | Score |',
+        '| --- | --- |',
+        '| Ours | 95 |',
+        '',
+        '正文第二段。',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'marker',
+      markerCommand: markerScriptPath,
+      markerBlockBlacklist: ['table', 'image'],
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /正文第一段。/);
+    assert.match(markdown, /正文第二段。/);
+    assert.doesNotMatch(markdown, /Figure 1/);
+    assert.doesNotMatch(markdown, /\| Method \| Score \|/);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
