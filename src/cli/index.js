@@ -1320,7 +1320,29 @@ async function main() {
     if (result.manifest?.corpusName) {
       console.log(`Corpus: ${result.manifest.corpusName}`);
     }
-    console.log('The archive was unpacked only. Inspect it before switching or importing.');
+    
+    // Auto-register the unpacked corpus to make it visible in the web interface
+    try {
+      const { registerCorpus } = await import('../storage/registry.js');
+      const { loadCorpusMeta } = await import('../storage/corpus-store.js');
+      const corpusIndexPath = path.join(result.outputPath, 'index');
+      
+      try {
+        const meta = await loadCorpusMeta(corpusIndexPath);
+        await registerCorpus({
+          name: meta.name,
+          rootPath: corpusIndexPath,
+          indexedAt: meta.indexedAt,
+          paperCount: meta.paperCount
+        });
+        console.log(`✓ Registered corpus "${meta.name}" and it's now visible in the web interface.`);
+      } catch (registrationError) {
+        console.log('Note: The unpacked corpus was not automatically registered in the index.');
+        console.log('You may inspect it before manually importing it later.');
+      }
+    } catch (error) {
+      // Silently ignore if registration fails, the user can still access via path
+    }
     return;
   }
 
