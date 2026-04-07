@@ -29,6 +29,13 @@ test('resolveAnalyzeConcurrency increases local docling parallelism', () => {
   }), 4);
 });
 
+test('resolveAnalyzeConcurrency keeps paddleocr-vl conservative for local high-performance inference', () => {
+  assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
+    pdfParser: 'paddleocr-vl',
+    availableParallelism: 8
+  }), 1);
+});
+
 test('resolveAnalyzeConcurrency keeps higher concurrency when llm-assisted extraction is enabled', () => {
   assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
     pdfParser: 'docling',

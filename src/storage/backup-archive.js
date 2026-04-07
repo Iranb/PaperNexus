@@ -7,9 +7,10 @@ import {
   fileExists,
   readJson,
   removePath,
-  shouldIgnoreFsEntry,
   writeJson
 } from '../lib/fs.js';
+import { getDefaultRuntimeConfigPath, getDefaultRuntimeConfigRoot } from '../lib/config.js';
+import { slugify } from '../lib/utils.js';
 import { getCorpusPaths, loadCorpusMeta, loadSourceManifest, resolveCorpus } from './corpus-store.js';
 
 function emitStage(options, step, total, title, detail = '') {
@@ -72,56 +73,120 @@ async function runTar(args, options = {}) {
   });
 }
 
-async function copyDirectoryIntoArchive(sourcePath, targetDir) {
-  await ensureDir(targetDir);
-  const entries = await fs.readdir(sourcePath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (shouldIgnoreFsEntry(entry.name, { isDirectory: entry.isDirectory() })) {
-      continue;
-    }
-
-    const sourceEntryPath = path.join(sourcePath, entry.name);
-    const targetEntryPath = path.join(targetDir, entry.name);
-    if (entry.isDirectory()) {
-      await copyDirectoryIntoArchive(sourceEntryPath, targetEntryPath);
-      continue;
-    }
-
-    await ensureDir(path.dirname(targetEntryPath));
-    await fs.copyFile(sourceEntryPath, targetEntryPath);
-  }
+function createArchiveStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
-async function copyPathIntoArchive(sourcePath, targetDir) {
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function isMarkdownLikePath(filePath) {
+  return /\.(md|markdown)$/i.test(String(filePath || ''));
+}
+
+function resolveArchiveFileName(entry, index) {
+  const sourceReference = String(entry?.kind || '').toLowerCase() === 'pdf'
+    ? firstNonEmptyString(entry.sourcePdfPath, entry.sourcePath, entry.inputPath, entry.paperId)
+    : firstNonEmptyString(entry.sourcePath, entry.inputPath, entry.sourceMarkdownPath, entry.markdownCachePath, entry.paperId);
+  const fallback = sourceReference || `source-${index + 1}.md`;
+  const parsed = path.parse(fallback);
+  const baseName = parsed.name || `source-${index + 1}`;
+  const extension = isMarkdownLikePath(fallback) && parsed.ext
+    ? parsed.ext
+    : '.md';
+  return `${baseName}${extension}`;
+}
+
+function resolveArchiveOutputPath(rootPath, meta, archivePath) {
+  if (archivePath) {
+    return path.resolve(String(archivePath));
+  }
+
+  const backupRoot = path.join(getDefaultRuntimeConfigRoot(), 'backups');
+  const archiveLabel = slugify(meta?.name || path.basename(rootPath) || 'papernexus-backup');
+  return path.join(backupRoot, `${archiveLabel}-${createArchiveStamp()}.tgz`);
+}
+
+async function copyPathToDestination(sourcePath, destinationPath) {
   const stats = await fs.stat(sourcePath);
+  await ensureDir(path.dirname(destinationPath));
+
   if (stats.isDirectory()) {
-    await copyDirectoryIntoArchive(sourcePath, targetDir);
+    await fs.cp(sourcePath, destinationPath, {
+      recursive: true
+    });
+    return destinationPath;
+  }
+
+  await fs.copyFile(sourcePath, destinationPath);
+  return destinationPath;
+}
+
+async function resolveSourceExportPlan(entry, index) {
+  const markdownCandidates = [
+    entry?.markdownCachePath,
+    entry?.sourceMarkdownPath
+  ].filter(Boolean);
+
+  for (const candidate of markdownCandidates) {
+    if (await fileExists(candidate)) {
+      return {
+        originalPath: firstNonEmptyString(entry?.sourcePath, entry?.inputPath, entry?.sourcePdfPath, candidate),
+        sourcePath: candidate,
+        archiveFileName: resolveArchiveFileName(entry, index),
+        kind: 'file',
+        exportKind: String(entry?.kind || '').toLowerCase() === 'pdf' ? 'derived-markdown' : 'cached-markdown',
+        sourceKind: entry?.kind || null
+      };
+    }
+  }
+
+  const directMarkdownSource = firstNonEmptyString(entry?.sourcePath, entry?.inputPath);
+  if (isMarkdownLikePath(directMarkdownSource) && await fileExists(directMarkdownSource)) {
     return {
-      originalPath: sourcePath,
-      archivePath: targetDir,
-      kind: 'directory'
+      originalPath: directMarkdownSource,
+      sourcePath: directMarkdownSource,
+      archiveFileName: resolveArchiveFileName(entry, index),
+      kind: 'file',
+      exportKind: 'source-markdown',
+      sourceKind: entry?.kind || 'markdown'
     };
   }
 
-  if (shouldIgnoreFsEntry(path.basename(sourcePath), { isDirectory: false })) {
-    return null;
+  return null;
+}
+
+async function listCommittedIndexEntries(paths) {
+  const candidates = [
+    { sourcePath: paths.metaPath, archiveRelativePath: 'meta.json' },
+    { sourcePath: paths.manifestPath, archiveRelativePath: 'sources.json' },
+    { sourcePath: paths.graphPath, archiveRelativePath: 'graph.json' },
+    { sourcePath: paths.kuzuGraphPath, archiveRelativePath: 'graph.kuzu' },
+    { sourcePath: paths.liteGraphPath, archiveRelativePath: 'graph.lite.json' },
+    { sourcePath: paths.liteStatePath, archiveRelativePath: 'graph.lite.state.json' }
+  ];
+  const existing = [];
+
+  for (const candidate of candidates) {
+    if (await fileExists(candidate.sourcePath)) {
+      existing.push(candidate);
+    }
   }
 
-  await ensureDir(targetDir);
-  const destinationPath = path.join(targetDir, path.basename(sourcePath));
-  await fs.copyFile(sourcePath, destinationPath);
-  return {
-    originalPath: sourcePath,
-    archivePath: destinationPath,
-    kind: 'file'
-  };
+  return existing;
 }
 
 export async function exportCorpusArchive(target, archivePath, options = {}) {
-  emitStage(options, 1, 1, 'Exporting backup archive', 'capturing graph state, cached markdown, snapshots, and source papers');
+  emitStage(options, 1, 1, 'Exporting backup archive', 'capturing minimal committed graph state, runtime config, and markdown-first source files');
   const rootPath = await resolveCorpus(target);
-  const { corpusDir } = getCorpusPaths(rootPath);
+  const paths = getCorpusPaths(rootPath);
+  const { corpusDir } = paths;
   const [meta, manifest] = await Promise.all([
     loadCorpusMeta(rootPath),
     loadSourceManifest(rootPath)
@@ -131,15 +196,29 @@ export async function exportCorpusArchive(target, archivePath, options = {}) {
     throw new Error(`No indexed corpus exists at ${rootPath}.`);
   }
 
-  const absoluteArchivePath = path.resolve(String(archivePath));
+  const absoluteArchivePath = resolveArchiveOutputPath(rootPath, meta, archivePath);
   await ensureDir(path.dirname(absoluteArchivePath));
+
+  const runtimeConfigPath = getDefaultRuntimeConfigPath();
+  const hasRuntimeConfig = await fileExists(runtimeConfigPath);
+  const committedIndexEntries = await listCommittedIndexEntries(paths);
+  const manifestSources = Array.isArray(manifest?.sources)
+    ? manifest.sources.filter((entry) => entry && entry.activeInGraph !== false)
+    : [];
+  const sourcePlans = [];
+  for (let index = 0; index < manifestSources.length; index += 1) {
+    const plan = await resolveSourceExportPlan(manifestSources[index], index);
+    if (plan) {
+      sourcePlans.push(plan);
+    }
+  }
 
   const stageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-export-'));
   const sourceEntries = [];
   const inputPaths = Array.isArray(manifest?.inputPaths)
     ? manifest.inputPaths
     : (manifest?.inputPath ? [manifest.inputPath] : []);
-  const totalSteps = 4 + inputPaths.length;
+  const totalSteps = 3 + committedIndexEntries.length + sourcePlans.length + (hasRuntimeConfig ? 1 : 0);
   let completed = 1;
 
   emitProgress(options, {
@@ -149,45 +228,61 @@ export async function exportCorpusArchive(target, archivePath, options = {}) {
   });
 
   try {
-    const archiveIndexDir = path.join(stageRoot, 'index', '.papernexus');
-    await ensureDir(path.dirname(archiveIndexDir));
-    await fs.cp(corpusDir, archiveIndexDir, {
-      recursive: true
-    });
-    completed += 1;
-    emitProgress(options, {
-      completed,
-      total: totalSteps,
-      label: 'copied committed corpus index'
-    });
+    if (hasRuntimeConfig) {
+      await copyPathToDestination(runtimeConfigPath, path.join(stageRoot, 'config.json'));
+      completed += 1;
+      emitProgress(options, {
+        completed,
+        total: totalSteps,
+        label: 'copied runtime config'
+      });
+    }
 
-    for (let index = 0; index < inputPaths.length; index += 1) {
-      const sourcePath = path.resolve(String(inputPaths[index]));
-      if (!(await fileExists(sourcePath))) {
+    const archiveIndexDir = path.join(stageRoot, 'index', '.papernexus');
+    await ensureDir(archiveIndexDir);
+    for (const entry of committedIndexEntries) {
+      await copyPathToDestination(entry.sourcePath, path.join(archiveIndexDir, entry.archiveRelativePath));
+      completed += 1;
+      emitProgress(options, {
+        completed,
+        total: totalSteps,
+        label: `copied committed index file ${entry.archiveRelativePath}`
+      });
+    }
+
+    for (let index = 0; index < sourcePlans.length; index += 1) {
+      const sourcePlan = sourcePlans[index];
+      if (!(await fileExists(sourcePlan.sourcePath))) {
         completed += 1;
         emitProgress(options, {
           completed,
           total: totalSteps,
-          label: `skipped missing source ${index + 1}/${inputPaths.length}`
+          label: `skipped missing source ${index + 1}/${sourcePlans.length}`
         });
         continue;
       }
 
       const sourceTarget = path.join(stageRoot, 'sources', String(index));
-      const copiedEntry = await copyPathIntoArchive(sourcePath, sourceTarget);
-      if (copiedEntry) {
-        sourceEntries.push(copiedEntry);
-      }
+      const destinationPath = path.join(sourceTarget, sourcePlan.archiveFileName);
+      await copyPathToDestination(sourcePlan.sourcePath, destinationPath);
+      sourceEntries.push({
+        originalPath: sourcePlan.originalPath,
+        archivePath: destinationPath,
+        kind: sourcePlan.kind,
+        exportKind: sourcePlan.exportKind,
+        sourceKind: sourcePlan.sourceKind
+      });
       completed += 1;
       emitProgress(options, {
         completed,
         total: totalSteps,
-        label: `copied source ${index + 1}/${inputPaths.length}`
+        label: `copied source ${index + 1}/${sourcePlans.length}`
       });
     }
 
     const exportManifest = {
-      version: 1,
+      version: 2,
+      mode: 'lightweight-markdown-first',
       createdAt: new Date().toISOString(),
       archivePath: absoluteArchivePath,
       corpusName: meta.name,
@@ -196,11 +291,24 @@ export async function exportCorpusArchive(target, archivePath, options = {}) {
       nodeCount: meta.nodeCount,
       relationshipCount: meta.relationshipCount,
       inputPaths,
+      runtimeConfigPath: hasRuntimeConfig ? 'config.json' : null,
+      committedIndexFiles: committedIndexEntries.map((entry) => path.join('index', '.papernexus', entry.archiveRelativePath)),
       sources: sourceEntries.map((entry) => ({
         originalPath: entry.originalPath,
         archivePath: path.relative(stageRoot, entry.archivePath),
-        kind: entry.kind
-      }))
+        kind: entry.kind,
+        exportKind: entry.exportKind,
+        sourceKind: entry.sourceKind
+      })),
+      omitted: {
+        intermediateDirs: [
+          'index/.papernexus/markdown',
+          'index/.papernexus/papers',
+          'index/.papernexus/staged',
+          'index/.papernexus/imports'
+        ],
+        pdfSources: 'omitted unless already materialized to markdown cache'
+      }
     };
 
     await writeJson(path.join(stageRoot, 'export.json'), exportManifest);

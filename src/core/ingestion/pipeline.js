@@ -4018,6 +4018,10 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       markerSshHost: options.markerSshHost,
       mineruCommand: options.mineruCommand,
       mineruHttpUrl: options.mineruHttpUrl,
+      paddleocrVlPython: options.paddleocrVlPython,
+      paddleocrVlEnableHpi: options.paddleocrVlEnableHpi,
+      paddleocrVlDevice: options.paddleocrVlDevice,
+      paddleocrVlUseTensorRt: options.paddleocrVlUseTensorRt,
       pageRange: options.pageRange,
       pdfSshHost: options.pdfSshHost,
       markerDir,
@@ -4133,6 +4137,10 @@ function resolveAnalyzeConcurrency(options = {}) {
   const parser = normalizePdfParser(options.pdfParser);
   if (parser === 'marker') {
     return resolveMarkerConcurrency(options);
+  }
+
+  if (parser === 'paddleocr-vl') {
+    return 1;
   }
 
   const available = resolveAvailableParallelism(options);

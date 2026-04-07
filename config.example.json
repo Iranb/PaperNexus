@@ -21,7 +21,13 @@
   "serve": {
     "host": "0.0.0.0",
     "port": 4821,
-    "apiToken": "replace-with-your-api-token"
+    "apiToken": "replace-with-your-api-token",
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp",
+      "transport": "streamable-http",
+      "allowSseFallback": false
+    }
   },
   "llm": {
     "provider": "openai",

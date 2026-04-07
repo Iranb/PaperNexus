@@ -21,8 +21,8 @@ Global options:
 
 Commands:
   papernexus init [--force]
-  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
-  papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
+  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
   papernexus llm-optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus build-graph [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>]
   papernexus merge-graph [<path>] [--continue] [--force] [--quiet] [--node-llm-check]
@@ -31,13 +31,13 @@ Commands:
   papernexus stage2 [<path>] [--name <corpus>] [--continue] [--force]
   papernexus stage3 [<path>] [--name <corpus>] [--continue] [--force]
   papernexus stage4 [<path>] [--continue] [--force]
-  papernexus optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
-  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
   papernexus catalyst-backfill [<path>] [--name <corpus>] [--semantic-extraction <llm-assisted|llm-primary>] [--force]
-  papernexus backup-export <archive-path> [--corpus <name>]
+  papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
   papernexus logs watch
@@ -71,6 +71,7 @@ Examples:
   papernexus analyze ./papers --name ml-papers --semantic-extraction auto --provider openai --model gpt-4o-mini
   papernexus analyze ./papers --name ml-papers --pdf-parser marker --marker-cmd marker_single --pdf-ssh-host 211.71.76.29 --ollama-model qwen2.5:0.5b --ollama-relations --ollama-ssh-host 211.71.76.29
   papernexus analyze ./papers --name ml-papers --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000
+  papernexus analyze ./papers --name ml-papers --pdf-parser paddleocr-vl
   papernexus materialize ./papers --name ml-papers --continue
   papernexus llm-optimize ./papers --name ml-papers --continue --semantic-extraction llm-primary --batch-size 16
   papernexus build-graph ./papers --name ml-papers --continue
@@ -79,6 +80,7 @@ Examples:
   papernexus optimize ./papers --name ml-papers --continue --semantic-extraction llm-primary --node-llm-check --batch-size 16
   papernexus watch ./papers --name ml-papers
   papernexus enhance --once
+  papernexus backup-export
   papernexus backup-export ./papernexus-backup.tgz
   papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
   papernexus auth llm set --provider openai --base-url https://coding.dashscope.aliyuncs.com/v1
@@ -385,6 +387,10 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     mineruCommand: firstDefined(flags['mineru-cmd'], commandConfig.mineruCommand),
     mineruHttpUrl: firstDefined(flags['mineru-http-url'], commandConfig.mineruHttpUrl, commandConfig.pdfCommand),
     mineruRemoteFailureMode: firstDefined(flags['mineru-remote-failure'], commandConfig.mineruRemoteFailureMode, 'error'),
+    paddleocrVlPython: firstDefined(commandConfig.paddleocrVlPython),
+    paddleocrVlEnableHpi: firstDefined(commandConfig.paddleocrVlEnableHpi, true),
+    paddleocrVlDevice: firstDefined(commandConfig.paddleocrVlDevice),
+    paddleocrVlUseTensorRt: firstDefined(commandConfig.paddleocrVlUseTensorRt, false),
     pageRange: firstDefined(flags['page-range'], commandConfig.pageRange),
     pdfSshHost: firstDefined(flags['pdf-ssh-host'], commandConfig.pdfSshHost, commandConfig.pdfParserSshHost, llmSshHost),
     ...llmOptions,
@@ -483,6 +489,12 @@ function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = 
     configBaseDir: baseDir,
     configPath
   };
+}
+
+function normalizeServeMcpPath(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '/mcp';
+  return raw.startsWith('/') ? raw : `/${raw}`;
 }
 
 function buildEnhanceOptions(flags, config) {
@@ -1249,13 +1261,9 @@ async function main() {
 
   if (command === 'backup-export') {
     const archiveTarget = positionals[0];
-    if (!archiveTarget) {
-      throw new Error('Usage: `papernexus backup-export <archive-path> [--corpus <name>]`.');
-    }
-
     const candidate = resolveConfiguredCorpus(flags, config, undefined, configBaseDir);
-    const archivePath = resolvePathWithHome(archiveTarget, process.cwd());
-    announceCliStage(flags, 1, 1, 'Exporting backup archive', 'capturing graph state, source papers, markdown cache, and staged artifacts');
+    const archivePath = archiveTarget ? resolvePathWithHome(archiveTarget, process.cwd()) : undefined;
+    announceCliStage(flags, 1, 1, 'Exporting backup archive', 'capturing minimal committed graph state, runtime config, and markdown-first source files');
     const progress = createCliProgress(1, {
       quiet: Boolean(flags.quiet),
       prefix: 'Exporting backup'
@@ -1613,6 +1621,14 @@ async function main() {
     const cliPath = fileURLToPath(import.meta.url);
     const projectRoot = path.resolve(path.dirname(cliPath), '../..');
     const absoluteCli = path.join(projectRoot, 'src/cli/index.js');
+    const serveConfig = getSection(config, 'serve');
+    const serveMcpConfig = serveConfig.mcp && typeof serveConfig.mcp === 'object' && !Array.isArray(serveConfig.mcp)
+      ? serveConfig.mcp
+      : {};
+    const serveHost = String(firstDefined(serveConfig.host, '127.0.0.1')).trim() || '127.0.0.1';
+    const servePort = Number(firstDefined(serveConfig.port, 4821)) || 4821;
+    const mcpPath = normalizeServeMcpPath(serveMcpConfig.path);
+    const remoteHost = serveHost === '0.0.0.0' ? '127.0.0.1' : serveHost;
 
     console.log('Codex / Claude / Cursor MCP snippets:');
     console.log('');
@@ -1628,6 +1644,24 @@ async function main() {
     console.log('    }');
     console.log('  }');
     console.log('}');
+
+    if (serveMcpConfig.enabled === true) {
+      console.log('');
+      console.log('Remote HTTP MCP snippet:');
+      console.log('');
+      console.log('{');
+      console.log('  "mcpServers": {');
+      console.log('    "papernexus-remote": {');
+      console.log(`      "url": "http://${remoteHost}:${servePort}${mcpPath}",`);
+      console.log('      "transport": "streamable-http",');
+      console.log('      "headers": {');
+      console.log('        "Authorization": "Bearer ${PAPERNEXUS_MCP_TOKEN}"');
+      console.log('      },');
+      console.log('      "connectionTimeoutMs": 30000');
+      console.log('    }');
+      console.log('  }');
+      console.log('}');
+    }
     return;
   }
 

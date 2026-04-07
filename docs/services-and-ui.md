@@ -217,6 +217,8 @@ papernexus setup
 
 This is useful when another agent or tool should query the graph, request context, or perform controlled graph mutation flows.
 
+For remote MCP over HTTP, enable `serve.mcp.enabled`, restart `papernexus serve`, and connect to `http://<host>:4821/mcp` with the same bearer token used for `/api/*`.
+
 ## Service-Friendly Daily Workflow
 
 For normal long-lived operation:

@@ -130,6 +130,8 @@ This includes:
 - PDF-derived Markdown
 - copied source Markdown
 
+PDF-derived Markdown is isolated by parser name, so different parser choices such as `docling`, `mineru`, or `paddleocr-vl` do not overwrite each other's cached output.
+
 The system updates the cache only when the corresponding source fingerprint changes, unless you explicitly force a rebuild.
 
 ### Semantic Snapshots
@@ -209,18 +211,25 @@ PaperNexus can export a portable archive of the current graph environment.
 Use:
 
 ```bash
+papernexus backup-export
 papernexus backup-export /path/to/archive.tgz
 papernexus backup-unpack /path/to/archive.tgz --output /path/to/inspect-dir
 ```
 
 The archive includes:
 
-- the committed `.papernexus/` corpus state
-- configured source papers
-- markdown cache
-- semantic snapshots
-- staged graph files
-- import-task data
+- `~/.papernexus/config.json` when present
+- the committed graph state needed to reopen the corpus
+- the committed lite view, metadata, and source manifest
+- markdown-first source exports for indexed papers
+
+The archive intentionally omits rebuildable intermediate files such as:
+
+- `.papernexus/markdown/`
+- `.papernexus/papers/`
+- `.papernexus/staged/`
+- `.papernexus/imports/`
+- original PDF files when a markdown materialization already exists
 
 `backup-unpack` is intentionally non-destructive. It unpacks the archive into an inspectable directory and does not overwrite the live graph.
 

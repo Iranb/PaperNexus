@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const examplesRoot = path.join(__dirname, '..', 'examples');
 
-test('backup archive export and unpack preserve the index plus source papers', async () => {
+test('backup archive export and unpack preserve minimal committed state plus markdown-first source papers', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-archive-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-archive-workspace-'));
   const inputRoot = path.join(workspaceRoot, 'papers');
@@ -20,10 +20,16 @@ test('backup archive export and unpack preserve the index plus source papers', a
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
     await fs.mkdir(inputRoot, { recursive: true });
+    await fs.writeFile(path.join(tempHome, 'config.json'), `${JSON.stringify({
+      analyze: {
+        name: 'backup-archive-test'
+      }
+    }, null, 2)}\n`);
     await fs.copyFile(
       path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
       path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
     );
+    await fs.writeFile(path.join(inputRoot, 'notes.txt'), 'not an indexed paper\n', 'utf8');
 
     const [{ analyzeCorpus }, backupArchive] = await Promise.all([
       import('../src/core/ingestion/pipeline.js'),
@@ -40,6 +46,10 @@ test('backup archive export and unpack preserve the index plus source papers', a
       name: 'backup-archive-test',
       force: true
     });
+    await fs.mkdir(path.join(indexRoot, '.papernexus', 'staged'), { recursive: true });
+    await fs.writeFile(path.join(indexRoot, '.papernexus', 'staged', 'ghost.json'), '{"staged":true}\n', 'utf8');
+    await fs.mkdir(path.join(indexRoot, '.papernexus', 'imports'), { recursive: true });
+    await fs.writeFile(path.join(indexRoot, '.papernexus', 'imports', 'queue.json'), '{"jobs":[]}\n', 'utf8');
 
     const exported = await backupArchive.exportCorpusArchive(indexRoot, archivePath, {
       onStage(step, total, title) {
@@ -63,10 +73,88 @@ test('backup archive export and unpack preserve the index plus source papers', a
       }
     });
     await fs.access(path.join(unpacked.outputPath, 'export.json'));
+    await fs.access(path.join(unpacked.outputPath, 'config.json'));
     await fs.access(path.join(unpacked.outputPath, 'index', '.papernexus', 'meta.json'));
+    await fs.access(path.join(unpacked.outputPath, 'index', '.papernexus', 'sources.json'));
+    await fs.access(path.join(unpacked.outputPath, 'index', '.papernexus', 'graph.lite.json'));
     await fs.access(path.join(unpacked.outputPath, 'sources', '0', 'retrieval-augmented-experiment-planning.md'));
+    await assert.rejects(fs.access(path.join(unpacked.outputPath, 'sources', '0', 'notes.txt')));
+    await assert.rejects(fs.access(path.join(unpacked.outputPath, 'index', '.papernexus', 'markdown')));
+    await assert.rejects(fs.access(path.join(unpacked.outputPath, 'index', '.papernexus', 'papers')));
+    await assert.rejects(fs.access(path.join(unpacked.outputPath, 'index', '.papernexus', 'staged')));
+    await assert.rejects(fs.access(path.join(unpacked.outputPath, 'index', '.papernexus', 'imports')));
     assert.ok(unpackStages.some((stage) => /Unpacking backup archive/i.test(stage.title)));
     assert.ok(unpackProgress.some((progress) => progress.completed >= progress.total));
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('backup archive export prefers cached markdown over original pdf files', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-pdf-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-pdf-workspace-'));
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const archivePath = path.join(workspaceRoot, 'papernexus-backup-pdf.tgz');
+  const unpackRoot = path.join(workspaceRoot, 'unpacked');
+  const pdfRoot = path.join(workspaceRoot, 'external-pdfs');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(path.join(indexRoot, '.papernexus', 'markdown', 'docling'), { recursive: true });
+    await fs.writeFile(path.join(tempHome, 'config.json'), `${JSON.stringify({
+      analyze: {
+        pdfParser: 'docling'
+      }
+    }, null, 2)}\n`);
+
+    const originalPdfPath = path.join(pdfRoot, 'vision-paper.pdf');
+    const cachedMarkdownPath = path.join(indexRoot, '.papernexus', 'markdown', 'docling', 'vision-paper.md');
+    await fs.mkdir(pdfRoot, { recursive: true });
+    await fs.writeFile(originalPdfPath, '%PDF-1.4\nplaceholder\n', 'utf8');
+    await fs.writeFile(cachedMarkdownPath, '# Vision Paper\n\n## Abstract\n\nRestore me from markdown.\n', 'utf8');
+    await fs.writeFile(path.join(indexRoot, '.papernexus', 'meta.json'), `${JSON.stringify({
+      name: 'backup-pdf-test',
+      paperCount: 1,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(indexRoot, '.papernexus', 'sources.json'), `${JSON.stringify({
+      corpusName: 'backup-pdf-test',
+      inputPaths: [pdfRoot],
+      sources: [
+        {
+          sourceKey: 'pdf:vision-paper',
+          inputPath: originalPdfPath,
+          kind: 'pdf',
+          fingerprint: 'fp-1',
+          sourceFingerprint: 'fp-1',
+          sourcePath: originalPdfPath,
+          sourcePdfPath: originalPdfPath,
+          sourceMarkdownPath: cachedMarkdownPath,
+          markdownCachePath: cachedMarkdownPath,
+          paperId: 'vision-paper',
+          paperTitle: 'Vision Paper'
+        }
+      ]
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(indexRoot, '.papernexus', 'graph.lite.json'), `${JSON.stringify({
+      nodes: [],
+      relationships: []
+    }, null, 2)}\n`);
+
+    const backupArchive = await import('../src/storage/backup-archive.js');
+
+    await backupArchive.exportCorpusArchive(indexRoot, archivePath);
+    await backupArchive.unpackCorpusArchive(archivePath, unpackRoot);
+
+    await fs.access(path.join(unpackRoot, 'sources', '0', 'vision-paper.md'));
+    await assert.rejects(fs.access(path.join(unpackRoot, 'sources', '0', 'vision-paper.pdf')));
+    const restoredMarkdown = await fs.readFile(path.join(unpackRoot, 'sources', '0', 'vision-paper.md'), 'utf8');
+    assert.match(restoredMarkdown, /restore me from markdown/i);
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

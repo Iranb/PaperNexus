@@ -230,6 +230,26 @@ papernexus serve
 http://127.0.0.1:4821
 ```
 
+如果您想让同一个 `serve` 进程同时暴露远程 MCP，请先在 `config.json` 中加入：
+
+```json
+{
+  "serve": {
+    "host": "0.0.0.0",
+    "port": 4821,
+    "apiToken": "replace-with-your-api-token",
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp",
+      "transport": "streamable-http",
+      "allowSseFallback": false
+    }
+  }
+}
+```
+
+然后把 MCP 客户端指向 `http://<host>:4821/mcp`，并使用 `Authorization: Bearer <token>`。
+
 使用仪表板检查以下内容：
 
 - 语料库元数据
@@ -319,6 +339,23 @@ papernexus mcp
 ```
 
 如果您想要为其他工具准备即用型的 MCP 配置片段，请使用 `papernexus setup`。
+
+如果要走远程 HTTP MCP，请启用 `serve.mcp.enabled`，启动 `papernexus serve`，然后使用如下客户端配置：
+
+```json
+{
+  "mcpServers": {
+    "papernexus-remote": {
+      "url": "http://127.0.0.1:4821/mcp",
+      "transport": "streamable-http",
+      "headers": {
+        "Authorization": "Bearer ${PAPERNEXUS_MCP_TOKEN}"
+      },
+      "connectionTimeoutMs": 30000
+    }
+  }
+}
+```
 
 ## 13. 可选：练习反思导向推理
 

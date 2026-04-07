@@ -41,7 +41,13 @@ papernexus --no-config ...
   "serve": {
     "host": "127.0.0.1",
     "port": 4821,
-    "apiToken": "replace-this-with-a-secret-token"
+    "apiToken": "replace-this-with-a-secret-token",
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp",
+      "transport": "streamable-http",
+      "allowSseFallback": false
+    }
   }
 }
 ```
@@ -106,13 +112,17 @@ Useful keys:
 - `name`: default corpus name
 - `concurrency`: parallelism for staged work
 - `semanticExtraction`: `auto`, `heuristic-only`, `llm-assisted`, or `llm-primary`
-- `pdfParser`: `docling`, `marker`, or `mineru`
+- `pdfParser`: `docling`, `marker`, `mineru`, or `paddleocr-vl`
 - `doclingCommand`
 - `doclingOcrEngine`
 - `doclingPdfBackend`
 - `markerCommand`
 - `mineruHttpUrl`
 - `mineruRemoteFailure`: `error` or `docling`
+- `paddleocrVlPython`
+- `paddleocrVlEnableHpi`
+- `paddleocrVlDevice`
+- `paddleocrVlUseTensorRt`
 - `nodeLlmCheck`
 
 ### `llm`
@@ -151,7 +161,13 @@ Controls the dashboard and local API binding.
   "serve": {
     "host": "127.0.0.1",
     "port": 4821,
-    "apiToken": "replace-this-with-a-secret-token"
+    "apiToken": "replace-this-with-a-secret-token",
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp",
+      "transport": "streamable-http",
+      "allowSseFallback": false
+    }
   }
 }
 ```
@@ -159,9 +175,13 @@ Controls the dashboard and local API binding.
 Notes:
 
 - all `/api/*` routes now require a token
+- the same bearer token protects the optional remote MCP endpoint
 - set the token with `serve.apiToken` or `PAPERNEXUS_API_TOKEN`
 - the dashboard can still serve static assets, but its API calls will fail until a token is provided
 - when the dashboard is opened in a browser, you can pass `?token=<secret>` once and the client will reuse it for later API calls
+- `serve.mcp.enabled` defaults to `false`
+- `serve.mcp.path` defaults to `/mcp`
+- `serve.mcp.transport` defaults to `streamable-http`
 
 ### `global`
 
@@ -216,6 +236,28 @@ Docling is the default PDF parser.
 ```
 
 If the remote MinerU backend is unreachable, the recommended default is `error` so the pipeline does not silently continue with an unclear parse result.
+
+### PaddleOCR-VL
+
+```json
+{
+  "analyze": {
+    "pdfParser": "paddleocr-vl",
+    "paddleocrVlPython": "python3",
+    "paddleocrVlEnableHpi": true,
+    "paddleocrVlDevice": "gpu:0",
+    "paddleocrVlUseTensorRt": false
+  }
+}
+```
+
+Notes:
+
+- this parser is local-only in v1
+- it uses the official `PaddleOCRVL` Python API
+- it is intended to be selected from `config.json`
+- it fails fast when PaddleOCR-VL is unavailable or inference fails
+- for local GPU HPI setups, install `paddleocr[doc-parser]` and run `paddleocr install_hpi_deps gpu`
 
 ## Remote Ollama
 

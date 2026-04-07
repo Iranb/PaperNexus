@@ -152,6 +152,64 @@ test('CLI can load defaults from config.json', async () => {
   }
 });
 
+test('CLI can analyze PDFs with paddleocr-vl selected from config.json', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-paddleocr-vl-'));
+  const fakePdfPath = path.join(workspaceRoot, 'paper.pdf');
+  const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(fakePdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'printf "# Configured PaddleOCR-VL\\n\\n## Abstract\\n\\nConfigured parser output.\\n" > "$output"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    await fs.writeFile(path.join(workspaceRoot, 'config.json'), `${JSON.stringify({
+      sources: {
+        inputs: ['.']
+      },
+      storage: {
+        home: '.configured-home',
+        indexDir: './index-store'
+      },
+      analyze: {
+        name: 'configured-paddleocr-vl',
+        pdfParser: 'paddleocr-vl',
+        paddleocrVlPython: './fake-python.sh',
+        paddleocrVlEnableHpi: true,
+        paddleocrVlDevice: 'gpu:0'
+      }
+    }, null, 2)}\n`);
+
+    const analyzeRun = await execFileAsync('node', [cliPath, 'analyze', '--force'], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+    assert.match(analyzeRun.stdout, /Corpus: configured-paddleocr-vl/);
+
+    const statusRun = await execFileAsync('node', [cliPath, 'status'], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+    assert.match(statusRun.stdout, /PDF parser: paddleocr-vl/);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('CLI can analyze multiple configured source directories from config.json', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-multi-source-'));
   const inputA = path.join(workspaceRoot, 'papers-a');
@@ -261,12 +319,11 @@ test('CLI can write the corpus index under storage.indexDir', async () => {
   }
 });
 
-test('CLI backup-export and backup-unpack print stage banners and complete successfully', async () => {
+test('CLI backup-export defaults to ~/.papernexus/backups and backup-unpack prints stage banners', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-backup-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-backup-workspace-'));
   const inputRoot = path.join(workspaceRoot, 'papers');
   const indexRoot = path.join(workspaceRoot, 'index-store');
-  const archivePath = path.join(workspaceRoot, 'backup.tgz');
   const unpackRoot = path.join(workspaceRoot, 'unpacked');
 
   try {
@@ -298,7 +355,6 @@ test('CLI backup-export and backup-unpack print stage banners and complete succe
       cliPath,
       'backup-export',
       '--no-config=true',
-      archivePath,
       '--corpus',
       'cli-backup-papers'
     ], {
@@ -308,6 +364,11 @@ test('CLI backup-export and backup-unpack print stage banners and complete succe
 
     assert.match(exportRun.stdout, /Stage 1\/1: Exporting backup archive/);
     assert.match(exportRun.stdout, /Exported backup archive to/);
+    const archivePathMatch = exportRun.stdout.match(/Exported backup archive to (.+)\n/);
+    assert.ok(archivePathMatch, 'expected backup-export to print the generated archive path');
+    const archivePath = archivePathMatch[1].trim();
+    assert.match(archivePath, new RegExp(`${tempHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${path.sep.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}backups`));
+    await fs.access(archivePath);
 
     const unpackRun = await execFileAsync('node', [
       cliPath,

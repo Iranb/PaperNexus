@@ -1,15 +1,18 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { ensureDir, fileExists, listFilesRecursive, readText, removePath, writeText } from '../../lib/fs.js';
 import { stableHash } from '../../lib/utils.js';
 
 const PDF_PARSER_DOCLING = 'docling';
 const PDF_PARSER_MARKER = 'marker';
 const PDF_PARSER_MINERU = 'mineru';
+const PDF_PARSER_PADDLEOCR_VL = 'paddleocr-vl';
 const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
 const DEFAULT_MINERU_PROBE_CACHE_TTL_MS = 15_000;
 const mineruProbeCache = new Map();
+const PADDLEOCR_VL_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/paddleocr_vl_to_markdown.py', import.meta.url));
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -154,7 +157,53 @@ export function normalizePdfParser(value) {
   const normalized = String(value || process.env.PAPERNEXUS_PDF_PARSER || PDF_PARSER_MINERU).trim().toLowerCase();
   if (normalized === PDF_PARSER_MARKER) return PDF_PARSER_MARKER;
   if (normalized === PDF_PARSER_MINERU) return PDF_PARSER_MINERU;
+  if (normalized === PDF_PARSER_PADDLEOCR_VL) return PDF_PARSER_PADDLEOCR_VL;
   return PDF_PARSER_DOCLING;
+}
+
+function resolvePaddleOcrVlPython(options = {}) {
+  return String(
+    options.paddleocrVlPython
+    || process.env.PAPERNEXUS_PADDLEOCR_VL_PYTHON
+    || 'python3'
+  ).trim() || 'python3';
+}
+
+function resolvePaddleOcrVlBoolean(value, fallback) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  return fallback;
+}
+
+function resolvePaddleOcrVlEnableHpi(options = {}) {
+  return resolvePaddleOcrVlBoolean(
+    options.paddleocrVlEnableHpi ?? process.env.PAPERNEXUS_PADDLEOCR_VL_ENABLE_HPI,
+    true
+  );
+}
+
+function resolvePaddleOcrVlUseTensorRt(options = {}) {
+  return resolvePaddleOcrVlBoolean(
+    options.paddleocrVlUseTensorRt ?? process.env.PAPERNEXUS_PADDLEOCR_VL_USE_TENSORRT,
+    false
+  );
+}
+
+function resolvePaddleOcrVlDevice(options = {}) {
+  return String(
+    options.paddleocrVlDevice
+    || process.env.PAPERNEXUS_PADDLEOCR_VL_DEVICE
+    || ''
+  ).trim();
 }
 
 function resolveRemoteMarkerHost(options = {}) {
@@ -1089,6 +1138,97 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   };
 }
 
+async function convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options = {}) {
+  const {
+    markerDir,
+    markdownDir,
+    force = false
+  } = options;
+
+  const pythonCommand = resolvePaddleOcrVlPython(options);
+  const enableHpi = resolvePaddleOcrVlEnableHpi(options);
+  const useTensorRt = resolvePaddleOcrVlUseTensorRt(options);
+  const device = resolvePaddleOcrVlDevice(options);
+  const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const progress = createProgressReporter(`paddleocr-vl:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_PADDLEOCR_VL, basename, {
+    markerDir,
+    markdownDir
+  });
+
+  if (!force && await fileExists(cachedMarkdownPath)) {
+    return {
+      markdownPath: cachedMarkdownPath,
+      sourcePdfPath: pdfPath,
+      generated: false,
+      parser: PDF_PARSER_PADDLEOCR_VL,
+      parserCommand: `${pythonCommand} ${PADDLEOCR_VL_WRAPPER_PATH}`
+    };
+  }
+
+  if (force) {
+    await removePath(runDir);
+  }
+
+  await ensureDir(runDir);
+  await ensureDir(path.dirname(cachedMarkdownPath));
+
+  const args = [
+    PADDLEOCR_VL_WRAPPER_PATH,
+    '--input',
+    pdfPath,
+    '--output',
+    cachedMarkdownPath,
+    '--enable-hpi',
+    String(enableHpi),
+    '--use-tensorrt',
+    String(useTensorRt)
+  ];
+
+  if (device) {
+    args.push('--device', device);
+  }
+
+  try {
+    process.stderr.write(`[paddleocr-vl:${basename}] Running local PaddleOCR-VL\n`);
+    await runCommand(pythonCommand, args, {
+      onStdout: progress,
+      onStderr: progress,
+      timeoutMs,
+      timeoutLabel: `paddleocr-vl parse for ${pdfPath}`
+    });
+    flushProgressReporter(progress);
+  } catch (error) {
+    throw new Error(
+      `PaddleOCR-VL failed for ${pdfPath}. ${error.message}\n` +
+      `Tip: install \`paddleocr[doc-parser]\`, run \`paddleocr install_hpi_deps gpu\` for local GPU high-performance inference, and verify \`${pythonCommand}\` can import \`PaddleOCRVL\`.`
+    );
+  }
+
+  if (!await fileExists(cachedMarkdownPath)) {
+    throw new Error(
+      `PaddleOCR-VL finished for ${pdfPath} but no markdown cache was written to ${cachedMarkdownPath}.`
+    );
+  }
+
+  const markdown = await readText(cachedMarkdownPath);
+  if (!markdown.trim()) {
+    throw new Error(
+      `PaddleOCR-VL produced empty markdown for ${pdfPath}.\n` +
+      'Tip: verify the PDF is valid and the PaddleOCR-VL runtime can parse the selected document.'
+    );
+  }
+
+  return {
+    markdownPath: cachedMarkdownPath,
+    sourcePdfPath: pdfPath,
+    generated: true,
+    parser: PDF_PARSER_PADDLEOCR_VL,
+    parserCommand: `${pythonCommand} ${PADDLEOCR_VL_WRAPPER_PATH}`
+  };
+}
+
 export async function warmMineruHttpEndpoint(url, options = {}) {
   const normalizedUrl = String(url || '').trim();
   if (!normalizedUrl) {
@@ -1128,6 +1268,10 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
     });
   }
 
+  if (parser === PDF_PARSER_PADDLEOCR_VL) {
+    return convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options);
+  }
+
   return convertPdfToMarkdownWithDocling(pdfPath, {
     ...options,
     doclingCommand: options.doclingCommand || options.pdfCommand
@@ -1137,6 +1281,7 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
 export const __markerTestables = {
   shellQuote,
   normalizePdfParser,
+  resolvePaddleOcrVlPython,
   resolveRemoteMarkerHost,
   resolveMineruRemoteFailureMode,
   resolveMineruProbeCacheTtlMs,

@@ -6,7 +6,9 @@ It also supports queued Web API imports for uploaded `pdf/md` files and portable
 
 Preferred setup path: run `papernexus init`, then `papernexus analyze --force`.
 
-[Getting Started](docs/getting-started.md) · [CLI Reference](docs/cli-reference.md) · [Configuration](docs/configuration.md) · [Pipeline & Storage](docs/pipeline-and-storage.md) · [Architecture](docs/architecture.md) · [Services & UI](docs/services-and-ui.md) · [Manual Walkthrough](#manual-walkthrough)
+Local MCP still works through `papernexus mcp`, and `papernexus serve` can now optionally expose the same MCP surface remotely over authenticated HTTP at `/mcp`.
+
+[Getting Started](docs/getting-started.md) · [CLI Reference](docs/cli-reference.md) · [Configuration](docs/configuration.md) · [MCP Setup](docs/mcp-setup.md) · [Pipeline & Storage](docs/pipeline-and-storage.md) · [Architecture](docs/architecture.md) · [Services & UI](docs/services-and-ui.md) · [Manual Walkthrough](#manual-walkthrough)
 
 ## Install
 
@@ -31,6 +33,13 @@ Install parser dependencies first:
 
 ```bash
 pip install docling marker-pdf
+```
+
+If you want to use local PaddleOCR-VL high-performance PDF parsing, install the official runtime separately:
+
+```bash
+python -m pip install -U "paddleocr[doc-parser]"
+paddleocr install_hpi_deps gpu
 ```
 
 Run the recommended first-time flow:
@@ -86,6 +95,7 @@ papernexus merge-graph --continue
 papernexus write-index --continue
 
 # Export the current graph environment
+papernexus backup-export
 papernexus backup-export ./papernexus-backup.tgz
 
 # Unpack a backup archive into an inspectable directory
@@ -109,6 +119,20 @@ papernexus enhance --once
 papernexus serve
 papernexus service install
 papernexus logs watch
+```
+
+Optional local PaddleOCR-VL parser config:
+
+```json
+{
+  "analyze": {
+    "pdfParser": "paddleocr-vl",
+    "paddleocrVlPython": "python3",
+    "paddleocrVlEnableHpi": true,
+    "paddleocrVlDevice": "gpu:0",
+    "paddleocrVlUseTensorRt": false
+  }
+}
 ```
 
 ## Manual Walkthrough
@@ -238,6 +262,26 @@ Open:
 http://127.0.0.1:4821
 ```
 
+To expose remote MCP from the same server, add this to `config.json` before starting `serve`:
+
+```json
+{
+  "serve": {
+    "host": "0.0.0.0",
+    "port": 4821,
+    "apiToken": "replace-with-your-api-token",
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp",
+      "transport": "streamable-http",
+      "allowSseFallback": false
+    }
+  }
+}
+```
+
+Then point an MCP client at `http://<host>:4821/mcp` with `Authorization: Bearer <token>`.
+
 ### 10. Turn on background mode
 
 ```bash
@@ -295,6 +339,23 @@ papernexus mcp
 papernexus setup
 ```
 
+For remote MCP over HTTP, enable `serve.mcp.enabled`, start `papernexus serve`, and use a client config like:
+
+```json
+{
+  "mcpServers": {
+    "papernexus-remote": {
+      "url": "http://127.0.0.1:4821/mcp",
+      "transport": "streamable-http",
+      "headers": {
+        "Authorization": "Bearer ${PAPERNEXUS_MCP_TOKEN}"
+      },
+      "connectionTimeoutMs": 30000
+    }
+  }
+}
+```
+
 ### 14. Optional: exercise reflection-oriented reasoning
 
 1. Run `papernexus enhance --once --corpus <your-corpus-name>`
@@ -321,7 +382,7 @@ You’ve exercised the full PaperNexus flow when:
 - graph merge stage for duplicate evaluation nodes
 - merge-time LLM node deletion is currently disabled; do not rely on `--node-llm-check`
 - queued Web API import tasks with per-task logs under `.papernexus/imports/`
-- backup archive export/unpack for graph data, source papers, markdown cache, snapshots, staged data, and imports
+- lightweight backup archive export/unpack for committed graph state, runtime config, and markdown-first source recovery
 - Kuzu-backed authoritative graph with lite JSON read index
 - theory, storyline, and reflection overlays
 - local dashboard, MCP server, and macOS background services

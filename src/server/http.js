@@ -31,6 +31,7 @@ import {
   theoryBriefPayload,
   updateLlmConfigPayload
 } from './api.js';
+import { getMcpHttpConfig, handleMcpHttpRequest } from '../mcp/http.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
@@ -142,6 +143,12 @@ function sendJson(response, statusCode, payload) {
     'Cache-Control': 'no-store'
   });
   response.end(body);
+}
+
+function logMcpHttpRequest(logger, request, method, statusCode, durationMs, transport) {
+  const timestamp = new Date().toISOString();
+  const remoteAddress = request.socket?.remoteAddress || 'unknown';
+  logger.log?.(`[${timestamp}] [mcp-http] ${remoteAddress} method=${method} status=${statusCode} durationMs=${durationMs} transport=${transport}`);
 }
 
 async function sendFile(response, filePath) {
@@ -441,6 +448,7 @@ export async function serveCommand(options = {}) {
   const port = Number(options.port || 4821);
   const host = options.host || '127.0.0.1';
   const apiToken = resolveApiToken(options);
+  const mcpConfig = getMcpHttpConfig(options);
   const rootPaths = getConfiguredRootPaths(options);
   const webRoot = buildWebRoot();
   const apiCache = createApiCache();
@@ -503,6 +511,31 @@ export async function serveCommand(options = {}) {
         config: options.config || {},
         configBaseDir: options.configBaseDir || process.cwd()
       };
+
+      if (url.pathname === mcpConfig.path) {
+        if (!mcpConfig.enabled) {
+          sendJson(response, 404, { error: 'Not Found' });
+          return;
+        }
+
+        if (!requireApiToken(request, response, apiToken)) {
+          return;
+        }
+
+        const startedAt = Date.now();
+        const result = await handleMcpHttpRequest(request, response, {
+          config: options.config || {}
+        });
+        logMcpHttpRequest(
+          workerLogger,
+          request,
+          result?.rpcMethod || request.method || 'UNKNOWN',
+          result?.statusCode || response.statusCode || 200,
+          Date.now() - startedAt,
+          mcpConfig.transport
+        );
+        return;
+      }
 
       if (url.pathname.startsWith('/api/')) {
         if (!requireApiToken(request, response, apiToken)) {
@@ -736,6 +769,14 @@ export async function serveCommand(options = {}) {
     console.log('API authentication: enabled (Bearer token required for all /api/* routes).');
   } else {
     console.warn('API authentication: token missing. All /api/* requests will return 503 until `serve.apiToken` or `PAPERNEXUS_API_TOKEN` is configured.');
+  }
+  if (mcpConfig.enabled) {
+    console.log(`MCP transport: ${mcpConfig.transport} enabled at http://${host}:${port}${mcpConfig.path}`);
+    if (!apiToken) {
+      console.warn('MCP authentication: token missing. All MCP requests will return 503 until `serve.apiToken` or `PAPERNEXUS_API_TOKEN` is configured.');
+    }
+  } else {
+    console.log(`MCP transport: disabled (configure serve.mcp.enabled to expose ${mcpConfig.path})`);
   }
   console.log('Press Ctrl+C to stop.');
 

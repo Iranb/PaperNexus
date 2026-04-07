@@ -57,7 +57,9 @@ Useful flags:
 - `--continue`: reuse existing markdown cache and snapshots when fingerprints match
 - `--force`: rematerialize source states
 - `--rebuild-pdf-markdown`: force all PDF-derived Markdown to be regenerated
-- `--pdf-parser <docling|marker|mineru>`
+- `--pdf-parser <docling|marker|mineru|paddleocr-vl>`
+
+`paddleocr-vl` is intended for local config-driven use with the official PaddleOCR-VL Python runtime. In v1 it fails fast instead of falling back to another parser.
 
 ### Stage 2: `llm-optimize`
 
@@ -125,10 +127,20 @@ If you skip `merge-graph`, `write-index` will automatically run the merge step b
 ### `backup-export`
 
 ```bash
-papernexus backup-export <archive-path> [--corpus <name>]
+papernexus backup-export [archive-path] [--corpus <name>]
 ```
 
-Exports the current single-graph environment into a compressed archive that includes the committed index plus current source inputs.
+Exports a lightweight compressed archive of the current single-graph environment.
+
+If you omit `archive-path`, PaperNexus writes the archive under `~/.papernexus/backups/`.
+
+The archive keeps:
+
+- `~/.papernexus/config.json` when present
+- the committed graph files, lite view, metadata, and source manifest
+- markdown-first source exports from the manifest
+
+The archive omits rebuildable intermediate state such as markdown cache directories, semantic snapshots, staged graph files, and import queues.
 
 ### `backup-unpack` / `backup-load`
 
@@ -217,6 +229,7 @@ papernexus service install
 papernexus service status
 papernexus service uninstall
 papernexus logs watch
+papernexus backup-export
 papernexus backup-export ./papernexus-backup.tgz
 papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
 ```
@@ -236,6 +249,7 @@ papernexus setup
 ```
 
 Use `auth llm set` to store an API key reference, ideally through macOS Keychain.
+Use `papernexus mcp` for local stdio MCP, or enable `serve.mcp.enabled` and run `papernexus serve` for authenticated remote HTTP MCP at `/mcp`.
 
 ## Common Usage Patterns
 
