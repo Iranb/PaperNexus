@@ -158,7 +158,7 @@ export async function listCorporaPayload(options = {}) {
   });
 }
 
-async function resolveCorpusForApi(candidate, options = {}) {
+export async function resolveCorpusForApi(candidate, options = {}) {
   const configuredRoot = getConfiguredRootPath(options);
   if (configuredRoot) {
     if (!candidate) {
@@ -227,7 +227,7 @@ export async function corpusPayload(candidate, options = {}) {
   });
 }
 
-async function loadCorpusLiteForApi(rootPath, options = {}) {
+export async function loadCorpusLiteForApi(rootPath, options = {}) {
   const cache = options.cache;
   const paths = getCorpusPaths(rootPath);
   const stamp = `${await readPathStamp(paths.metaPath)}|${await readPathStamp(paths.liteGraphPath)}|${await readPathStamp(paths.graphPath)}|${await readPathStamp(paths.kuzuGraphPath)}`;

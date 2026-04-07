@@ -42,7 +42,7 @@ export function startMcpServer() {
       }
 
       try {
-        const result = await handleMessage(message);
+        const result = await handleMessage(message, {});
         sendMessage(createJsonRpcSuccess(message.id, result));
       } catch (error) {
         sendMessage(createJsonRpcError(message.id, -32603, error.message));

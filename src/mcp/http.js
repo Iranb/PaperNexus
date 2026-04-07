@@ -89,7 +89,7 @@ export async function handleMcpHttpRequest(request, response, options = {}) {
   }
 
   try {
-    const result = await handleMessage(message);
+    const result = await handleMessage(message, options);
     sendJson(response, 200, createJsonRpcSuccess(message.id ?? null, result));
     return {
       rpcMethod: message.method,

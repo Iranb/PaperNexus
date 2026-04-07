@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 import argparse
-import urllib.parse
-
 from pn_common import (
     RemoteScriptError,
     add_connection_args,
     build_graph_payload,
+    call_mcp_tool_json,
     emit_result,
     fail,
-    normalize_api_base,
-    request_json,
-    require_corpus,
+    normalize_mcp_url,
+    resolve_corpus,
     resolve_token
 )
 
@@ -22,7 +20,7 @@ def add_shared_query_options(parser: argparse.ArgumentParser) -> None:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Query a remote PaperNexus graph over the authenticated API.")
+    parser = argparse.ArgumentParser(description="Query a remote PaperNexus graph over authenticated HTTP MCP.")
     add_connection_args(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -71,15 +69,18 @@ def build_options(args) -> dict:
 def main() -> int:
     args = parse_args()
     try:
-        api_base = normalize_api_base(args.api_base)
+        mcp_url = normalize_mcp_url(args.mcp_url, args.api_base)
         token = resolve_token(args.token)
-        corpus = require_corpus(args.corpus)
-        payload = request_json(
-            "POST",
-            api_base,
-            f"/api/{args.command}?name={urllib.parse.quote(corpus)}",
+        corpus = resolve_corpus(args.corpus, mcp_url, token, timeout=args.request_timeout)
+        payload = call_mcp_tool_json(
+            mcp_url,
             token,
-            payload=build_graph_payload(corpus, args.query, build_options(args)),
+            "research_lookup",
+            {
+                "operation": args.command,
+                **build_graph_payload(corpus, args.query, build_options(args)),
+                "corpus": corpus
+            },
             timeout=args.request_timeout
         )
         return emit_result(payload, args.json)

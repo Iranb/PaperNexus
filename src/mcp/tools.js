@@ -272,6 +272,209 @@ export const PAPERNEXUS_TOOLS = [
     }
   },
   {
+    name: 'research_lookup',
+    description: 'Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, domain distance, takeaway extraction, and interdisciplinary potential.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: {
+          type: 'string',
+          enum: [
+            'query',
+            'context',
+            'impact',
+            'ideas',
+            'brainstorm',
+            'domain_distance',
+            'extract_takeaways',
+            'interdisciplinary_potential'
+          ]
+        },
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        query: {
+          type: 'string',
+          description: 'Topic, node anchor, or challenge text used by the selected lookup operation.'
+        },
+        targetDomain: {
+          type: 'string',
+          description: 'Target domain used by domain-distance and interdisciplinary operations.'
+        },
+        agnosticChallenges: {
+          type: 'array',
+          items: { type: 'string' }
+        },
+        excludeProximalDomains: {
+          type: 'boolean',
+          default: true
+        },
+        limit: {
+          type: 'number'
+        },
+        minDomainDistance: {
+          type: 'number'
+        },
+        options: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Operation-specific options such as limit, layers, layerMode, mode, maxDepth, or maxHops.'
+        }
+      },
+      required: ['operation']
+    }
+  },
+  {
+    name: 'research_briefing',
+    description: 'Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP MCP tool surface.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: {
+          type: 'string',
+          enum: [
+            'path_trace',
+            'evidence_chain',
+            'reflection_chain',
+            'paper_enhancement',
+            'theory_brief',
+            'storyline_brief',
+            'research_brief',
+            'brainstorm_brief'
+          ]
+        },
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        query: {
+          type: 'string',
+          description: 'Query text for chain or brief retrieval.'
+        },
+        from: {
+          type: 'string',
+          description: 'Starting anchor for path-trace.'
+        },
+        to: {
+          type: 'string',
+          description: 'Ending anchor for path-trace.'
+        },
+        paperId: {
+          type: 'string',
+          description: 'Paper id for paper-enhancement retrieval.'
+        },
+        options: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Operation-specific options such as limit, layers, maxDepth, maxPaths, direction, or mode.'
+        }
+      },
+      required: ['operation']
+    }
+  },
+  {
+    name: 'import_workflow',
+    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, log, and wait on import tasks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: {
+          type: 'string',
+          enum: ['submit', 'list', 'status', 'log', 'wait']
+        },
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        taskId: {
+          type: 'string',
+          description: 'Import task id for status, log, or wait.'
+        },
+        paperId: {
+          type: 'string',
+          description: 'Optional paper id used to resolve a task when taskId is omitted.'
+        },
+        source: {
+          type: 'string',
+          description: 'Optional source path used to resolve a task when taskId is omitted.'
+        },
+        serverFilePath: {
+          type: 'string',
+          description: 'Absolute file path on the PaperNexus server for submit.'
+        },
+        files: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: true
+          }
+        },
+        trigger: {
+          type: 'string',
+          default: 'mcp'
+        },
+        limit: {
+          type: 'number'
+        },
+        timeout: {
+          type: 'number',
+          description: 'Maximum seconds to wait for completion when operation is wait.',
+          default: 1800
+        },
+        interval: {
+          type: 'number',
+          description: 'Polling interval in seconds when operation is wait.',
+          default: 2
+        }
+      },
+      required: ['operation']
+    }
+  },
+  {
+    name: 'idea_catalyst',
+    description: 'Run a one-shot interdisciplinary ideation pass over the graph and return either idea fragments or a data-starvation requisition.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        problem: {
+          type: 'string',
+          description: 'Research problem statement to analyze.'
+        },
+        targetDomain: {
+          type: 'string',
+          description: 'Target domain that needs cross-domain inspiration.'
+        },
+        mechanisms: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ]
+        },
+        numSourceDomains: {
+          type: 'number',
+          default: 3
+        },
+        relevanceThreshold: {
+          type: 'number',
+          default: 3
+        },
+        limit: {
+          type: 'number',
+          default: 8
+        }
+      },
+      required: ['problem', 'targetDomain']
+    }
+  },
+  {
     name: 'mutate_graph',
     description: 'Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk.',
     inputSchema: {

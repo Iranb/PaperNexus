@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 import typing
 import argparse
-import urllib.parse
 from pathlib import Path
 
 from pn_common import (
     RemoteScriptError,
     add_connection_args,
     build_registry_summary,
+    call_mcp_tool_json,
     emit_result,
     find_task_record,
     fail,
     load_task_registry,
-    normalize_api_base,
-    request_json,
+    normalize_mcp_url,
     resolve_corpus,
     resolve_token,
     update_registry_from_task_payload,
@@ -64,7 +63,7 @@ def match_task_file(task: dict, paper_id: str = "", source: str = "") -> bool:
     return False
 
 
-def resolve_task_id(args, api_base: str, token: str, corpus: str) -> typing.Tuple[typing.Optional[str], typing.Optional[dict], typing.Optional[str]]:
+def resolve_task_id(args, mcp_url: str, token: str, corpus: str, timeout: float) -> typing.Tuple[typing.Optional[str], typing.Optional[dict], typing.Optional[str]]:
     direct_task_id = str(getattr(args, "task_id", "") or "").strip()
     if direct_task_id:
         return direct_task_id, None, "task-id"
@@ -80,12 +79,15 @@ def resolve_task_id(args, api_base: str, token: str, corpus: str) -> typing.Tupl
         return str(record["taskId"]).strip(), record, matched_by
 
     if (args.paper_id or "").strip() or (args.source or "").strip():
-        payload = request_json(
-            "GET",
-            api_base,
-            f"/api/imports?name={urllib.parse.quote(corpus)}",
+        payload = call_mcp_tool_json(
+            mcp_url,
             token,
-            timeout=args.request_timeout
+            "import_workflow",
+            {
+                "operation": "list",
+                "corpus": corpus
+            },
+            timeout=timeout
         )
         paper_id = (args.paper_id or "").strip()
         source = (args.source or "").strip()
@@ -105,10 +107,9 @@ def resolve_task_id(args, api_base: str, token: str, corpus: str) -> typing.Tupl
 def main() -> int:
     args = parse_args()
     try:
-        api_base = normalize_api_base(args.api_base)
+        mcp_url = normalize_mcp_url(args.mcp_url, args.api_base)
         token = resolve_token(args.token)
-        corpus = resolve_corpus(args.corpus, api_base, token, timeout=args.request_timeout)
-        corpus_q = urllib.parse.quote(corpus)
+        corpus = resolve_corpus(args.corpus, mcp_url, token, timeout=args.request_timeout)
         command = args.command
         if args.status and not command:
             command = "status"
@@ -116,37 +117,47 @@ def main() -> int:
             raise RemoteScriptError("Missing queue command. Use list/status/log/wait or pass --status.")
 
         if command == "list":
-            payload = request_json(
-                "GET",
-                api_base,
-                f"/api/imports?name={corpus_q}",
+            payload = call_mcp_tool_json(
+                mcp_url,
                 token,
+                "import_workflow",
+                {
+                    "operation": "list",
+                    "corpus": corpus
+                },
                 timeout=args.request_timeout
             )
             payload["tasks"] = list(payload.get("tasks", []))[: max(0, args.limit)]
             payload["registry"] = build_registry_summary()
             return emit_result(payload, args.json)
 
-        task_id, record, matched_by = resolve_task_id(args, api_base, token, corpus)
+        task_id, record, matched_by = resolve_task_id(args, mcp_url, token, corpus, args.request_timeout)
 
         if command == "status":
             if not task_id:
                 if (args.paper_id or "").strip() or (args.source or "").strip():
                     raise RemoteScriptError("No tracked task found for the requested paper/source.")
-                payload = request_json(
-                    "GET",
-                    api_base,
-                    f"/api/imports?name={corpus_q}",
+                payload = call_mcp_tool_json(
+                    mcp_url,
                     token,
+                    "import_workflow",
+                    {
+                        "operation": "list",
+                        "corpus": corpus
+                    },
                     timeout=args.request_timeout
                 )
                 payload["registry"] = build_registry_summary()
                 return emit_result(payload, args.json)
-            payload = request_json(
-                "GET",
-                api_base,
-                f"/api/imports/{urllib.parse.quote(task_id)}?name={corpus_q}",
+            payload = call_mcp_tool_json(
+                mcp_url,
                 token,
+                "import_workflow",
+                {
+                    "operation": "status",
+                    "corpus": corpus,
+                    "taskId": task_id
+                },
                 timeout=args.request_timeout
             )
             registry_path = update_registry_from_task_payload(
@@ -167,11 +178,15 @@ def main() -> int:
         if command == "log":
             if not task_id:
                 raise RemoteScriptError("Missing task reference for log lookup. Pass a task id, --paper-id, or --source.")
-            payload = request_json(
-                "GET",
-                api_base,
-                f"/api/imports/{urllib.parse.quote(task_id)}/log?name={corpus_q}",
+            payload = call_mcp_tool_json(
+                mcp_url,
                 token,
+                "import_workflow",
+                {
+                    "operation": "log",
+                    "corpus": corpus,
+                    "taskId": task_id
+                },
                 timeout=args.request_timeout
             )
             payload["paperId"] = (record or {}).get("paperId") or args.paper_id or ""
@@ -181,7 +196,7 @@ def main() -> int:
         if command == "wait":
             if not task_id:
                 raise RemoteScriptError("Missing task reference for wait. Pass a task id, --paper-id, or --source.")
-            payload = wait_for_task(api_base, token, corpus, task_id, args.timeout, args.interval)
+            payload = wait_for_task(mcp_url, token, corpus, task_id, args.timeout, args.interval)
             registry_path = update_registry_from_task_payload(
                 payload,
                 paper_id=(record or {}).get("paperId") or args.paper_id,

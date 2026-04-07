@@ -179,6 +179,10 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(tools.tools.some((tool) => tool.name === 'domain_distance'));
   assert.ok(tools.tools.some((tool) => tool.name === 'extract_takeaways'));
   assert.ok(tools.tools.some((tool) => tool.name === 'interdisciplinary_potential'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'research_lookup'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'research_briefing'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'import_workflow'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'idea_catalyst'));
 
   const prompts = await pending.request('prompts/list', {});
   assert.ok(prompts.prompts.some((prompt) => prompt.name === 'brainstorm_topic'));
@@ -250,6 +254,36 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
     }
   });
   assert.match(queryResult.content[0].text, /Results for/);
+
+  const aggregatedLookup = await pending.request('tools/call', {
+    name: 'research_lookup',
+    arguments: {
+      operation: 'query',
+      corpus: tempCorpusRoot,
+      query: 'graph augmented literature mapping',
+      options: {
+        limit: 3
+      }
+    }
+  });
+  const parsedLookup = JSON.parse(aggregatedLookup.content[0].text);
+  assert.equal(parsedLookup.result.query, 'graph augmented literature mapping');
+  assert.ok(parsedLookup.result.groups.length > 0);
+
+  const aggregatedBriefing = await pending.request('tools/call', {
+    name: 'research_briefing',
+    arguments: {
+      operation: 'evidence_chain',
+      corpus: tempCorpusRoot,
+      query: 'experiment planning',
+      options: {
+        limit: 3
+      }
+    }
+  });
+  const parsedBriefing = JSON.parse(aggregatedBriefing.content[0].text);
+  assert.equal(parsedBriefing.result.query, 'experiment planning');
+  assert.ok(parsedBriefing.result.chains.length > 0);
 
   const statusResult = await pending.request('tools/call', {
     name: 'corpus_status',

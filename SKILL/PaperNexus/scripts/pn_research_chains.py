@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 import argparse
-import urllib.parse
-
 from pn_common import (
     RemoteScriptError,
     add_connection_args,
     build_graph_payload,
+    call_mcp_tool_json,
     emit_result,
     fail,
-    normalize_api_base,
-    request_json,
-    require_corpus,
+    normalize_mcp_url,
+    resolve_corpus,
     resolve_token
 )
 
@@ -24,7 +22,7 @@ def add_query_parser(subparsers, name: str) -> argparse.ArgumentParser:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run chain and brief APIs against a remote PaperNexus graph.")
+    parser = argparse.ArgumentParser(description="Run chain and brief lookups against a remote PaperNexus HTTP MCP server.")
     add_connection_args(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -70,29 +68,32 @@ def build_query_options(args) -> dict:
 def main() -> int:
     args = parse_args()
     try:
-        api_base = normalize_api_base(args.api_base)
+        mcp_url = normalize_mcp_url(args.mcp_url, args.api_base)
         token = resolve_token(args.token)
-        corpus = require_corpus(args.corpus)
-        corpus_q = urllib.parse.quote(corpus)
+        corpus = resolve_corpus(args.corpus, mcp_url, token, timeout=args.request_timeout)
 
         if args.command == "paper-enhancement":
-            payload = request_json(
-                "GET",
-                api_base,
-                f"/api/paper-enhancement?name={corpus_q}&paperId={urllib.parse.quote(args.paper_id)}",
+            payload = call_mcp_tool_json(
+                mcp_url,
                 token,
+                "research_briefing",
+                {
+                    "operation": "paper_enhancement",
+                    "corpus": corpus,
+                    "paperId": args.paper_id
+                },
                 timeout=args.request_timeout
             )
             return emit_result(payload, args.json)
 
         if args.command == "path-trace":
-            payload = request_json(
-                "POST",
-                api_base,
-                f"/api/path-trace?name={corpus_q}",
+            payload = call_mcp_tool_json(
+                mcp_url,
                 token,
-                payload={
-                    "name": corpus,
+                "research_briefing",
+                {
+                    "operation": "path_trace",
+                    "corpus": corpus,
                     "from": args.from_query,
                     "to": args.to_query,
                     "options": build_query_options(args)
@@ -101,12 +102,15 @@ def main() -> int:
             )
             return emit_result(payload, args.json)
 
-        payload = request_json(
-            "POST",
-            api_base,
-            f"/api/{args.command}?name={corpus_q}",
+        payload = call_mcp_tool_json(
+            mcp_url,
             token,
-            payload=build_graph_payload(corpus, args.query, build_query_options(args)),
+            "research_briefing",
+            {
+                "operation": args.command.replace("-", "_"),
+                **build_graph_payload(corpus, args.query, build_query_options(args)),
+                "corpus": corpus
+            },
             timeout=args.request_timeout
         )
         return emit_result(payload, args.json)

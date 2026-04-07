@@ -3,7 +3,6 @@ import typing
 import argparse
 import json
 import os
-import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,13 +10,13 @@ from pn_common import (
     RemoteScriptError,
     add_connection_args,
     build_registry_summary,
+    call_mcp_tool_json,
     emit_result,
     fail,
     find_task_record,
     infer_source_kind,
     load_task_registry,
-    normalize_api_base,
-    request_json,
+    normalize_mcp_url,
     resolve_corpus,
     resolve_token,
     update_registry_from_task_payload,
@@ -47,7 +46,7 @@ def parse_args():
     submit_parser.add_argument("--remote-staging-root", default=os.environ.get("PAPERNEXUS_REMOTE_STAGING_ROOT", ""))
     submit_parser.add_argument("--ssh-bin", default=os.environ.get("PAPERNEXUS_SSH_BIN", "ssh"))
     submit_parser.add_argument("--rsync-bin", default=os.environ.get("PAPERNEXUS_RSYNC_BIN", "rsync"))
-    submit_parser.add_argument("--trigger", default="api")
+    submit_parser.add_argument("--trigger", default="mcp")
     submit_parser.add_argument("--fail-fast", action="store_true")
 
     status_parser = subparsers.add_parser("status")
@@ -71,11 +70,11 @@ def manifest_template() -> dict:
     return {
         "version": BATCH_MANIFEST_VERSION,
         "defaults": {
-            "apiBase": "http://211.71.76.29:4821",
+            "mcpUrl": "http://211.71.76.29:4821/mcp",
             "corpus": "GCD",
             "sshTarget": "hyq@211.71.76.29",
             "remoteStagingRoot": "/tmp/papernexus-import-staging",
-            "trigger": "api",
+            "trigger": "mcp",
         },
         "papers": [
             {
@@ -172,10 +171,13 @@ def build_batch_summary(items: list[dict]) -> dict:
 
 def resolve_runtime_settings(args, manifest: dict) -> tuple[str, str, str, dict]:
     defaults = manifest.get("defaults") or {}
-    api_base = normalize_api_base(first_defined(args.api_base, defaults.get("apiBase")))
+    mcp_url = normalize_mcp_url(
+        first_defined(args.mcp_url, defaults.get("mcpUrl")),
+        first_defined(args.api_base, defaults.get("apiBase"))
+    )
     token = resolve_token(args.token)
-    corpus = resolve_corpus(first_defined(args.corpus, defaults.get("corpus")), api_base, token, timeout=args.request_timeout)
-    return api_base, token, corpus, defaults
+    corpus = resolve_corpus(first_defined(args.corpus, defaults.get("corpus")), mcp_url, token, timeout=args.request_timeout)
+    return mcp_url, token, corpus, defaults
 
 
 def build_submission_args(item: dict, args, defaults: dict) -> SimpleNamespace:
@@ -190,17 +192,18 @@ def build_submission_args(item: dict, args, defaults: dict) -> SimpleNamespace:
     )
 
 
-def submit_item(item: dict, args, api_base: str, token: str, corpus: str, defaults: dict) -> dict:
+def submit_item(item: dict, args, mcp_url: str, token: str, corpus: str, defaults: dict) -> dict:
     submission_args = build_submission_args(item, args, defaults)
-    server_file_path, staging_payload, source_value = resolve_submission_source(submission_args, api_base)
-    payload = request_json(
-        "POST",
-        api_base,
-        f"/api/imports?name={urllib.parse.quote(corpus)}",
+    server_file_path, staging_payload, source_value = resolve_submission_source(submission_args, mcp_url)
+    payload = call_mcp_tool_json(
+        mcp_url,
         token,
-        payload={
+        "import_workflow",
+        {
+            "operation": "submit",
+            "corpus": corpus,
             "serverFilePath": server_file_path,
-            "trigger": first_defined(args.trigger, defaults.get("trigger"), "api"),
+            "trigger": first_defined(args.trigger, defaults.get("trigger"), "mcp"),
         },
         timeout=args.request_timeout,
     )
@@ -234,12 +237,16 @@ def submit_item(item: dict, args, api_base: str, token: str, corpus: str, defaul
     return result
 
 
-def load_remote_tasks(api_base: str, token: str, corpus: str, timeout: float, limit: int = 200) -> list[dict]:
-    payload = request_json(
-        "GET",
-        api_base,
-        f"/api/imports?name={urllib.parse.quote(corpus)}",
+def load_remote_tasks(mcp_url: str, token: str, corpus: str, timeout: float, limit: int = 200) -> list[dict]:
+    payload = call_mcp_tool_json(
+        mcp_url,
         token,
+        "import_workflow",
+        {
+            "operation": "list",
+            "corpus": corpus,
+            "limit": limit
+        },
         timeout=timeout,
     )
     return list(payload.get("tasks") or [])[: max(0, limit)]
@@ -272,7 +279,7 @@ def resolve_task_reference(item: dict, registry: dict, remote_tasks: list[dict],
     return None, record, matched_by
 
 
-def status_item(item: dict, args, api_base: str, token: str, corpus: str, registry: dict, remote_tasks: list[dict]) -> dict:
+def status_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry: dict, remote_tasks: list[dict]) -> dict:
     task_id, record, matched_by = resolve_task_reference(item, registry, remote_tasks, corpus)
     if not task_id:
         return {
@@ -287,11 +294,15 @@ def status_item(item: dict, args, api_base: str, token: str, corpus: str, regist
             "registry": build_registry_summary(record, matched_by),
         }
 
-    payload = request_json(
-        "GET",
-        api_base,
-        f"/api/imports/{urllib.parse.quote(task_id)}?name={urllib.parse.quote(corpus)}",
+    payload = call_mcp_tool_json(
+        mcp_url,
         token,
+        "import_workflow",
+        {
+            "operation": "status",
+            "corpus": corpus,
+            "taskId": task_id
+        },
         timeout=args.request_timeout,
     )
     registry_path = update_registry_from_task_payload(
@@ -321,7 +332,7 @@ def status_item(item: dict, args, api_base: str, token: str, corpus: str, regist
     }
 
 
-def wait_item(item: dict, args, api_base: str, token: str, corpus: str, registry: dict, remote_tasks: list[dict]) -> dict:
+def wait_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry: dict, remote_tasks: list[dict]) -> dict:
     task_id, record, matched_by = resolve_task_reference(item, registry, remote_tasks, corpus)
     if not task_id:
         return {
@@ -337,7 +348,7 @@ def wait_item(item: dict, args, api_base: str, token: str, corpus: str, registry
             "registry": build_registry_summary(record, matched_by),
         }
 
-    payload = wait_for_task(api_base, token, corpus, task_id, args.timeout, args.interval)
+    payload = wait_for_task(mcp_url, token, corpus, task_id, args.timeout, args.interval)
     registry_path = update_registry_from_task_payload(
         payload,
         paper_id=(record or {}).get("paperId") or item["paperId"],
@@ -397,13 +408,13 @@ def main() -> int:
 
         manifest = require_manifest_for_command(args)
         items = normalize_manifest_items(manifest)
-        api_base, token, corpus, defaults = resolve_runtime_settings(args, manifest)
+        mcp_url, token, corpus, defaults = resolve_runtime_settings(args, manifest)
 
         if args.command == "submit":
             results = []
             for item in items:
                 try:
-                    results.append(submit_item(item, args, api_base, token, corpus, defaults))
+                    results.append(submit_item(item, args, mcp_url, token, corpus, defaults))
                 except RemoteScriptError as exc:
                     results.append({
                         "paperId": item["paperId"],
@@ -426,10 +437,10 @@ def main() -> int:
             }, args.json)
 
         registry = load_task_registry()
-        remote_tasks = load_remote_tasks(api_base, token, corpus, args.request_timeout, getattr(args, "limit", 200))
+        remote_tasks = load_remote_tasks(mcp_url, token, corpus, args.request_timeout, getattr(args, "limit", 200))
 
         if args.command == "status":
-            results = [status_item(item, args, api_base, token, corpus, registry, remote_tasks) for item in items]
+            results = [status_item(item, args, mcp_url, token, corpus, registry, remote_tasks) for item in items]
             return emit_result({
                 "manifest": manifest["path"],
                 "corpus": corpus,
@@ -440,7 +451,7 @@ def main() -> int:
         if args.command == "wait":
             results = []
             for item in items:
-                results.append(wait_item(item, args, api_base, token, corpus, registry, remote_tasks))
+                results.append(wait_item(item, args, mcp_url, token, corpus, registry, remote_tasks))
             return emit_result({
                 "manifest": manifest["path"],
                 "corpus": corpus,

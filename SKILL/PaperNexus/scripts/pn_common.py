@@ -25,7 +25,8 @@ class RemoteScriptError(RuntimeError):
 
 
 def add_connection_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--api-base", default=os.environ.get("PAPERNEXUS_API_BASE_URL", ""))
+    parser.add_argument("--mcp-url", default=os.environ.get("PAPERNEXUS_MCP_URL", ""))
+    parser.add_argument("--api-base", default=os.environ.get("PAPERNEXUS_API_BASE_URL", ""), help=argparse.SUPPRESS)
     parser.add_argument("--token", default=os.environ.get("PAPERNEXUS_API_TOKEN", ""))
     parser.add_argument("--corpus", default=os.environ.get("PAPERNEXUS_CORPUS", ""))
     parser.add_argument("--json", action="store_true")
@@ -37,6 +38,37 @@ def normalize_api_base(raw: str) -> str:
     if not value:
         raise RemoteScriptError("Missing API base URL. Pass --api-base or set PAPERNEXUS_API_BASE_URL.")
     return value
+
+
+def allow_local_mcp() -> bool:
+    return os.environ.get("PAPERNEXUS_ALLOW_LOCAL_MCP", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_mcp_url(raw: str, api_base: str = "") -> str:
+    value = (raw or "").strip()
+    legacy_base = (api_base or "").strip().rstrip("/")
+    if not value and legacy_base:
+        value = f"{legacy_base}/mcp"
+
+    if not value:
+        raise RemoteScriptError("Missing MCP URL. Pass --mcp-url or set PAPERNEXUS_MCP_URL.")
+
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RemoteScriptError(f"Invalid MCP URL: {value}")
+
+    path = parsed.path or ""
+    if not path or path == "/":
+        parsed = parsed._replace(path="/mcp")
+        value = urllib.parse.urlunparse(parsed)
+
+    host = parsed.hostname or ""
+    if host in {"127.0.0.1", "localhost"} and not allow_local_mcp():
+        raise RemoteScriptError(
+            "Local MCP URLs are disabled for PaperNexus skills. Use a remote HTTP MCP server."
+        )
+
+    return value.rstrip("/")
 
 
 def now_iso() -> str:
@@ -68,19 +100,24 @@ def resolve_token(explicit: str) -> str:
     raise RemoteScriptError("Missing API token. Pass --token or configure PAPERNEXUS_API_TOKEN.")
 
 
-def resolve_corpus(explicit: str, api_base: str, token: str, timeout: float = DEFAULT_TIMEOUT) -> str:
+def resolve_corpus(explicit: str, mcp_url: str, token: str, timeout: float = DEFAULT_TIMEOUT) -> str:
     corpus = (explicit or "").strip()
     if corpus:
         return corpus
-    payload = request_json("GET", api_base, "/api/corpora", token, timeout=timeout)
-    corpora = payload.get("corpora", [])
-    if len(corpora) == 1:
-        name = str(corpora[0].get("name") or "").strip()
+    payload = call_mcp_tool(mcp_url, token, "list_corpora", {}, timeout=timeout)
+    text = extract_tool_text(payload)
+    names = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        name = stripped[2:].split(":", 1)[0].strip()
         if name:
-            return name
-    if not corpora:
+            names.append(name)
+    if len(names) == 1:
+        return names[0]
+    if not names:
         raise RemoteScriptError("No remote corpora found.")
-    names = [str(entry.get("name") or "").strip() for entry in corpora if str(entry.get("name") or "").strip()]
     raise RemoteScriptError(
         "Missing corpus name. Multiple remote corpora are available: "
         + ", ".join(names or ["<unnamed>"])
@@ -125,6 +162,94 @@ def request_json(method: str, api_base: str, path: str, token: str, payload: typ
         raise RemoteScriptError(f"HTTP {exc.code} for {path}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RemoteScriptError(f"Request to {path} failed: {exc.reason}") from exc
+
+
+def request_mcp(method: str, mcp_url: str, token: str, params: typing.Optional[dict] = None, timeout: float = DEFAULT_TIMEOUT):
+    request_payload = {
+        "jsonrpc": "2.0",
+        "id": int(time.time() * 1000),
+        "method": method,
+        "params": params or {}
+    }
+    request = urllib.request.Request(
+        normalize_mcp_url(mcp_url),
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers=build_headers(token, with_json=True),
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode("utf-8", errors="replace")
+        detail = text
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+                detail = str(payload["error"].get("message") or payload["error"])
+        except json.JSONDecodeError:
+            pass
+        raise RemoteScriptError(f"HTTP {exc.code} for MCP {method}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RemoteScriptError(f"MCP request {method} failed: {exc.reason}") from exc
+
+    if not isinstance(payload, dict):
+        raise RemoteScriptError(f"Invalid MCP response for {method}.")
+    if isinstance(payload.get("error"), dict):
+        error = payload["error"]
+        raise RemoteScriptError(str(error.get("message") or error))
+    return payload.get("result")
+
+
+def call_mcp_tool(mcp_url: str, token: str, name: str, arguments: typing.Optional[dict] = None, timeout: float = DEFAULT_TIMEOUT):
+    return request_mcp(
+        "tools/call",
+        mcp_url,
+        token,
+        {
+            "name": name,
+            "arguments": arguments or {}
+        },
+        timeout=timeout
+    )
+
+
+def extract_tool_text(payload) -> str:
+    if not isinstance(payload, dict):
+        return str(payload)
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    texts = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = str(part.get("text") or "")
+            if text:
+                texts.append(text)
+    return "\n\n".join(texts).strip()
+
+
+def parse_json_text(text: str):
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return {}
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(
+            line for line in cleaned.splitlines() if not line.strip().startswith("```")
+        ).strip()
+    return json.loads(cleaned)
+
+
+def call_mcp_tool_json(mcp_url: str, token: str, name: str, arguments: typing.Optional[dict] = None, timeout: float = DEFAULT_TIMEOUT):
+    payload = call_mcp_tool(mcp_url, token, name, arguments=arguments, timeout=timeout)
+    text = extract_tool_text(payload)
+    if not text:
+        return {}
+    try:
+        return parse_json_text(text)
+    except json.JSONDecodeError as exc:
+        raise RemoteScriptError(f"MCP tool {name} did not return JSON content.") from exc
 
 
 def emit_result(payload, as_json: bool) -> int:
@@ -419,32 +544,20 @@ def build_registry_summary(record: typing.Optional[dict] = None, matched_by: typ
     return summary
 
 
-def wait_for_task(api_base: str, token: str, corpus: str, task_id: str, timeout_seconds: float, interval_seconds: float) -> dict:
-    deadline = time.monotonic() + timeout_seconds
-    last_task = None
-    last_log = None
-    while True:
-        last_task = request_json(
-            "GET",
-            api_base,
-            f"/api/imports/{urllib.parse.quote(task_id)}?name={urllib.parse.quote(corpus)}",
-            token
-        )
-        last_log = request_json(
-            "GET",
-            api_base,
-            f"/api/imports/{urllib.parse.quote(task_id)}/log?name={urllib.parse.quote(corpus)}",
-            token
-        )
-        task = last_task.get("task", {})
-        status = str(task.get("status", "")).strip().lower()
-        if status in {"completed", "failed"}:
-            return build_wait_summary(last_task, last_log)
-        if time.monotonic() >= deadline:
-            raise RemoteScriptError(
-                f"Timed out waiting for task {task_id}. Last status={task.get('status')} stage={task.get('stage')}"
-            )
-        time.sleep(interval_seconds)
+def wait_for_task(mcp_url: str, token: str, corpus: str, task_id: str, timeout_seconds: float, interval_seconds: float) -> dict:
+    return call_mcp_tool_json(
+        mcp_url,
+        token,
+        "import_workflow",
+        {
+            "operation": "wait",
+            "corpus": corpus,
+            "taskId": task_id,
+            "timeout": timeout_seconds,
+            "interval": interval_seconds
+        },
+        timeout=max(DEFAULT_TIMEOUT, timeout_seconds + 10)
+    )
 
 
 def update_registry_from_task_payload(
@@ -466,6 +579,11 @@ def update_registry_from_task_payload(
         corpus=corpus
     )
     return upsert_task_record(record)
+
+
+def mcp_host_is_local(mcp_url: str) -> bool:
+    host = urllib.parse.urlparse(normalize_mcp_url(mcp_url)).hostname or ""
+    return host in {"127.0.0.1", "localhost"}
 
 
 def api_host_is_local(api_base: str) -> bool:

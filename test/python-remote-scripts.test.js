@@ -15,10 +15,15 @@ const skillRoot = path.join(repoRoot, 'SKILL');
 
 async function runPython(scriptName, args = [], options = {}) {
   const scriptPath = path.join(repoRoot, 'scripts', scriptName);
+  return runPythonPath(scriptPath, args, options);
+}
+
+async function runPythonPath(scriptPath, args = [], options = {}) {
   const { stdout, stderr } = await execFileAsync('python3', [scriptPath, ...args], {
     cwd: repoRoot,
     env: {
       ...process.env,
+      PAPERNEXUS_ALLOW_LOCAL_MCP: '1',
       ...(options.env || {})
     }
   });
@@ -147,7 +152,10 @@ async function startServer(fixture, port, options = {}) {
         indexDir: fixture.indexRoot
       },
       serve: {
-        apiToken: 'secret-token'
+        apiToken: 'secret-token',
+        mcp: {
+          enabled: true
+        }
       }
     },
     configBaseDir: fixture.workspaceRoot
@@ -251,7 +259,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
     try {
       const submit = await runPython('pn_import_submit.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         '--server-file-path', fixture.markdownUploadPath
@@ -262,7 +270,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
 
       const wait = await runPython('pn_import_queue.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'wait',
@@ -277,7 +285,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
 
       const status = await runPython('pn_import_queue.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'status',
@@ -288,7 +296,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
 
       const log = await runPython('pn_import_queue.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'log',
@@ -315,7 +323,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
     try {
       const submit = await runPython('pn_import_submit.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--paper-id', '2305.18909',
         '--source', fixture.markdownUploadPath,
@@ -338,7 +346,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
 
       const status = await runPython('pn_import_queue.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--paper-id', '2305.18909',
         '--status'
@@ -354,7 +362,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
 
       const wait = await runPython('pn_import_queue.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         'wait',
         '--paper-id', '2305.18909',
@@ -381,7 +389,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
   }
 });
 
-test('pn_graph_query.py exposes query and brainstorm through the remote API', async () => {
+test('pn_graph_query.py exposes query and brainstorm through remote HTTP MCP', async () => {
   const fixture = await createImportFixture();
   const port = 54500 + Math.floor(Math.random() * 500);
 
@@ -390,7 +398,7 @@ test('pn_graph_query.py exposes query and brainstorm through the remote API', as
     try {
       const query = await runPython('pn_graph_query.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'query',
@@ -403,7 +411,7 @@ test('pn_graph_query.py exposes query and brainstorm through the remote API', as
 
       const brainstorm = await runPython('pn_graph_query.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'brainstorm',
@@ -464,7 +472,7 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
     try {
       const submit = await runPython('pn_batch_import.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--manifest', manifestPath,
         'submit'
@@ -481,7 +489,7 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
 
       const wait = await runPython('pn_batch_import.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--manifest', manifestPath,
         'wait',
@@ -499,7 +507,7 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
 
       const status = await runPython('pn_batch_import.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--manifest', manifestPath,
         'status'
@@ -534,7 +542,7 @@ test('pn_batch_import.py template emits the fixed manifest schema', async () => 
   assert.equal(typeof payload.papers[0].source, 'string');
 });
 
-test('pn_research_chains.py exposes evidence, reflection, and brief endpoints through the remote API', async () => {
+test('pn_research_chains.py exposes evidence, reflection, and brief endpoints through remote HTTP MCP', async () => {
   const fixture = await createImportFixture();
   const port = 55000 + Math.floor(Math.random() * 500);
 
@@ -543,7 +551,7 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
     try {
       const evidence = await runPython('pn_research_chains.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'evidence-chain',
@@ -555,7 +563,7 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
 
       const reflection = await runPython('pn_research_chains.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'reflection-chain',
@@ -567,7 +575,7 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
 
       const researchBrief = await runPython('pn_research_chains.py', [
         '--json',
-        '--api-base', `http://127.0.0.1:${port}`,
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
         'research-brief',
@@ -576,6 +584,39 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
       ]);
       const briefPayload = JSON.parse(researchBrief.stdout);
       assert.ok(briefPayload.result.querySummary.groups.length > 0);
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test('pn_idea_catalyst.py runs through remote HTTP MCP and returns a bounded result shape', async () => {
+  const fixture = await createImportFixture();
+  const port = 55800 + Math.floor(Math.random() * 500);
+  const scriptPath = path.join(repoRoot, 'SKILL', 'PaperNexusIdeaCatalyst', 'scripts', 'pn_idea_catalyst.py');
+
+  try {
+    const server = await startServer(fixture, port, { enableImports: false });
+    try {
+      const result = await runPythonPath(scriptPath, [
+        '--json',
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
+        '--token', 'secret-token',
+        '--corpus', 'python-remote-test',
+        '--problem', 'experiment planning under retrieval constraints',
+        '--target-domain', 'Computer Science',
+        '--limit', '5'
+      ]);
+      const payload = JSON.parse(result.stdout);
+      assert.ok(payload.idea_fragments || payload.requisition_report);
+      if (payload.idea_fragments) {
+        assert.ok(Array.isArray(payload.idea_fragments));
+      }
+      if (payload.requisition_report) {
+        assert.equal(payload.requisition_report.status, 'DATA_STARVATION');
+      }
     } finally {
       await server.stop();
     }

@@ -113,6 +113,10 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
     }, { token: 'secret-token' }).then((response) => response.json());
     assert.ok(tools.result.tools.some((tool) => tool.name === 'refresh_corpus'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'mutate_graph'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'research_lookup'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'research_briefing'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'import_workflow'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'idea_catalyst'));
 
     const prompt = await postMcp(port, {
       jsonrpc: '2.0',
@@ -147,6 +151,26 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
       }
     }, { token: 'secret-token' }).then((response) => response.json());
     assert.match(query.result.content[0].text, /Results for/);
+
+    const aggregatedLookup = await postMcp(port, {
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'tools/call',
+      params: {
+        name: 'research_lookup',
+        arguments: {
+          operation: 'query',
+          corpus: fixture.tempCorpusRoot,
+          query: 'graph augmented literature mapping',
+          options: {
+            limit: 3
+          }
+        }
+      }
+    }, { token: 'secret-token' }).then((response) => response.json());
+    const parsedLookup = JSON.parse(aggregatedLookup.result.content[0].text);
+    assert.equal(parsedLookup.result.query, 'graph augmented literature mapping');
+    assert.ok(parsedLookup.result.groups.length > 0);
   } finally {
     await serverHandle.stop();
     await cleanupIndexedCorpus(fixture);

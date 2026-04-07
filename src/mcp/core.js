@@ -7,6 +7,10 @@ import { applyCorpusMutations, loadCorpus, loadCorpusLite, resolveCorpus } from 
 import { loadRegistry } from '../storage/registry.js';
 import { PAPERNEXUS_PROMPTS, getPrompt } from './prompts.js';
 import { listResources, readResourcePayload } from './resources.js';
+import { executeIdeaCatalystTool } from './tool-idea-catalyst.js';
+import { executeImportWorkflowTool } from './tool-import-workflow.js';
+import { executeResearchBriefingTool } from './tool-research-briefing.js';
+import { executeResearchLookupTool } from './tool-research-lookup.js';
 import { PAPERNEXUS_TOOLS } from './tools.js';
 
 export const SERVER_INFO = {
@@ -34,7 +38,7 @@ export function createJsonRpcError(id, code, message, data) {
   };
 }
 
-export async function executeTool(name, args) {
+export async function executeTool(name, args, options = {}) {
   if (name === 'list_corpora') {
     const registry = await loadRegistry();
     return renderCorpusList(registry.corpora);
@@ -183,6 +187,22 @@ export async function executeTool(name, args) {
     return renderStatus(meta);
   }
 
+  if (name === 'research_lookup') {
+    return executeResearchLookupTool(args, options);
+  }
+
+  if (name === 'research_briefing') {
+    return executeResearchBriefingTool(args, options);
+  }
+
+  if (name === 'import_workflow') {
+    return executeImportWorkflowTool(args, options);
+  }
+
+  if (name === 'idea_catalyst') {
+    return executeIdeaCatalystTool(args, options);
+  }
+
   throw new Error(`Unknown tool: ${name}`);
 }
 
@@ -203,7 +223,7 @@ export function normalizeToolContent(result) {
   ];
 }
 
-export async function handleMessage(message) {
+export async function handleMessage(message, options = {}) {
   switch (message.method) {
     case 'initialize':
       return {
@@ -219,7 +239,7 @@ export async function handleMessage(message) {
       return { tools: PAPERNEXUS_TOOLS };
     case 'tools/call':
       return {
-        content: normalizeToolContent(await executeTool(message.params?.name, message.params?.arguments || {}))
+        content: normalizeToolContent(await executeTool(message.params?.name, message.params?.arguments || {}, options))
       };
     case 'resources/list':
       return { resources: await listResources() };

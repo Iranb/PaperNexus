@@ -2,21 +2,19 @@
 import typing
 import argparse
 import os
-import urllib.parse
 from pathlib import Path
 
 from pn_common import (
     RemoteScriptError,
     add_connection_args,
-    api_host_is_local,
+    call_mcp_tool_json,
     emit_result,
     fail,
     infer_source_kind,
-    normalize_api_base,
-    request_json,
+    mcp_host_is_local,
+    normalize_mcp_url,
     resolve_corpus,
-    resolve_token
-    ,
+    resolve_token,
     stage_local_path,
     update_registry_from_task_payload
 )
@@ -34,7 +32,7 @@ def parse_args():
     parser.add_argument("--remote-staging-root", default=os.environ.get("PAPERNEXUS_REMOTE_STAGING_ROOT", ""))
     parser.add_argument("--ssh-bin", default=os.environ.get("PAPERNEXUS_SSH_BIN", "ssh"))
     parser.add_argument("--rsync-bin", default=os.environ.get("PAPERNEXUS_RSYNC_BIN", "rsync"))
-    parser.add_argument("--trigger", default="api")
+    parser.add_argument("--trigger", default="mcp")
     return parser.parse_args()
 
 
@@ -47,11 +45,11 @@ def infer_paper_id(explicit: str, source_value: str) -> str:
     return ""
 
 
-def resolve_submission_source(args, api_base: str) -> tuple[str, typing.Optional[dict], str]:
+def resolve_submission_source(args, mcp_url: str) -> tuple[str, typing.Optional[dict], str]:
     server_file_path = (args.server_file_path or "").strip()
     if server_file_path:
         if not server_file_path.startswith("/"):
-            raise RemoteScriptError("--server-file-path must be an absolute path on the API server.")
+            raise RemoteScriptError("--server-file-path must be an absolute path on the PaperNexus server.")
         return server_file_path, None, ""
 
     source = (args.source or "").strip()
@@ -63,7 +61,7 @@ def resolve_submission_source(args, api_base: str) -> tuple[str, typing.Optional
         local_candidate = local_candidate.resolve()
         if local_candidate.is_dir():
             raise RemoteScriptError("--source must point to a single PDF or Markdown file.")
-        if api_host_is_local(api_base):
+        if mcp_host_is_local(mcp_url):
             return str(local_candidate), None, str(local_candidate)
         if not args.ssh_target.strip():
             raise RemoteScriptError("Local source requires remote staging. Pass --ssh-target or set PAPERNEXUS_SSH_TARGET.")
@@ -81,25 +79,26 @@ def resolve_submission_source(args, api_base: str) -> tuple[str, typing.Optional
         return str(local_candidate), None, source
 
     raise RemoteScriptError(
-        "Source path does not exist locally. Pass a local file path, or use --server-file-path for an API-server path."
+        "Source path does not exist locally. Pass a local file path, or use --server-file-path for a PaperNexus-server path."
     )
 
 
 def main() -> int:
     args = parse_args()
     try:
-        api_base = normalize_api_base(args.api_base)
+        mcp_url = normalize_mcp_url(args.mcp_url, args.api_base)
         token = resolve_token(args.token)
-        corpus = resolve_corpus(args.corpus, api_base, token, timeout=args.request_timeout)
-        server_file_path, staging_payload, source_value = resolve_submission_source(args, api_base)
+        corpus = resolve_corpus(args.corpus, mcp_url, token, timeout=args.request_timeout)
+        server_file_path, staging_payload, source_value = resolve_submission_source(args, mcp_url)
         paper_id = infer_paper_id(args.paper_id, source_value or server_file_path)
         source_kind = infer_source_kind(source_value or server_file_path, args.source_kind)
-        payload = request_json(
-            "POST",
-            api_base,
-            f"/api/imports?name={urllib.parse.quote(corpus)}",
+        payload = call_mcp_tool_json(
+            mcp_url,
             token,
-            payload={
+            "import_workflow",
+            {
+                "operation": "submit",
+                "corpus": corpus,
                 "serverFilePath": server_file_path,
                 "trigger": args.trigger
             },
