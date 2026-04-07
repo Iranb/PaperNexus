@@ -1243,6 +1243,9 @@ async function main() {
   }
 
   const runtime = await loadRuntimeModules();
+  const logEnhanceMessage = (message) => {
+    console.log(runtime.formatEnhancementLogMessage(message));
+  };
 
   if (command === 'backup-export') {
     const archiveTarget = positionals[0];
@@ -1456,7 +1459,7 @@ async function main() {
       if (corpusCandidate) {
         const rootPath = await runtime.resolveCorpus(corpusCandidate);
         const result = await runtime.runEnhancementQueueUntilIdle(rootPath, enhanceOptions);
-        console.log(`Processed enhancement queue for ${rootPath}`);
+        logEnhanceMessage(`Processed enhancement queue for ${rootPath}`);
         console.log(renderEnhancementSummary(result.summary));
         return;
       }
@@ -1464,7 +1467,7 @@ async function main() {
       const registry = await runtime.loadRegistry();
       for (const corpus of registry.corpora) {
         const result = await runtime.runEnhancementQueueUntilIdle(corpus.rootPath, enhanceOptions);
-        console.log(`Processed enhancement queue for ${corpus.name}`);
+        logEnhanceMessage(`Processed enhancement queue for ${corpus.name}`);
         console.log(renderEnhancementSummary(result.summary));
       }
       return;
@@ -1477,7 +1480,7 @@ async function main() {
       logger: console
     });
 
-    console.log(`Enhancement worker running${rootPaths?.length ? ` for ${rootPaths[0]}` : ' for all indexed corpora'}. Press Ctrl+C to stop.`);
+    logEnhanceMessage(`Enhancement worker running${rootPaths?.length ? ` for ${rootPaths[0]}` : ' for all indexed corpora'}. Press Ctrl+C to stop.`);
     await new Promise((resolve) => {
       const shutdown = () => {
         worker.stop();

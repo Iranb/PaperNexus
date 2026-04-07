@@ -16,6 +16,21 @@ import {
 } from '../../storage/enhancement-store.js';
 import { buildPaperEnhancementOverlay, summarizePaperEnhancement } from './extract.js';
 
+export function formatEnhancementLogMessage(message, timestamp = new Date()) {
+  return `[${timestamp.toISOString()}] ${message}`;
+}
+
+function createEnhancementLogger(baseLogger = console) {
+  return {
+    log(message) {
+      baseLogger.log?.(formatEnhancementLogMessage(message));
+    },
+    error(message) {
+      baseLogger.error?.(formatEnhancementLogMessage(message));
+    }
+  };
+}
+
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
 }
@@ -217,7 +232,7 @@ export async function runEnhancementsForAllCorporaOnce(options = {}) {
 }
 
 export function startEnhancementWorker(options = {}) {
-  const logger = options.logger || console;
+  const logger = createEnhancementLogger(options.logger || console);
   const intervalMs = Math.max(1500, Number(options.intervalMs || 5000));
   let closed = false;
   let running = false;
