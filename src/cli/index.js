@@ -1030,18 +1030,33 @@ async function handleApiKeyCommand(flags, config, configBaseDir, configPath) {
   const recommended = backends[0];
   console.log(`  Storage: ${recommended.name}`);
   
-  // Prompt for API key
-  console.log('\nEnter your API key:');
-  
+  // Get secret from user
+  let secret;
   if (flags.stdin) {
-    const secret = await auth.readSecretFromStdin();
-    if (!secret) {
-      throw new Error('API key cannot be empty.');
-    }
-    await auth.setKeychainSecret({ service, account, secret });
+    secret = await auth.readSecretFromStdin();
   } else {
-    await auth.promptKeychainSecret({ service, account });
+    // Use cross-platform prompt
+    const { promptSecret } = await import('../lib/prompt.js');
+    try {
+      secret = await promptSecret('\nEnter your API key: ');
+    } catch (err) {
+      if (err.message.includes('TTY')) {
+        console.log('\nNo interactive terminal available.');
+        console.log('Use one of these methods instead:');
+        console.log('  echo "sk-..." | papernexus apikey --stdin');
+        console.log('  papernexus apikey --stdin < api_key.txt');
+        return;
+      }
+      throw err;
+    }
   }
+  
+  if (!secret || !secret.trim()) {
+    throw new Error('API key cannot be empty.');
+  }
+  
+  // Store the secret
+  await auth.setKeychainSecret({ service, account, secret: secret.trim() });
   
   // Get model from config or use default
   const defaultModel = provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini';

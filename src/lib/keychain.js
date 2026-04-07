@@ -42,24 +42,24 @@ export async function getAvailableBackends() {
   
   if (platform === 'darwin') {
     if (await darwinKeychain.isAvailable()) {
-      backends.push({ id: 'keychain', name: darwinKeychain.getDisplayName(), backend: darwinKeychain });
+      backends.push({ id: 'keychain', name: await darwinKeychain.getDisplayName(), backend: darwinKeychain });
     }
   }
   
   if (platform === 'linux') {
     if (await linuxKeychain.isAvailable()) {
-      backends.push({ id: 'secret-service', name: linuxKeychain.getDisplayName(), backend: linuxKeychain });
+      backends.push({ id: 'secret-service', name: await linuxKeychain.getDisplayName(), backend: linuxKeychain });
     }
   }
   
   if (platform === 'win32') {
     if (await windowsKeychain.isAvailable()) {
-      backends.push({ id: 'credential-manager', name: windowsKeychain.getDisplayName(), backend: windowsKeychain });
+      backends.push({ id: 'credential-manager', name: await windowsKeychain.getDisplayName(), backend: windowsKeychain });
     }
   }
   
   // Encrypted storage always available as fallback
-  backends.push({ id: 'encrypted', name: encryptedStorage.getDisplayName(), backend: encryptedStorage });
+  backends.push({ id: 'encrypted', name: await encryptedStorage.getDisplayName(), backend: encryptedStorage });
   
   return backends;
 }
