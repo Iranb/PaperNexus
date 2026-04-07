@@ -179,6 +179,7 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(tools.tools.some((tool) => tool.name === 'domain_distance'));
   assert.ok(tools.tools.some((tool) => tool.name === 'extract_takeaways'));
   assert.ok(tools.tools.some((tool) => tool.name === 'interdisciplinary_potential'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'corpus_sources'));
   assert.ok(tools.tools.some((tool) => tool.name === 'research_lookup'));
   assert.ok(tools.tools.some((tool) => tool.name === 'research_briefing'));
   assert.ok(tools.tools.some((tool) => tool.name === 'import_workflow'));
@@ -292,6 +293,18 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
     }
   });
   assert.match(statusResult.content[0].text, /Graph mode: explicit-multilayer/);
+
+  const sourcesResult = await pending.request('tools/call', {
+    name: 'corpus_sources',
+    arguments: {
+      corpus: tempCorpusRoot
+    }
+  });
+  const parsedSources = JSON.parse(sourcesResult.content[0].text);
+  assert.equal(parsedSources.meta.name, 'mcp-papers');
+  assert.ok(Array.isArray(parsedSources.sources));
+  assert.equal(parsedSources.sources.length, 2);
+  assert.ok(parsedSources.sources.every((entry) => entry.activeInGraph !== false));
 
   const domainDistanceResult = await pending.request('tools/call', {
     name: 'domain_distance',

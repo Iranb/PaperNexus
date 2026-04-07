@@ -1097,6 +1097,33 @@ export async function corpusMetaPayload(candidate, options = {}) {
   return resolveCachedPayload(cache.corpusMetaByRoot, rootPath, stamp, buildPayload);
 }
 
+export async function corpusSourcesPayload(candidate, options = {}) {
+  const rootPath = await resolveCorpusForApi(candidate, options);
+  const [meta, manifest] = await Promise.all([
+    loadCorpusMeta(rootPath),
+    loadSourceManifest(rootPath)
+  ]);
+  const sources = Array.isArray(manifest?.sources) ? manifest.sources : [];
+
+  return {
+    rootPath,
+    meta,
+    manifest: {
+      version: manifest?.version ?? null,
+      corpusName: manifest?.corpusName || meta.name,
+      rootPath: manifest?.rootPath || rootPath,
+      inputPath: manifest?.inputPath || null,
+      inputPaths: Array.isArray(manifest?.inputPaths) ? manifest.inputPaths : [],
+      indexedAt: manifest?.indexedAt || meta.indexedAt || null,
+      sourceMode: manifest?.sourceMode || meta.sourceMode || null,
+      sourceCount: sources.length,
+      activeSourceCount: sources.filter((entry) => entry?.activeInGraph !== false).length
+    },
+    sources,
+    generatedAt: new Date().toISOString()
+  };
+}
+
 export async function backupCorpusPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate);
   return {

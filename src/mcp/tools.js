@@ -23,6 +23,20 @@ export const PAPERNEXUS_TOOLS = [
     }
   },
   {
+    name: 'corpus_sources',
+    description: 'Return the current source manifest entries for a corpus so remote clients can reconcile which papers are already materialized in the graph.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        }
+      },
+      required: []
+    }
+  },
+  {
     name: 'query',
     description: 'Search a research knowledge graph for relevant papers, problems, methods, claims, findings, limitations, assumptions, evidence, datasets, benchmarks, metrics, and future directions.',
     inputSchema: {

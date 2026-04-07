@@ -113,6 +113,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
     }, { token: 'secret-token' }).then((response) => response.json());
     assert.ok(tools.result.tools.some((tool) => tool.name === 'refresh_corpus'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'mutate_graph'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'corpus_sources'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'research_lookup'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'research_briefing'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'import_workflow'));
@@ -171,6 +172,34 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
     const parsedLookup = JSON.parse(aggregatedLookup.result.content[0].text);
     assert.equal(parsedLookup.result.query, 'graph augmented literature mapping');
     assert.ok(parsedLookup.result.groups.length > 0);
+
+    const corpusSources = await postMcp(port, {
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: {
+        name: 'corpus_sources',
+        arguments: {
+          corpus: fixture.tempCorpusRoot
+        }
+      }
+    }, { token: 'secret-token' }).then((response) => response.json());
+    const parsedSources = JSON.parse(corpusSources.result.content[0].text);
+    assert.equal(parsedSources.meta.name, 'mcp-http-papers');
+    assert.ok(Array.isArray(parsedSources.sources));
+    assert.equal(parsedSources.sources.length, 2);
+
+    const apiSources = await fetch(
+      `http://127.0.0.1:${port}/api/corpus-sources?name=mcp-http-papers`,
+      {
+        headers: {
+          Authorization: 'Bearer secret-token'
+        }
+      }
+    ).then((response) => response.json());
+    assert.equal(apiSources.meta.name, 'mcp-http-papers');
+    assert.ok(Array.isArray(apiSources.sources));
+    assert.equal(apiSources.sources.length, 2);
   } finally {
     await serverHandle.stop();
     await cleanupIndexedCorpus(fixture);

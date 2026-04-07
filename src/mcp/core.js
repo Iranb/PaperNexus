@@ -7,6 +7,7 @@ import { applyCorpusMutations, loadCorpus, loadCorpusLite, resolveCorpus } from 
 import { loadRegistry } from '../storage/registry.js';
 import { PAPERNEXUS_PROMPTS, getPrompt } from './prompts.js';
 import { listResources, readResourcePayload } from './resources.js';
+import { corpusSourcesPayload } from '../server/api.js';
 import { executeIdeaCatalystTool } from './tool-idea-catalyst.js';
 import { executeImportWorkflowTool } from './tool-import-workflow.js';
 import { executeResearchBriefingTool } from './tool-research-briefing.js';
@@ -48,6 +49,10 @@ export async function executeTool(name, args, options = {}) {
     const rootPath = await resolveCorpus(args.corpus);
     const { meta } = await loadCorpus(rootPath);
     return renderStatus(meta);
+  }
+
+  if (name === 'corpus_sources') {
+    return corpusSourcesPayload(args.corpus, options);
   }
 
   if (name === 'query') {

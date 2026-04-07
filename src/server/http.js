@@ -11,6 +11,7 @@ import {
   contextGraphPayload,
   corpusMetaPayload,
   corpusPayload,
+  corpusSourcesPayload,
   createImportTaskPayload,
   evidenceChainPayload,
   createApiCache,
@@ -568,6 +569,12 @@ export async function serveCommand(options = {}) {
       if (request.method === 'GET' && url.pathname === '/api/corpus-meta') {
         const name = url.searchParams.get('name') || undefined;
         sendJson(response, 200, await corpusMetaPayload(name, apiOptions));
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/corpus-sources') {
+        const name = url.searchParams.get('name') || undefined;
+        sendJson(response, 200, await corpusSourcesPayload(name, apiOptions));
         return;
       }
 
