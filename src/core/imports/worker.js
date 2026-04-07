@@ -82,6 +82,7 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
         const prepared = await convertPdfToMarkdown(storedPath, {
           pdfParser: options.pdfParser,
           pdfCommand: options.pdfCommand,
+          opendataloaderPdfPython: options.opendataloaderPdfPython,
           doclingCommand: options.doclingCommand,
           doclingOcrEngine: options.doclingOcrEngine,
           doclingSshHost: options.doclingSshHost,
@@ -89,6 +90,7 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
           pdfParserSshHost: options.pdfParserSshHost,
           markerCommand: options.markerCommand,
           markerSshHost: options.markerSshHost,
+          markerBlockBlacklist: options.markerBlockBlacklist,
           markerConcurrency: options.markerConcurrency,
           mineruCommand: options.mineruCommand,
           mineruHttpUrl: options.mineruHttpUrl,

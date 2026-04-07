@@ -6,12 +6,14 @@ import { ensureDir, fileExists, listFilesRecursive, readText, removePath, writeT
 import { stableHash } from '../../lib/utils.js';
 
 const PDF_PARSER_DOCLING = 'docling';
+const PDF_PARSER_OPENDATALOADER = 'opendataloader';
 const PDF_PARSER_MARKER = 'marker';
 const PDF_PARSER_MINERU = 'mineru';
 const PDF_PARSER_PADDLEOCR_VL = 'paddleocr-vl';
 const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
 const DEFAULT_MINERU_PROBE_CACHE_TTL_MS = 15_000;
 const mineruProbeCache = new Map();
+const OPENDATALOADER_PDF_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/opendataloader_pdf_to_markdown.py', import.meta.url));
 const PADDLEOCR_VL_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/paddleocr_vl_to_markdown.py', import.meta.url));
 
 function runCommand(command, args, options = {}) {
@@ -154,11 +156,20 @@ function shellQuote(value) {
 }
 
 export function normalizePdfParser(value) {
-  const normalized = String(value || process.env.PAPERNEXUS_PDF_PARSER || PDF_PARSER_MINERU).trim().toLowerCase();
+  const normalized = String(value || process.env.PAPERNEXUS_PDF_PARSER || PDF_PARSER_OPENDATALOADER).trim().toLowerCase();
+  if (normalized === PDF_PARSER_OPENDATALOADER) return PDF_PARSER_OPENDATALOADER;
   if (normalized === PDF_PARSER_MARKER) return PDF_PARSER_MARKER;
   if (normalized === PDF_PARSER_MINERU) return PDF_PARSER_MINERU;
   if (normalized === PDF_PARSER_PADDLEOCR_VL) return PDF_PARSER_PADDLEOCR_VL;
   return PDF_PARSER_DOCLING;
+}
+
+function resolveOpenDataLoaderPdfPython(options = {}) {
+  return String(
+    options.opendataloaderPdfPython
+    || process.env.PAPERNEXUS_OPENDATALOADER_PDF_PYTHON
+    || 'python3'
+  ).trim() || 'python3';
 }
 
 function resolvePaddleOcrVlPython(options = {}) {
@@ -743,6 +754,86 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
   };
 }
 
+async function convertPdfToMarkdownWithOpenDataLoader(pdfPath, options = {}) {
+  const {
+    markerDir,
+    markdownDir,
+    force = false
+  } = options;
+
+  const pythonCommand = resolveOpenDataLoaderPdfPython(options);
+  const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const progress = createProgressReporter(`opendataloader:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_OPENDATALOADER, basename, {
+    markerDir,
+    markdownDir
+  });
+
+  if (!force && await fileExists(cachedMarkdownPath)) {
+    return {
+      markdownPath: cachedMarkdownPath,
+      sourcePdfPath: pdfPath,
+      generated: false,
+      parser: PDF_PARSER_OPENDATALOADER,
+      parserCommand: `${pythonCommand} ${OPENDATALOADER_PDF_WRAPPER_PATH}`
+    };
+  }
+
+  if (force) {
+    await removePath(runDir);
+  }
+
+  await ensureDir(runDir);
+  await ensureDir(path.dirname(cachedMarkdownPath));
+
+  const args = [
+    OPENDATALOADER_PDF_WRAPPER_PATH,
+    '--input',
+    pdfPath,
+    '--output',
+    cachedMarkdownPath
+  ];
+
+  try {
+    process.stderr.write(`[opendataloader:${basename}] Running OpenDataLoader PDF\n`);
+    await runCommand(pythonCommand, args, {
+      onStdout: progress,
+      onStderr: progress,
+      timeoutMs,
+      timeoutLabel: `opendataloader parse for ${pdfPath}`
+    });
+    flushProgressReporter(progress);
+  } catch (error) {
+    throw new Error(
+      `OpenDataLoader PDF failed for ${pdfPath}. ${error.message}\n` +
+      `Tip: install \`opendataloader-pdf\`, verify Java 11+ is available, and confirm \`${pythonCommand}\` can import \`opendataloader_pdf\`.`
+    );
+  }
+
+  if (!await fileExists(cachedMarkdownPath)) {
+    throw new Error(
+      `OpenDataLoader PDF finished for ${pdfPath} but no markdown cache was written to ${cachedMarkdownPath}.`
+    );
+  }
+
+  const markdown = await readText(cachedMarkdownPath);
+  if (!markdown.trim()) {
+    throw new Error(
+      `OpenDataLoader PDF produced empty markdown for ${pdfPath}.\n` +
+      'Tip: verify the PDF is valid and the OpenDataLoader runtime can parse the selected document.'
+    );
+  }
+
+  return {
+    markdownPath: cachedMarkdownPath,
+    sourcePdfPath: pdfPath,
+    generated: true,
+    parser: PDF_PARSER_OPENDATALOADER,
+    parserCommand: `${pythonCommand} ${OPENDATALOADER_PDF_WRAPPER_PATH}`
+  };
+}
+
 async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   const { mineruHttpUrl, mineruCommand, runDir, quiet = false } = options;
   const basename = path.basename(pdfPath, path.extname(pdfPath));
@@ -1316,6 +1407,13 @@ export async function warmMineruHttpEndpoint(url, options = {}) {
 
 export async function convertPdfToMarkdown(pdfPath, options = {}) {
   const parser = normalizePdfParser(options.pdfParser);
+  if (parser === PDF_PARSER_OPENDATALOADER) {
+    return convertPdfToMarkdownWithOpenDataLoader(pdfPath, {
+      ...options,
+      opendataloaderPdfPython: options.opendataloaderPdfPython || options.pdfCommand
+    });
+  }
+
   if (parser === PDF_PARSER_MARKER) {
     return convertPdfToMarkdownWithMarker(pdfPath, {
       ...options,
@@ -1344,6 +1442,7 @@ export const __markerTestables = {
   shellQuote,
   normalizePdfParser,
   resolveMarkerBlockBlacklist,
+  resolveOpenDataLoaderPdfPython,
   resolvePaddleOcrVlPython,
   resolvePaddleOcrVlServerUrl,
   resolveRemoteMarkerHost,

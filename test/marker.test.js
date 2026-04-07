@@ -22,8 +22,9 @@ test('resolveRemoteMarkerHost prefers explicit marker host then pdf host', () =>
   );
 });
 
-test('normalizePdfParser defaults to mineru and accepts marker', () => {
-  assert.equal(__markerTestables.normalizePdfParser(undefined), 'mineru');
+test('normalizePdfParser defaults to opendataloader and accepts other parsers', () => {
+  assert.equal(__markerTestables.normalizePdfParser(undefined), 'opendataloader');
+  assert.equal(__markerTestables.normalizePdfParser('opendataloader'), 'opendataloader');
   assert.equal(__markerTestables.normalizePdfParser('mineru'), 'mineru');
   assert.equal(__markerTestables.normalizePdfParser('docling'), 'docling');
   assert.equal(__markerTestables.normalizePdfParser('marker'), 'marker');
@@ -336,6 +337,85 @@ test('convertPdfToMarkdown with marker can blacklist table and image blocks', as
     assert.match(markdown, /正文第二段。/);
     assert.doesNotMatch(markdown, /Figure 1/);
     assert.doesNotMatch(markdown, /\| Method \| Score \|/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown can materialize markdown via the opendataloader wrapper', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-opendataloader-success-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const fakePythonPath = path.join(tempDir, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'cat > "$output" <<\'EOF\'',
+        '# OpenDataLoader Parsed',
+        '',
+        '正文第一段。',
+        '',
+        'Tail text.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'opendataloader',
+      opendataloaderPdfPython: fakePythonPath,
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'opendataloader');
+    assert.match(result.markdownPath, /opendataloader/);
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /正文第一段。/);
+    assert.match(markdown, /Tail text\./);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown fails fast when opendataloader setup or inference fails', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-opendataloader-fail-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const fakePythonPath = path.join(tempDir, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'echo "ImportError: No module named opendataloader_pdf" >&2',
+        'exit 1'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    await assert.rejects(
+      () => convertPdfToMarkdown(pdfPath, {
+        pdfParser: 'opendataloader',
+        opendataloaderPdfPython: fakePythonPath,
+        markerDir: tempDir,
+        markdownDir: tempDir
+      }),
+      /OpenDataLoader PDF failed|opendataloader-pdf/i
+    );
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

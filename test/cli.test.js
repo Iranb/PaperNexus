@@ -211,6 +211,61 @@ test('CLI can analyze PDFs with paddleocr-vl selected from config.json', async (
   }
 });
 
+test('CLI defaults to opendataloader for configured PDF analyze runs', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-opendataloader-'));
+  const fakePdfPath = path.join(workspaceRoot, 'paper.pdf');
+  const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(fakePdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'printf "# Configured OpenDataLoader\\n\\n## Abstract\\n\\nConfigured parser output.\\n" > "$output"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    await fs.writeFile(path.join(workspaceRoot, 'config.json'), `${JSON.stringify({
+      sources: {
+        inputs: ['.']
+      },
+      storage: {
+        home: '.configured-home',
+        indexDir: './index-store'
+      },
+      analyze: {
+        name: 'configured-opendataloader',
+        opendataloaderPdfPython: './fake-python.sh'
+      }
+    }, null, 2)}\n`);
+
+    const analyzeRun = await execFileAsync('node', [cliPath, 'analyze', '--force'], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+    assert.match(analyzeRun.stdout, /Corpus: configured-opendataloader/);
+
+    const statusRun = await execFileAsync('node', [cliPath, 'status'], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+    assert.match(statusRun.stdout, /PDF parser: opendataloader/);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('CLI can analyze multiple configured source directories from config.json', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-multi-source-'));
   const inputA = path.join(workspaceRoot, 'papers-a');

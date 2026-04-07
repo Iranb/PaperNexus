@@ -32,6 +32,18 @@ Add that directory to your shell `PATH`.
 Install parser dependencies first:
 
 ```bash
+python -m pip install -U opendataloader-pdf
+```
+
+OpenDataLoader PDF also needs Java 11+:
+
+```bash
+java -version
+```
+
+If you want optional alternative parsers later, install them separately:
+
+```bash
 pip install docling marker-pdf
 ```
 
@@ -118,6 +130,17 @@ papernexus enhance --once
 papernexus serve
 papernexus service install
 papernexus logs watch
+```
+
+Default OpenDataLoader PDF parser config:
+
+```json
+{
+  "analyze": {
+    "pdfParser": "opendataloader",
+    "opendataloaderPdfPython": "python3"
+  }
+}
 ```
 
 Optional PaddleOCR-VL remote parser config:

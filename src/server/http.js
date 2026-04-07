@@ -276,6 +276,12 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       analyzeConfig.pdfParserSshHost,
       watchConfig.pdfParserSshHost
     ),
+    opendataloaderPdfPython: firstDefined(
+      options.opendataloaderPdfPython,
+      materializeConfig.opendataloaderPdfPython,
+      analyzeConfig.opendataloaderPdfPython,
+      watchConfig.opendataloaderPdfPython
+    ),
     doclingCommand: firstDefined(
       options.doclingCommand,
       materializeConfig.doclingCommand,

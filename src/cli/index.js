@@ -23,8 +23,8 @@ Global options:
 
 Commands:
   papernexus init [--force]
-  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
-  papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
+  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--opendataloader-pdf-python <python>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--opendataloader-pdf-python <python>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
   papernexus llm-optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus build-graph [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>]
   papernexus merge-graph [<path>] [--continue] [--force] [--quiet] [--node-llm-check]
@@ -33,8 +33,8 @@ Commands:
   papernexus stage2 [<path>] [--name <corpus>] [--continue] [--force]
   papernexus stage3 [<path>] [--name <corpus>] [--continue] [--force]
   papernexus stage4 [<path>] [--continue] [--force]
-  papernexus optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
-  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--opendataloader-pdf-python <python>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--pdf-parser-ssh-host <host>] [--opendataloader-pdf-python <python>] [--docling-cmd <cmd>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
@@ -70,7 +70,7 @@ Examples:
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus analyze ./papers --name ml-papers
   papernexus analyze ./papers --name ml-papers --concurrency 4
-  papernexus analyze ./papers --name ml-papers --pdf-parser docling
+  papernexus analyze ./papers --name ml-papers --pdf-parser opendataloader
   papernexus analyze ./papers --name ml-papers --pdf-parser docling --docling-pdf-backend pypdfium2
   papernexus analyze ./papers --name ml-papers --pdf-parser docling --docling-pdf-backend pdfplumber
   papernexus analyze ./papers --name ml-papers --semantic-extraction auto --provider openai --model gpt-4o-mini
@@ -379,9 +379,10 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     semanticExtraction: firstDefined(flags['semantic-extraction'], commandConfig.semanticExtraction, 'auto'),
     nodeLlmCheck: Boolean(firstDefined(flags['node-llm-check'], commandConfig.nodeLlmCheck)),
     rebuildPdfMarkdown: Boolean(firstDefined(flags['rebuild-pdf-markdown'], commandConfig.rebuildPdfMarkdown)),
-    pdfParser: firstDefined(flags['pdf-parser'], commandConfig.pdfParser, 'mineru'),
+    pdfParser: firstDefined(flags['pdf-parser'], commandConfig.pdfParser, 'opendataloader'),
     pdfCommand: firstDefined(flags['pdf-cmd'], commandConfig.pdfCommand),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], commandConfig.pdfParserSshHost),
+    opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], commandConfig.opendataloaderPdfPython),
     doclingCommand: firstDefined(flags['docling-cmd'], commandConfig.doclingCommand),
     doclingSshHost: firstDefined(flags['docling-ssh-host'], commandConfig.doclingSshHost, commandConfig.pdfParserSshHost, commandConfig.pdfSshHost),
     doclingOcrEngine: firstDefined(flags['docling-ocr-engine'], commandConfig.doclingOcrEngine),
@@ -807,7 +808,7 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
       analyze: {
         ...(config.analyze || {}),
         name: corpusName,
-        pdfParser: currentAnalyze.pdfParser || 'docling'
+        pdfParser: currentAnalyze.pdfParser || 'opendataloader'
       },
       global: {
         ...(config.global || {}),

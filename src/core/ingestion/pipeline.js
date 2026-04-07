@@ -4010,6 +4010,7 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       pdfParser: options.pdfParser,
       pdfCommand: options.pdfCommand,
       force: Boolean(sourceState.markdownCacheNeedsRefresh),
+      opendataloaderPdfPython: options.opendataloaderPdfPython,
       doclingCommand: options.doclingCommand,
       doclingOcrEngine: options.doclingOcrEngine,
       doclingSshHost: options.doclingSshHost,

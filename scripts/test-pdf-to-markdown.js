@@ -64,8 +64,9 @@ function buildPdfOptions(flags, config) {
   const analyzeConfig = getSection(config, 'analyze');
   const materializeConfig = getSection(config, 'materialize');
   return {
-    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'mineru'),
+    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'opendataloader'),
     pdfCommand: firstDefined(flags['pdf-cmd'], materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
+    opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], materializeConfig.opendataloaderPdfPython, analyzeConfig.opendataloaderPdfPython),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
     doclingCommand: firstDefined(flags['docling-cmd'], materializeConfig.doclingCommand, analyzeConfig.doclingCommand),
     doclingSshHost: firstDefined(flags['docling-ssh-host'], materializeConfig.doclingSshHost, analyzeConfig.doclingSshHost, materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),

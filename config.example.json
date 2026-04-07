@@ -10,7 +10,8 @@
   "analyze": {
     "name": "GCD",
     "semanticExtraction": "llm-primary",
-    "pdfParser": "mineru",
+    "pdfParser": "opendataloader",
+    "opendataloaderPdfPython": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
     "doclingCommand": "docling",
     "doclingPdfBackend": "pdfplumber"
