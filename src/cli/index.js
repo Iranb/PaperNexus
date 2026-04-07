@@ -41,6 +41,7 @@ Commands:
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
   papernexus logs watch
+  papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus setup
   papernexus serve [--host 127.0.0.1] [--port 4821] [--api-token <token>]
   papernexus mcp
@@ -63,6 +64,7 @@ Examples:
   papernexus init
   papernexus service install
   papernexus logs watch
+  papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus analyze ./papers --name ml-papers
   papernexus analyze ./papers --name ml-papers --concurrency 4
   papernexus analyze ./papers --name ml-papers --pdf-parser docling
@@ -1240,6 +1242,104 @@ async function loadSelectedCorpusLite(runtime, corpusFlag) {
   return runtime.loadCorpusLite(rootPath);
 }
 
+async function handleUpdateCommand(flags) {
+  const git = require('child_process');
+  const execFile = require('util').promisify(git.execFile);
+  
+  console.log('Updating PaperNexus to latest version from GitHub...');
+  
+  try {
+    // Check if we're in a git repository
+    await execFile('git', ['rev-parse', '--git-dir']);
+  } catch (error) {
+    throw new Error(
+      'Not a git repository. PaperNexus must be cloned from GitHub to use update.\n'
+      + 'Clone with: git clone https://github.com/Iranb/PaperNexus.git'
+    );
+  }
+  
+  try {
+    // Fetch latest changes
+    console.log('Fetching latest changes from origin/main...');
+    await execFile('git', ['fetch', 'origin', 'main']);
+    
+    // Check current branch
+    let currentBranch = '';
+    try {
+      const branchResult = await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
+      currentBranch = String(branchResult.stdout).trim();
+    } catch {
+      currentBranch = 'unknown';
+    }
+    
+    if (currentBranch !== 'main') {
+      console.warn(`Warning: You are on branch "${currentBranch}", not "main".`);
+      const shouldSwitch = await require('../lib/prompt.js').then(mod => 
+        mod.createPromptSession().promptConfirm('Switch to main and update?', true)
+      ).catch(() => false);
+      
+      if (!shouldSwitch && !flags.force) {
+        console.log('Update cancelled.');
+        return;
+      }
+      
+      if (shouldSwitch) {
+        console.log('Switching to main branch...');
+        await execFile('git', ['checkout', 'main']);
+      }
+    }
+    
+    // Check for local changes
+    try {
+      const statusResult = await execFile('git', ['status', '--porcelain']);
+      const hasChanges = String(statusResult.stdout).trim().length > 0;
+      
+      if (hasChanges && !flags.force) {
+        throw new Error(
+          'You have local changes. Commit or stash them before updating.\n'
+          + 'Use --force to discard local changes (not recommended).'
+        );
+      }
+      
+      if (hasChanges && flags.force) {
+        console.warn('Warning: Discarding local changes...');
+        await execFile('git', ['checkout', '.']);
+      }
+    } catch (error) {
+      if (!String(error?.message || '').includes('ENOENT')) {
+        throw error;
+      }
+    }
+    
+    // Pull latest changes
+    console.log('Pulling latest code...');
+    const pullResult = await execFile('git', ['pull', 'origin', 'main']);
+    const pullOutput = String(pullResult.stdout || pullResult.stderr).trim();
+    
+    if (pullOutput.includes('Already up to date')) {
+      console.log('✓ Already up to date with latest version.');
+    } else {
+      console.log('✓ Updated successfully!');
+      console.log(pullOutput);
+    }
+    
+    // Show what's new
+    try {
+      const logResult = await execFile('git', ['log', '--oneline', '-5']);
+      console.log('\nLatest commits:');
+      console.log(String(logResult.stdout).trim());
+    } catch {
+      // Ignore log errors
+    }
+    
+    console.log('\n💡 Tip: Restart your papernexus processes to use the updated code.');
+    
+  } catch (error) {
+    throw new Error(`Update failed: ${error.message}`);
+  }
+}
+
+
 async function main() {
   const [command = 'help', ...rest] = process.argv.slice(2);
   const { flags, positionals } = parseArgv(rest);
@@ -1278,6 +1378,11 @@ async function main() {
 
   if (command === 'logs') {
     await handleLogsCommand(positionals, config, configBaseDir);
+    return;
+  }
+
+  if (command === 'update') {
+    await handleUpdateCommand(flags);
     return;
   }
 
