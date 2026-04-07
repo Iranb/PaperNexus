@@ -1247,11 +1247,16 @@ async function loadSelectedCorpusLite(runtime, corpusFlag) {
 async function handleUpdateCommand(flags) {
   const execFile = promisify(nodeExecFile);
   
+  // Get the PaperNexus source directory (src/cli/index.js -> src -> . )
+  const cliPath = fileURLToPath(import.meta.url);
+  const srcDir = path.dirname(cliPath);
+  const papernexusDir = path.dirname(srcDir);
+  
   console.log('Updating PaperNexus to latest version from GitHub...');
   
   try {
-    // Check if we're in a git repository
-    await execFile('git', ['rev-parse', '--git-dir']);
+    // Check if PaperNexus source is a git repository
+    await execFile('git', ['rev-parse', '--git-dir'], { cwd: papernexusDir });
   } catch (error) {
     throw new Error(
       'Not a git repository. PaperNexus must be cloned from GitHub to use update.\n'
@@ -1262,12 +1267,12 @@ async function handleUpdateCommand(flags) {
   try {
     // Fetch latest changes
     console.log('Fetching latest changes from origin/main...');
-    await execFile('git', ['fetch', 'origin', 'main']);
+    await execFile('git', ['fetch', 'origin', 'main'], { cwd: papernexusDir });
     
     // Check current branch
     let currentBranch = '';
     try {
-      const branchResult = await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
+      const branchResult = await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: papernexusDir });
       currentBranch = String(branchResult.stdout).trim();
     } catch {
       currentBranch = 'unknown';
@@ -1285,13 +1290,13 @@ async function handleUpdateCommand(flags) {
       
       if (shouldSwitch) {
         console.log('Switching to main branch...');
-        await execFile('git', ['checkout', 'main']);
+        await execFile('git', ['checkout', 'main'], { cwd: papernexusDir });
       }
     }
     
     // Check for local changes
     try {
-      const statusResult = await execFile('git', ['status', '--porcelain']);
+      const statusResult = await execFile('git', ['status', '--porcelain'], { cwd: papernexusDir });
       const hasChanges = String(statusResult.stdout).trim().length > 0;
       
       if (hasChanges && !flags.force) {
@@ -1303,7 +1308,7 @@ async function handleUpdateCommand(flags) {
       
       if (hasChanges && flags.force) {
         console.warn('Warning: Discarding local changes...');
-        await execFile('git', ['checkout', '.']);
+        await execFile('git', ['checkout', '.'], { cwd: papernexusDir });
       }
     } catch (error) {
       if (!String(error?.message || '').includes('ENOENT')) {
@@ -1313,7 +1318,7 @@ async function handleUpdateCommand(flags) {
     
     // Pull latest changes
     console.log('Pulling latest code...');
-    const pullResult = await execFile('git', ['pull', 'origin', 'main']);
+    const pullResult = await execFile('git', ['pull', 'origin', 'main'], { cwd: papernexusDir });
     const pullOutput = String(pullResult.stdout || pullResult.stderr).trim();
     
     if (pullOutput.includes('Already up to date')) {
@@ -1325,7 +1330,7 @@ async function handleUpdateCommand(flags) {
     
     // Show what's new
     try {
-      const logResult = await execFile('git', ['log', '--oneline', '-5']);
+      const logResult = await execFile('git', ['log', '--oneline', '-5'], { cwd: papernexusDir });
       console.log('\nLatest commits:');
       console.log(String(logResult.stdout).trim());
     } catch {
