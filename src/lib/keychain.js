@@ -1,42 +1,172 @@
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+/**
+ * Cross-platform secret storage manager
+ * Routes to platform-specific implementations:
+ * - macOS: Keychain
+ * - Linux: Secret Service (systemd)
+ * - Windows: Credential Manager
+ * - Fallback: Encrypted local storage (all platforms)
+ */
 
-const execFileAsync = promisify(execFile);
+import * as darwinKeychain from './keychain-darwin.js';
+import * as linuxKeychain from './keychain-linux.js';
+import * as windowsKeychain from './keychain-windows.js';
+import * as encryptedStorage from './encrypted-storage.js';
+
 const DEFAULT_LLM_KEYCHAIN_SERVICE = 'papernexus.llm';
 
-function ensureMacOsKeychain() {
-  if (process.platform !== 'darwin') {
-    throw new Error('Keychain-backed secret storage is currently supported only on macOS.');
+function getPlatformKeychain() {
+  const platform = process.platform;
+  
+  if (platform === 'darwin') {
+    return { backend: darwinKeychain, name: 'darwin' };
+  }
+  
+  if (platform === 'linux') {
+    return { backend: linuxKeychain, name: 'linux' };
+  }
+  
+  if (platform === 'win32') {
+    return { backend: windowsKeychain, name: 'windows' };
+  }
+  
+  // Default fallback
+  return { backend: encryptedStorage, name: 'encrypted' };
+}
+
+/**
+ * Get all available key storage backends for current platform
+ */
+export async function getAvailableBackends() {
+  const backends = [];
+  const platform = process.platform;
+  
+  if (platform === 'darwin') {
+    if (await darwinKeychain.isAvailable()) {
+      backends.push({ id: 'keychain', name: darwinKeychain.getDisplayName(), backend: darwinKeychain });
+    }
+  }
+  
+  if (platform === 'linux') {
+    if (await linuxKeychain.isAvailable()) {
+      backends.push({ id: 'secret-service', name: linuxKeychain.getDisplayName(), backend: linuxKeychain });
+    }
+  }
+  
+  if (platform === 'win32') {
+    if (await windowsKeychain.isAvailable()) {
+      backends.push({ id: 'credential-manager', name: windowsKeychain.getDisplayName(), backend: windowsKeychain });
+    }
+  }
+  
+  // Encrypted storage always available as fallback
+  backends.push({ id: 'encrypted', name: encryptedStorage.getDisplayName(), backend: encryptedStorage });
+  
+  return backends;
+}
+
+/**
+ * Get the recommended storage backend for current platform
+ */
+export async function getRecommendedBackend() {
+  const backends = await getAvailableBackends();
+  // Prefer system keyring if available, otherwise encrypted storage
+  const systemBackend = backends.find(b => b.id !== 'encrypted');
+  return systemBackend || backends[0];
+}
+
+/**
+ * Store a secret using the platform-appropriate backend
+ */
+export async function setKeychainSecret({ service, account, secret }, deps = {}) {
+  const { backend } = getPlatformKeychain();
+  
+  try {
+    await backend.setSecret({ service, account, secret }, deps);
+  } catch (error) {
+    // If primary backend fails, try encrypted storage
+    if (backend !== encryptedStorage) {
+      console.warn(`Warning: ${error.message}. Falling back to encrypted storage.`);
+      await encryptedStorage.setSecret({ service, account, secret });
+    } else {
+      throw error;
+    }
   }
 }
 
-async function runSecurity(args, runner = execFileAsync) {
-  ensureMacOsKeychain();
-  const result = await runner('security', args);
-  return result?.stdout ? String(result.stdout).trim() : '';
+/**
+ * Prompt user for a secret (interactive, macOS only)
+ */
+export async function promptKeychainSecret({ service, account }, deps = {}) {
+  const { backend } = getPlatformKeychain();
+  
+  try {
+    await backend.promptSecret({ service, account }, deps);
+  } catch (error) {
+    // Fall back to environment variable or encrypted storage
+    throw new Error(
+      `${error.message}\n\n` +
+      `Alternative: Set the API key via environment variable or use 'papernexus auth llm set --stdin'.`
+    );
+  }
 }
 
-async function runSecurityInteractive(args, runner = spawn) {
-  ensureMacOsKeychain();
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error('Interactive Keychain prompt requires a TTY. Use `--stdin` to pipe the key instead.');
+/**
+ * Retrieve a secret from secure storage
+ * Tries platform-specific backend first, then falls back to encrypted storage
+ */
+export async function getKeychainSecret({ service, account }, deps = {}) {
+  if (!service || !account) {
+    return '';
   }
 
-  return new Promise((resolve, reject) => {
-    const child = runner('security', args, {
-      stdio: 'inherit'
-    });
+  const { backend, name } = getPlatformKeychain();
+  
+  try {
+    const secret = await backend.getSecret({ service, account }, deps);
+    if (secret) {
+      return secret;
+    }
+  } catch (error) {
+    // If primary backend fails, try encrypted storage
+    if (backend !== encryptedStorage) {
+      console.debug(`Debug: ${name} backend unavailable, trying encrypted storage.`);
+    }
+  }
+  
+  // Try encrypted storage as fallback
+  if (backend !== encryptedStorage) {
+    try {
+      return await encryptedStorage.getSecret({ service, account });
+    } catch {
+      // Silently fail, let caller handle missing secret
+    }
+  }
+  
+  return '';
+}
 
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
+/**
+ * Delete a secret from secure storage
+ */
+export async function deleteKeychainSecret({ service, account }, deps = {}) {
+  if (!service || !account) {
+    return;
+  }
+
+  const { backend } = getPlatformKeychain();
+  
+  try {
+    await backend.deleteSecret({ service, account }, deps);
+  } catch (error) {
+    // Try encrypted storage
+    if (backend !== encryptedStorage) {
+      try {
+        await encryptedStorage.deleteSecret({ service, account });
+      } catch {
+        // Silently fail
       }
-
-      reject(new Error(`security exited with ${code}`));
-    });
-  });
+    }
+  }
 }
 
 export function getDefaultLlmKeychainService() {
@@ -45,65 +175,4 @@ export function getDefaultLlmKeychainService() {
 
 export function buildDefaultLlmKeychainAccount({ provider, baseUrl }) {
   return `${String(provider || 'llm').trim().toLowerCase()}:${String(baseUrl || 'default').trim()}`;
-}
-
-export async function setKeychainSecret({ service, account, secret }, deps = {}) {
-  if (!service || !account) {
-    throw new Error('Keychain service and account are required.');
-  }
-  if (!secret) {
-    throw new Error('Secret value is required.');
-  }
-
-  await runSecurity(
-    ['add-generic-password', '-U', '-s', service, '-a', account, '-w', secret],
-    deps.runner
-  );
-}
-
-export async function promptKeychainSecret({ service, account }, deps = {}) {
-  if (!service || !account) {
-    throw new Error('Keychain service and account are required.');
-  }
-
-  await runSecurityInteractive(
-    ['add-generic-password', '-U', '-s', service, '-a', account, '-w'],
-    deps.spawnRunner
-  );
-}
-
-export async function getKeychainSecret({ service, account }, deps = {}) {
-  if (!service || !account) {
-    return '';
-  }
-
-  try {
-    return await runSecurity(
-      ['find-generic-password', '-w', '-s', service, '-a', account],
-      deps.runner
-    );
-  } catch (error) {
-    if (String(error?.message || '').includes('could not be found')) {
-      return '';
-    }
-    throw error;
-  }
-}
-
-export async function deleteKeychainSecret({ service, account }, deps = {}) {
-  if (!service || !account) {
-    return;
-  }
-
-  try {
-    await runSecurity(
-      ['delete-generic-password', '-s', service, '-a', account],
-      deps.runner
-    );
-  } catch (error) {
-    if (String(error?.message || '').includes('could not be found')) {
-      return;
-    }
-    throw error;
-  }
 }

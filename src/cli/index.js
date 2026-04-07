@@ -986,7 +986,7 @@ function buildPersistedLlmConfig(currentConfig, values = {}) {
 
 async function handleAuthCommand(flags, positionals, config, configBaseDir, configPath) {
   const [scope = '', action = ''] = positionals;
-  if (scope !== 'llm' || (action !== 'set' && action !== 'clear')) {
+  if (scope !== 'llm' || (action !== 'set' && action !== 'clear' && action !== 'diagnose')) {
     throw new Error('Usage: `papernexus auth llm set|clear [--provider <name>] [--base-url <url>]`.');
   }
 
@@ -1012,6 +1012,43 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
 
   if (!service || !account) {
     throw new Error('Keychain service and account are required.');
+  }
+
+  if (action === 'diagnose') {
+    const auth = await loadAuthModules();
+    const backends = await auth.getAvailableBackends();
+    
+    console.log('\nAvailable Key Storage Backends on this system:');
+    backends.forEach((backend, idx) => {
+      const marker = idx === 0 && backend.id !== 'encrypted' ? ' ← RECOMMENDED' : '';
+      console.log(`  ${backend.name}${marker}`);
+    });
+    
+    console.log('\nCurrent LLM Configuration:');
+    const resolved = auth.resolveLlmConfig(buildLlmOptions(flags, config));
+    console.log(`  Provider: ${resolved.provider}`);
+    console.log(`  Model: ${resolved.model}`);
+    console.log(`  Base URL: ${resolved.baseUrl}`);
+    
+    if (resolved.provider === 'openai' || resolved.provider === 'anthropic') {
+      console.log(`  API Key Source: ${resolved.apiKeySource || 'environment variable / not configured'}`);
+      if (resolved.apiKeySource === 'keychain') {
+        console.log(`  API Key Service: ${resolved.apiKeyService}`);
+        console.log(`  API Key Account: ${resolved.apiKeyAccount}`);
+        
+        // Check if key is stored
+        try {
+          const key = await auth.getKeychainSecret({ service: resolved.apiKeyService, account: resolved.apiKeyAccount });
+          console.log(`  API Key Stored: ${key ? '✓ Yes' : '✗ No'}`);
+        } catch {
+          console.log('  API Key Stored: ✗ Unable to check');
+        }
+      }
+    }
+    
+    console.log('\nTo configure your LLM API key, run:');
+    console.log('  papernexus auth llm set --provider openai --base-url https://api.openai.com/v1');
+    return;
   }
 
   if (action === 'set') {
