@@ -44,6 +44,7 @@ Commands:
   papernexus backup-load <archive-path> --output <dir>
   papernexus logs watch
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
+  papernexus apikey [--provider <name>] [--base-url <url>]  Set LLM API key securely
   papernexus setup
   papernexus serve [--host 127.0.0.1] [--port 4821] [--api-token <token>]
   papernexus mcp
@@ -751,10 +752,13 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
 
       if (llmProvider === 'openai' || llmProvider === 'anthropic') {
         nextLlm.apiKeyEnv = currentLlm.apiKeyEnv || init.getDefaultLlmApiKeyEnv(llmProvider);
-        console.log('API key storage: on macOS you can keep the secret in Keychain so config.json only stores a reference, not the raw key.');
-        const storeKeyNow = process.platform === 'darwin'
-          ? await prompt.promptConfirm('Store an API key in macOS Keychain now?', currentLlm.apiKeySource === 'keychain')
-          : false;
+        
+        // Show available backends
+        const backends = await init.getAvailableBackends();
+        const recommended = backends[0];
+        console.log(`API key storage: Your API key can be stored securely using ${recommended.name}.`);
+        
+        const storeKeyNow = await prompt.promptConfirm('Store an API key securely now?', currentLlm.apiKeySource === 'keychain');
 
         if (storeKeyNow) {
           keychainConfiguredNow = true;
@@ -781,7 +785,7 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
     }
 
     if (shouldPromptForKeychain) {
-      console.log('Keychain prompt: enter your LLM API key. The macOS prompt may label it as "password data", but this value is your provider API key, not your system login password.');
+      console.log('Enter your LLM API key when prompted.');
       prompt.close();
       promptClosed = true;
       await init.promptKeychainSecret({
@@ -988,6 +992,83 @@ function buildPersistedLlmConfig(currentConfig, values = {}) {
   return nextConfig;
 }
 
+async function handleApiKeyCommand(flags, config, configBaseDir, configPath) {
+  const auth = await loadAuthModules();
+  
+  // Get provider from flags or config, default to openai
+  let provider = flags.provider || config?.llm?.provider || 'openai';
+  
+  // Normalize provider name
+  if (provider === 'claude' || provider === 'claudecode') {
+    provider = 'anthropic';
+  }
+  
+  // Check for valid provider
+  if (provider !== 'openai' && provider !== 'anthropic') {
+    console.log(`Provider "${provider}" doesn't require an API key.`);
+    console.log('This command is for OpenAI or Anthropic API keys.');
+    console.log('Use --provider openai or --provider anthropic');
+    return;
+  }
+  
+  // Get base URL
+  const defaultBaseUrl = provider === 'anthropic' 
+    ? 'https://api.anthropic.com/v1'
+    : 'https://api.openai.com/v1';
+  const baseUrl = flags['base-url'] || config?.llm?.baseUrl || defaultBaseUrl;
+  
+  // Build service/account
+  const service = auth.getDefaultLlmKeychainService();
+  const account = auth.buildDefaultLlmKeychainAccount({ provider, baseUrl });
+  
+  // Show what we're configuring
+  console.log(`\nConfiguring API key for ${provider}`);
+  console.log(`  Base URL: ${baseUrl}`);
+  
+  // Show available backends
+  const backends = await auth.getAvailableBackends();
+  const recommended = backends[0];
+  console.log(`  Storage: ${recommended.name}`);
+  
+  // Prompt for API key
+  console.log('\nEnter your API key:');
+  
+  if (flags.stdin) {
+    const secret = await auth.readSecretFromStdin();
+    if (!secret) {
+      throw new Error('API key cannot be empty.');
+    }
+    await auth.setKeychainSecret({ service, account, secret });
+  } else {
+    await auth.promptKeychainSecret({ service, account });
+  }
+  
+  // Get model from config or use default
+  const defaultModel = provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini';
+  const model = config?.llm?.model || defaultModel;
+  
+  // Update config
+  const nextConfig = buildPersistedLlmConfig(config, {
+    provider,
+    model,
+    baseUrl,
+    apiKeyEnv: auth.getDefaultLlmApiKeyEnv(provider),
+    apiKeySource: 'keychain',
+    apiKeyService: service,
+    apiKeyAccount: account
+  });
+  
+  const saved = await saveRuntimeConfig(nextConfig, {
+    cwd: configBaseDir,
+    path: configPath
+  });
+  
+  console.log(`\n✓ API key stored securely for ${provider}`);
+  console.log(`  Config updated: ${saved.path}`);
+  console.log('\nTo test the connection, run:');
+  console.log('  papernexus probe');
+}
+
 async function handleAuthCommand(flags, positionals, config, configBaseDir, configPath) {
   const [scope = '', action = ''] = positionals;
   if (scope !== 'llm' || (action !== 'set' && action !== 'clear' && action !== 'diagnose')) {
@@ -1082,7 +1163,7 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
       path: configPath
     });
 
-    console.log(`Stored API key in macOS Keychain for ${resolved.provider} (${account}).`);
+    console.log(`✓ Stored API key securely for ${resolved.provider} (${account}).`);
     console.log(`Updated ${saved.path} to use llm.apiKeySource="keychain".`);
     return;
   }
@@ -1388,6 +1469,11 @@ async function main() {
 
   if (command === 'update') {
     await handleUpdateCommand(flags);
+    return;
+  }
+
+  if (command === 'apikey' || command === 'api-key') {
+    await handleApiKeyCommand(flags, config, configBaseDir, configPath);
     return;
   }
 
