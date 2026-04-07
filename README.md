@@ -35,11 +35,10 @@ Install parser dependencies first:
 pip install docling marker-pdf
 ```
 
-If you want to use local PaddleOCR-VL high-performance PDF parsing, install the official runtime separately:
+If you want to use the PaddleOCR-VL PDF parser against a local Docker or vLLM service, install the Python client runtime separately:
 
 ```bash
 python -m pip install -U "paddleocr[doc-parser]"
-paddleocr install_hpi_deps gpu
 ```
 
 Run the recommended first-time flow:
@@ -121,16 +120,15 @@ papernexus service install
 papernexus logs watch
 ```
 
-Optional local PaddleOCR-VL parser config:
+Optional PaddleOCR-VL remote parser config:
 
 ```json
 {
   "analyze": {
     "pdfParser": "paddleocr-vl",
     "paddleocrVlPython": "python3",
-    "paddleocrVlEnableHpi": true,
-    "paddleocrVlDevice": "gpu:0",
-    "paddleocrVlUseTensorRt": false
+    "paddleocrVlServerUrl": "http://127.0.0.1:8080/v1",
+    "paddleocrVlLayoutModel": "PP-DocLayout-S"
   }
 }
 ```

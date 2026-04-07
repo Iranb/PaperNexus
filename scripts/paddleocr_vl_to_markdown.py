@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import inspect
 import sys
 import tempfile
 from pathlib import Path
-
-
-def parse_bool(raw: str) -> bool:
-    normalized = str(raw or "").strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"Unsupported boolean value: {raw!r}")
 
 
 def ensure_markdown_output(result_root: Path) -> str:
@@ -40,13 +32,39 @@ def normalize_results(value):
     return [value]
 
 
+def build_paddleocr_vl_kwargs(paddleocr_vl_type, args):
+    kwargs = {
+        "vl_rec_backend": "vllm-server",
+        "vl_rec_server_url": args.server_url,
+    }
+    layout_model = str(args.layout_model or "").strip()
+    if not layout_model:
+        return kwargs
+
+    candidate_names = (
+        "layout_detection_model_name",
+        "layout_model_name",
+        "layout_model",
+    )
+    try:
+        signature = inspect.signature(paddleocr_vl_type)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature:
+        for candidate in candidate_names:
+            if candidate in signature.parameters:
+                kwargs[candidate] = layout_model
+                break
+    return kwargs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Convert a PDF to markdown using PaddleOCR-VL.")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--enable-hpi", default="true")
-    parser.add_argument("--device", default="")
-    parser.add_argument("--use-tensorrt", default="false")
+    parser.add_argument("--server-url", default="http://127.0.0.1:8080/v1")
+    parser.add_argument("--layout-model", default="PP-DocLayout-S")
     args = parser.parse_args()
 
     input_path = Path(args.input).expanduser().resolve()
@@ -57,15 +75,11 @@ def main() -> int:
         from paddleocr import PaddleOCRVL
     except Exception as exc:  # pragma: no cover - exercised from Node wrapper tests
         raise RuntimeError(
-            "PaddleOCR-VL is not available. Install `paddleocr[doc-parser]` and, for GPU HPI, run `paddleocr install_hpi_deps gpu`."
+            "PaddleOCR-VL is not available. Install `paddleocr[doc-parser]` in the Python environment used to talk to the remote server."
         ) from exc
 
     try:
-        pipeline = PaddleOCRVL(
-            enable_hpi=parse_bool(args.enable_hpi),
-            device=(args.device or None),
-            use_tensorrt=parse_bool(args.use_tensorrt),
-        )
+        pipeline = PaddleOCRVL(**build_paddleocr_vl_kwargs(PaddleOCRVL, args))
     except Exception as exc:  # pragma: no cover - environment dependent
         raise RuntimeError(f"Failed to initialize PaddleOCRVL: {exc}") from exc
 

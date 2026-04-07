@@ -165,14 +165,16 @@ test('CLI can analyze PDFs with paddleocr-vl selected from config.json', async (
         '#!/bin/sh',
         'shift',
         'output=""',
+        'server_url=""',
         'while [ "$#" -gt 0 ]; do',
         '  case "$1" in',
         '    --output) output="$2"; shift 2 ;;',
+        '    --server-url) server_url="$2"; shift 2 ;;',
         '    *) shift ;;',
         '  esac',
         'done',
         'mkdir -p "$(dirname "$output")"',
-        'printf "# Configured PaddleOCR-VL\\n\\n## Abstract\\n\\nConfigured parser output.\\n" > "$output"'
+        'printf "# Configured PaddleOCR-VL\\n\\n## Abstract\\n\\nRemote server: %s\\n" "$server_url" > "$output"'
       ].join('\n'),
       { mode: 0o755 }
     );
@@ -189,8 +191,7 @@ test('CLI can analyze PDFs with paddleocr-vl selected from config.json', async (
         name: 'configured-paddleocr-vl',
         pdfParser: 'paddleocr-vl',
         paddleocrVlPython: './fake-python.sh',
-        paddleocrVlEnableHpi: true,
-        paddleocrVlDevice: 'gpu:0'
+        paddleocrVlServerUrl: 'http://127.0.0.1:8080/v1'
       }
     }, null, 2)}\n`);
 

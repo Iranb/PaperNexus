@@ -169,41 +169,20 @@ function resolvePaddleOcrVlPython(options = {}) {
   ).trim() || 'python3';
 }
 
-function resolvePaddleOcrVlBoolean(value, fallback) {
-  if (value === undefined || value === null || value === '') {
-    return fallback;
-  }
-  if (typeof value === 'boolean') {
-    return value;
-  }
-
-  const normalized = String(value).trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  return fallback;
-}
-
-function resolvePaddleOcrVlEnableHpi(options = {}) {
-  return resolvePaddleOcrVlBoolean(
-    options.paddleocrVlEnableHpi ?? process.env.PAPERNEXUS_PADDLEOCR_VL_ENABLE_HPI,
-    true
-  );
-}
-
-function resolvePaddleOcrVlUseTensorRt(options = {}) {
-  return resolvePaddleOcrVlBoolean(
-    options.paddleocrVlUseTensorRt ?? process.env.PAPERNEXUS_PADDLEOCR_VL_USE_TENSORRT,
-    false
-  );
-}
-
-function resolvePaddleOcrVlDevice(options = {}) {
+function resolvePaddleOcrVlServerUrl(options = {}) {
   return String(
-    options.paddleocrVlDevice
-    || process.env.PAPERNEXUS_PADDLEOCR_VL_DEVICE
-    || ''
-  ).trim();
+    options.paddleocrVlServerUrl
+    || process.env.PAPERNEXUS_PADDLEOCR_VL_SERVER_URL
+    || 'http://127.0.0.1:8080/v1'
+  ).trim() || 'http://127.0.0.1:8080/v1';
+}
+
+function resolvePaddleOcrVlLayoutModel(options = {}) {
+  return String(
+    options.paddleocrVlLayoutModel
+    || process.env.PAPERNEXUS_PADDLEOCR_VL_LAYOUT_MODEL
+    || 'PP-DocLayout-S'
+  ).trim() || 'PP-DocLayout-S';
 }
 
 function resolveRemoteMarkerHost(options = {}) {
@@ -1146,9 +1125,8 @@ async function convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options = {}) {
   } = options;
 
   const pythonCommand = resolvePaddleOcrVlPython(options);
-  const enableHpi = resolvePaddleOcrVlEnableHpi(options);
-  const useTensorRt = resolvePaddleOcrVlUseTensorRt(options);
-  const device = resolvePaddleOcrVlDevice(options);
+  const serverUrl = resolvePaddleOcrVlServerUrl(options);
+  const layoutModel = resolvePaddleOcrVlLayoutModel(options);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`paddleocr-vl:${basename}`);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
@@ -1180,18 +1158,14 @@ async function convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options = {}) {
     pdfPath,
     '--output',
     cachedMarkdownPath,
-    '--enable-hpi',
-    String(enableHpi),
-    '--use-tensorrt',
-    String(useTensorRt)
+    '--server-url',
+    serverUrl,
+    '--layout-model',
+    layoutModel
   ];
 
-  if (device) {
-    args.push('--device', device);
-  }
-
   try {
-    process.stderr.write(`[paddleocr-vl:${basename}] Running local PaddleOCR-VL\n`);
+    process.stderr.write(`[paddleocr-vl:${basename}] Running PaddleOCR-VL via remote server ${serverUrl}\n`);
     await runCommand(pythonCommand, args, {
       onStdout: progress,
       onStderr: progress,
@@ -1202,7 +1176,7 @@ async function convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options = {}) {
   } catch (error) {
     throw new Error(
       `PaddleOCR-VL failed for ${pdfPath}. ${error.message}\n` +
-      `Tip: install \`paddleocr[doc-parser]\`, run \`paddleocr install_hpi_deps gpu\` for local GPU high-performance inference, and verify \`${pythonCommand}\` can import \`PaddleOCRVL\`.`
+      `Tip: verify the PaddleOCR-VL remote server is reachable at \`${serverUrl}\` and \`${pythonCommand}\` can import \`PaddleOCRVL\`.`
     );
   }
 
@@ -1282,6 +1256,7 @@ export const __markerTestables = {
   shellQuote,
   normalizePdfParser,
   resolvePaddleOcrVlPython,
+  resolvePaddleOcrVlServerUrl,
   resolveRemoteMarkerHost,
   resolveMineruRemoteFailureMode,
   resolveMineruProbeCacheTtlMs,

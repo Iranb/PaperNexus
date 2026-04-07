@@ -77,9 +77,8 @@ function buildPdfOptions(flags, config) {
     mineruHttpUrl: firstDefined(flags['mineru-http-url'], materializeConfig.mineruHttpUrl, analyzeConfig.mineruHttpUrl, materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
     mineruRemoteFailureMode: firstDefined(flags['mineru-remote-failure'], materializeConfig.mineruRemoteFailureMode, analyzeConfig.mineruRemoteFailureMode, 'error'),
     paddleocrVlPython: firstDefined(flags['paddleocr-vl-python'], materializeConfig.paddleocrVlPython, analyzeConfig.paddleocrVlPython),
-    paddleocrVlEnableHpi: toBoolean(firstDefined(flags['paddleocr-vl-enable-hpi'], materializeConfig.paddleocrVlEnableHpi, analyzeConfig.paddleocrVlEnableHpi), true),
-    paddleocrVlDevice: firstDefined(flags['paddleocr-vl-device'], materializeConfig.paddleocrVlDevice, analyzeConfig.paddleocrVlDevice),
-    paddleocrVlUseTensorRt: toBoolean(firstDefined(flags['paddleocr-vl-use-tensorrt'], materializeConfig.paddleocrVlUseTensorRt, analyzeConfig.paddleocrVlUseTensorRt), false),
+    paddleocrVlServerUrl: firstDefined(flags['paddleocr-vl-server-url'], materializeConfig.paddleocrVlServerUrl, analyzeConfig.paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1'),
+    paddleocrVlLayoutModel: firstDefined(flags['paddleocr-vl-layout-model'], materializeConfig.paddleocrVlLayoutModel, analyzeConfig.paddleocrVlLayoutModel, 'PP-DocLayout-S'),
     pdfParseTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], materializeConfig.pdfParseTimeoutMs, analyzeConfig.pdfParseTimeoutMs), undefined),
     pageRange: firstDefined(flags['page-range'], materializeConfig.pageRange, analyzeConfig.pageRange),
     force: Boolean(flags.force)
