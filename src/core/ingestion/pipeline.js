@@ -77,7 +77,12 @@ import {
   getPdfMarkdownCachePath,
   normalizePdfParser
 } from './marker.js';
-import { extractConceptCandidates, parsePaperMarkdown } from './markdown.js';
+import {
+  assessPaperTitleCandidate,
+  extractConceptCandidates,
+  isPaperTitleDegenerate,
+  parsePaperMarkdown
+} from './markdown.js';
 import { postIngestionRefinement, precomputePaperGraphFragments } from './graph-precompute.js';
 import { countGraphPostprocessTasks, precomputeGraphPostprocess } from './graph-postprocess.js';
 
@@ -1185,6 +1190,7 @@ function buildSemanticPaperView(paper) {
   return {
     paperId: paper.paperId,
     paperTitle: paper.title,
+    titleValidation: paper.titleValidation || assessPaperTitleCandidate(paper.title, paper.sourcePath),
     authors: paper.authors || [],
     abstract: abstract?.text || '',
     sourcePath: paper.sourcePath,
@@ -4048,17 +4054,40 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
   let markdownPath = sourceState.inputPath;
   let sourcePdfPath = null;
   let pdfCommand = null;
+  let parserUsed = sourceState.kind;
   const timings = createEmptyMaterializeTimings();
   const materializeStartedAt = Date.now();
 
+  async function readAndParseMarkdown(targetMarkdownPath, targetSourcePdfPath) {
+    const markdownReadStartedAt = Date.now();
+    const markdown = await readText(targetMarkdownPath);
+    timings.markdownReadMs += Date.now() - markdownReadStartedAt;
+    const markdownParseStartedAt = Date.now();
+    const parsed = parsePaperMarkdown(markdown, sourceState.inputPath || targetMarkdownPath);
+    timings.markdownParseMs += Date.now() - markdownParseStartedAt;
+    parsed.paperId = `paper:${stableHash(sourceState.sourceKey)}`;
+    parsed.paperTitle = parsed.title;
+    parsed.sourceKey = sourceState.sourceKey;
+    parsed.sourcePath = sourceState.inputPath;
+    parsed.sourceMarkdownPath = targetMarkdownPath;
+    parsed.sourcePdfPath = targetSourcePdfPath;
+    parsed.sourceKind = sourceState.kind;
+    parsed.sourceFingerprint = sourceState.fingerprint;
+    return parsed;
+  }
+
   if (sourceState.kind === 'pdf') {
     const convertStartedAt = Date.now();
-    const converted = await convertPdfToMarkdown(sourceState.inputPath, {
+    let converted = await convertPdfToMarkdown(sourceState.inputPath, {
       pdfParser: options.pdfParser,
       pdfCommand: options.pdfCommand,
       force: Boolean(sourceState.markdownCacheNeedsRefresh),
+      markpdfdownPython: options.markpdfdownPython,
       opendataloaderPdfPython: options.opendataloaderPdfPython,
+      doclingPython: options.doclingPython,
       doclingCommand: options.doclingCommand,
+      doclingUseVlm: options.doclingUseVlm,
+      doclingVlmPreset: options.doclingVlmPreset,
       doclingOcrEngine: options.doclingOcrEngine,
       doclingSshHost: options.doclingSshHost,
       pdfParserSshHost: options.pdfParserSshHost,
@@ -4072,16 +4101,62 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       paddleocrVlLayoutModel: options.paddleocrVlLayoutModel,
       pageRange: options.pageRange,
       pdfSshHost: options.pdfSshHost,
+      llmProvider: options.llmProvider,
+      llmModel: options.llmModel,
+      llmBaseUrl: options.llmBaseUrl,
+      llmApiKey: options.llmApiKey,
+      llmApiKeyEnv: options.llmApiKeyEnv,
+      llmApiKeySource: options.llmApiKeySource,
+      llmApiKeyService: options.llmApiKeyService,
+      llmApiKeyAccount: options.llmApiKeyAccount,
+      llmMaxTokens: options.llmMaxTokens,
       markerDir,
       markdownDir
     });
-    timings.pdfToMarkdownMs = Date.now() - convertStartedAt;
+    timings.pdfToMarkdownMs += Date.now() - convertStartedAt;
     mergeMaterializeTimings(timings, {
       parser: converted.timings || null
     });
     markdownPath = converted.markdownPath;
     sourcePdfPath = converted.sourcePdfPath;
     pdfCommand = converted.parserCommand || converted.markerCommand || null;
+    parserUsed = converted.parser || normalizePdfParser(options.pdfParser);
+
+    let parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
+    if (parsed.titleValidation?.needsReparse && parserUsed !== 'docling') {
+      process.stderr.write(
+        `[materialize:${path.basename(sourceState.inputPath)}] Detected degenerate title "${parsed.titleValidation.rawTitle || parsed.title}"; reparsing with docling\n`
+      );
+      const doclingStartedAt = Date.now();
+      converted = await convertPdfToMarkdown(sourceState.inputPath, {
+        ...options,
+        pdfParser: 'docling',
+        pdfCommand: options.doclingCommand || options.pdfCommand,
+        force: true,
+        markerDir,
+        markdownDir
+      });
+      timings.pdfToMarkdownMs += Date.now() - doclingStartedAt;
+      mergeMaterializeTimings(timings, {
+        parser: converted.timings || null
+      });
+      markdownPath = converted.markdownPath;
+      sourcePdfPath = converted.sourcePdfPath;
+      pdfCommand = converted.parserCommand || converted.markerCommand || null;
+      parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
+    }
+
+    const semanticSnapshotStartedAt = Date.now();
+    const semanticPaper = buildSemanticPaperView(parsed);
+    timings.semanticSnapshotMs += Date.now() - semanticSnapshotStartedAt;
+    timings.totalMs = Date.now() - materializeStartedAt;
+
+    return {
+      parsedPaper: parsed,
+      semanticPaper,
+      markerCommand: pdfCommand,
+      timings
+    };
   } else if (sourceState.kind === 'markdown') {
     const cached = await cacheMarkdownSource(sourceState.inputPath, {
       markdownDir,
@@ -4090,24 +4165,11 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
     markdownPath = cached.markdownPath;
   }
 
-  const markdownReadStartedAt = Date.now();
-  const markdown = await readText(markdownPath);
-  timings.markdownReadMs = Date.now() - markdownReadStartedAt;
-  const markdownParseStartedAt = Date.now();
-  const parsed = parsePaperMarkdown(markdown, markdownPath);
-  timings.markdownParseMs = Date.now() - markdownParseStartedAt;
-  parsed.paperId = `paper:${stableHash(sourceState.sourceKey)}`;
-  parsed.paperTitle = parsed.title;
-  parsed.sourceKey = sourceState.sourceKey;
-  parsed.sourcePath = sourceState.inputPath;
-  parsed.sourceMarkdownPath = markdownPath;
-  parsed.sourcePdfPath = sourcePdfPath;
-  parsed.sourceKind = sourceState.kind;
-  parsed.sourceFingerprint = sourceState.fingerprint;
+  const parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
 
   const semanticSnapshotStartedAt = Date.now();
   const semanticPaper = buildSemanticPaperView(parsed);
-  timings.semanticSnapshotMs = Date.now() - semanticSnapshotStartedAt;
+  timings.semanticSnapshotMs += Date.now() - semanticSnapshotStartedAt;
   timings.totalMs = Date.now() - materializeStartedAt;
 
   return {
@@ -4130,7 +4192,7 @@ async function loadParsedPaperFromMarkdownCache(sourceState, cachedPaper = null)
   }
 
   const markdown = await readText(markdownPath);
-  const parsed = parsePaperMarkdown(markdown, markdownPath);
+  const parsed = parsePaperMarkdown(markdown, sourceState.inputPath || markdownPath);
   parsed.paperId = cachedPaper?.paperId || `paper:${stableHash(sourceState.sourceKey)}`;
   parsed.paperTitle = parsed.title;
   parsed.sourceKey = sourceState.sourceKey;
@@ -4140,6 +4202,15 @@ async function loadParsedPaperFromMarkdownCache(sourceState, cachedPaper = null)
   parsed.sourceKind = sourceState.kind;
   parsed.sourceFingerprint = sourceState.fingerprint;
   return parsed;
+}
+
+function paperHasDegenerateTitle(paper, sourcePath = '') {
+  if (!paper) return false;
+  if (paper.titleValidation?.isValid === false) return true;
+  return isPaperTitleDegenerate(
+    paper.paperTitle || paper.title || '',
+    sourcePath || paper.sourcePath || paper.sourceKey || ''
+  );
 }
 
 function formatChangeSummary(changes) {
@@ -4188,6 +4259,10 @@ function resolveAnalyzeConcurrency(options = {}) {
   }
 
   if (parser === 'paddleocr-vl') {
+    return 1;
+  }
+
+  if (parser === 'markpdfdown') {
     return 1;
   }
 
@@ -4254,6 +4329,12 @@ function normalizeAuthorName(value) {
 }
 
 function createPaperTitleKey(paper) {
+  const titleValidation = paper?.titleValidation || assessPaperTitleCandidate(
+    paper?.paperTitle || paper?.title || '',
+    paper?.sourcePath || paper?.sourceKey || ''
+  );
+  if (titleValidation?.isValid === false) return '';
+
   const title = normalizeText(paper?.paperTitle || paper?.title || '');
   if (title) return title;
   const sourcePath = paper?.sourcePath || paper?.sourceKey || '';
@@ -4676,11 +4757,19 @@ export async function analyzeCorpus(inputPath, options = {}) {
         cachedPaper?.sourceFingerprint,
         ''
       );
+      const cachedPaperHasDegenerateTitle = source.kind === 'pdf' && paperHasDegenerateTitle(cachedPaper, source.inputPath);
+      const previousPaperHasDegenerateTitle = source.kind === 'pdf' && paperHasDegenerateTitle(previous, source.inputPath);
+      if (cachedPaperHasDegenerateTitle) {
+        cachedPaper = null;
+        llmRefreshState = freshSourceLlmRefreshState;
+      }
       const forcedMarkdownRefresh = Boolean(analysisOptions.rebuildPdfMarkdown && source.kind === 'pdf');
       const markdownCacheNeedsRefresh = forcedMarkdownRefresh
         || !markdownCacheExists
         || (previousMarkdownCachePath && previousMarkdownCachePath !== markdownCachePath)
-        || (previousMarkdownCacheFingerprint && previousMarkdownCacheFingerprint !== fingerprint);
+        || (previousMarkdownCacheFingerprint && previousMarkdownCacheFingerprint !== fingerprint)
+        || cachedPaperHasDegenerateTitle
+        || previousPaperHasDegenerateTitle;
       let reuseCachedMaterialization = false;
 
       let changeType = 'unchanged';
@@ -4831,6 +4920,14 @@ export async function analyzeCorpus(inputPath, options = {}) {
               previousManifest?.mineruCommand,
               process.env.PAPERNEXUS_MINERU_CMD,
               ''
+            )
+          : pdfParser === 'markpdfdown'
+            ? firstDefinedValue(
+              options.pdfCommand,
+              options.markpdfdownPython,
+              previousManifest?.pdfCommand,
+              process.env.PAPERNEXUS_MARKPDFDOWN_PYTHON,
+              'python3'
             )
             : firstDefinedValue(
               options.pdfCommand,

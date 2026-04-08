@@ -10,11 +10,14 @@
   "analyze": {
     "name": "GCD",
     "semanticExtraction": "llm-primary",
-    "pdfParser": "opendataloader",
-    "opendataloaderPdfPython": "python3",
+    "pdfParser": "markpdfdown",
+    "markpdfdownPython": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
+    "doclingPython": "python3",
     "doclingCommand": "docling",
-    "doclingPdfBackend": "pdfplumber"
+    "doclingPdfBackend": "pdfplumber",
+    "doclingUseVlm": false,
+    "doclingVlmPreset": "granite_docling"
   },
   "global": {
     "corpus": "GCD"

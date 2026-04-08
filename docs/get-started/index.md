@@ -11,18 +11,21 @@ npm install
 npm link
 ```
 
-PaperNexus itself is a Node-based application, but PDF analysis depends on parser tooling. The recommended default parser path remains OpenDataLoader:
+PaperNexus itself is a Node-based application, but PDF analysis depends on parser tooling. The default parser path uses MarkPDFDown with the same `llm` configuration PaperNexus already uses for semantic extraction. If the first parser run fails or produces a degenerate title such as `Abstract`, PaperNexus automatically retries the PDF with Docling before indexing it:
 
 ```bash
-python -m pip install -U opendataloader-pdf
+python -m pip install -U markpdfdown
 ```
 
 Optional parser families can be installed separately:
 
 ```bash
+python -m pip install -U opendataloader-pdf
 pip install docling marker-pdf
 python -m pip install -U "paddleocr[doc-parser]"
 ```
+
+If you want Docling to use its VLM pipeline during fallback parsing, enable `analyze.doclingUseVlm` and reuse the normal PaperNexus `llm` config.
 
 ## 2. Create Or Choose A Paper Source Directory
 

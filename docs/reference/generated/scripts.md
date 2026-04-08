@@ -26,12 +26,14 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexusReflection/scripts/pn_stage_sync.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusReflection/scripts/pn_stage_sync.py) | Pn Stage Sync implementation. |
 | [`SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py) | Pn Graph Query implementation. |
 | [`SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py) | Pn Research Chains implementation. |
+| [`scripts/docling_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/docling_to_markdown.py) | Docling To Markdown implementation. |
 | [`scripts/generate-docs-reference.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/generate-docs-reference.mjs) | Generate VitePress reference pages from code, config, and repository structure. |
 | [`scripts/graph_manage/delete_and_rebuild_all.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/graph_manage/delete_and_rebuild_all.sh) | Delete And Rebuild All implementation. |
 | [`scripts/graph_manage/delete_graph_index.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/graph_manage/delete_graph_index.sh) | Delete Graph Index implementation. |
 | [`scripts/graph_manage/delete_graph_index_snapshot.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/graph_manage/delete_graph_index_snapshot.sh) | Delete Graph Index Snapshot implementation. |
 | [`scripts/install-service.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/install-service.sh) | Install platform-specific background services for watch and serve. |
 | [`scripts/manage-service.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/manage-service.sh) | Inspect and control installed services on supported platforms. |
+| [`scripts/markpdfdown_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/markpdfdown_to_markdown.py) | Markpdfdown To Markdown implementation. |
 | [`scripts/opendataloader_pdf_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/opendataloader_pdf_to_markdown.py) | Standalone OpenDataLoader PDF-to-markdown bridge. |
 | [`scripts/paddleocr_vl_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/paddleocr_vl_to_markdown.py) | Standalone PaddleOCR-VL PDF-to-markdown bridge. |
 | [`scripts/pm2-papernexus-serve.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/pm2-papernexus-serve.sh) | Run the serve process under PM2 and inspect recent import-focused logs. |

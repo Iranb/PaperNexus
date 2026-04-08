@@ -63,12 +63,18 @@ function toNumber(value, fallback = undefined) {
 function buildPdfOptions(flags, config) {
   const analyzeConfig = getSection(config, 'analyze');
   const materializeConfig = getSection(config, 'materialize');
+  const llmConfig = getSection(config, 'llm');
+  const ollamaConfig = getSection(config, 'ollama');
   return {
-    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'opendataloader'),
+    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'markpdfdown'),
     pdfCommand: firstDefined(flags['pdf-cmd'], materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
+    markpdfdownPython: firstDefined(flags['markpdfdown-python'], materializeConfig.markpdfdownPython, analyzeConfig.markpdfdownPython),
     opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], materializeConfig.opendataloaderPdfPython, analyzeConfig.opendataloaderPdfPython),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
+    doclingPython: firstDefined(flags['docling-python'], materializeConfig.doclingPython, analyzeConfig.doclingPython),
     doclingCommand: firstDefined(flags['docling-cmd'], materializeConfig.doclingCommand, analyzeConfig.doclingCommand),
+    doclingUseVlm: toBoolean(firstDefined(flags['docling-vlm'], materializeConfig.doclingUseVlm, analyzeConfig.doclingUseVlm), false),
+    doclingVlmPreset: firstDefined(flags['docling-vlm-preset'], materializeConfig.doclingVlmPreset, analyzeConfig.doclingVlmPreset),
     doclingSshHost: firstDefined(flags['docling-ssh-host'], materializeConfig.doclingSshHost, analyzeConfig.doclingSshHost, materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
     doclingOcrEngine: firstDefined(flags['docling-ocr-engine'], materializeConfig.doclingOcrEngine, analyzeConfig.doclingOcrEngine),
     doclingPdfBackend: firstDefined(flags['docling-pdf-backend'], materializeConfig.doclingPdfBackend, analyzeConfig.doclingPdfBackend),
@@ -83,7 +89,16 @@ function buildPdfOptions(flags, config) {
     paddleocrVlLayoutModel: firstDefined(flags['paddleocr-vl-layout-model'], materializeConfig.paddleocrVlLayoutModel, analyzeConfig.paddleocrVlLayoutModel, 'PP-DocLayout-S'),
     pdfParseTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], materializeConfig.pdfParseTimeoutMs, analyzeConfig.pdfParseTimeoutMs), undefined),
     pageRange: firstDefined(flags['page-range'], materializeConfig.pageRange, analyzeConfig.pageRange),
-    force: Boolean(flags.force)
+    force: Boolean(flags.force),
+    llmProvider: firstDefined(flags.provider, llmConfig.provider),
+    llmModel: firstDefined(flags.model, flags['ollama-model'], llmConfig.model, ollamaConfig.model),
+    llmBaseUrl: firstDefined(flags['base-url'], flags.url, flags['ollama-url'], llmConfig.baseUrl, llmConfig.url, ollamaConfig.url),
+    llmApiKey: firstDefined(flags['api-key'], llmConfig.apiKey),
+    llmApiKeyEnv: firstDefined(flags['api-key-env'], llmConfig.apiKeyEnv),
+    llmApiKeySource: firstDefined(flags['api-key-source'], llmConfig.apiKeySource),
+    llmApiKeyService: firstDefined(flags.service, llmConfig.apiKeyService),
+    llmApiKeyAccount: firstDefined(flags.account, llmConfig.apiKeyAccount),
+    llmMaxTokens: toNumber(firstDefined(flags['max-tokens'], llmConfig.maxTokens), undefined)
   };
 }
 
@@ -100,15 +115,124 @@ function formatBytes(bytes) {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
+async function runPdfProbe(pdfPath, options) {
+  const startedAt = Date.now();
+  const rawResult = await convertPdfToMarkdown(pdfPath, options);
+  const elapsedMs = Date.now() - startedAt;
+  const markdownStats = await fs.stat(rawResult.markdownPath);
+  return {
+    rawResult,
+    result: {
+      parser: rawResult.parser,
+      parserCommand: rawResult.parserCommand,
+      markdownPath: rawResult.markdownPath,
+      markdownSizeBytes: markdownStats.size,
+      markdownSizeHuman: formatBytes(markdownStats.size),
+      generated: Boolean(rawResult.generated)
+    },
+    timings: {
+      elapsedMs
+    }
+  };
+}
+
+function buildFailingPrimaryProbeOptions(baseOptions, requestedParser) {
+  const primaryParser = normalizePdfParser(requestedParser);
+  const missingCommand = `__papernexus_missing_${primaryParser.replace(/[^a-z0-9]+/gi, '_')}__`;
+  const options = {
+    ...baseOptions,
+    pdfParser: primaryParser,
+    force: true,
+    disableDoclingFallback: false
+  };
+
+  if (primaryParser === 'markpdfdown') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        markpdfdownPython: missingCommand
+      }
+    };
+  }
+
+  if (primaryParser === 'opendataloader') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        opendataloaderPdfPython: missingCommand
+      }
+    };
+  }
+
+  if (primaryParser === 'marker') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        markerCommand: missingCommand
+      }
+    };
+  }
+
+  if (primaryParser === 'mineru') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        mineruHttpUrl: 'http://127.0.0.1:9',
+        mineruRemoteFailureMode: 'error',
+        cacheTtlMs: 0
+      }
+    };
+  }
+
+  if (primaryParser === 'paddleocr-vl') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        paddleocrVlPython: missingCommand
+      }
+    };
+  }
+
+  throw new Error(
+    `Cannot run a docling fallback probe with primary parser \`${primaryParser}\`. `
+    + 'Use one of: markpdfdown, opendataloader, marker, mineru, paddleocr-vl.'
+  );
+}
+
+function buildTimingComparison(configuredProbe, fallbackProbe) {
+  const configuredElapsedMs = Number(configuredProbe?.timings?.elapsedMs || 0);
+  const fallbackElapsedMs = Number(fallbackProbe?.timings?.elapsedMs || 0);
+  const signedDeltaMs = fallbackElapsedMs - configuredElapsedMs;
+  let fasterProbe = 'tie';
+  if (signedDeltaMs < 0) fasterProbe = 'docling-fallback';
+  if (signedDeltaMs > 0) fasterProbe = 'configured';
+  return {
+    configuredParser: configuredProbe?.result?.parser || '',
+    configuredElapsedMs,
+    doclingFallbackParser: fallbackProbe?.result?.parser || '',
+    doclingFallbackElapsedMs: fallbackElapsedMs,
+    deltaMs: Math.abs(signedDeltaMs),
+    signedDeltaMs,
+    fasterProbe
+  };
+}
+
 function printUsage() {
   console.log(`Usage:
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--config <path>] [--no-config] [--force] [--json]
+  node ./scripts/test-pdf-to-markdown.js <pdf-path> [--verify-docling-fallback] [--fallback-primary-parser <parser>]
 
 Behavior:
   - loads the same config resolution flow as PaperNexus CLI
   - runs convertPdfToMarkdown() with parser settings from config
+  - optionally runs a second synthetic probe to verify docling fallback
   - writes parser cache into ~/.papernexus/pdf-bench by default
-  - records input file size and total processing time
+  - records input file size and total processing time for each probe
 `);
 }
 
@@ -154,14 +278,11 @@ async function main() {
 
   const options = buildPdfOptions(flags, config);
   const parser = normalizePdfParser(options.pdfParser);
-  const startedAt = Date.now();
-  const result = await convertPdfToMarkdown(pdfPath, {
+  const configuredProbe = await runPdfProbe(pdfPath, {
     ...options,
     markerDir,
     markdownDir
   });
-  const elapsedMs = Date.now() - startedAt;
-  const markdownStats = await fs.stat(result.markdownPath);
 
   const payload = {
     input: {
@@ -174,19 +295,32 @@ async function main() {
       parser,
       cacheRoot: benchRoot
     },
-    result: {
-      parser: result.parser,
-      parserCommand: result.parserCommand,
-      markdownPath: result.markdownPath,
-      markdownSizeBytes: markdownStats.size,
-      markdownSizeHuman: formatBytes(markdownStats.size),
-      generated: Boolean(result.generated)
-    },
-    timings: {
-      elapsedMs
-    },
+    result: configuredProbe.result,
+    timings: configuredProbe.timings,
     generatedAt: new Date().toISOString()
   };
+
+  if (flags['verify-docling-fallback']) {
+    const requestedFallbackPrimaryParser = firstDefined(
+      flags['fallback-primary-parser'],
+      parser === 'docling' ? 'marker' : parser
+    );
+    const fallbackProbeConfig = buildFailingPrimaryProbeOptions({
+      ...options,
+      markerDir,
+      markdownDir
+    }, requestedFallbackPrimaryParser);
+    const fallbackProbe = await runPdfProbe(pdfPath, fallbackProbeConfig.options);
+    payload.fallbackCheck = {
+      checked: true,
+      primaryParser: fallbackProbeConfig.primaryParser,
+      fallbackTriggered: Boolean(fallbackProbe.rawResult.fallbackFromParser),
+      fallbackFromParser: fallbackProbe.rawResult.fallbackFromParser || null,
+      result: fallbackProbe.result,
+      timings: fallbackProbe.timings
+    };
+    payload.comparison = buildTimingComparison(configuredProbe, fallbackProbe);
+  }
 
   if (flags.json) {
     console.log(JSON.stringify(payload, null, 2));
@@ -203,6 +337,21 @@ async function main() {
   console.log(`Elapsed: ${payload.timings.elapsedMs} ms`);
   if (payload.result.parserCommand) {
     console.log(`Parser command: ${payload.result.parserCommand}`);
+  }
+  if (payload.fallbackCheck?.checked) {
+    console.log('');
+    console.log(`Docling fallback probe primary parser: ${payload.fallbackCheck.primaryParser}`);
+    console.log(`Docling fallback triggered: ${payload.fallbackCheck.fallbackTriggered ? 'yes' : 'no'}`);
+    console.log(`Docling fallback parser: ${payload.fallbackCheck.result.parser}`);
+    console.log(`Docling fallback markdown: ${payload.fallbackCheck.result.markdownPath}`);
+    console.log(`Docling fallback elapsed: ${payload.fallbackCheck.timings.elapsedMs} ms`);
+  }
+  if (payload.comparison) {
+    console.log('');
+    console.log(`Configured probe elapsed: ${payload.comparison.configuredElapsedMs} ms`);
+    console.log(`Docling fallback elapsed: ${payload.comparison.doclingFallbackElapsedMs} ms`);
+    console.log(`Elapsed delta: ${payload.comparison.deltaMs} ms`);
+    console.log(`Faster probe: ${payload.comparison.fasterProbe}`);
   }
 }
 

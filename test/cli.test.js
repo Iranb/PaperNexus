@@ -211,8 +211,8 @@ test('CLI can analyze PDFs with paddleocr-vl selected from config.json', async (
   }
 });
 
-test('CLI defaults to opendataloader for configured PDF analyze runs', async () => {
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-opendataloader-'));
+test('CLI defaults to markpdfdown for configured PDF analyze runs', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-markpdfdown-'));
   const fakePdfPath = path.join(workspaceRoot, 'paper.pdf');
   const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
 
@@ -231,7 +231,7 @@ test('CLI defaults to opendataloader for configured PDF analyze runs', async () 
         '  esac',
         'done',
         'mkdir -p "$(dirname "$output")"',
-        'printf "# Configured OpenDataLoader\\n\\n## Abstract\\n\\nConfigured parser output.\\n" > "$output"'
+        'printf "# Configured MarkPDFDown\\n\\n## Abstract\\n\\nConfigured parser output.\\n" > "$output"'
       ].join('\n'),
       { mode: 0o755 }
     );
@@ -245,8 +245,14 @@ test('CLI defaults to opendataloader for configured PDF analyze runs', async () 
         indexDir: './index-store'
       },
       analyze: {
-        name: 'configured-opendataloader',
-        opendataloaderPdfPython: './fake-python.sh'
+        name: 'configured-markpdfdown',
+        markpdfdownPython: './fake-python.sh'
+      },
+      llm: {
+        provider: 'openai',
+        model: 'qwen-vl-max',
+        baseUrl: 'https://dashscope.example/v1',
+        apiKey: 'test-key'
       }
     }, null, 2)}\n`);
 
@@ -254,13 +260,13 @@ test('CLI defaults to opendataloader for configured PDF analyze runs', async () 
       cwd: workspaceRoot,
       env: process.env
     });
-    assert.match(analyzeRun.stdout, /Corpus: configured-opendataloader/);
+    assert.match(analyzeRun.stdout, /Corpus: configured-markpdfdown/);
 
     const statusRun = await execFileAsync('node', [cliPath, 'status'], {
       cwd: workspaceRoot,
       env: process.env
     });
-    assert.match(statusRun.stdout, /PDF parser: opendataloader/);
+    assert.match(statusRun.stdout, /PDF parser: markpdfdown/);
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -615,7 +621,7 @@ process.exit(0);
     });
 
     assert.equal(authRun.code, 0, authRun.stderr);
-    assert.match(authRun.stdout, /Stored API key in macOS Keychain/);
+    assert.match(authRun.stdout, /Stored API key securely for openai/);
 
     const savedConfig = JSON.parse(await fs.readFile(path.join(workspaceRoot, 'config.json'), 'utf8'));
     assert.equal(savedConfig.llm.provider, 'openai');
@@ -669,7 +675,7 @@ test('CLI init creates a first-run config.json from interactive answers', async 
     const savedConfig = JSON.parse(await fs.readFile(path.join(workspaceRoot, 'config.json'), 'utf8'));
     assert.deepEqual(savedConfig.sources.inputs, ['./papers']);
     assert.equal(savedConfig.analyze.name, 'first-run-corpus');
-    assert.equal(savedConfig.analyze.pdfParser, 'docling');
+    assert.equal(savedConfig.analyze.pdfParser, 'markpdfdown');
     assert.equal(savedConfig.global.corpus, 'first-run-corpus');
     assert.equal(savedConfig.storage.indexDir, './index-store');
     assert.equal(savedConfig.serve.host, '127.0.0.1');

@@ -122,8 +122,12 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
         const prepared = await convertPdfToMarkdown(storedPath, {
           pdfParser: options.pdfParser,
           pdfCommand: options.pdfCommand,
+          markpdfdownPython: options.markpdfdownPython,
           opendataloaderPdfPython: options.opendataloaderPdfPython,
+          doclingPython: options.doclingPython,
           doclingCommand: options.doclingCommand,
+          doclingUseVlm: options.doclingUseVlm,
+          doclingVlmPreset: options.doclingVlmPreset,
           doclingOcrEngine: options.doclingOcrEngine,
           doclingSshHost: options.doclingSshHost,
           doclingPdfBackend: options.doclingPdfBackend,
@@ -138,6 +142,15 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
           pageRange: options.pageRange,
           pdfSshHost: options.pdfSshHost,
           pdfParseTimeoutMs: options.pdfParseTimeoutMs,
+          llmProvider: options.llmProvider,
+          llmModel: options.llmModel,
+          llmBaseUrl: options.llmBaseUrl,
+          llmApiKey: options.llmApiKey,
+          llmApiKeyEnv: options.llmApiKeyEnv,
+          llmApiKeySource: options.llmApiKeySource,
+          llmApiKeyService: options.llmApiKeyService,
+          llmApiKeyAccount: options.llmApiKeyAccount,
+          llmMaxTokens: options.llmMaxTokens,
           markerDir,
           markdownDir
         });

@@ -27,6 +27,24 @@ const SECTION_ROLE_PATTERNS = [
   ['appendix', 'appendix']
 ];
 
+const DEGENERATE_TITLE_PATTERNS = [
+  [/^abstract$/i, 'section-heading'],
+  [/^introduction$/i, 'section-heading'],
+  [/^background$/i, 'section-heading'],
+  [/^related work$/i, 'section-heading'],
+  [/^preliminaries$/i, 'section-heading'],
+  [/^(method|methods|approach|implementation)$/i, 'section-heading'],
+  [/^(experiment|experiments|evaluation|results|analysis|discussion)$/i, 'section-heading'],
+  [/^(conclusion|conclusions)$/i, 'section-heading'],
+  [/^(references|bibliography)$/i, 'section-heading'],
+  [/^(appendix|appendices)$/i, 'section-heading'],
+  [/^(acknowledg?ments?)$/i, 'section-heading'],
+  [/^(keywords?|index terms?)$/i, 'metadata-heading'],
+  [/^(authors?|affiliations?)$/i, 'metadata-heading'],
+  [/^(figure|table)\s+\w+/i, 'caption-like'],
+  [/^(overview|summary|contents?)$/i, 'section-heading']
+];
+
 function isChartNoiseLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return false;
@@ -57,6 +75,61 @@ function cleanText(value) {
     .join('\n');
 
   return lines.trim();
+}
+
+function normalizeTitleLine(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .find((line) => line.trim()) || '';
+}
+
+function normalizeTitleCandidate(value) {
+  return normalizeTitleLine(value)
+    .trim()
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^[-*]\s+/, '')
+    .replace(/^[`"'“”‘’]+|[`"'“”‘’]+$/g, '')
+    .trim();
+}
+
+export function assessPaperTitleCandidate(rawTitle, filePath = '') {
+  const fallbackTitle = path.basename(filePath || 'paper', path.extname(filePath || '')) || 'paper';
+  const normalizedCandidate = normalizeTitleCandidate(rawTitle);
+  const normalizedKey = normalizeText(normalizedCandidate);
+  let reason = null;
+
+  if (!normalizedCandidate) {
+    reason = 'empty';
+  } else if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(normalizedCandidate)) {
+    reason = 'missing-alphanumeric';
+  } else if (normalizedCandidate.length > 220) {
+    reason = 'too-long';
+  } else if (normalizedCandidate.length < 4 && !/^[A-Z]{2,}$/.test(normalizedCandidate)) {
+    reason = 'too-short';
+  } else {
+    for (const [pattern, matchReason] of DEGENERATE_TITLE_PATTERNS) {
+      if (pattern.test(normalizedCandidate) || pattern.test(normalizedKey)) {
+        reason = matchReason;
+        break;
+      }
+    }
+  }
+
+  const isValid = !reason;
+  return {
+    displayTitle: isValid ? normalizedCandidate : fallbackTitle,
+    rawTitle: normalizedCandidate,
+    fallbackTitle,
+    isValid,
+    usedFallbackTitle: !isValid,
+    needsReparse: !isValid,
+    reason
+  };
+}
+
+export function isPaperTitleDegenerate(title, filePath = '') {
+  return !assessPaperTitleCandidate(title, filePath).isValid;
 }
 
 export function inferSectionRole(heading) {
@@ -256,10 +329,10 @@ export function extractConceptCandidates(texts) {
   const counts = new Map();
   const GENERIC_SURFACE_TOKENS = new Set([
     'approach', 'analysis', 'benchmark', 'benchmarks', 'claim', 'claims', 'conclusion',
-    'dataset', 'datasets', 'discussion', 'energy', 'evidence', 'experiment', 'experiments',
+    'dataset', 'datasets', 'discussion', 'energy', 'evidence',
     'finding', 'findings', 'framework', 'graph', 'graphs', 'introduction', 'knowledge',
     'method', 'methods', 'metric', 'metrics', 'model', 'models', 'monitoring', 'paper',
-    'planning', 'pressure', 'problem', 'problems', 'process', 'processes', 'product',
+    'pressure', 'problem', 'problems', 'process', 'processes', 'product',
     'research', 'result', 'results', 'scale', 'speech', 'study', 'system', 'task', 'tasks',
     'view', 'views', 'workflow'
   ]);
@@ -305,11 +378,13 @@ export function parsePaperMarkdown(markdown, filePath) {
   const lines = cleanText(markdown).split('\n');
   let title = path.basename(filePath, path.extname(filePath));
   let titleIndex = -1;
+  let titleValidation = assessPaperTitleCandidate('', filePath);
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].trim();
     if (!line) continue;
-    title = line.replace(/^#\s+/, '').trim();
+    titleValidation = assessPaperTitleCandidate(line, filePath);
+    title = titleValidation.displayTitle;
     titleIndex = index;
     break;
   }
@@ -389,6 +464,7 @@ export function parsePaperMarkdown(markdown, filePath) {
 
   return {
     title,
+    titleValidation,
     authors: parseAuthors(authorLines),
     sourcePath: filePath,
     sections: normalizedSections,

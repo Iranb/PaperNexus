@@ -4,8 +4,10 @@ import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { ensureDir, fileExists, listFilesRecursive, readText, removePath, writeText } from '../../lib/fs.js';
 import { stableHash } from '../../lib/utils.js';
+import { loadLlmApiKey, resolveLlmConfig } from '../llm/ollama.js';
 
 const PDF_PARSER_DOCLING = 'docling';
+const PDF_PARSER_MARKPDFDOWN = 'markpdfdown';
 const PDF_PARSER_OPENDATALOADER = 'opendataloader';
 const PDF_PARSER_MARKER = 'marker';
 const PDF_PARSER_MINERU = 'mineru';
@@ -13,6 +15,8 @@ const PDF_PARSER_PADDLEOCR_VL = 'paddleocr-vl';
 const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
 const DEFAULT_MINERU_PROBE_CACHE_TTL_MS = 15_000;
 const mineruProbeCache = new Map();
+const MARKPDFDOWN_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/markpdfdown_to_markdown.py', import.meta.url));
+const DOCLING_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/docling_to_markdown.py', import.meta.url));
 const OPENDATALOADER_PDF_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/opendataloader_pdf_to_markdown.py', import.meta.url));
 const PADDLEOCR_VL_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/paddleocr_vl_to_markdown.py', import.meta.url));
 
@@ -20,7 +24,8 @@ function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: options.env ? { ...process.env, ...options.env } : process.env
     });
 
     let stdout = '';
@@ -71,7 +76,8 @@ function runCommandWithStdin(command, args, stdinBuffer, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const child = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: options.env ? { ...process.env, ...options.env } : process.env
     });
 
     let stdout = '';
@@ -156,12 +162,21 @@ function shellQuote(value) {
 }
 
 export function normalizePdfParser(value) {
-  const normalized = String(value || process.env.PAPERNEXUS_PDF_PARSER || PDF_PARSER_OPENDATALOADER).trim().toLowerCase();
+  const normalized = String(value || process.env.PAPERNEXUS_PDF_PARSER || PDF_PARSER_MARKPDFDOWN).trim().toLowerCase();
+  if (normalized === PDF_PARSER_MARKPDFDOWN) return PDF_PARSER_MARKPDFDOWN;
   if (normalized === PDF_PARSER_OPENDATALOADER) return PDF_PARSER_OPENDATALOADER;
   if (normalized === PDF_PARSER_MARKER) return PDF_PARSER_MARKER;
   if (normalized === PDF_PARSER_MINERU) return PDF_PARSER_MINERU;
   if (normalized === PDF_PARSER_PADDLEOCR_VL) return PDF_PARSER_PADDLEOCR_VL;
   return PDF_PARSER_DOCLING;
+}
+
+function resolveMarkPdfDownPython(options = {}) {
+  return String(
+    options.markpdfdownPython
+    || process.env.PAPERNEXUS_MARKPDFDOWN_PYTHON
+    || 'python3'
+  ).trim() || 'python3';
 }
 
 function resolveOpenDataLoaderPdfPython(options = {}) {
@@ -170,6 +185,27 @@ function resolveOpenDataLoaderPdfPython(options = {}) {
     || process.env.PAPERNEXUS_OPENDATALOADER_PDF_PYTHON
     || 'python3'
   ).trim() || 'python3';
+}
+
+function resolveDoclingPython(options = {}) {
+  return String(
+    options.doclingPython
+    || process.env.PAPERNEXUS_DOCLING_PYTHON
+    || 'python3'
+  ).trim() || 'python3';
+}
+
+function resolveDoclingUseVlm(options = {}) {
+  const raw = options.doclingUseVlm ?? process.env.PAPERNEXUS_DOCLING_USE_VLM ?? false;
+  return raw === true || raw === '1' || raw === 'true';
+}
+
+function resolveDoclingVlmPreset(options = {}) {
+  return String(
+    options.doclingVlmPreset
+    || process.env.PAPERNEXUS_DOCLING_VLM_PRESET
+    || 'granite_docling'
+  ).trim() || 'granite_docling';
 }
 
 function resolvePaddleOcrVlPython(options = {}) {
@@ -194,6 +230,162 @@ function resolvePaddleOcrVlLayoutModel(options = {}) {
     || process.env.PAPERNEXUS_PADDLEOCR_VL_LAYOUT_MODEL
     || 'PP-DocLayout-S'
   ).trim() || 'PP-DocLayout-S';
+}
+
+function resolveMarkPdfDownTemperature(options = {}) {
+  const raw = Number(options.markpdfdownTemperature ?? process.env.PAPERNEXUS_MARKPDFDOWN_TEMPERATURE ?? 0.3);
+  if (!Number.isFinite(raw)) return 0.3;
+  return raw;
+}
+
+function resolveMarkPdfDownRetryTimes(options = {}) {
+  const raw = Number(options.markpdfdownRetryTimes ?? process.env.PAPERNEXUS_MARKPDFDOWN_RETRY_TIMES ?? 3);
+  if (!Number.isFinite(raw) || raw <= 0) return 3;
+  return Math.max(1, Math.round(raw));
+}
+
+function normalizeMarkPdfDownModelName(provider, model) {
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+  const normalizedModel = String(model || '').trim();
+  if (!normalizedModel) return '';
+  if (normalizedModel.includes('/')) return normalizedModel;
+  if (normalizedProvider === 'openai') return `openai/${normalizedModel}`;
+  if (normalizedProvider === 'anthropic') return `anthropic/${normalizedModel}`;
+  if (normalizedProvider === 'ollama') return `ollama/${normalizedModel}`;
+  return normalizedModel;
+}
+
+function resolveMarkPdfDownPageWindow(pageRange) {
+  const normalized = String(pageRange || '').trim();
+  if (!normalized) {
+    return {
+      startPage: 1,
+      endPage: 0
+    };
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    const singlePage = Math.max(1, Number(normalized));
+    return {
+      startPage: singlePage,
+      endPage: singlePage
+    };
+  }
+
+  const rangeMatch = normalized.match(/^(\d+)\s*-\s*(\d+)?$/);
+  if (rangeMatch) {
+    const startPage = Math.max(1, Number(rangeMatch[1] || 1));
+    const endPage = rangeMatch[2] ? Math.max(startPage, Number(rangeMatch[2])) : 0;
+    return {
+      startPage,
+      endPage
+    };
+  }
+
+  return {
+    startPage: 1,
+    endPage: 0
+  };
+}
+
+async function buildMarkPdfDownRuntime(options = {}) {
+  const llmConfig = resolveLlmConfig(options);
+  const provider = String(llmConfig.provider || '').trim().toLowerCase();
+  const modelName = normalizeMarkPdfDownModelName(provider, llmConfig.model);
+
+  if (!modelName) {
+    throw new Error(
+      'MarkPDFDown requires a configured LLM model. Set `llm.model` in PaperNexus config or pass `--model` / `--ollama-model`.'
+    );
+  }
+
+  const apiKey = llmConfig.apiKey || await loadLlmApiKey(llmConfig);
+  if ((provider === 'openai' || provider === 'anthropic') && !apiKey) {
+    throw new Error(
+      `MarkPDFDown requires an API key for the ${provider} provider. `
+      + `Configure \`llm.apiKey\`, \`llm.apiKeySource="keychain"\`, or ${llmConfig.apiKeyEnv || 'the provider API key env var'}.`
+    );
+  }
+
+  const env = {
+    MODEL_NAME: modelName,
+    TEMPERATURE: String(resolveMarkPdfDownTemperature(options)),
+    MAX_TOKENS: String(
+      Number.isFinite(Number(options.markpdfdownMaxTokens ?? llmConfig.maxTokens))
+        ? Number(options.markpdfdownMaxTokens ?? llmConfig.maxTokens)
+        : 8192
+    ),
+    RETRY_TIMES: String(resolveMarkPdfDownRetryTimes(options))
+  };
+
+  if (provider === 'openai') {
+    env.OPENAI_API_KEY = apiKey;
+    if (llmConfig.baseUrl) {
+      env.OPENAI_BASE_URL = llmConfig.baseUrl;
+      env.OPENAI_API_BASE = llmConfig.baseUrl;
+    }
+  } else if (provider === 'anthropic') {
+    env.ANTHROPIC_API_KEY = apiKey;
+    if (llmConfig.baseUrl) {
+      env.ANTHROPIC_BASE_URL = llmConfig.baseUrl;
+      env.ANTHROPIC_API_BASE = llmConfig.baseUrl;
+    }
+  } else if (provider === 'ollama' && llmConfig.baseUrl) {
+    env.OLLAMA_API_BASE = llmConfig.baseUrl;
+  }
+
+  return {
+    llmConfig,
+    modelName,
+    env
+  };
+}
+
+function normalizeDoclingChatCompletionsUrl(baseUrl = '') {
+  const normalized = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!normalized) return '';
+  if (normalized.endsWith('/chat/completions')) return normalized;
+  return `${normalized}/chat/completions`;
+}
+
+async function buildDoclingVlmRuntime(options = {}) {
+  if (!resolveDoclingUseVlm(options)) {
+    return null;
+  }
+
+  const llmConfig = resolveLlmConfig(options);
+  const provider = String(llmConfig.provider || '').trim().toLowerCase();
+  if (provider === 'anthropic') {
+    throw new Error('Docling VLM currently supports openai-compatible or ollama endpoints, not Anthropic-compatible message APIs.');
+  }
+
+  const modelName = String(llmConfig.model || '').trim();
+  if (!modelName) {
+    throw new Error('Docling VLM requires a configured LLM model. Set `llm.model` in PaperNexus config or pass `--model` / `--ollama-model`.');
+  }
+
+  const apiKey = llmConfig.apiKey || await loadLlmApiKey(llmConfig);
+  const env = {};
+  if (apiKey) {
+    env.PAPERNEXUS_DOCLING_VLM_API_KEY = apiKey;
+  }
+
+  const baseUrl = normalizeDoclingChatCompletionsUrl(llmConfig.baseUrl);
+  if (!baseUrl) {
+    throw new Error('Docling VLM requires an OpenAI-compatible base URL. Configure `llm.baseUrl` or use an ollama/openai profile with a resolved base URL.');
+  }
+
+  return {
+    llmConfig,
+    env,
+    provider,
+    modelName,
+    baseUrl,
+    preset: resolveDoclingVlmPreset(options),
+    maxTokens: Number.isFinite(Number(options.doclingVlmMaxTokens ?? llmConfig.maxTokens))
+      ? Number(options.doclingVlmMaxTokens ?? llmConfig.maxTokens)
+      : 4096
+  };
 }
 
 function resolveRemoteMarkerHost(options = {}) {
@@ -834,6 +1026,107 @@ async function convertPdfToMarkdownWithOpenDataLoader(pdfPath, options = {}) {
   };
 }
 
+async function convertPdfToMarkdownWithMarkPdfDown(pdfPath, options = {}) {
+  const {
+    markerDir,
+    markdownDir,
+    force = false
+  } = options;
+
+  const pythonCommand = resolveMarkPdfDownPython(options);
+  const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const progress = createProgressReporter(`markpdfdown:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const { startPage, endPage } = resolveMarkPdfDownPageWindow(options.pageRange);
+  const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKPDFDOWN, basename, {
+    markerDir,
+    markdownDir
+  });
+
+  if (!force && await fileExists(cachedMarkdownPath)) {
+    return {
+      markdownPath: cachedMarkdownPath,
+      sourcePdfPath: pdfPath,
+      generated: false,
+      parser: PDF_PARSER_MARKPDFDOWN,
+      parserCommand: `${pythonCommand} ${MARKPDFDOWN_WRAPPER_PATH}`
+    };
+  }
+
+  if (force) {
+    await removePath(runDir);
+  }
+
+  await ensureDir(runDir);
+  await ensureDir(path.dirname(cachedMarkdownPath));
+
+  const runtime = await buildMarkPdfDownRuntime(options);
+  const args = [
+    MARKPDFDOWN_WRAPPER_PATH,
+    '--input',
+    pdfPath,
+    '--output',
+    cachedMarkdownPath,
+    '--provider',
+    runtime.llmConfig.provider,
+    '--model-name',
+    runtime.modelName,
+    '--max-tokens',
+    runtime.env.MAX_TOKENS,
+    '--temperature',
+    runtime.env.TEMPERATURE,
+    '--retry-times',
+    runtime.env.RETRY_TIMES,
+    '--start-page',
+    String(startPage),
+    '--end-page',
+    String(endPage)
+  ];
+
+  if (runtime.llmConfig.baseUrl) {
+    args.push('--base-url', runtime.llmConfig.baseUrl);
+  }
+
+  try {
+    process.stderr.write(`[markpdfdown:${basename}] Running MarkPDFDown with provider ${runtime.llmConfig.provider}\n`);
+    await runCommand(pythonCommand, args, {
+      env: runtime.env,
+      onStdout: progress,
+      onStderr: progress,
+      timeoutMs,
+      timeoutLabel: `markpdfdown parse for ${pdfPath}`
+    });
+    flushProgressReporter(progress);
+  } catch (error) {
+    throw new Error(
+      `MarkPDFDown failed for ${pdfPath}. ${error.message}\n`
+      + `Tip: install \`markpdfdown\` in the selected Python environment and verify PaperNexus LLM config is valid for provider \`${runtime.llmConfig.provider}\`.`
+    );
+  }
+
+  if (!await fileExists(cachedMarkdownPath)) {
+    throw new Error(
+      `MarkPDFDown finished for ${pdfPath} but no markdown cache was written to ${cachedMarkdownPath}.`
+    );
+  }
+
+  const markdown = await readText(cachedMarkdownPath);
+  if (!markdown.trim()) {
+    throw new Error(
+      `MarkPDFDown produced empty markdown for ${pdfPath}.\n`
+      + 'Tip: verify the PDF is valid and the configured multimodal model can access the upstream API endpoint.'
+    );
+  }
+
+  return {
+    markdownPath: cachedMarkdownPath,
+    sourcePdfPath: pdfPath,
+    generated: true,
+    parser: PDF_PARSER_MARKPDFDOWN,
+    parserCommand: `${pythonCommand} ${MARKPDFDOWN_WRAPPER_PATH}`
+  };
+}
+
 async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   const { mineruHttpUrl, mineruCommand, runDir, quiet = false } = options;
   const basename = path.basename(pdfPath, path.extname(pdfPath));
@@ -1050,6 +1343,7 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
 async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
   const {
     doclingCommand = process.env.PAPERNEXUS_DOCLING_CMD || 'docling',
+    doclingPython = resolveDoclingPython(options),
     doclingOcrEngine = process.env.PAPERNEXUS_DOCLING_OCR_ENGINE || '',
     doclingPdfBackend = process.env.PAPERNEXUS_DOCLING_PDF_BACKEND || '',
     doclingSshHost = '',
@@ -1122,6 +1416,64 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
 
   if (pageRange) {
     throw new Error('Docling page-range forwarding is not currently supported. Use `--pdf-parser marker` when you need `--page-range`.');
+  }
+
+  if (resolveDoclingUseVlm(options)) {
+    const runtime = await buildDoclingVlmRuntime(options);
+    const args = [
+      DOCLING_WRAPPER_PATH,
+      '--input',
+      pdfPath,
+      '--output',
+      cachedMarkdownPath,
+      '--use-vlm',
+      '--vlm-preset',
+      runtime.preset,
+      '--provider',
+      runtime.provider,
+      '--model-name',
+      runtime.modelName,
+      '--base-url',
+      runtime.baseUrl,
+      '--max-tokens',
+      String(runtime.maxTokens),
+      ...(doclingOcrEngine ? ['--ocr-engine', doclingOcrEngine] : []),
+      ...(doclingPdfBackend ? ['--pdf-backend', doclingPdfBackend] : [])
+    ];
+
+    try {
+      process.stderr.write(`[docling:${basename}] Running docling VLM pipeline\n`);
+      await runCommand(doclingPython, args, {
+        env: runtime.env,
+        onStdout: progress,
+        onStderr: progress,
+        timeoutMs,
+        timeoutLabel: `docling VLM parse for ${pdfPath}`
+      });
+      flushProgressReporter(progress);
+    } catch (error) {
+      throw new Error(
+        `Docling VLM failed for ${pdfPath}. ${error.message}\n`
+        + 'Tip: verify the selected Python environment can import `docling`, and that the configured OpenAI-compatible endpoint is reachable.'
+      );
+    }
+
+    if (!await fileExists(cachedMarkdownPath)) {
+      throw new Error(`Docling VLM finished for ${pdfPath} but no markdown cache was written to ${cachedMarkdownPath}.`);
+    }
+
+    const markdown = await readText(cachedMarkdownPath);
+    if (!markdown.trim()) {
+      throw new Error(`Docling VLM produced empty markdown for ${pdfPath}.`);
+    }
+
+    return {
+      markdownPath: cachedMarkdownPath,
+      sourcePdfPath: pdfPath,
+      generated: true,
+      parser: PDF_PARSER_DOCLING,
+      parserCommand: `${doclingPython} ${DOCLING_WRAPPER_PATH} --use-vlm`
+    };
   }
 
   try {
@@ -1407,40 +1759,77 @@ export async function warmMineruHttpEndpoint(url, options = {}) {
 
 export async function convertPdfToMarkdown(pdfPath, options = {}) {
   const parser = normalizePdfParser(options.pdfParser);
-  if (parser === PDF_PARSER_OPENDATALOADER) {
-    return convertPdfToMarkdownWithOpenDataLoader(pdfPath, {
+  const convertWithSelectedParser = async () => {
+    if (parser === PDF_PARSER_MARKPDFDOWN) {
+      return convertPdfToMarkdownWithMarkPdfDown(pdfPath, {
+        ...options,
+        markpdfdownPython: options.markpdfdownPython || options.pdfCommand
+      });
+    }
+
+    if (parser === PDF_PARSER_OPENDATALOADER) {
+      return convertPdfToMarkdownWithOpenDataLoader(pdfPath, {
+        ...options,
+        opendataloaderPdfPython: options.opendataloaderPdfPython || options.pdfCommand
+      });
+    }
+
+    if (parser === PDF_PARSER_MARKER) {
+      return convertPdfToMarkdownWithMarker(pdfPath, {
+        ...options,
+        markerCommand: options.markerCommand || options.pdfCommand
+      });
+    }
+
+    if (parser === PDF_PARSER_MINERU) {
+      return convertPdfToMarkdownWithMineru(pdfPath, {
+        ...options,
+        mineruCommand: options.mineruCommand || options.pdfCommand
+      });
+    }
+
+    if (parser === PDF_PARSER_PADDLEOCR_VL) {
+      return convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options);
+    }
+
+    return convertPdfToMarkdownWithDocling(pdfPath, {
       ...options,
-      opendataloaderPdfPython: options.opendataloaderPdfPython || options.pdfCommand
+      doclingCommand: options.doclingCommand || options.pdfCommand
     });
-  }
+  };
 
-  if (parser === PDF_PARSER_MARKER) {
-    return convertPdfToMarkdownWithMarker(pdfPath, {
-      ...options,
-      markerCommand: options.markerCommand || options.pdfCommand
-    });
-  }
+  try {
+    return await convertWithSelectedParser();
+  } catch (error) {
+    if (parser === PDF_PARSER_DOCLING || options.disableDoclingFallback) {
+      throw error;
+    }
 
-  if (parser === PDF_PARSER_MINERU) {
-    return convertPdfToMarkdownWithMineru(pdfPath, {
-      ...options,
-      mineruCommand: options.mineruCommand || options.pdfCommand
-    });
-  }
+    process.stderr.write(
+      `[${parser}:${path.basename(pdfPath, path.extname(pdfPath))}] Primary parser failed; falling back to docling\n`
+    );
 
-  if (parser === PDF_PARSER_PADDLEOCR_VL) {
-    return convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options);
+    try {
+      const fallbackResult = await convertPdfToMarkdownWithDocling(pdfPath, {
+        ...options,
+        pdfParser: PDF_PARSER_DOCLING,
+        doclingCommand: options.doclingCommand || options.pdfCommand,
+        force: true
+      });
+      return {
+        ...fallbackResult,
+        fallbackFromParser: parser
+      };
+    } catch (fallbackError) {
+      throw new Error(`${error.message}\nDocling fallback also failed for ${pdfPath}. ${fallbackError.message}`);
+    }
   }
-
-  return convertPdfToMarkdownWithDocling(pdfPath, {
-    ...options,
-    doclingCommand: options.doclingCommand || options.pdfCommand
-  });
 }
 
 export const __markerTestables = {
   shellQuote,
   normalizePdfParser,
+  resolveMarkPdfDownPython,
   resolveMarkerBlockBlacklist,
   resolveOpenDataLoaderPdfPython,
   resolvePaddleOcrVlPython,

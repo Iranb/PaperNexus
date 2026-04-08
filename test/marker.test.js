@@ -22,8 +22,9 @@ test('resolveRemoteMarkerHost prefers explicit marker host then pdf host', () =>
   );
 });
 
-test('normalizePdfParser defaults to opendataloader and accepts other parsers', () => {
-  assert.equal(__markerTestables.normalizePdfParser(undefined), 'opendataloader');
+test('normalizePdfParser defaults to markpdfdown and accepts other parsers', () => {
+  assert.equal(__markerTestables.normalizePdfParser(undefined), 'markpdfdown');
+  assert.equal(__markerTestables.normalizePdfParser('markpdfdown'), 'markpdfdown');
   assert.equal(__markerTestables.normalizePdfParser('opendataloader'), 'opendataloader');
   assert.equal(__markerTestables.normalizePdfParser('mineru'), 'mineru');
   assert.equal(__markerTestables.normalizePdfParser('docling'), 'docling');
@@ -385,6 +386,168 @@ test('convertPdfToMarkdown can materialize markdown via the opendataloader wrapp
     const markdown = await fs.readFile(result.markdownPath, 'utf8');
     assert.match(markdown, /正文第一段。/);
     assert.match(markdown, /Tail text\./);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown can materialize markdown via the markpdfdown wrapper and reuse PaperNexus LLM config', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markpdfdown-success-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const fakePythonPath = path.join(tempDir, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'printf "# MarkPDFDown\\n\\nMODEL_NAME=%s\\nOPENAI_API_KEY=%s\\nOPENAI_BASE_URL=%s\\nOPENAI_API_BASE=%s\\nMAX_TOKENS=%s\\n" "$MODEL_NAME" "$OPENAI_API_KEY" "$OPENAI_BASE_URL" "$OPENAI_API_BASE" "$MAX_TOKENS" > "$output"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'markpdfdown',
+      markpdfdownPython: fakePythonPath,
+      llmProvider: 'openai',
+      llmModel: 'qwen-vl-max',
+      llmBaseUrl: 'https://dashscope.example/v1',
+      llmApiKey: 'test-key',
+      llmMaxTokens: 4096,
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'markpdfdown');
+    assert.match(result.markdownPath, /markpdfdown/);
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /MODEL_NAME=openai\/qwen-vl-max/);
+    assert.match(markdown, /OPENAI_API_KEY=test-key/);
+    assert.match(markdown, /OPENAI_BASE_URL=https:\/\/dashscope\.example\/v1/);
+    assert.match(markdown, /OPENAI_API_BASE=https:\/\/dashscope\.example\/v1/);
+    assert.match(markdown, /MAX_TOKENS=4096/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown falls back to docling when the primary parser fails', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-parser-fallback-docling-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const failingPythonPath = path.join(tempDir, 'fail-markpdfdown.sh');
+  const fakeDoclingPath = path.join(tempDir, 'fake-docling.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      failingPythonPath,
+      [
+        '#!/bin/sh',
+        'echo "markpdfdown failed" >&2',
+        'exit 1'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'out_dir=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) out_dir="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'base=$(basename "$pdf_path" .pdf)',
+        'mkdir -p "$out_dir"',
+        'printf "# %s Title\\n\\n## Abstract\\n\\nRecovered by docling fallback.\\n" "$base" > "$out_dir/$base.md"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'markpdfdown',
+      markpdfdownPython: failingPythonPath,
+      doclingCommand: fakeDoclingPath,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'docling');
+    assert.match(result.markdownPath, /docling/);
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /Recovered by docling fallback/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown can run docling in VLM mode with PaperNexus LLM config', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-docling-vlm-success-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const fakePythonPath = path.join(tempDir, 'fake-docling-python.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'preset=""',
+        'model=""',
+        'base_url=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    --vlm-preset) preset="$2"; shift 2 ;;',
+        '    --model-name) model="$2"; shift 2 ;;',
+        '    --base-url) base_url="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'printf "# Docling VLM\\n\\nPRESET=%s\\nMODEL=%s\\nBASE_URL=%s\\nAPI_KEY=%s\\n" "$preset" "$model" "$base_url" "$PAPERNEXUS_DOCLING_VLM_API_KEY" > "$output"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'docling',
+      doclingUseVlm: true,
+      doclingPython: fakePythonPath,
+      doclingVlmPreset: 'granite_docling',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'docling');
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /PRESET=granite_docling/);
+    assert.match(markdown, /MODEL=gpt-4o-mini/);
+    assert.match(markdown, /BASE_URL=https:\/\/api\.openai\.com\/v1\/chat\/completions/);
+    assert.match(markdown, /API_KEY=test-key/);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

@@ -36,6 +36,13 @@ test('resolveAnalyzeConcurrency keeps paddleocr-vl conservative for local high-p
   }), 1);
 });
 
+test('resolveAnalyzeConcurrency keeps markpdfdown conservative for local multimodal parsing', () => {
+  assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
+    pdfParser: 'markpdfdown',
+    availableParallelism: 8
+  }), 1);
+});
+
 test('resolveAnalyzeConcurrency keeps higher concurrency when llm-assisted extraction is enabled', () => {
   assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
     pdfParser: 'docling',

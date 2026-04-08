@@ -32,13 +32,15 @@ Add that directory to your shell `PATH`.
 Install parser dependencies first:
 
 ```bash
-python -m pip install -U opendataloader-pdf
+python -m pip install -U markpdfdown
 ```
 
-OpenDataLoader PDF also needs Java 11+:
+The default parser path now uses MarkPDFDown plus your PaperNexus `llm` config.
+If MarkPDFDown returns a failed parse or a degenerate title such as `Abstract`, PaperNexus automatically reparses the PDF with Docling before the paper can enter duplicate resolution.
+If you prefer the older OpenDataLoader path, install it separately:
 
 ```bash
-java -version
+python -m pip install -U opendataloader-pdf
 ```
 
 If you want optional alternative parsers later, install them separately:
@@ -147,7 +149,47 @@ papernexus service install
 papernexus logs watch
 ```
 
-Default OpenDataLoader PDF parser config:
+Default MarkPDFDown PDF parser config:
+
+```json
+{
+  "analyze": {
+    "pdfParser": "markpdfdown",
+    "markpdfdownPython": "python3",
+    "doclingCommand": "docling",
+    "doclingUseVlm": false,
+    "doclingVlmPreset": "granite_docling"
+  },
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY"
+  }
+}
+```
+
+Optional Docling VLM fallback config:
+
+```json
+{
+  "analyze": {
+    "pdfParser": "markpdfdown",
+    "doclingCommand": "docling",
+    "doclingPython": "python3",
+    "doclingUseVlm": true,
+    "doclingVlmPreset": "granite_docling"
+  },
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY"
+  }
+}
+```
+
+Optional OpenDataLoader PDF parser config:
 
 ```json
 {

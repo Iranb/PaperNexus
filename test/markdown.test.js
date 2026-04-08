@@ -69,3 +69,20 @@ Chart noise should be filtered.
     'should keep valid text'
   );
 });
+
+test('parsePaperMarkdown flags degenerate section-heading titles and falls back to the filename for display', () => {
+  const parsed = parsePaperMarkdown(`## Abstract
+
+This parser output lost the real title.
+
+## Method
+
+Fallback titles should not be treated as canonical paper titles.
+`, '/tmp/degenerate-title-paper.md');
+
+  assert.equal(parsed.title, 'degenerate-title-paper');
+  assert.equal(parsed.titleValidation?.isValid, false);
+  assert.equal(parsed.titleValidation?.rawTitle, 'Abstract');
+  assert.equal(parsed.titleValidation?.usedFallbackTitle, true);
+  assert.match(parsed.titleValidation?.reason || '', /section-heading|degenerate/i);
+});

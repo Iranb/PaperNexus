@@ -88,8 +88,8 @@ await fs.writeFile(
   }
 });
 
-test('test-pdf-to-markdown defaults to opendataloader and keeps markdown text-only', async () => {
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pdf2md-opendataloader-'));
+test('test-pdf-to-markdown defaults to markpdfdown and keeps markdown text-only', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pdf2md-markpdfdown-'));
   const pdfPath = path.join(workspaceRoot, 'paper.pdf');
   const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
   const configPath = path.join(workspaceRoot, 'config.json');
@@ -123,7 +123,13 @@ test('test-pdf-to-markdown defaults to opendataloader and keeps markdown text-on
 
     await fs.writeFile(configPath, `${JSON.stringify({
       analyze: {
-        opendataloaderPdfPython: './fake-python.sh'
+        markpdfdownPython: './fake-python.sh'
+      },
+      llm: {
+        provider: 'openai',
+        model: 'qwen-vl-max',
+        baseUrl: 'https://dashscope.example/v1',
+        apiKey: 'test-key'
       }
     }, null, 2)}\n`);
 
@@ -142,10 +148,116 @@ test('test-pdf-to-markdown defaults to opendataloader and keeps markdown text-on
     });
 
     const payload = JSON.parse(stdout);
-    assert.equal(payload.config.parser, 'opendataloader');
+    assert.equal(payload.config.parser, 'markpdfdown');
     const markdown = await fs.readFile(payload.result.markdownPath, 'utf8');
     assert.match(markdown, /Body text only\./);
     assert.match(markdown, /Tail text\./);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('test-pdf-to-markdown can compare configured parser timing with docling fallback timing', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pdf2md-compare-'));
+  const pdfPath = path.join(workspaceRoot, 'paper.pdf');
+  const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
+  const fakeDoclingPath = path.join(workspaceRoot, 'fake-docling.sh');
+  const configPath = path.join(workspaceRoot, 'config.json');
+  const cacheRoot = path.join(workspaceRoot, 'cache');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'cat > "$output" <<\'EOF\'',
+        '# Configured Title',
+        '',
+        'Configured parser markdown.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'input="$1"',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$output"',
+        'base=$(basename "$input" .pdf)',
+        'cat > "$output/$base.md" <<\'EOF\'',
+        '# Docling Recovery Title',
+        '',
+        'Recovered by docling fallback.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    await fs.writeFile(configPath, `${JSON.stringify({
+      analyze: {
+        markpdfdownPython: './fake-python.sh',
+        doclingCommand: './fake-docling.sh'
+      },
+      llm: {
+        provider: 'openai',
+        model: 'qwen-vl-max',
+        baseUrl: 'https://dashscope.example/v1',
+        apiKey: 'test-key'
+      }
+    }, null, 2)}\n`);
+
+    const { stdout } = await execFileAsync('node', [
+      scriptPath,
+      './paper.pdf',
+      '--config',
+      './config.json',
+      '--cache-root',
+      cacheRoot,
+      '--force',
+      '--verify-docling-fallback',
+      '--fallback-primary-parser',
+      'marker',
+      '--json'
+    ], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.config.parser, 'markpdfdown');
+    assert.equal(payload.result.parser, 'markpdfdown');
+    assert.equal(payload.fallbackCheck.checked, true);
+    assert.equal(payload.fallbackCheck.primaryParser, 'marker');
+    assert.equal(payload.fallbackCheck.fallbackTriggered, true);
+    assert.equal(payload.fallbackCheck.result.parser, 'docling');
+    assert.ok(payload.timings.elapsedMs >= 0);
+    assert.ok(payload.fallbackCheck.timings.elapsedMs >= 0);
+    assert.ok(payload.comparison.deltaMs >= 0);
+    assert.equal(payload.comparison.configuredParser, 'markpdfdown');
+    assert.equal(payload.comparison.doclingFallbackParser, 'docling');
+
+    const fallbackMarkdown = await fs.readFile(payload.fallbackCheck.result.markdownPath, 'utf8');
+    assert.match(fallbackMarkdown, /Recovered by docling fallback\./);
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }

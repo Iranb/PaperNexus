@@ -61,6 +61,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/domain-bridges.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/domain-bridges.js) | Cross-domain bridge construction, takeaways, and transferable edge enrichment. |
 | [`src/core/graph/domain-taxonomy.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/domain-taxonomy.js) | Graph-derived domain taxonomy and distance computation. |
 | [`src/core/graph/graph.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/graph.js) | Graph implementation. |
+| [`src/core/graph/idea-catalyst-packets.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/idea-catalyst-packets.js) | Idea Catalyst Packets implementation. |
 | [`src/core/graph/interdisciplinary-potential.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/interdisciplinary-potential.js) | Interdisciplinary Potential implementation. |
 | [`src/core/graph/interdisciplinary-ranking.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/interdisciplinary-ranking.js) | Explainable interdisciplinary potential ranking. |
 | [`src/core/graph/lite.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/lite.js) | Lite implementation. |

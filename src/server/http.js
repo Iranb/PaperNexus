@@ -267,6 +267,12 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     ),
     pdfParser: firstDefined(options.pdfParser, materializeConfig.pdfParser, analyzeConfig.pdfParser, watchConfig.pdfParser),
     pdfCommand: firstDefined(options.pdfCommand, materializeConfig.pdfCommand, analyzeConfig.pdfCommand, watchConfig.pdfCommand),
+    markpdfdownPython: firstDefined(
+      options.markpdfdownPython,
+      materializeConfig.markpdfdownPython,
+      analyzeConfig.markpdfdownPython,
+      watchConfig.markpdfdownPython
+    ),
     pdfParserSshHost: firstDefined(
       options.pdfParserSshHost,
       materializeConfig.pdfParserSshHost,
@@ -279,11 +285,29 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       analyzeConfig.opendataloaderPdfPython,
       watchConfig.opendataloaderPdfPython
     ),
+    doclingPython: firstDefined(
+      options.doclingPython,
+      materializeConfig.doclingPython,
+      analyzeConfig.doclingPython,
+      watchConfig.doclingPython
+    ),
     doclingCommand: firstDefined(
       options.doclingCommand,
       materializeConfig.doclingCommand,
       analyzeConfig.doclingCommand,
       watchConfig.doclingCommand
+    ),
+    doclingUseVlm: firstDefined(
+      options.doclingUseVlm,
+      materializeConfig.doclingUseVlm,
+      analyzeConfig.doclingUseVlm,
+      watchConfig.doclingUseVlm
+    ),
+    doclingVlmPreset: firstDefined(
+      options.doclingVlmPreset,
+      materializeConfig.doclingVlmPreset,
+      analyzeConfig.doclingVlmPreset,
+      watchConfig.doclingVlmPreset
     ),
     doclingSshHost: firstDefined(
       options.doclingSshHost,

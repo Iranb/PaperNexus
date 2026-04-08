@@ -135,3 +135,232 @@ test('analyzeCorpus ignores cross-platform metadata files during source discover
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('analyzeCorpus does not collapse different papers when their parsed titles degrade to section headings', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-degenerate-title-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-degenerate-title-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), '## Abstract\n\nKeep this paper distinct.\n', 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-b.md'), '## Abstract\n\nThis should not merge into paper-a.\n', 'utf8');
+
+    const [{ analyzeCorpus }, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    const result = await analyzeCorpus(tempCorpusRoot, {
+      name: 'degenerate-title-test',
+      force: true
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const activeSources = manifest.sources.filter((entry) => entry.activeInGraph !== false);
+
+    assert.equal(result.meta.paperCount, 2);
+    assert.equal(manifest.sources.length, 2);
+    assert.equal(activeSources.length, 2);
+    assert.deepEqual(
+      activeSources.map((entry) => entry.paperTitle).sort(),
+      ['paper-a', 'paper-b']
+    );
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('analyzeCorpus refreshes stale cached pdf snapshots when the stored title is already degenerate', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-stale-title-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-stale-title-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const pdfPath = path.join(tempCorpusRoot, 'paper-a.pdf');
+  const fakeMarkPdfDownPath = path.join(tempCorpusRoot, 'fake-markpdfdown.sh');
+  const fakeDoclingPath = path.join(tempCorpusRoot, 'fake-docling.sh');
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    await fs.writeFile(pdfPath, 'fake pdf payload\n', 'utf8');
+    await fs.writeFile(
+      fakeMarkPdfDownPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'cat > "$output" <<\'EOF\'',
+        '## Abstract',
+        '',
+        'Stale primary parser output.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'out_dir=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) out_dir="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'base=$(basename "$pdf_path" .pdf)',
+        'mkdir -p "$out_dir"',
+        'printf "# Recovered %s\\n\\n## Abstract\\n\\nDocling repaired this title.\\n" "$base" > "$out_dir/$base.md"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const [{ analyzeCorpus }, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    const stats = await fs.stat(pdfPath);
+    const fingerprint = `${Math.round(Number(stats.mtimeMs || 0))}:${Number(stats.size || 0)}`;
+    const sourceKey = pdfPath;
+    const { markdownDir } = corpusStore.getCorpusPaths(tempCorpusRoot);
+    const staleCachePath = path.join(markdownDir, 'markpdfdown', 'paper-a.md');
+    await fs.mkdir(path.dirname(staleCachePath), { recursive: true });
+    await fs.writeFile(staleCachePath, '## Abstract\n\nPersisted bad cache.\n', 'utf8');
+
+    await corpusStore.saveSemanticPaperSnapshot(tempCorpusRoot, sourceKey, {
+      paperId: 'paper:stale',
+      paperTitle: 'paper-a',
+      titleValidation: {
+        isValid: false,
+        rawTitle: 'Abstract',
+        fallbackTitle: 'paper-a',
+        usedFallbackTitle: true,
+        needsReparse: true,
+        reason: 'section-heading'
+      },
+      authors: [],
+      abstract: 'Persisted bad cache.',
+      sourcePath: pdfPath,
+      sourceMarkdownPath: staleCachePath,
+      sourcePdfPath: pdfPath,
+      sourceKind: 'pdf',
+      sourceFingerprint: fingerprint,
+      sourceKey,
+      references: [],
+      problems: [],
+      methods: [],
+      datasets: [],
+      benchmarks: [],
+      metrics: [],
+      claims: [],
+      findings: [],
+      researchGoals: [],
+      researchQuestions: [],
+      openChallenges: [],
+      takeaways: [],
+      ideaFragments: [],
+      limitations: [],
+      assumptions: [],
+      evidences: [],
+      futureDirections: [],
+      llm: {
+        provider: 'disabled',
+        error: null,
+        relationCount: 0,
+        semanticExtractionMode: 'heuristic-only',
+        semanticExtractionModeEffective: 'heuristic-only',
+        semanticExtractionAttempted: false,
+        semanticExtractionParticipated: false,
+        semanticExtractionParticipationReason: 'mode-disabled',
+        semanticObjectCount: 0
+      },
+      llmSemanticObjects: {
+        provider: 'disabled',
+        semanticMetadata: null,
+        semanticExtractionParticipated: false
+      }
+    });
+    await corpusStore.saveSourceManifest(tempCorpusRoot, {
+      version: 4,
+      corpusName: 'stale-title-refresh',
+      rootPath: tempCorpusRoot,
+      inputPath: tempCorpusRoot,
+      inputPaths: [tempCorpusRoot],
+      sourceMode: 'directory',
+      pdfParser: 'markpdfdown',
+      pdfCommand: fakeMarkPdfDownPath,
+      semanticExtractionMode: 'heuristic-only',
+      indexedAt: new Date().toISOString(),
+      lastChangeSummary: { added: 1, updated: 0, removed: 0, reused: 0 },
+      sources: [
+        {
+          sourceKey,
+          inputPath: pdfPath,
+          kind: 'pdf',
+          fingerprint,
+          sourceFingerprint: fingerprint,
+          sourceMtimeMs: Number(stats.mtimeMs || 0),
+          sourceSizeBytes: Number(stats.size || 0),
+          paperId: 'paper:stale',
+          paperTitle: 'paper-a',
+          sourcePath: pdfPath,
+          sourceMarkdownPath: staleCachePath,
+          sourcePdfPath: pdfPath,
+          markdownCachePath: staleCachePath,
+          markdownCacheFingerprint: fingerprint,
+          markdownCacheExists: true,
+          markdownCacheStatus: 'reused',
+          materializedFrom: 'markdown-cache',
+          markerCommand: fakeMarkPdfDownPath,
+          snapshotPath: path.relative(tempCorpusRoot, corpusStore.getSemanticPaperSnapshotPath(tempCorpusRoot, sourceKey)),
+          snapshotStateSignature: null,
+          activeInGraph: true,
+          canonicalSourceKey: sourceKey,
+          duplicateOfSourceKey: null,
+          duplicateSourceCount: 1,
+          availableSourceKinds: ['pdf']
+        }
+      ],
+      llmOptimization: null
+    });
+
+    const result = await analyzeCorpus(tempCorpusRoot, {
+      name: 'stale-title-refresh',
+      pdfParser: 'markpdfdown',
+      markpdfdownPython: fakeMarkPdfDownPath,
+      doclingCommand: fakeDoclingPath
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(result.meta.paperCount, 1);
+    assert.equal(manifest.sources[0].paperTitle, 'Recovered paper-a');
+    assert.match(manifest.sources[0].sourceMarkdownPath, /docling/);
+    assert.equal(manifest.sources[0].activeInGraph, true);
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

@@ -20,7 +20,7 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/Iranb/PaperN
 | [`research_lookup`](#tool-research_lookup) | Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, domain distance, takeaway extraction, and interdisciplinary potential. |
 | [`research_briefing`](#tool-research_briefing) | Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP MCP tool surface. |
 | [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. |
-| [`idea_catalyst`](#tool-idea_catalyst) | Run a one-shot interdisciplinary ideation pass over the graph and return either idea fragments or a data-starvation requisition. |
+| [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
 | [`mutate_graph`](#tool-mutate_graph) | Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Trigger incremental re-analysis of a corpus to pick up new or changed papers. Returns the updated corpus status after refresh. |
 
@@ -249,7 +249,7 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 <a id="tool-idea_catalyst"></a>
 
-Run a one-shot interdisciplinary ideation pass over the graph and return either idea fragments or a data-starvation requisition.
+Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle.
 
 ### Input Schema
 
@@ -258,10 +258,14 @@ Run a one-shot interdisciplinary ideation pass over the graph and return either 
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `problem` | required | string | Research problem statement to analyze. |
 | `targetDomain` | required | string | Target domain that needs cross-domain inspiration. |
+| `fineGrainedDomain` | optional | string | Optional finer-grained target domain label used in the staged packet bundle. |
+| `coarseGrainedDomain` | optional | string | Optional coarse-grained target domain label used in the staged packet bundle. |
 | `mechanisms` | optional | string \| array |  |
 | `numSourceDomains` | optional | number |  |
 | `relevanceThreshold` | optional | number |  |
 | `limit` | optional | number |  |
+| `outputMode` | optional | string (idea_fragments, packet_bundle) |  |
+| `includeAnalysis` | optional | boolean |  |
 
 ## Tool: mutate_graph
 

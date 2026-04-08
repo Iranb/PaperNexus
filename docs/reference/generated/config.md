@@ -17,11 +17,14 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
   "analyze": {
     "name": "GCD",
     "semanticExtraction": "llm-primary",
-    "pdfParser": "opendataloader",
-    "opendataloaderPdfPython": "python3",
+    "pdfParser": "markpdfdown",
+    "markpdfdownPython": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
+    "doclingPython": "python3",
     "doclingCommand": "docling",
-    "doclingPdfBackend": "pdfplumber"
+    "doclingPdfBackend": "pdfplumber",
+    "doclingUseVlm": false,
+    "doclingVlmPreset": "granite_docling"
   },
   "global": {
     "corpus": "GCD"
@@ -58,11 +61,14 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze` | object | section |
 | `analyze.name` | string | `GCD` |
 | `analyze.semanticExtraction` | string | `llm-primary` |
-| `analyze.pdfParser` | string | `opendataloader` |
-| `analyze.opendataloaderPdfPython` | string | `python3` |
+| `analyze.pdfParser` | string | `markpdfdown` |
+| `analyze.markpdfdownPython` | string | `python3` |
 | `analyze.mineruHttpUrl` | string | `http://127.0.0.1:30000` |
+| `analyze.doclingPython` | string | `python3` |
 | `analyze.doclingCommand` | string | `docling` |
 | `analyze.doclingPdfBackend` | string | `pdfplumber` |
+| `analyze.doclingUseVlm` | boolean | `false` |
+| `analyze.doclingVlmPreset` | string | `granite_docling` |
 | `global` | object | section |
 | `global.corpus` | string | `GCD` |
 | `serve` | object | section |
