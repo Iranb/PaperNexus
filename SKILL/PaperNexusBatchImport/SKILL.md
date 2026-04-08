@@ -14,6 +14,7 @@ For two or more files, prefer:
 - `python3 SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py`
 
 Do not write ad-hoc shell loops. The batch wrapper is the default control plane because it keeps one manifest format, one task registry, and one `summary/items` response shape.
+It also uses one remote `queue_progress` snapshot for status reads, so agents do not need to infer progress from elapsed time.
 
 ## Manifest Format
 
@@ -44,6 +45,9 @@ Rules:
 - each paper must include `source`
 - `paperId` is strongly recommended
 - optional per-paper overrides: `remoteDir`, `serverFilePath`, `taskId`
+- `source` is the local file path on the agent machine
+- `serverFilePath` is only for files that already exist on the remote PaperNexus server
+- do not copy a local `/Users/...` path into `serverFilePath`
 
 ## Workflow
 
@@ -69,17 +73,36 @@ python3 SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py \
   wait --timeout 1800 --interval 15
 ```
 
+`submit` behavior:
+
+- if a paper already has `serverFilePath`, the wrapper submits that remote file directly
+- if a paper only has local `source`, the wrapper stages it with `ssh`/`rsync` first
+- the remote MCP submit step always receives a server-side `serverFilePath`, never the raw local path
+
 ## Status Rules
 
 - `summary.submitted`: tasks accepted by the server
 - `summary.completed`: tasks with `status=completed`
 - `summary.failed`: tasks that failed after submission
 - `summary.submitFailed`: items that never became remote tasks
+- `summary.remaining`: tasks still `pending` or `running`
+- `summary.overallPercent`: aggregate progress across the returned batch items
 
 Per paper:
 
 - `submitted=true` means the server accepted a task
 - `synced=true` means the task reached `completed`
+- `progress.percent` is the per-task overall progress
+- `progress.stagePercent` is the current-stage progress
+- `progress.queuePosition` shows where the task sits among unfinished queue entries
 - `registry.matchedBy` explains whether task resolution came from `paper-id`, `source`, `task-id`, or `remote-scan`
 
 Do not claim a paper is in the graph when only `submitted=true`.
+
+## Batch Tracking Rules
+
+- Use `status` during uploads to read a live batch snapshot.
+- Use `wait` when you need a terminal batch result; it polls all tasks round-robin instead of waiting one paper at a time.
+- Prefer `paperId` in the manifest so registry matching stays stable across retries.
+- During uploads, read `summary.remaining`, `summary.overallPercent`, and each paper's `progress.percent`.
+- If one paper is stuck, inspect it with `python3 SKILL/PaperNexusBatchImport/scripts/pn_import_queue.py status --paper-id "<paperId>"` or `log --paper-id "<paperId>"`.

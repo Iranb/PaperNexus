@@ -43,21 +43,41 @@ The wrappers are thin adapters over these remote MCP tools:
   Used by `pn_research_chains.py` for `path-trace`, `evidence-chain`, `reflection-chain`, `theory-brief`, `storyline-brief`, `research-brief`, `brainstorm-brief`, and `paper-enhancement`
 - `import_workflow`
   Used by `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py`
+  Important operations: `submit`, `status`, `progress`, `queue_progress`, `log`, `wait`
 - `idea_catalyst`
   Used by `SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py`
 
 ## Remote Import Checklist
 
 1. Resolve `mcp-url`, token, and corpus before touching the graph.
-2. If the paper is already on the server machine, use `--server-file-path`.
-3. If the paper is local to the agent machine, stage it with:
+2. Understand the path boundary:
+   `import_workflow submit` sends `serverFilePath` to the remote PaperNexus server, so that path must exist on the server machine, not on the agent's local filesystem.
+3. If the paper is already on the server machine, use `--server-file-path`.
+4. If the paper is local to the agent machine, do not call `import_workflow submit` with the local path directly. Stage it with:
    `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`
-4. For two or more files, prefer one JSON manifest plus:
+   The wrapper will:
+   - detect that the source is local
+   - `ssh`/`rsync` it to remote staging
+   - call remote `import_workflow submit` with the staged `serverFilePath`
+5. For two or more files, prefer one JSON manifest plus:
    `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> submit`
-5. Track progress with:
-   `python3 SKILL/PaperNexus/scripts/pn_import_queue.py status|log|wait`
+6. Single-paper progress:
+   `python3 SKILL/PaperNexus/scripts/pn_import_queue.py status --paper-id <paperId>`
+   or
+   `python3 SKILL/PaperNexus/scripts/pn_import_queue.py wait --paper-id <paperId> --timeout 1800 --interval 15`
+7. Batch progress:
+   `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> status`
+   because it uses one remote `queue_progress` snapshot instead of guessing by time
+8. Only claim graph sync succeeded when the task is `status=completed` and `stage=completed`.
 
 Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging and `serverFilePath`.
+
+## Upload Rules
+
+- Never pass a local macOS path like `/Users/iranb/.../paper.pdf` as remote `serverFilePath`.
+- `serverFilePath` is only valid for files already present on the remote PaperNexus server.
+- For local files, use `pn_import_submit.py --source ...` or `pn_batch_import.py submit` so the wrapper can upload first.
+- For batch work, prefer one manifest and one wrapper call, not ad-hoc loops of raw MCP submits.
 
 ## Minimal Remote Examples
 
@@ -72,7 +92,18 @@ python3 SKILL/PaperNexus/scripts/pn_import_submit.py \
 python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
   --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
+  status --paper-id "data-shapley-iclr-2025"
+
+python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
+  --mcp-url "http://<host>:4821/mcp" \
+  --corpus "<corpus>" \
   wait --paper-id "data-shapley-iclr-2025" --timeout 1800 --interval 15
+
+python3 SKILL/PaperNexus/scripts/pn_batch_import.py \
+  --mcp-url "http://<host>:4821/mcp" \
+  --corpus "<corpus>" \
+  --manifest "/absolute/path/batch-import.json" \
+  status
 
 python3 SKILL/PaperNexus/scripts/pn_graph_query.py \
   --mcp-url "http://<host>:4821/mcp" \
@@ -86,6 +117,11 @@ python3 SKILL/PaperNexus/scripts/pn_graph_query.py \
 - `running`: read `stage` and recent `log`
 - `completed` plus `completed`: safe to query the graph
 - `failed`: report `stage`, `error`, and recent log lines before retrying
+- `task.progress.percent`: per-task overall progress, not just terminal state
+- `task.progress.stagePercent`: progress inside the current stage
+- `task.progress.queuePosition`: current unfinished-queue position for that task
+- `summary.remaining`: unfinished tasks in the current batch or queue snapshot
+- `summary.overallPercent`: aggregate progress across the returned task set
 
 Only call a paper synchronized when the returned task state says it is completed.
 

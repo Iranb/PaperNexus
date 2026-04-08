@@ -6,7 +6,8 @@ import {
   getImportPaths,
   listImportTasks,
   markImportTaskStage,
-  reserveNextImportTask
+  reserveNextImportTask,
+  updateImportTaskProgress
 } from '../../storage/import-store.js';
 import {
   fastCommitCorpus,
@@ -35,6 +36,45 @@ function resolveImportPreparseConcurrency(options = {}) {
     return DEFAULT_IMPORT_PREPARSE_CONCURRENCY;
   }
   return Math.max(1, Math.min(8, Math.floor(raw)));
+}
+
+function clampProgressPercent(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(numeric * 100) / 100));
+}
+
+function createTaskProgressReporter(rootPath, taskId, stage) {
+  let lastSignature = '';
+  let chain = Promise.resolve();
+  return {
+    async report(event = {}) {
+      const signature = JSON.stringify({
+        stage,
+        stagePercent: clampProgressPercent(event.stagePercent, -1),
+        processedUnits: Number(event.processedUnits || 0),
+        totalUnits: Number(event.totalUnits || 0),
+        currentStep: String(event.currentStep || event.phase || '').trim(),
+        message: String(event.message || event.label || '').trim()
+      });
+      if (signature === lastSignature) {
+        return chain;
+      }
+      lastSignature = signature;
+      chain = chain.then(() => updateImportTaskProgress(rootPath, taskId, {
+        stage,
+        stagePercent: event.stagePercent,
+        processedUnits: event.processedUnits,
+        totalUnits: event.totalUnits,
+        currentStep: event.currentStep || event.phase || '',
+        message: event.message || event.label || ''
+      })).catch(() => null);
+      return chain;
+    },
+    async flush() {
+      await chain;
+    }
+  };
 }
 
 async function mapWithConcurrency(items, concurrency, iteratee) {
@@ -239,7 +279,21 @@ async function processImportTask(rootPath, task, options = {}) {
 
   if (startStage === 'materialize') {
     await markImportTaskStage(rootPath, task.id, 'materialize', 'stage materialize');
-    const materialized = await materializeCorpus(inputPath, sharedOptions);
+    const materializeProgress = createTaskProgressReporter(rootPath, task.id, 'materialize');
+    const materialized = await materializeCorpus(inputPath, {
+      ...sharedOptions,
+      onProgress(event = {}) {
+        void materializeProgress.report(event);
+      }
+    });
+    await materializeProgress.report({
+      stagePercent: 100,
+      currentStep: 'materialization complete',
+      message: 'Prepared paper snapshots',
+      processedUnits: materialized?.meta?.paperCount || materialized?.result?.paperCount || 0,
+      totalUnits: materialized?.meta?.paperCount || materialized?.result?.paperCount || 0
+    });
+    await materializeProgress.flush();
     result.materialized = {
       reused: Boolean(materialized?.reused),
       paperCount: materialized?.meta?.paperCount || 0,
@@ -250,17 +304,39 @@ async function processImportTask(rootPath, task, options = {}) {
   const changedSourceKeys = await resolveTaskChangedSourceKeys(rootPath, task);
 
   await markImportTaskStage(rootPath, task.id, 'llm-optimize', 'stage llm-optimize');
-  const optimized = await llmOptimizeCorpus(inputPath, sharedOptions);
+  const llmProgress = createTaskProgressReporter(rootPath, task.id, 'llm-optimize');
+  const optimized = await llmOptimizeCorpus(inputPath, {
+    ...sharedOptions,
+    onProgress(event = {}) {
+      void llmProgress.report(event);
+    }
+  });
+  await llmProgress.report({
+    stagePercent: 100,
+    currentStep: 'llm optimization complete',
+    message: 'Completed LLM optimization'
+  });
+  await llmProgress.flush();
   result.optimized = {
     reused: Boolean(optimized?.reused)
   };
 
   await markImportTaskStage(rootPath, task.id, 'fast-commit', 'stage fast-commit');
+  const fastCommitProgress = createTaskProgressReporter(rootPath, task.id, 'fast-commit');
   const committed = await fastCommitCorpus(inputPath, {
     ...sharedOptions,
     changedSourceKeys,
-    mode: 'import'
+    mode: 'import',
+    onProgress(event = {}) {
+      void fastCommitProgress.report(event);
+    }
   });
+  await fastCommitProgress.report({
+    stagePercent: 100,
+    currentStep: 'fast commit complete',
+    message: 'Applied graph update'
+  });
+  await fastCommitProgress.flush();
 
   result.fastCommitted = {
     reused: Boolean(committed?.reused),

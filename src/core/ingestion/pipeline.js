@@ -340,6 +340,15 @@ function announceStage(options = {}, step, total, title, detail = '') {
   console.log(`Stage ${step}/${total}: ${title}${suffix}`);
 }
 
+function emitPipelineProgress(options = {}, event = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  if (!onProgress) return;
+  onProgress({
+    timestamp: new Date().toISOString(),
+    ...event
+  });
+}
+
 function logPipelineEvent(options = {}, message) {
   if (options.quiet) return;
   console.log(message);
@@ -1949,6 +1958,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   }
 
   const batchSize = Math.max(1, Number(firstDefinedValue(options.llmBatchSize, options.batchSize, 8)));
+  let llmCompletedUnits = 0;
   announceStage(
     options,
     options.llmStageStep || 1,
@@ -1959,6 +1969,17 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   const formatBatchLabel = (batchNumber, totalBatches, completed, total) =>
     `batch ${batchNumber}/${Math.max(1, totalBatches)}, ${Math.min(completed, total)}/${total} papers completed`;
+
+  const relationPendingCount = records.filter((record) => record.sourceState.llmRefreshState.relationRequired).length;
+  const totalLlmUnits = semanticPending.length + relationPendingCount;
+  emitPipelineProgress(options, {
+    stage: 'llm-optimize',
+    currentStep: semanticPending.length ? 'semantic extraction' : 'relation extraction',
+    processedUnits: 0,
+    totalUnits: totalLlmUnits,
+    stagePercent: totalLlmUnits ? 0 : 100,
+    message: 'Starting batch LLM optimization'
+  });
 
   if (semanticPending.length) {
     const semanticProgress = quiet ? createQuietProgress() : createProgressBar(semanticPending.length, { prefix: 'Semantic extraction' });
@@ -1998,6 +2019,15 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       jobState.phases.semantic.lastBatchNumber = Math.floor(start / batchSize) + 1;
       refreshStage2PhaseStatus(jobState, semanticPending, 'semantic');
       await saveStage2JobState(rootPath, jobState);
+      llmCompletedUnits = Math.min(start + batchRecords.length, semanticPending.length);
+      emitPipelineProgress(options, {
+        stage: 'llm-optimize',
+        currentStep: 'semantic extraction',
+        processedUnits: llmCompletedUnits,
+        totalUnits: totalLlmUnits,
+        stagePercent: totalLlmUnits ? ((llmCompletedUnits / totalLlmUnits) * 100) : 100,
+        message: formatBatchLabel(jobState.phases.semantic.lastBatchNumber, totalBatches, start + batchRecords.length, semanticPending.length)
+      });
       semanticProgress.update(
         Math.min(start + batchRecords.length, semanticPending.length),
         formatBatchLabel(jobState.phases.semantic.lastBatchNumber, totalBatches, start + batchRecords.length, semanticPending.length)
@@ -2053,6 +2083,15 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       jobState.phases.relation.lastBatchNumber = Math.floor(start / batchSize) + 1;
       refreshStage2PhaseStatus(jobState, relationPending, 'relation');
       await saveStage2JobState(rootPath, jobState);
+      llmCompletedUnits = semanticPending.length + Math.min(start + batchRecords.length, relationPending.length);
+      emitPipelineProgress(options, {
+        stage: 'llm-optimize',
+        currentStep: 'relation extraction',
+        processedUnits: llmCompletedUnits,
+        totalUnits: totalLlmUnits,
+        stagePercent: totalLlmUnits ? ((llmCompletedUnits / totalLlmUnits) * 100) : 100,
+        message: formatBatchLabel(jobState.phases.relation.lastBatchNumber, totalBatches, start + batchRecords.length, relationPending.length)
+      });
       relationProgress.update(
         Math.min(start + batchRecords.length, relationPending.length),
         formatBatchLabel(jobState.phases.relation.lastBatchNumber, totalBatches, start + batchRecords.length, relationPending.length)
@@ -2079,6 +2118,14 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   jobState.completedAt = completed ? new Date().toISOString() : null;
   jobState.updatedAt = new Date().toISOString();
   await saveStage2JobState(rootPath, jobState);
+  emitPipelineProgress(options, {
+    stage: 'llm-optimize',
+    currentStep: completed ? 'llm optimization complete' : 'llm optimization partial',
+    processedUnits: totalLlmUnits,
+    totalUnits: totalLlmUnits,
+    stagePercent: completed ? 100 : (totalLlmUnits ? ((llmCompletedUnits / totalLlmUnits) * 100) : 100),
+    message: completed ? 'Completed batch LLM optimization' : 'LLM optimization finished with pending work'
+  });
 
   const nextManifest = createStage2ManifestFromRecords(rootPath, manifest, records, {
     ...options,
@@ -4339,12 +4386,21 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
   const metadataConcurrency = resolveMetadataConcurrency(options);
   const quiet = Boolean(options.quiet);
   let nextIndex = 0;
+  let completedSources = 0;
   const activeStates = new Map();
   const totalWorkers = Math.min(analyzeConcurrency, Math.max(sourceStates.length, 1));
 
   // 创建进度条
   const progress = quiet ? createQuietProgress() : createProgressBar(sourceStates.length, { prefix: 'Processing papers' });
   progress.start();
+  emitPipelineProgress(options, {
+    stage: 'materialize',
+    currentStep: 'starting',
+    processedUnits: 0,
+    totalUnits: sourceStates.length,
+    stagePercent: sourceStates.length ? 0 : 100,
+    message: 'Preparing paper snapshots'
+  });
 
   const formatSourceActivity = (sourceState, status = '') => {
     const basename = path.basename(sourceState.inputPath, path.extname(sourceState.inputPath)) || sourceState.sourceKey;
@@ -4447,7 +4503,19 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
       }
     } finally {
       clearSourceStatus(sourceState);
+      completedSources += 1;
       progress.tick();
+      emitPipelineProgress(options, {
+        stage: 'materialize',
+        currentStep: failedSources.some((entry) => entry.sourceKey === sourceState.sourceKey) ? 'source failed' : 'source completed',
+        processedUnits: completedSources,
+        totalUnits: sourceStates.length,
+        stagePercent: sourceStates.length ? ((completedSources / sourceStates.length) * 100) : 100,
+        message: formatSourceActivity(
+          sourceState,
+          failedSources.some((entry) => entry.sourceKey === sourceState.sourceKey) ? 'failed' : 'completed'
+        )
+      });
     }
   }
 
@@ -4467,6 +4535,14 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
   );
 
   progress.done();
+  emitPipelineProgress(options, {
+    stage: 'materialize',
+    currentStep: 'source materialization complete',
+    processedUnits: sourceStates.length,
+    totalUnits: sourceStates.length,
+    stagePercent: 100,
+    message: 'Prepared paper snapshots'
+  });
   if (options.enableLlmEnrichment === false) {
     for (const record of materializedSources) {
       applySemanticAdmissionPolicy(record.semanticPaper);
@@ -5290,6 +5366,14 @@ export async function fastCommitCorpus(inputPath, options = {}) {
     'Fast local graph update',
     'applying changed papers to the lite graph and queueing authoritative sync'
   );
+  emitPipelineProgress(options, {
+    stage: 'fast-commit',
+    currentStep: 'loading lite graph',
+    processedUnits: 0,
+    totalUnits: 6,
+    stagePercent: 0,
+    message: 'Preparing fast local graph update'
+  });
 
   const [currentCorpus, liteState] = await Promise.all([
     loadCorpusLite(rootPath),
@@ -5309,6 +5393,14 @@ export async function fastCommitCorpus(inputPath, options = {}) {
       changedSemanticPapers.push(snapshot);
     }
   }
+  emitPipelineProgress(options, {
+    stage: 'fast-commit',
+    currentStep: 'collecting changed snapshots',
+    processedUnits: 1,
+    totalUnits: 6,
+    stagePercent: 16.67,
+    message: 'Collected changed semantic snapshots'
+  });
 
   const paperDeltaPayload = await buildGraphDeltaPayload({
     corpusName: manifest.corpusName || options.name || currentCorpus.meta.name || path.basename(rootPath),
@@ -5318,6 +5410,14 @@ export async function fastCommitCorpus(inputPath, options = {}) {
     liteState,
     changedSourceKeys,
     options
+  });
+  emitPipelineProgress(options, {
+    stage: 'fast-commit',
+    currentStep: 'building graph delta',
+    processedUnits: 2,
+    totalUnits: 6,
+    stagePercent: 33.33,
+    message: 'Built graph delta payload'
   });
   const nextGraph = applyGraphDeltaPayload(currentCorpus.graph, paperDeltaPayload);
   postIngestionRefinement(nextGraph);
@@ -5338,6 +5438,14 @@ export async function fastCommitCorpus(inputPath, options = {}) {
       .filter(Boolean),
     removalState: paperDeltaPayload.removalState
   });
+  emitPipelineProgress(options, {
+    stage: 'fast-commit',
+    currentStep: 'applying refinement',
+    processedUnits: 3,
+    totalUnits: 6,
+    stagePercent: 50,
+    message: 'Applied graph refinement and computed lite diff'
+  });
   const nextMeta = {
     ...refreshMetaFromGraph(currentCorpus.meta, nextGraph, currentCorpus.meta.similarNodeMerge, currentCorpus.meta.nodeLlmCheck),
     name: currentCorpus.meta.name || manifest.corpusName || options.name || path.basename(rootPath),
@@ -5356,7 +5464,33 @@ export async function fastCommitCorpus(inputPath, options = {}) {
   const fastCommitted = await saveCorpusFastLocalDelta(rootPath, deltaPayload, nextMeta, nextManifest, {
     baseManifestToken: options.baseManifestToken || null,
     targetManifestToken,
-    mode: options.mode || 'delta'
+    mode: options.mode || 'delta',
+    onProgress(event = {}) {
+      const phase = String(event.phase || '').trim();
+      const phaseProgress = phase === 'lite-delta'
+        ? { processedUnits: 4, stagePercent: 66.67 }
+        : phase === 'manifest'
+          ? { processedUnits: 5, stagePercent: 83.33 }
+          : phase === 'meta'
+            ? { processedUnits: 5.5, stagePercent: 95 }
+            : { processedUnits: 3, stagePercent: 50 };
+      emitPipelineProgress(options, {
+        stage: 'fast-commit',
+        currentStep: phase || 'writing fast local delta',
+        processedUnits: phaseProgress.processedUnits,
+        totalUnits: 6,
+        stagePercent: phaseProgress.stagePercent,
+        message: event.label || 'Writing fast local delta files'
+      });
+    }
+  });
+  emitPipelineProgress(options, {
+    stage: 'fast-commit',
+    currentStep: 'fast commit complete',
+    processedUnits: 6,
+    totalUnits: 6,
+    stagePercent: 100,
+    message: 'Applied graph update and queued authoritative sync'
   });
 
   return {

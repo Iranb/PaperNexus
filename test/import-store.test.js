@@ -33,6 +33,9 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
 
     assert.equal(task.status, 'pending');
     assert.equal(task.files.length, 1);
+    assert.equal(task.progress.contractVersion, 'import-progress-v1');
+    assert.equal(task.progress.stage, 'queued');
+    assert.equal(task.progress.percent, 0);
     await fs.access(task.files[0].storedPath);
 
     await appendImportTaskLog(rootPath, task.id, {
@@ -47,12 +50,18 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
     const listed = await listImportTasks(rootPath);
     assert.equal(listed.tasks.length, 1);
     assert.equal(listed.tasks[0].id, task.id);
+    assert.equal(listed.summary.total, 1);
+    assert.equal(listed.summary.pending, 1);
+    assert.equal(listed.summary.overallPercent, 0);
 
     const beforeReserve = await listActiveImportSourceDirs(rootPath);
     assert.deepEqual(beforeReserve, []);
 
     const reserved = await reserveNextImportTask(rootPath);
     assert.equal(reserved.task.id, task.id);
+    assert.equal(reserved.task.progress.stage, 'materialize');
+    assert.equal(reserved.task.progress.stageIndex, 1);
+    assert.equal(reserved.task.progress.percent, 0);
 
     const afterReserve = await listActiveImportSourceDirs(rootPath);
     assert.deepEqual(afterReserve, [task.sourcesDir]);
@@ -60,6 +69,11 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
     await completeImportTask(rootPath, task.id, {
       ok: true
     });
+
+    const completed = await loadImportTask(rootPath, task.id);
+    assert.equal(completed.progress.stage, 'completed');
+    assert.equal(completed.progress.percent, 100);
+    assert.equal(completed.progress.stagePercent, 100);
 
     const afterComplete = await listActiveImportSourceDirs(rootPath);
     assert.deepEqual(afterComplete, []);

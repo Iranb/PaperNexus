@@ -346,6 +346,52 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   assert.ok(Array.isArray(parsedInterdisciplinary.rankedSourceDomains));
 });
 
+test('import_workflow exposes task progress and queue progress over MCP', async () => {
+  const submitResult = await pending.request('tools/call', {
+    name: 'import_workflow',
+    arguments: {
+      operation: 'submit',
+      corpus: tempCorpusRoot,
+      files: [
+        {
+          name: 'mcp-progress-upload.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# MCP Progress Upload\n\n## Abstract\n\nTrack queue progress.\n', 'utf8').toString('base64')
+        }
+      ]
+    }
+  });
+  const submitted = JSON.parse(submitResult.content[0].text);
+  assert.equal(submitted.task.status, 'pending');
+  assert.equal(submitted.task.progress.contractVersion, 'import-progress-v1');
+
+  const progressResult = await pending.request('tools/call', {
+    name: 'import_workflow',
+    arguments: {
+      operation: 'progress',
+      corpus: tempCorpusRoot,
+      taskId: submitted.task.id
+    }
+  });
+  const progressPayload = JSON.parse(progressResult.content[0].text);
+  assert.equal(progressPayload.task.id, submitted.task.id);
+  assert.equal(progressPayload.task.progress.contractVersion, 'import-progress-v1');
+  assert.equal(progressPayload.queueSummary.total >= 1, true);
+
+  const queueProgressResult = await pending.request('tools/call', {
+    name: 'import_workflow',
+    arguments: {
+      operation: 'queue_progress',
+      corpus: tempCorpusRoot
+    }
+  });
+  const queueProgressPayload = JSON.parse(queueProgressResult.content[0].text);
+  assert.equal(queueProgressPayload.summary.total >= 1, true);
+  assert.equal(typeof queueProgressPayload.summary.overallPercent, 'number');
+  assert.ok(Array.isArray(queueProgressPayload.tasks));
+  assert.ok(queueProgressPayload.tasks.some((task) => task.id === submitted.task.id));
+});
+
 test('MCP mutate_graph previews and applies validated graph edits', async () => {
   const preview = await pending.request('tools/call', {
     name: 'mutate_graph',

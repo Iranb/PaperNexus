@@ -389,13 +389,13 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'import_workflow',
-    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, log, and wait on import tasks.',
+    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['submit', 'list', 'status', 'log', 'wait']
+          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait']
         },
         corpus: {
           type: 'string',
@@ -430,6 +430,13 @@ export const PAPERNEXUS_TOOLS = [
         },
         limit: {
           type: 'number'
+        },
+        taskIds: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description: 'Optional task ids used to filter queue_progress snapshots.'
         },
         timeout: {
           type: 'number',

@@ -73,6 +73,9 @@ test('import worker processes queued uploads and merges them into the single gra
 
     const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
     assert.equal(loadedTask.status, 'completed');
+    assert.equal(loadedTask.progress.contractVersion, 'import-progress-v1');
+    assert.equal(loadedTask.progress.stage, 'completed');
+    assert.equal(loadedTask.progress.percent, 100);
     assert.equal(typeof loadedTask.result?.materialized?.timings?.totalMs, 'number');
     assert.equal(loadedTask.result.materialized.timings.totalMs >= 0, true);
 

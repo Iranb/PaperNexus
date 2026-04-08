@@ -484,8 +484,29 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
       const submitted = JSON.parse(submit.stdout);
       assert.equal(submitted.summary.total, 2);
       assert.equal(submitted.summary.submitted, 2);
+      assert.equal(typeof submitted.summary.overallPercent, 'number');
       assert.equal(submitted.items.length, 2);
       assert.ok(submitted.items.every((item) => item.taskId));
+      assert.ok(submitted.items.every((item) => item.progress && item.progress.contractVersion === 'import-progress-v1'));
+
+      const status = await runPython('pn_batch_import.py', [
+        '--json',
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
+        '--token', 'secret-token',
+        '--manifest', manifestPath,
+        'status'
+      ], {
+        env: {
+          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
+        }
+      });
+      const statusPayload = JSON.parse(status.stdout);
+      assert.equal(statusPayload.summary.total, 2);
+      assert.equal(typeof statusPayload.summary.overallPercent, 'number');
+      assert.ok(statusPayload.summary.remaining >= 0);
+      assert.ok(statusPayload.items.every((item) => item.taskId));
+      assert.ok(statusPayload.items.every((item) => item.progress && item.progress.contractVersion === 'import-progress-v1'));
+      assert.ok(statusPayload.items.every((item) => item.registry.matchedBy === 'paper-id'));
 
       const wait = await runPython('pn_batch_import.py', [
         '--json',
@@ -503,23 +524,8 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
       const waited = JSON.parse(wait.stdout);
       assert.equal(waited.summary.total, 2);
       assert.equal(waited.summary.completed, 2);
+      assert.equal(waited.summary.overallPercent, 100);
       assert.ok(waited.items.every((item) => item.status === 'completed'));
-
-      const status = await runPython('pn_batch_import.py', [
-        '--json',
-        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
-        '--manifest', manifestPath,
-        'status'
-      ], {
-        env: {
-          PAPERNEXUS_TASK_REGISTRY_PATH: registryPath
-        }
-      });
-      const statusPayload = JSON.parse(status.stdout);
-      assert.equal(statusPayload.summary.completed, 2);
-      assert.ok(statusPayload.items.every((item) => item.taskId));
-      assert.ok(statusPayload.items.every((item) => item.registry.matchedBy === 'paper-id'));
     } finally {
       await server.stop();
     }

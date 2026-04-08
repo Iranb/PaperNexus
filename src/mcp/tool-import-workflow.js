@@ -32,6 +32,32 @@ function taskMatchesReference(task, args = {}) {
   });
 }
 
+function summarizeProgressTasks(tasks = []) {
+  const summary = {
+    total: tasks.length,
+    pending: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    remaining: 0,
+    overallPercent: 0
+  };
+  if (!tasks.length) return summary;
+
+  let totalPercent = 0;
+  for (const task of tasks) {
+    const status = String(task?.status || '').trim().toLowerCase();
+    if (status === 'completed') summary.completed += 1;
+    else if (status === 'failed') summary.failed += 1;
+    else if (status === 'running') summary.running += 1;
+    else summary.pending += 1;
+    totalPercent += Number(task?.progress?.percent || 0) || 0;
+  }
+  summary.remaining = summary.pending + summary.running;
+  summary.overallPercent = Math.max(0, Math.min(100, Math.round((totalPercent / tasks.length) * 100) / 100));
+  return summary;
+}
+
 async function resolveTaskId(candidate, args = {}, options = {}) {
   const directTaskId = String(args.taskId || args.task_id || '').trim();
   if (directTaskId) {
@@ -68,12 +94,40 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       }
       return payload;
     }
+    case 'progress':
     case 'status': {
       const taskId = await resolveTaskId(candidate, args, options);
       if (!taskId) {
-        throw new Error('taskId is required for import_workflow status.');
+        throw new Error(`taskId is required for import_workflow ${operation}.`);
       }
       return importTaskPayload(candidate, taskId, options);
+    }
+    case 'queue_progress': {
+      const payload = await listImportTasksPayload(candidate, options);
+      const requestedTaskIds = Array.isArray(args.taskIds)
+        ? args.taskIds.map((value) => String(value || '').trim()).filter(Boolean)
+        : [];
+      let tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+      if (requestedTaskIds.length) {
+        const requested = new Set(requestedTaskIds);
+        tasks = tasks.filter((task) => requested.has(String(task?.id || '').trim()));
+      }
+      const paperId = String(args.paperId || args.paper_id || '').trim();
+      const source = String(args.source || '').trim();
+      if (paperId || source) {
+        tasks = tasks.filter((task) => taskMatchesReference(task, { paperId, source }));
+      }
+      const limit = Number(args.limit || 0);
+      if (Number.isFinite(limit) && limit > 0) {
+        tasks = tasks.slice(0, limit);
+      }
+      return {
+        rootPath: payload.rootPath,
+        summary: summarizeProgressTasks(tasks),
+        queueSummary: payload.summary,
+        tasks,
+        generatedAt: new Date().toISOString()
+      };
     }
     case 'log': {
       const taskId = await resolveTaskId(candidate, args, options);

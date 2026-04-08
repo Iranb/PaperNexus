@@ -1239,6 +1239,7 @@ export async function listImportTasksPayload(candidate, options = {}) {
   const payload = await listImportTasks(rootPath);
   return {
     rootPath,
+    summary: payload.summary,
     tasks: payload.tasks,
     generatedAt: new Date().toISOString()
   };
@@ -1249,13 +1250,15 @@ export async function importTaskPayload(candidate, taskId, options = {}) {
   if (!taskId) {
     throw new Error('taskId is required.');
   }
-  const task = await loadImportTask(rootPath, taskId);
+  const listed = await listImportTasks(rootPath);
+  const task = (listed.tasks || []).find((entry) => entry.id === taskId) || await loadImportTask(rootPath, taskId);
   if (!task) {
     throw new Error(`No import task found for ${taskId}.`);
   }
   return {
     rootPath,
     task,
+    queueSummary: listed.summary,
     generatedAt: new Date().toISOString()
   };
 }

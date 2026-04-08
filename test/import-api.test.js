@@ -61,10 +61,18 @@ test('import API payload helpers create, list, inspect, and show logs for upload
     const listed = await api.listImportTasksPayload(indexRoot);
     assert.equal(listed.tasks.length, 1);
     assert.equal(listed.tasks[0].id, created.task.id);
+    assert.equal(listed.summary.total, 1);
+    assert.equal(listed.summary.pending, 1);
+    assert.equal(typeof listed.summary.overallPercent, 'number');
+    assert.equal(listed.tasks[0].progress.contractVersion, 'import-progress-v1');
 
     const detail = await api.importTaskPayload(indexRoot, created.task.id);
     assert.equal(detail.task.id, created.task.id);
     assert.equal(detail.task.files.length, 1);
+    assert.equal(detail.task.progress.contractVersion, 'import-progress-v1');
+    assert.equal(detail.task.progress.stage, 'queued');
+    assert.equal(detail.queueSummary.total, 1);
+    assert.equal(detail.queueSummary.pending, 1);
 
     const log = await api.importTaskLogPayload(indexRoot, created.task.id);
     assert.match(log.log, /created import task/i);

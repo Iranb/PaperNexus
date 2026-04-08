@@ -37,6 +37,13 @@ Default MCP mapping:
 - `pn_research_chains.py` -> `research_briefing`
 - import wrappers -> `import_workflow`
 
+## Import Boundary Rules
+
+- `import_workflow submit` expects a remote `serverFilePath`, not a local `/Users/...` path.
+- If the paper is local to the agent machine, use `pn_import_submit.py --source ... --ssh-target ...` or `pn_batch_import.py submit`.
+- Only use `--server-file-path` when the file is already on the PaperNexus server.
+- During reasoning tasks, do not tell the user a paper is in the graph right after submit; check queue status first.
+
 ## Reasoning Loop
 
 For non-trivial research tasks, keep this compact state:
@@ -74,6 +81,21 @@ python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py --mcp-url "ht
 python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_graph_query.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" brainstorm "<topic>" --mode converge --limit 6
 python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" brainstorm-brief "<topic>" --limit 6
 ```
+
+Check import progress:
+
+```bash
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_import_queue.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" status --paper-id "<paperId>"
+python3 SKILL/PaperNexusAgenticReasoning/scripts/pn_batch_import.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" --manifest "/absolute/path/batch-import.json" status
+```
+
+Read:
+
+- `task.progress.percent`
+- `task.progress.stagePercent`
+- `task.progress.queuePosition`
+- `summary.remaining`
+- `summary.overallPercent`
 
 ## Graph Thinking Rules
 

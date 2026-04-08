@@ -3,6 +3,7 @@ import typing
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -149,7 +150,10 @@ def build_batch_summary(items: list[dict]) -> dict:
         "failed": 0,
         "notSubmitted": 0,
         "submitFailed": 0,
+        "remaining": 0,
+        "overallPercent": 0,
     }
+    total_percent = 0.0
     for item in items:
         status = str(item.get("status") or "").strip().lower()
         if item.get("submitted"):
@@ -166,6 +170,14 @@ def build_batch_summary(items: list[dict]) -> dict:
             summary["notSubmitted"] += 1
         elif status == "submit-failed":
             summary["submitFailed"] += 1
+        progress = item.get("progress") or {}
+        try:
+            total_percent += float(progress.get("percent") or 0.0)
+        except (TypeError, ValueError):
+            total_percent += 0.0
+    summary["remaining"] = summary["pending"] + summary["running"]
+    if items:
+        summary["overallPercent"] = round(total_percent / len(items), 2)
     return summary
 
 
@@ -227,6 +239,7 @@ def submit_item(item: dict, args, mcp_url: str, token: str, corpus: str, default
         "synced": str(task.get("status") or "").lower() == "completed" and str(task.get("stage") or "").lower() == "completed",
         "remoteFile": server_file_path,
         "deduped": bool(payload.get("deduped")),
+        "progress": task.get("progress") or {},
         "registry": {
             "path": str(registry_path),
             "saved": True,
@@ -250,6 +263,20 @@ def load_remote_tasks(mcp_url: str, token: str, corpus: str, timeout: float, lim
         timeout=timeout,
     )
     return list(payload.get("tasks") or [])[: max(0, limit)]
+
+
+def load_queue_progress(mcp_url: str, token: str, corpus: str, timeout: float, limit: int = 200) -> dict:
+    return call_mcp_tool_json(
+        mcp_url,
+        token,
+        "import_workflow",
+        {
+            "operation": "queue_progress",
+            "corpus": corpus,
+            "limit": limit
+        },
+        timeout=timeout,
+    )
 
 
 def resolve_remote_task(item: dict, remote_tasks: list[dict]) -> typing.Optional[dict]:
@@ -279,9 +306,8 @@ def resolve_task_reference(item: dict, registry: dict, remote_tasks: list[dict],
     return None, record, matched_by
 
 
-def status_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry: dict, remote_tasks: list[dict]) -> dict:
-    task_id, record, matched_by = resolve_task_reference(item, registry, remote_tasks, corpus)
-    if not task_id:
+def build_status_result(item: dict, task: typing.Optional[dict], record: typing.Optional[dict], matched_by: typing.Optional[str], registry_path: str = "") -> dict:
+    if not task:
         return {
             "paperId": item["paperId"],
             "source": item["source"],
@@ -291,8 +317,49 @@ def status_item(item: dict, args, mcp_url: str, token: str, corpus: str, registr
             "stage": "",
             "submitted": False,
             "synced": False,
+            "progress": {},
             "registry": build_registry_summary(record, matched_by),
         }
+
+    status = str(task.get("status") or "").strip()
+    stage = str(task.get("stage") or "").strip()
+    result = {
+        "paperId": (record or {}).get("paperId") or item["paperId"],
+        "source": (record or {}).get("source") or item["source"],
+        "sourceKind": (record or {}).get("sourceKind") or item["sourceKind"],
+        "taskId": str(task.get("id") or task.get("taskId") or ""),
+        "status": status,
+        "stage": stage,
+        "submitted": True,
+        "synced": status.lower() == "completed" and stage.lower() == "completed",
+        "progress": task.get("progress") or {},
+        "error": task.get("error"),
+        "finishedAt": task.get("finishedAt"),
+        "registry": {
+            **build_registry_summary(record, matched_by),
+        },
+    }
+    if registry_path:
+        result["registry"]["path"] = str(registry_path)
+    return result
+
+
+def status_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry: dict, remote_tasks: list[dict]) -> dict:
+    task_id, record, matched_by = resolve_task_reference(item, registry, remote_tasks, corpus)
+    if not task_id:
+        return build_status_result(item, None, record, matched_by)
+
+    remote_task = resolve_remote_task({ **item, "taskId": task_id }, remote_tasks)
+    if remote_task:
+        registry_path = update_registry_from_task_payload(
+            {"task": remote_task},
+            paper_id=(record or {}).get("paperId") or item["paperId"],
+            source=(record or {}).get("source") or item["source"],
+            source_kind=(record or {}).get("sourceKind") or item["sourceKind"],
+            remote_file=(record or {}).get("remoteFile") or "",
+            corpus=corpus,
+        )
+        return build_status_result(item, remote_task, record, matched_by or "remote-scan", registry_path)
 
     payload = call_mcp_tool_json(
         mcp_url,
@@ -313,23 +380,7 @@ def status_item(item: dict, args, mcp_url: str, token: str, corpus: str, registr
         remote_file=(record or {}).get("remoteFile") or "",
         corpus=corpus,
     )
-    task = payload.get("task", {})
-    return {
-        "paperId": (record or {}).get("paperId") or item["paperId"],
-        "source": (record or {}).get("source") or item["source"],
-        "sourceKind": (record or {}).get("sourceKind") or item["sourceKind"],
-        "taskId": str(task.get("id") or task_id),
-        "status": str(task.get("status") or "").strip(),
-        "stage": str(task.get("stage") or "").strip(),
-        "submitted": True,
-        "synced": str(task.get("status") or "").lower() == "completed" and str(task.get("stage") or "").lower() == "completed",
-        "error": task.get("error"),
-        "finishedAt": task.get("finishedAt"),
-        "registry": {
-            **build_registry_summary(record, matched_by),
-            "path": str(registry_path),
-        },
-    }
+    return build_status_result(item, payload.get("task", {}), record, matched_by, registry_path)
 
 
 def wait_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry: dict, remote_tasks: list[dict]) -> dict:
@@ -367,6 +418,7 @@ def wait_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry:
         "stage": str(task.get("stage") or "").strip(),
         "submitted": True,
         "synced": str(task.get("status") or "").lower() == "completed" and str(task.get("stage") or "").lower() == "completed",
+        "progress": task.get("progress") or {},
         "error": task.get("error"),
         "finishedAt": task.get("finishedAt"),
         "log": payload.get("log", ""),
@@ -437,7 +489,9 @@ def main() -> int:
             }, args.json)
 
         registry = load_task_registry()
-        remote_tasks = load_remote_tasks(mcp_url, token, corpus, args.request_timeout, getattr(args, "limit", 200))
+        queue_limit = max(getattr(args, "limit", 200), len(items) * 4, 50)
+        queue_payload = load_queue_progress(mcp_url, token, corpus, args.request_timeout, queue_limit)
+        remote_tasks = list(queue_payload.get("tasks") or [])
 
         if args.command == "status":
             results = [status_item(item, args, mcp_url, token, corpus, registry, remote_tasks) for item in items]
@@ -445,17 +499,32 @@ def main() -> int:
                 "manifest": manifest["path"],
                 "corpus": corpus,
                 "summary": build_batch_summary(results),
+                "queueSummary": queue_payload.get("queueSummary") or queue_payload.get("summary") or {},
                 "items": results,
             }, args.json)
 
         if args.command == "wait":
-            results = []
-            for item in items:
-                results.append(wait_item(item, args, mcp_url, token, corpus, registry, remote_tasks))
+            deadline = time.time() + max(1.0, float(args.timeout))
+            results = [status_item(item, args, mcp_url, token, corpus, registry, remote_tasks) for item in items]
+            while True:
+                terminal = {"completed", "failed", "not-submitted", "submit-failed"}
+                if all(str(item.get("status") or "").strip().lower() in terminal for item in results):
+                    break
+                if time.time() >= deadline:
+                    raise RemoteScriptError(
+                        "Timed out waiting for batch import completion. "
+                        f"Remaining={build_batch_summary(results).get('remaining', 0)}"
+                    )
+                time.sleep(max(0.05, float(args.interval)))
+                registry = load_task_registry()
+                queue_payload = load_queue_progress(mcp_url, token, corpus, args.request_timeout, queue_limit)
+                remote_tasks = list(queue_payload.get("tasks") or [])
+                results = [status_item(item, args, mcp_url, token, corpus, registry, remote_tasks) for item in items]
             return emit_result({
                 "manifest": manifest["path"],
                 "corpus": corpus,
                 "summary": build_batch_summary(results),
+                "queueSummary": queue_payload.get("queueSummary") or queue_payload.get("summary") or {},
                 "items": results,
             }, args.json)
 

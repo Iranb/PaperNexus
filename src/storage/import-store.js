@@ -15,6 +15,169 @@ import { slugify, stableHash } from '../lib/utils.js';
 
 const IMPORT_SCHEMA_VERSION = 1;
 const IMPORT_CONTENT_INDEX_SCHEMA_VERSION = 1;
+const IMPORT_PROGRESS_CONTRACT_VERSION = 'import-progress-v1';
+const IMPORT_QUEUE_PROGRESS_CONTRACT_VERSION = 'import-queue-progress-v1';
+const IMPORT_STAGE_TOTAL = 4;
+const IMPORT_STAGE_WEIGHTS = {
+  queued: { index: 0, startPercent: 0, weight: 0 },
+  materialize: { index: 1, startPercent: 0, weight: 50 },
+  'llm-optimize': { index: 2, startPercent: 50, weight: 30 },
+  'fast-commit': { index: 3, startPercent: 80, weight: 20 },
+  completed: { index: 4, startPercent: 100, weight: 0 }
+};
+
+function clampPercent(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(numeric * 100) / 100));
+}
+
+function normalizeImportStage(stage, status = '') {
+  const normalizedStage = String(stage || '').trim().toLowerCase();
+  const normalizedStatus = String(status || '').trim().toLowerCase();
+  if (normalizedStatus === 'completed') return 'completed';
+  if (IMPORT_STAGE_WEIGHTS[normalizedStage]) return normalizedStage;
+  return normalizedStatus === 'running' ? 'materialize' : 'queued';
+}
+
+function defaultProgressMessage(stage, status = '') {
+  switch (normalizeImportStage(stage, status)) {
+    case 'materialize':
+      return 'Preparing paper snapshots';
+    case 'llm-optimize':
+      return 'Running LLM optimization';
+    case 'fast-commit':
+      return 'Applying graph update';
+    case 'completed':
+      return 'Import task completed';
+    case 'queued':
+    default:
+      return 'Queued for processing';
+  }
+}
+
+function computeOverallPercent(stage, stagePercent, status = '') {
+  const normalizedStatus = String(status || '').trim().toLowerCase();
+  const normalizedStage = normalizeImportStage(stage, status);
+  if (normalizedStatus === 'completed' || normalizedStage === 'completed') return 100;
+  const stageMeta = IMPORT_STAGE_WEIGHTS[normalizedStage] || IMPORT_STAGE_WEIGHTS.queued;
+  return clampPercent(stageMeta.startPercent + ((clampPercent(stagePercent) / 100) * stageMeta.weight));
+}
+
+function createImportProgress(task = {}, overrides = {}) {
+  const now = new Date().toISOString();
+  const existing = (task.progress && typeof task.progress === 'object' && !Array.isArray(task.progress))
+    ? task.progress
+    : {};
+  const status = String(overrides.status || task.status || existing.status || 'pending').trim().toLowerCase() || 'pending';
+  const stage = normalizeImportStage(
+    overrides.stage !== undefined ? overrides.stage : (task.stage || existing.stage || 'queued'),
+    status
+  );
+  const stageChanged = stage !== normalizeImportStage(existing.stage, existing.status || status);
+  const stagePercent = status === 'completed'
+    ? 100
+    : clampPercent(
+      overrides.stagePercent !== undefined
+        ? overrides.stagePercent
+        : existing.stagePercent,
+      stage === 'queued' ? 0 : 0
+    );
+  const totalUnits = Math.max(0, Number(
+    overrides.totalUnits !== undefined
+      ? overrides.totalUnits
+      : existing.totalUnits || 0
+  ) || 0);
+  const processedUnits = Math.max(0, Math.min(
+    totalUnits || Number.MAX_SAFE_INTEGER,
+    Number(
+      overrides.processedUnits !== undefined
+        ? overrides.processedUnits
+        : existing.processedUnits || 0
+    ) || 0
+  ));
+  const currentStep = String(
+    overrides.currentStep !== undefined
+      ? overrides.currentStep
+      : (existing.currentStep || '')
+  ).trim();
+  const message = String(
+    overrides.message !== undefined
+      ? overrides.message
+      : (existing.message || defaultProgressMessage(stage, status))
+  ).trim() || defaultProgressMessage(stage, status);
+  const stageMeta = IMPORT_STAGE_WEIGHTS[stage] || IMPORT_STAGE_WEIGHTS.queued;
+
+  return {
+    contractVersion: IMPORT_PROGRESS_CONTRACT_VERSION,
+    status,
+    stage,
+    stageIndex: stageMeta.index,
+    stageTotal: IMPORT_STAGE_TOTAL,
+    percent: computeOverallPercent(stage, stagePercent, status),
+    stagePercent: status === 'completed' ? 100 : stagePercent,
+    currentStep,
+    processedUnits,
+    totalUnits,
+    queuePosition: overrides.queuePosition !== undefined ? overrides.queuePosition : (existing.queuePosition ?? null),
+    queuedAhead: overrides.queuedAhead !== undefined ? overrides.queuedAhead : (existing.queuedAhead ?? null),
+    stageStartedAt: overrides.stageStartedAt || (stageChanged ? now : (existing.stageStartedAt || task.startedAt || now)),
+    lastEventAt: overrides.lastEventAt || now,
+    message
+  };
+}
+
+function buildQueueOrderedTasks(queue, tasks = []) {
+  const taskById = new Map(tasks.filter(Boolean).map((task) => [task.id, task]));
+  return (queue.jobs || []).map((job) => taskById.get(job.id)).filter(Boolean);
+}
+
+function decorateTaskWithQueueProgress(task, queueOrderedTasks = []) {
+  const activeTasks = queueOrderedTasks.filter((entry) => !['completed', 'failed'].includes(String(entry?.status || '').trim().toLowerCase()));
+  const queuePosition = activeTasks.findIndex((entry) => entry.id === task.id);
+  return {
+    ...task,
+    progress: createImportProgress(task, {
+      queuePosition: queuePosition === -1 ? null : queuePosition + 1,
+      queuedAhead: queuePosition === -1 ? 0 : queuePosition
+    })
+  };
+}
+
+function summarizeImportTasks(tasks = []) {
+  const summary = {
+    contractVersion: IMPORT_QUEUE_PROGRESS_CONTRACT_VERSION,
+    total: tasks.length,
+    pending: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    remaining: 0,
+    overallPercent: 0,
+    activeTaskId: null,
+    activeStage: null
+  };
+  if (!tasks.length) {
+    return summary;
+  }
+
+  let totalPercent = 0;
+  for (const task of tasks) {
+    const status = String(task?.status || '').trim().toLowerCase();
+    if (status === 'completed') summary.completed += 1;
+    else if (status === 'failed') summary.failed += 1;
+    else if (status === 'running') summary.running += 1;
+    else summary.pending += 1;
+    totalPercent += clampPercent(task?.progress?.percent, 0);
+    if (!summary.activeTaskId && (status === 'running' || status === 'pending')) {
+      summary.activeTaskId = task.id;
+      summary.activeStage = String(task?.stage || '').trim() || null;
+    }
+  }
+  summary.remaining = summary.pending + summary.running;
+  summary.overallPercent = clampPercent(totalPercent / tasks.length, tasks.every((task) => String(task?.status || '').trim().toLowerCase() === 'completed') ? 100 : 0);
+  return summary;
+}
 
 function createImportValidationError(message) {
   const error = new Error(message);
@@ -172,6 +335,7 @@ function updateQueuedJob(queue, task) {
     id: task.id,
     status: task.status,
     stage: task.stage,
+    progress: task.progress || null,
     includeInGraph: Boolean(task.includeInGraph),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
@@ -312,6 +476,14 @@ export async function createImportTask(rootPath, options = {}) {
       result: null,
       error: null
     };
+    task.progress = createImportProgress(task, {
+      stage: 'queued',
+      status: 'pending',
+      stagePercent: 0,
+      processedUnits: 0,
+      totalUnits: 0,
+      message: 'Queued for processing'
+    });
 
     await saveImportTask(rootPath, task);
     updateQueuedJob(queue, task);
@@ -340,9 +512,13 @@ export async function createImportTask(rootPath, options = {}) {
 export async function listImportTasks(rootPath) {
   const queue = await loadImportQueue(rootPath);
   const tasks = await Promise.all(queue.jobs.map((job) => loadImportTask(rootPath, job.id)));
+  const rawQueueOrderedTasks = buildQueueOrderedTasks(queue, tasks);
+  const queueOrderedTasks = rawQueueOrderedTasks.map((task) => decorateTaskWithQueueProgress(task, rawQueueOrderedTasks));
+  const summary = summarizeImportTasks(queueOrderedTasks);
   return {
     updatedAt: queue.updatedAt,
-    tasks: tasks.filter(Boolean).sort((left, right) => {
+    summary,
+    tasks: queueOrderedTasks.sort((left, right) => {
       const leftTime = Date.parse(left.createdAt || 0) || 0;
       const rightTime = Date.parse(right.createdAt || 0) || 0;
       return rightTime - leftTime;
@@ -406,6 +582,15 @@ export async function reserveNextImportTask(rootPath) {
     task.includeInGraph = true;
     task.startedAt = task.startedAt || now;
     task.updatedAt = now;
+    task.progress = createImportProgress(task, {
+      stage: task.stage,
+      status: 'running',
+      stagePercent: task.stage === 'materialize' ? 0 : task.progress?.stagePercent,
+      processedUnits: 0,
+      totalUnits: 0,
+      stageStartedAt: task.progress?.stage === task.stage ? task.progress?.stageStartedAt : now,
+      message: `Running ${task.stage}`
+    });
     await saveImportTask(rootPath, task);
     updateQueuedJob(queue, task);
     queue.updatedAt = now;
@@ -426,6 +611,15 @@ export async function markImportTaskStage(rootPath, taskId, stage, message = '')
     nextTask.stage = stage;
     nextTask.status = 'running';
     nextTask.includeInGraph = true;
+    nextTask.progress = createImportProgress(nextTask, {
+      stage,
+      status: 'running',
+      stagePercent: 0,
+      processedUnits: 0,
+      totalUnits: 0,
+      stageStartedAt: new Date().toISOString(),
+      message: message || defaultProgressMessage(stage, 'running')
+    });
   });
   if (!task) return null;
   if (message) {
@@ -437,6 +631,12 @@ export async function markImportTaskStage(rootPath, taskId, stage, message = '')
   return task;
 }
 
+export async function updateImportTaskProgress(rootPath, taskId, progress = {}) {
+  return updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
+    nextTask.progress = createImportProgress(nextTask, progress);
+  });
+}
+
 export async function completeImportTask(rootPath, taskId, result = null) {
   const task = await updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
     nextTask.status = 'completed';
@@ -445,6 +645,13 @@ export async function completeImportTask(rootPath, taskId, result = null) {
     nextTask.finishedAt = new Date().toISOString();
     nextTask.result = result;
     nextTask.error = null;
+    nextTask.progress = createImportProgress(nextTask, {
+      stage: 'completed',
+      status: 'completed',
+      stagePercent: 100,
+      percent: 100,
+      message: 'Import task completed'
+    });
   });
   if (!task) return null;
   await appendImportTaskLog(rootPath, taskId, {
@@ -462,6 +669,10 @@ export async function failImportTask(rootPath, taskId, error) {
     nextTask.error = {
       message: String(error?.message || error || 'Import task failed')
     };
+    nextTask.progress = createImportProgress(nextTask, {
+      status: 'failed',
+      message: String(error?.message || error || 'Import task failed')
+    });
   });
   if (!task) return null;
   await appendImportTaskLog(rootPath, taskId, {
