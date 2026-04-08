@@ -322,6 +322,8 @@ test('buildCatalystQuery returns a stable scout-friendly contract with domain co
   assert.equal(result.targetDomain, 'Education');
   assert.equal(result.abstractChallenge, 'reduce confirmation bias during tutoring feedback');
   assert.deepEqual(result.targetMechanisms, ['metacontrol policy']);
+  assert.equal(result.fineGrainedDomain, 'Education');
+  assert.equal(result.coarseGrainedDomain, 'Education');
   assert.equal(result.coverage.targetDomain.paperCount, 1);
   assert.ok(result.candidateDomains.some((entry) => entry.domain === 'Psychology'));
   assert.ok(result.candidateDomains.find((entry) => entry.domain === 'Psychology').coverage.paperCount >= 1);
@@ -389,6 +391,7 @@ test('buildCatalystQuery adds bridge retrieval, structural analogy, and interdis
   const graph = createCatalystFixtureGraph();
   const result = buildCatalystQuery(graph, {
     targetDomain: 'Education',
+    fineGrainedDomain: 'Intelligent Tutoring Systems',
     abstractChallenge: 'reduce confirmation bias during tutoring feedback',
     mechanisms: ['metacontrol policy'],
     limit: 6
@@ -413,4 +416,10 @@ test('buildCatalystQuery adds bridge retrieval, structural analogy, and interdis
   assert.equal(typeof topCandidate.groundingScore, 'number');
   assert.equal(typeof topCandidate.challengeCoverageScore, 'number');
   assert.equal(typeof topCandidate.storyCompleteness, 'number');
+  assert.ok(Array.isArray(result.researchQuestions));
+  assert.ok(Array.isArray(result.remainingChallenges));
+  assert.ok(Array.isArray(result.crossDomainSearches));
+  assert.equal(result.packetBundle.contractVersion, 'idea-catalyst-packet-bundle-v1');
+  assert.equal(result.packetBundle.decomposition.fine_grained_domain, 'Intelligent Tutoring Systems');
+  assert.ok(result.packetBundle.cross_domain_queries.length > 0);
 });

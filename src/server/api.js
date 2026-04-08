@@ -15,6 +15,7 @@ import {
   loadImportTaskLog
 } from '../storage/import-store.js';
 import { listAuthoritativeSyncJobs } from '../storage/authoritative-sync-store.js';
+import { fileExists } from '../lib/fs.js';
 import {
   searchGraph,
   buildContext,
@@ -54,16 +55,18 @@ export function createApiCache() {
   };
 }
 
-function getConfiguredRootPath(options = {}) {
+export async function getConfiguredRootPath(options = {}) {
   const raw = options.config?.storage?.indexDir;
   if (typeof raw !== 'string' || !raw.trim()) {
     return null;
   }
-  return resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd());
+  const rootPath = resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd());
+  const { metaPath } = getCorpusPaths(rootPath);
+  return (await fileExists(metaPath)) ? rootPath : null;
 }
 
 async function loadConfiguredCorpusEntry(options = {}) {
-  const rootPath = getConfiguredRootPath(options);
+  const rootPath = await getConfiguredRootPath(options);
   if (!rootPath) {
     return null;
   }
@@ -159,7 +162,7 @@ export async function listCorporaPayload(options = {}) {
 }
 
 export async function resolveCorpusForApi(candidate, options = {}) {
-  const configuredRoot = getConfiguredRootPath(options);
+  const configuredRoot = await getConfiguredRootPath(options);
   if (configuredRoot) {
     if (!candidate) {
       return configuredRoot;
@@ -318,13 +321,17 @@ function normalizeCatalystRequestBody(body = {}) {
   const rawOptions = body?.options && typeof body.options === 'object' && !Array.isArray(body.options)
     ? body.options
     : {};
-  const abstractChallenge = String(body?.abstractChallenge || body?.challenge || body?.query || '').trim();
+  const abstractChallenge = String(body?.abstractChallenge || body?.challenge || body?.problem || body?.query || '').trim();
 
   return {
     candidate: typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : undefined,
     targetDomain,
+    fineGrainedDomain: String(body?.fineGrainedDomain || body?.fine_grained_domain || '').trim(),
+    coarseGrainedDomain: String(body?.coarseGrainedDomain || body?.coarse_grained_domain || '').trim(),
     abstractChallenge,
     mechanisms: normalizeMechanismList(body?.mechanisms || body?.mechanism || rawOptions.mechanisms),
+    numSourceDomains: Number(body?.numSourceDomains || body?.num_source_domains || rawOptions.numSourceDomains || 3),
+    relevanceThreshold: Number(body?.relevanceThreshold || body?.relevance_threshold || rawOptions.relevanceThreshold || 3),
     options: rawOptions
   };
 }
@@ -377,14 +384,21 @@ export async function catalystGraphPayload(candidate, body = {}, options = {}) {
   const rootPath = await resolveCorpusForApi(effectiveCandidate, options);
   const { graph } = await loadCorpusLiteForApi(rootPath, options);
 
+  const result = buildCatalystQuery(graph, {
+    targetDomain: request.targetDomain,
+    fineGrainedDomain: request.fineGrainedDomain,
+    coarseGrainedDomain: request.coarseGrainedDomain,
+    abstractChallenge: request.abstractChallenge,
+    mechanisms: request.mechanisms,
+    numSourceDomains: request.numSourceDomains,
+    relevanceThreshold: request.relevanceThreshold,
+    limit: Number(request.options.limit || 5)
+  });
+
   return {
     rootPath,
-    result: buildCatalystQuery(graph, {
-      targetDomain: request.targetDomain,
-      abstractChallenge: request.abstractChallenge,
-      mechanisms: request.mechanisms,
-      limit: Number(request.options.limit || 5)
-    }),
+    result,
+    packetBundle: result.packetBundle,
     generatedAt: new Date().toISOString()
   };
 }

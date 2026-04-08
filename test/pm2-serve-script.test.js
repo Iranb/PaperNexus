@@ -76,3 +76,42 @@ test('pm2 wrapper recent can filter by task id', async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('pm2 wrapper recent stays import-focused with stricter awk compatibility', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pm2-logs-strict-awk-'));
+  const logDir = path.join(tempDir, 'logs');
+  const binDir = path.join(tempDir, 'bin');
+  await fs.mkdir(logDir, { recursive: true });
+  await fs.mkdir(binDir, { recursive: true });
+
+  const latestLog = path.join(logDir, 'papernexus-serve-2026-04-08.log');
+  await fs.writeFile(latestLog, [
+    '[2026-04-08T10:01:00Z] [mcp-http] 127.0.0.1 method=tools/call status=200 durationMs=5 transport=streamable-http',
+    '[imports] GCD: completed task imp:recent-success',
+    '[imports] GCD: task imp:recent-failure failed (boom)',
+  ].join('\n'), 'utf8');
+
+  const fakeAwkPath = path.join(binDir, 'awk');
+  await fs.writeFile(fakeAwkPath, `#!/bin/sh
+echo "strict awk should not be invoked" >&2
+exit 99
+`, 'utf8');
+  await fs.chmod(fakeAwkPath, 0o755);
+
+  try {
+    const { stdout } = await execFileAsync(scriptPath, ['recent', '--lines', '2'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PAPERNEXUS_LOG_DIR: logDir,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
+      }
+    });
+
+    assert.match(stdout, /\[imports\] GCD: completed task imp:recent-success/);
+    assert.match(stdout, /\[imports\] GCD: task imp:recent-failure failed \(boom\)/);
+    assert.doesNotMatch(stdout, /mcp-http/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

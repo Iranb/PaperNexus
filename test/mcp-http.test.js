@@ -297,3 +297,48 @@ test('serveCommand fails closed for HTTP MCP when auth is not configured', async
     await cleanupIndexedCorpus(fixture);
   }
 });
+
+test('serveCommand background workers ignore an invalid configured storage index', async () => {
+  const fixture = await createIndexedCorpus('papernexus-mcp-http-worker-root', 'mcp-http-worker-root-papers');
+  const invalidIndexRoot = path.join(fixture.tempHome, 'index-store');
+  const port = 57500 + Math.floor(Math.random() * 500);
+  const capturedRoots = {
+    enhancement: null,
+    authoritativeSync: null,
+    import: null,
+  };
+  const makeStarter = (key) => (options = {}) => {
+    capturedRoots[key] = options.rootPaths;
+    return {
+      stop() {}
+    };
+  };
+
+  const { serveCommand } = await import('../src/server/http.js');
+  const serverHandle = await serveCommand({
+    host: '127.0.0.1',
+    port,
+    apiToken: 'secret-token',
+    enableMineruWarmup: false,
+    config: {
+      serve: {
+        apiToken: 'secret-token'
+      },
+      storage: {
+        indexDir: invalidIndexRoot
+      }
+    },
+    startEnhancementWorker: makeStarter('enhancement'),
+    startAuthoritativeSyncWorker: makeStarter('authoritativeSync'),
+    startImportWorker: makeStarter('import')
+  });
+
+  try {
+    assert.equal(capturedRoots.enhancement, undefined);
+    assert.equal(capturedRoots.authoritativeSync, undefined);
+    assert.equal(capturedRoots.import, undefined);
+  } finally {
+    await serverHandle.stop();
+    await cleanupIndexedCorpus(fixture);
+  }
+});

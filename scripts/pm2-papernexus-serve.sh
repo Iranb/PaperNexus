@@ -136,25 +136,19 @@ show_recent_logs() {
   printf '\n'
 
   local filtered_output
-  filtered_output="$(
-    awk \
-      -v focus_pattern="${focus_pattern}" \
-      -v task_id="${task_id}" \
-      -v paper_id="${paper_id}" \
-      -v grep_text="${grep_text}" \
-      '
-        function contains(haystack, needle) {
-          return needle == "" || index(haystack, needle) > 0
-        }
-        {
-          if ($0 !~ focus_pattern) next
-          if (!contains($0, task_id)) next
-          if (!contains($0, paper_id)) next
-          if (!contains($0, grep_text)) next
-          print
-        }
-      ' "${log_file}" | tail -n "${lines}"
-  )"
+  filtered_output="$(grep -E "${focus_pattern}" "${log_file}" || true)"
+  if [[ -n "${task_id}" && -n "${filtered_output}" ]]; then
+    filtered_output="$(printf '%s\n' "${filtered_output}" | grep -F "${task_id}" || true)"
+  fi
+  if [[ -n "${paper_id}" && -n "${filtered_output}" ]]; then
+    filtered_output="$(printf '%s\n' "${filtered_output}" | grep -F "${paper_id}" || true)"
+  fi
+  if [[ -n "${grep_text}" && -n "${filtered_output}" ]]; then
+    filtered_output="$(printf '%s\n' "${filtered_output}" | grep -F "${grep_text}" || true)"
+  fi
+  if [[ -n "${filtered_output}" ]]; then
+    filtered_output="$(printf '%s\n' "${filtered_output}" | tail -n "${lines}")"
+  fi
 
   if [[ -z "${filtered_output}" ]]; then
     printf 'No matching recent import lines found.\n'

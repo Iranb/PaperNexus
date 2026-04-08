@@ -454,7 +454,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'idea_catalyst',
-    description: 'Run a one-shot interdisciplinary ideation pass over the graph and return either idea fragments or a data-starvation requisition.',
+    description: 'Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -469,6 +469,14 @@ export const PAPERNEXUS_TOOLS = [
         targetDomain: {
           type: 'string',
           description: 'Target domain that needs cross-domain inspiration.'
+        },
+        fineGrainedDomain: {
+          type: 'string',
+          description: 'Optional finer-grained target domain label used in the staged packet bundle.'
+        },
+        coarseGrainedDomain: {
+          type: 'string',
+          description: 'Optional coarse-grained target domain label used in the staged packet bundle.'
         },
         mechanisms: {
           oneOf: [
@@ -490,6 +498,15 @@ export const PAPERNEXUS_TOOLS = [
         limit: {
           type: 'number',
           default: 8
+        },
+        outputMode: {
+          type: 'string',
+          enum: ['idea_fragments', 'packet_bundle'],
+          default: 'idea_fragments'
+        },
+        includeAnalysis: {
+          type: 'boolean',
+          default: false
         }
       },
       required: ['problem', 'targetDomain']

@@ -252,6 +252,10 @@ Reflective prompts create a pause that improves uncertainty-aware belief revisio
     assert.equal(payload.rootPath, tempCorpusRoot);
     assert.equal(payload.result.targetDomain, 'Education');
     assert.ok(payload.result.candidateDomains.some((entry) => entry.domain === 'Psychology'));
+    assert.equal(payload.packetBundle.contractVersion, 'idea-catalyst-packet-bundle-v1');
+    assert.ok(payload.packetBundle.decomposition.research_questions.length >= 1);
+    assert.ok(payload.packetBundle.cross_domain_queries.length >= 1);
+    assert.ok(payload.packetBundle.source_domain_analyses.length >= 1);
     assert.ok(payload.result.mechanismTraversal.matches.some((entry) => (
       entry.mechanism === 'metacontrol policy'
       && entry.provenanceVersion === 'idea-catalyst-mechanism-support-v1'

@@ -1,8 +1,5 @@
-import { buildInterdisciplinaryPotentialReport } from '../core/graph/interdisciplinary-potential.js';
 import {
-  catalystGraphPayload,
-  loadCorpusLiteForApi,
-  resolveCorpusForApi
+  catalystGraphPayload
 } from '../server/api.js';
 
 function clampScore(value, min, max) {
@@ -20,29 +17,52 @@ function normalizeMechanisms(value) {
 }
 
 function buildIdeaFragment(entry, problem, threshold, index) {
-  const topTakeaways = Array.isArray(entry.topTakeaways) ? entry.topTakeaways : [];
   return {
     rank: index + 1,
-    title: `${entry.domain} bridge for ${problem}`.slice(0, 120),
+    title: `${entry.source_domain} bridge for ${problem}`.slice(0, 120),
     target_challenge: problem,
     abstract_challenge: problem,
-    source_domain: entry.domain,
-    source_takeaways: topTakeaways.map((takeaway) => ({
-      concept: takeaway.concept,
-      mechanism: takeaway.mechanism,
-      source_papers: Array.isArray(takeaway.kg_evidence?.paper_titles) ? takeaway.kg_evidence.paper_titles : []
-    })),
+    source_domain: entry.source_domain,
+    source_takeaways: Array.isArray(entry.source_takeaways) ? entry.source_takeaways : [],
     integration_rationale: [
-      `Prioritize ${entry.domain} because it scores ${entry.interdisciplinaryPotentialScore} on the graph-derived interdisciplinary ranking.`,
-      entry.sharedMechanisms?.length
-        ? `Shared mechanisms: ${entry.sharedMechanisms.join(', ')}.`
-        : 'No explicit shared mechanisms were surfaced; rely on bridge-node evidence instead.'
+      `Prioritize ${entry.source_domain} because it remains one of the strongest graph-ranked bridge domains for "${problem}".`,
+      entry.integration_mechanism
+        ? `Transfer mechanism: ${entry.integration_mechanism}.`
+        : 'No explicit mechanism was returned; rely on the graph evidence in the packet bundle.'
     ].join(' '),
-    novelty_score: Number((clampScore(Number(entry.interdisciplinaryPotentialScore || 0), 0, 1) * 5).toFixed(2)),
-    usefulness_score: Number((clampScore(Number(entry.bridgeNodeCount || 0) / Math.max(1, threshold), 0, 1) * 5).toFixed(2)),
-    supporting_kg_nodes: topTakeaways
-      .map((takeaway) => takeaway.kg_evidence?.node_id)
-      .filter(Boolean)
+    novelty_score: Number((clampScore(Number(entry.ranking_signals?.interdisciplinary_potential || 0), 0, 1) * 5).toFixed(2)),
+    usefulness_score: Number((clampScore(Number((entry.supporting_papers || []).length || 0) / Math.max(1, threshold), 0, 1) * 5).toFixed(2)),
+    supporting_kg_nodes: Array.isArray(entry.supporting_kg_nodes) ? entry.supporting_kg_nodes : [],
+    ...entry
+  };
+}
+
+function buildLegacyIdeaCatalystResponse(payload, problem, relevanceThreshold) {
+  const bundle = payload.packetBundle || payload.result?.packetBundle || {};
+  if (bundle.requisition_report) {
+    return {
+      rootPath: payload.rootPath,
+      requisition_report: bundle.requisition_report,
+      analysis: {
+        target_domain: payload.result?.targetDomain || '',
+        candidate_source_domains: payload.result?.candidateSourceDomains || [],
+        catalyst: payload.result
+      },
+      generatedAt: payload.generatedAt
+    };
+  }
+
+  return {
+    rootPath: payload.rootPath,
+    idea_fragments: (bundle.idea_fragments || [])
+      .slice(0, 3)
+      .map((entry, index) => buildIdeaFragment(entry, problem, relevanceThreshold, index)),
+    analysis: {
+      target_domain: payload.result?.targetDomain || '',
+      candidate_source_domains: payload.result?.candidateSourceDomains || [],
+      catalyst: payload.result
+    },
+    generatedAt: payload.generatedAt
   };
 }
 
@@ -50,10 +70,14 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
   const candidate = typeof args.corpus === 'string' && args.corpus.trim() ? args.corpus.trim() : undefined;
   const problem = String(args.problem || args.query || '').trim();
   const targetDomain = String(args.targetDomain || args.target_domain || '').trim();
+  const fineGrainedDomain = String(args.fineGrainedDomain || args.fine_grained_domain || '').trim();
+  const coarseGrainedDomain = String(args.coarseGrainedDomain || args.coarse_grained_domain || '').trim();
   const limit = Math.max(1, Number(args.limit || 8));
   const numSourceDomains = Math.max(1, Number(args.numSourceDomains || args.num_source_domains || 3));
   const relevanceThreshold = Math.max(1, Number(args.relevanceThreshold || args.relevance_threshold || 3));
   const mechanisms = normalizeMechanisms(args.mechanisms);
+  const outputMode = String(args.outputMode || args.output_mode || 'idea_fragments').trim() || 'idea_fragments';
+  const includeAnalysis = args.includeAnalysis === true || args.include_analysis === true;
 
   if (!problem) {
     throw new Error('problem is required.');
@@ -62,75 +86,38 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
     throw new Error('targetDomain is required.');
   }
 
-  const rootPath = await resolveCorpusForApi(candidate, options);
-  const { graph } = await loadCorpusLiteForApi(rootPath, options);
-  const catalyst = await catalystGraphPayload(candidate, {
+  const payload = await catalystGraphPayload(candidate, {
     name: candidate,
     targetDomain,
-    query: problem,
+    fineGrainedDomain,
+    coarseGrainedDomain,
+    abstractChallenge: problem,
     mechanisms,
+    numSourceDomains,
+    relevanceThreshold,
     options: {
       limit
     }
   }, options);
-  const potential = buildInterdisciplinaryPotentialReport(graph, {
-    targetDomain,
-    query: problem,
-    agnosticChallenges: [problem],
-    limit: Math.max(limit, numSourceDomains)
-  });
-  const rankedSourceDomains = (potential.rankedSourceDomains || []).slice(0, numSourceDomains);
-  const sufficient = rankedSourceDomains.some((entry) => (
-    Number(entry.bridgeNodeCount || 0) >= relevanceThreshold
-    || (Array.isArray(entry.topTakeaways) ? entry.topTakeaways.length : 0) >= relevanceThreshold
-  ));
 
-  if (!sufficient) {
-    const missingDomains = rankedSourceDomains.length
-      ? rankedSourceDomains.map((entry) => entry.domain)
-      : (catalyst.result.candidateSourceDomains || []).slice(0, numSourceDomains).map((entry) => entry.domain).filter(Boolean);
-    const requiredTopics = missingDomains.map((domain, index) => {
-      const candidateDomain = rankedSourceDomains.find((entry) => entry.domain === domain)
-        || (catalyst.result.candidateSourceDomains || []).find((entry) => entry.domain === domain)
-        || {};
-      return {
-        topic: domain,
-        search_keywords: [
-          domain,
-          ...(Array.isArray(candidateDomain.matchedChallenges) ? candidateDomain.matchedChallenges.slice(0, 2) : []),
-          ...mechanisms.slice(0, 2)
-        ].filter(Boolean),
-        reason: `Need stronger ${domain} evidence to address "${problem}" without hallucinating beyond the current graph.`
-      };
-    });
-
+  if (outputMode === 'packet_bundle') {
     return {
-      rootPath,
-      requisition_report: {
-        status: 'DATA_STARVATION',
-        target_challenge: problem,
-        missing_domains: missingDomains,
-        required_topics: requiredTopics
-      },
-      analysis: {
-        target_domain: targetDomain,
-        candidate_source_domains: rankedSourceDomains,
-        catalyst: catalyst.result
-      },
-      generatedAt: new Date().toISOString()
+      rootPath: payload.rootPath,
+      packet_bundle: payload.packetBundle,
+      ...(includeAnalysis ? {
+        analysis: {
+          target_domain: payload.result?.targetDomain || '',
+          candidate_source_domains: payload.result?.candidateSourceDomains || [],
+          catalyst: payload.result
+        }
+      } : {}),
+      generatedAt: payload.generatedAt
     };
   }
 
-  return {
-    rootPath,
-    idea_fragments: rankedSourceDomains
-      .slice(0, Math.min(3, rankedSourceDomains.length))
-      .map((entry, index) => buildIdeaFragment(entry, problem, relevanceThreshold, index)),
-    analysis: {
-      target_domain: targetDomain,
-      candidate_source_domains: rankedSourceDomains,
-      catalyst: catalyst.result
-    },
-    generatedAt: new Date().toISOString()
-  };
+  const legacy = buildLegacyIdeaCatalystResponse(payload, problem, relevanceThreshold);
+  if (!includeAnalysis) {
+    delete legacy.analysis;
+  }
+  return legacy;
 }

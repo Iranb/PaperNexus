@@ -67,5 +67,7 @@ test('extractTakeawaysFromBridgeNodes returns structured source-domain takeaways
   assert.equal(takeaway.concept, 'reflective prompts stabilize belief updating');
   assert.equal(takeaway.mechanism, 'metacontrol policy');
   assert.ok(Array.isArray(takeaway.kg_evidence.paper_titles));
+  assert.ok(Array.isArray(takeaway.supporting_papers));
+  assert.ok(takeaway.supporting_papers.includes('Belief Updating Under Uncertainty'));
   assert.match(takeaway.kg_evidence.evidence_text, /Reflective prompts/i);
 });

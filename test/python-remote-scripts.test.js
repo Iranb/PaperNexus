@@ -639,7 +639,7 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
   }
 });
 
-test('pn_idea_catalyst.py runs through remote HTTP MCP and returns a bounded result shape', async () => {
+test('pn_idea_catalyst.py forwards fine-grained domain and bundle mode through remote HTTP MCP', async () => {
   const fixture = await createImportFixture();
   const port = 55800 + Math.floor(Math.random() * 500);
   const scriptPath = path.join(repoRoot, 'SKILL', 'PaperNexusIdeaCatalyst', 'scripts', 'pn_idea_catalyst.py');
@@ -654,16 +654,18 @@ test('pn_idea_catalyst.py runs through remote HTTP MCP and returns a bounded res
         '--corpus', 'python-remote-test',
         '--problem', 'experiment planning under retrieval constraints',
         '--target-domain', 'Computer Science',
+        '--fine-grained-domain', 'Generalized Category Discovery',
+        '--output-mode', 'packet_bundle',
+        '--include-analysis',
         '--limit', '5'
       ]);
       const payload = JSON.parse(result.stdout);
-      assert.ok(payload.idea_fragments || payload.requisition_report);
-      if (payload.idea_fragments) {
-        assert.ok(Array.isArray(payload.idea_fragments));
-      }
-      if (payload.requisition_report) {
-        assert.equal(payload.requisition_report.status, 'DATA_STARVATION');
-      }
+      assert.equal(payload.request.tool, 'idea_catalyst');
+      assert.equal(payload.request.arguments.fineGrainedDomain, 'Generalized Category Discovery');
+      assert.equal(payload.request.arguments.outputMode, 'packet_bundle');
+      assert.equal(payload.request.arguments.includeAnalysis, true);
+      assert.ok(payload.packet_bundle);
+      assert.ok(payload.analysis);
     } finally {
       await server.stop();
     }
