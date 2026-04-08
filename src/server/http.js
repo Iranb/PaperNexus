@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolvePathWithHome } from '../lib/config.js';
 import {
   backupCorpusPayload,
   brainstormBriefPayload,
@@ -28,6 +27,7 @@ import {
   queryGraphPayload,
   reflectionChainPayload,
   researchBriefPayload,
+  getConfiguredRootPath,
   storylineBriefPayload,
   theoryBriefPayload,
   updateLlmConfigPayload
@@ -73,7 +73,7 @@ function firstNumber(...values) {
   return Number.isFinite(normalized) ? normalized : undefined;
 }
 
-function getConfiguredRootPaths(options = {}) {
+async function getConfiguredRootPaths(options = {}) {
   const explicit = Array.isArray(options.rootPaths)
     ? options.rootPaths.map((item) => String(item || '').trim()).filter(Boolean)
     : [];
@@ -81,12 +81,8 @@ function getConfiguredRootPaths(options = {}) {
     return explicit;
   }
 
-  const raw = options.config?.storage?.indexDir;
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return undefined;
-  }
-
-  return [resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd())];
+  const configuredRoot = await getConfiguredRootPath(options);
+  return configuredRoot ? [configuredRoot] : undefined;
 }
 
 function resolveApiToken(options = {}) {
@@ -456,7 +452,7 @@ export async function serveCommand(options = {}) {
   const host = options.host || '127.0.0.1';
   const apiToken = resolveApiToken(options);
   const mcpConfig = getMcpHttpConfig(options);
-  const rootPaths = getConfiguredRootPaths(options);
+  const rootPaths = await getConfiguredRootPaths(options);
   const webRoot = buildWebRoot();
   const apiCache = createApiCache();
   const workerLogger = options.logger || console;

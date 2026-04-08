@@ -15,6 +15,7 @@ import {
   loadImportTaskLog
 } from '../storage/import-store.js';
 import { listAuthoritativeSyncJobs } from '../storage/authoritative-sync-store.js';
+import { fileExists } from '../lib/fs.js';
 import {
   searchGraph,
   buildContext,
@@ -54,16 +55,18 @@ export function createApiCache() {
   };
 }
 
-function getConfiguredRootPath(options = {}) {
+export async function getConfiguredRootPath(options = {}) {
   const raw = options.config?.storage?.indexDir;
   if (typeof raw !== 'string' || !raw.trim()) {
     return null;
   }
-  return resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd());
+  const rootPath = resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd());
+  const { metaPath } = getCorpusPaths(rootPath);
+  return (await fileExists(metaPath)) ? rootPath : null;
 }
 
 async function loadConfiguredCorpusEntry(options = {}) {
-  const rootPath = getConfiguredRootPath(options);
+  const rootPath = await getConfiguredRootPath(options);
   if (!rootPath) {
     return null;
   }
@@ -159,7 +162,7 @@ export async function listCorporaPayload(options = {}) {
 }
 
 export async function resolveCorpusForApi(candidate, options = {}) {
-  const configuredRoot = getConfiguredRootPath(options);
+  const configuredRoot = await getConfiguredRootPath(options);
   if (configuredRoot) {
     if (!candidate) {
       return configuredRoot;

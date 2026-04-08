@@ -157,6 +157,62 @@ test('API payload helpers prefer the configured storage index over stale registr
   }
 });
 
+test('API payload helpers ignore an invalid configured storage index and fall back to the registered corpus', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-invalid-config-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-invalid-config-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const invalidIndexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [ingestion, api] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/server/api.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      name: 'invalid-config-fallback-test',
+      force: true
+    });
+
+    const options = {
+      config: {
+        storage: {
+          indexDir: invalidIndexRoot
+        }
+      },
+      configBaseDir: workspaceRoot
+    };
+
+    const meta = await api.corpusMetaPayload(undefined, options);
+    assert.equal(meta.meta.name, 'invalid-config-fallback-test');
+
+    const created = await api.createImportTaskPayload(undefined, {
+      files: [
+        {
+          name: 'fallback-upload.md',
+          contentBase64: Buffer.from('# Upload\n\nUsing registry fallback.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    }, options);
+    assert.equal(created.rootPath, inputRoot);
+    assert.equal(created.task.status, 'pending');
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('import API payload helpers can create tasks from a server-side single file path', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-workspace-'));
