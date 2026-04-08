@@ -11,6 +11,7 @@ from pn_common import (
     emit_result,
     fail,
     infer_source_kind,
+    is_remote_path_reference,
     mcp_host_is_local,
     normalize_mcp_url,
     resolve_corpus,
@@ -48,8 +49,8 @@ def infer_paper_id(explicit: str, source_value: str) -> str:
 def resolve_submission_source(args, mcp_url: str) -> tuple[str, typing.Optional[dict], str]:
     server_file_path = (args.server_file_path or "").strip()
     if server_file_path:
-        if not server_file_path.startswith("/"):
-            raise RemoteScriptError("--server-file-path must be an absolute path on the PaperNexus server.")
+        if not is_remote_path_reference(server_file_path):
+            raise RemoteScriptError("--server-file-path must be an absolute path or `~/...` path on the PaperNexus server.")
         return server_file_path, None, ""
 
     source = (args.source or "").strip()

@@ -4,6 +4,7 @@ import { backupCorpus, loadCorpus, loadCorpusLite, loadCorpusMeta, loadSourceMan
 import { resolveLlmConfig, getDefaultLlmApiKeyEnv, getDefaultLlmBaseUrl } from '../core/llm/ollama.js';
 import { getNodeLayer, NODE_TYPES } from '../core/graph/schema.js';
 import { resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
+import { collapseHomePath, isServerPathReference, resolveServerPathReference } from '../lib/server-paths.js';
 import { buildDefaultLlmKeychainAccount } from '../lib/keychain.js';
 import { getCorpusPaths } from '../storage/corpus-store.js';
 import { getRegistryPath, loadRegistry } from '../storage/registry.js';
@@ -42,6 +43,68 @@ function sortObjectEntries(object) {
 
 function getApiNodeLayer(node) {
   return node.properties?.layer || getNodeLayer(node.type);
+}
+
+const PORTABLE_PATH_FIELD_NAMES = new Set([
+  'rootPath',
+  'inputPath',
+  'sourceKey',
+  'sourcePath',
+  'sourceMarkdownPath',
+  'sourcePdfPath',
+  'markdownCachePath',
+  'storedPath',
+  'sourcesDir',
+  'remoteFile',
+  'serverFilePath'
+]);
+
+const PORTABLE_PATH_LIST_FIELD_NAMES = new Set([
+  'inputPaths',
+  'changedSourceKeys'
+]);
+
+function shouldPresentPortablePaths(options = {}) {
+  return options?.portablePaths === true;
+}
+
+function presentPortablePath(value, options = {}) {
+  if (!shouldPresentPortablePaths(options)) return value;
+  return collapseHomePath(String(value || '').trim());
+}
+
+function presentPortablePayload(value, options = {}, fieldName = '') {
+  if (!shouldPresentPortablePaths(options)) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    if (PORTABLE_PATH_LIST_FIELD_NAMES.has(fieldName)) {
+      return value.map((item) => presentPortablePath(item, options));
+    }
+    return value.map((item) => presentPortablePayload(item, options, fieldName));
+  }
+
+  if (!value || typeof value !== 'object') {
+    if (PORTABLE_PATH_FIELD_NAMES.has(fieldName) && typeof value === 'string') {
+      return presentPortablePath(value, options);
+    }
+    return value;
+  }
+
+  const output = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (PORTABLE_PATH_FIELD_NAMES.has(key) && typeof entryValue === 'string') {
+      output[key] = presentPortablePath(entryValue, options);
+      continue;
+    }
+    if (PORTABLE_PATH_LIST_FIELD_NAMES.has(key) && Array.isArray(entryValue)) {
+      output[key] = entryValue.map((item) => presentPortablePath(item, options));
+      continue;
+    }
+    output[key] = presentPortablePayload(entryValue, options, key);
+  }
+  return output;
 }
 
 export function createApiCache() {
@@ -134,10 +197,10 @@ async function resolveCachedPayload(cacheMap, key, stamp, loader) {
 export async function listCorporaPayload(options = {}) {
   const configuredCorpus = await loadConfiguredCorpusEntry(options);
   if (configuredCorpus) {
-    return {
+    return presentPortablePayload({
       corpora: [configuredCorpus],
       generatedAt: new Date().toISOString()
-    };
+    }, options);
   }
 
   const registryPath = getRegistryPath();
@@ -146,18 +209,18 @@ export async function listCorporaPayload(options = {}) {
 
   if (!cache?.corporaByPath) {
     const registry = await loadRegistry();
-    return {
+    return presentPortablePayload({
       corpora: registry.corpora,
       generatedAt: new Date().toISOString()
-    };
+    }, options);
   }
 
   return resolveCachedPayload(cache.corporaByPath, registryPath, stamp, async () => {
     const registry = await loadRegistry();
-    return {
+    return presentPortablePayload({
       corpora: registry.corpora,
       generatedAt: new Date().toISOString()
-    };
+    }, options);
   });
 }
 
@@ -185,15 +248,15 @@ export async function resolveCorpusForApi(candidate, options = {}) {
     return resolveCorpus(candidate);
   }
 
-  const registryPayload = await listCorporaPayload(options);
-  if (!registryPayload.corpora.length) {
+  const registry = await loadRegistry();
+  if (!registry.corpora.length) {
     throw new Error(
       'No indexed corpora found. Analyze or import an already-provided paper/corpus first; '
       + 'PaperNexus does not discover external literature for you.'
     );
   }
 
-  return registryPayload.corpora[0].rootPath;
+  return registry.corpora[0].rootPath;
 }
 
 export async function corpusPayload(candidate, options = {}) {
@@ -203,7 +266,7 @@ export async function corpusPayload(candidate, options = {}) {
 
   if (!cache?.corpusByRoot) {
     const { meta, graph } = await loadCorpus(rootPath);
-    return {
+    return presentPortablePayload({
       meta,
       graph: graph.toJSON(),
       summary: {
@@ -212,12 +275,12 @@ export async function corpusPayload(candidate, options = {}) {
         relationTypes: sortObjectEntries(countBy(graph.relationships, (relationship) => relationship.type)),
         layerPaths: sortObjectEntries(countBy(graph.relationships, (relationship) => relationship.properties?.layerPath || 'Unknown'))
       }
-    };
+    }, options);
   }
 
   return resolveCachedPayload(cache.corpusByRoot, rootPath, stamp, async () => {
     const { meta, graph } = await loadCorpus(rootPath);
-    return {
+    return presentPortablePayload({
       meta,
       graph: graph.toJSON(),
       summary: {
@@ -226,7 +289,7 @@ export async function corpusPayload(candidate, options = {}) {
         relationTypes: sortObjectEntries(countBy(graph.relationships, (relationship) => relationship.type)),
         layerPaths: sortObjectEntries(countBy(graph.relationships, (relationship) => relationship.properties?.layerPath || 'Unknown'))
       }
-    };
+    }, options);
   });
 }
 
@@ -341,11 +404,11 @@ async function buildGraphSearchPayload(candidate, body, options, buildResult) {
   const effectiveCandidate = request.candidate || candidate;
   const rootPath = await resolveCorpusForApi(effectiveCandidate, options);
   const { graph } = await loadCorpusLiteForApi(rootPath, options);
-  return {
+  return presentPortablePayload({
     rootPath,
     result: buildResult(graph, request.query, request.options),
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function queryGraphPayload(candidate, body = {}, options = {}) {
@@ -395,12 +458,12 @@ export async function catalystGraphPayload(candidate, body = {}, options = {}) {
     limit: Number(request.options.limit || 5)
   });
 
-  return {
+  return presentPortablePayload({
     rootPath,
     result,
     packetBundle: result.packetBundle,
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 function normalizeLayerFilter(value) {
@@ -888,7 +951,7 @@ export async function pathTraceGraphPayload(candidate, body = {}, options = {}) 
     ? enumeratePathTracePaths(graph, fromSelection.node, toSelection.node, traceOptions)
     : [];
 
-  return {
+  return presentPortablePayload({
     rootPath,
     result: {
       from: {
@@ -904,7 +967,7 @@ export async function pathTraceGraphPayload(candidate, body = {}, options = {}) 
       paths
     },
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function evidenceChainPayload(candidate, body = {}, options = {}) {
@@ -915,14 +978,14 @@ export async function evidenceChainPayload(candidate, body = {}, options = {}) {
   const relevantPapers = collectRelevantPaperNodes(graph, request.query, request.options);
   const chains = relevantPapers.map((paper) => buildEvidenceChainsForPaper(graph, paper));
 
-  return {
+  return presentPortablePayload({
     rootPath,
     result: {
       query: request.query,
       chains
     },
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function reflectionChainPayload(candidate, body = {}, options = {}) {
@@ -932,7 +995,7 @@ export async function reflectionChainPayload(candidate, body = {}, options = {})
   const { graph } = await loadCorpusLiteForApi(rootPath, options);
   const overlayPapers = await collectOverlayPapers(rootPath, graph, request.query, request.options);
 
-  return {
+  return presentPortablePayload({
     rootPath,
     result: {
       query: request.query,
@@ -962,7 +1025,7 @@ export async function reflectionChainPayload(candidate, body = {}, options = {})
       })
     },
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function theoryBriefPayload(candidate, body = {}, options = {}) {
@@ -975,7 +1038,7 @@ export async function theoryBriefPayload(candidate, body = {}, options = {}) {
     .map(({ paper, overlay }) => buildTheoryBriefFromOverlay(paper, overlay))
     .filter(Boolean);
 
-  return {
+  return presentPortablePayload({
     rootPath,
     result: {
       query: request.query,
@@ -983,7 +1046,7 @@ export async function theoryBriefPayload(candidate, body = {}, options = {}) {
       openRisks: summarizeOpenRisks(papers)
     },
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function storylineBriefPayload(candidate, body = {}, options = {}) {
@@ -996,7 +1059,7 @@ export async function storylineBriefPayload(candidate, body = {}, options = {}) 
     .map(({ paper, overlay }) => buildStorylineBriefFromOverlay(paper, overlay))
     .filter(Boolean);
 
-  return {
+  return presentPortablePayload({
     rootPath,
     result: {
       query: request.query,
@@ -1004,7 +1067,7 @@ export async function storylineBriefPayload(candidate, body = {}, options = {}) 
       openRisks: summarizeOpenRisks(papers)
     },
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function researchBriefPayload(candidate, body = {}, options = {}) {
@@ -1018,7 +1081,7 @@ export async function researchBriefPayload(candidate, body = {}, options = {}) {
     storylineBriefPayload(effectiveCandidate, request, options)
   ]);
 
-  return {
+  return presentPortablePayload({
     rootPath: querySummary.rootPath,
     result: {
       query: request.query,
@@ -1034,7 +1097,7 @@ export async function researchBriefPayload(candidate, body = {}, options = {}) {
       ]).slice(0, 16)
     },
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function brainstormBriefPayload(candidate, body = {}, options = {}) {
@@ -1058,7 +1121,7 @@ export async function brainstormBriefPayload(candidate, body = {}, options = {})
     }, options)
   ]);
 
-  return {
+  return presentPortablePayload({
     rootPath: brainstorm.rootPath,
     result: {
       query: request.query,
@@ -1073,7 +1136,7 @@ export async function brainstormBriefPayload(candidate, body = {}, options = {})
       ]).slice(0, 12)
     },
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function corpusMetaPayload(candidate, options = {}) {
@@ -1088,7 +1151,7 @@ export async function corpusMetaPayload(candidate, options = {}) {
       listAuthoritativeSyncJobs(rootPath)
     ]);
 
-    return {
+    return presentPortablePayload({
       meta,
       authoritativeSync: {
         status: meta.authoritativeSyncStatus || (syncJobs.length ? 'pending' : 'synced'),
@@ -1101,7 +1164,7 @@ export async function corpusMetaPayload(candidate, options = {}) {
           updatedAt: job.updatedAt
         }))
       }
-    };
+    }, options);
   };
 
   if (!cache?.corpusMetaByRoot) {
@@ -1119,7 +1182,7 @@ export async function corpusSourcesPayload(candidate, options = {}) {
   ]);
   const sources = Array.isArray(manifest?.sources) ? manifest.sources : [];
 
-  return {
+  return presentPortablePayload({
     rootPath,
     meta,
     manifest: {
@@ -1135,17 +1198,17 @@ export async function corpusSourcesPayload(candidate, options = {}) {
     },
     sources,
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function backupCorpusPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate);
-  return {
+  return presentPortablePayload({
     backup: await backupCorpus(rootPath, {
       backupDir: options.backupDir
     }),
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 function normalizeImportFiles(files = []) {
@@ -1169,13 +1232,15 @@ async function normalizeServerImportFile(serverFilePath = '') {
     return [];
   }
 
-  if (!path.isAbsolute(normalizedPath)) {
-    throw createApiRequestError('`serverFilePath` must be an absolute path on the API server.');
+  if (!isServerPathReference(normalizedPath)) {
+    throw createApiRequestError('`serverFilePath` must be an absolute path or `~/...` path on the API server.');
   }
+
+  const resolvedPath = resolveServerPathReference(normalizedPath);
 
   let stats = null;
   try {
-    stats = await fs.stat(normalizedPath);
+    stats = await fs.stat(resolvedPath);
   } catch (error) {
     if (error?.code === 'ENOENT') {
       throw createApiRequestError(`No file exists at \`serverFilePath\`: ${normalizedPath}`);
@@ -1189,9 +1254,9 @@ async function normalizeServerImportFile(serverFilePath = '') {
 
   return [
     {
-      name: path.basename(normalizedPath),
+      name: path.basename(resolvedPath),
       mimeType: '',
-      content: await fs.readFile(normalizedPath)
+      content: await fs.readFile(resolvedPath)
     }
   ];
 }
@@ -1240,23 +1305,23 @@ export async function createImportTaskPayload(candidate, body = {}, options = {}
     files
   });
 
-  return {
+  return presentPortablePayload({
     rootPath,
     task,
     deduped: Boolean(task?.deduped),
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function listImportTasksPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
   const payload = await listImportTasks(rootPath);
-  return {
+  return presentPortablePayload({
     rootPath,
     summary: payload.summary,
     tasks: payload.tasks,
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function importTaskPayload(candidate, taskId, options = {}) {
@@ -1269,12 +1334,12 @@ export async function importTaskPayload(candidate, taskId, options = {}) {
   if (!task) {
     throw new Error(`No import task found for ${taskId}.`);
   }
-  return {
+  return presentPortablePayload({
     rootPath,
     task,
     queueSummary: listed.summary,
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function importTaskLogPayload(candidate, taskId, options = {}) {
@@ -1286,12 +1351,12 @@ export async function importTaskLogPayload(candidate, taskId, options = {}) {
   if (!task) {
     throw new Error(`No import task found for ${taskId}.`);
   }
-  return {
+  return presentPortablePayload({
     rootPath,
     taskId,
     log: await loadImportTaskLog(rootPath, taskId),
     generatedAt: new Date().toISOString()
-  };
+  }, options);
 }
 
 export async function enhancementSummaryPayload(candidate, options = {}) {

@@ -30,6 +30,7 @@ Wrapper mapping:
 
 - Remote `import_workflow` runs on the PaperNexus server.
 - `serverFilePath` must therefore be a file path on the server, not a local `/Users/...` path on the agent machine.
+- If that server path is under the server user's home directory, keep it in `~/...` form.
 - For local PDFs or Markdown files, use `pn_import_submit.py --source ... --ssh-target ...` or `pn_batch_import.py submit`.
 - Only read reflection overlays after the import task reaches `completed`.
 

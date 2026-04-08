@@ -40,6 +40,7 @@ Default MCP mapping:
 ## Import Boundary Rules
 
 - `import_workflow submit` expects a remote `serverFilePath`, not a local `/Users/...` path.
+- If a server path lives under the PaperNexus server user's home directory, keep it as `~/...` instead of guessing a concrete `/home/...` prefix.
 - If the paper is local to the agent machine, use `pn_import_submit.py --source ... --ssh-target ...` or `pn_batch_import.py submit`.
 - Only use `--server-file-path` when the file is already on the PaperNexus server.
 - During reasoning tasks, do not tell the user a paper is in the graph right after submit; check queue status first.

@@ -1,4 +1,9 @@
 import { truncate } from './utils.js';
+import { collapseHomePath } from './server-paths.js';
+
+function presentRenderPath(value) {
+  return collapseHomePath(String(value || '').trim());
+}
 
 export function renderCorpusList(items) {
   if (!items.length) {
@@ -8,7 +13,7 @@ export function renderCorpusList(items) {
   const lines = ['Indexed corpora:'];
   for (const item of items) {
     const updated = item.indexedAt ? new Date(item.indexedAt).toLocaleString() : 'unknown';
-    lines.push(`- ${item.name}: ${item.rootPath} (${item.paperCount || 0} papers, updated ${updated})`);
+    lines.push(`- ${item.name}: ${presentRenderPath(item.rootPath)} (${item.paperCount || 0} papers, updated ${updated})`);
   }
   return lines.join('\n');
 }
@@ -16,7 +21,7 @@ export function renderCorpusList(items) {
 export function renderStatus(meta) {
   const lines = [
     `Corpus: ${meta.name}`,
-    `Root: ${meta.rootPath}`,
+    `Root: ${presentRenderPath(meta.rootPath)}`,
     `Indexed at: ${meta.indexedAt}`,
     `Papers: ${meta.paperCount}`,
     `Nodes: ${meta.nodeCount}`,

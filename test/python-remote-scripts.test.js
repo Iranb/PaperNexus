@@ -172,9 +172,74 @@ async function createImportFixture() {
   };
 }
 
+async function createHomeRelativeImportFixture() {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-remote-home-relative-'));
+  const workspaceRoot = path.join(tempHome, 'workspace');
+  const inputRoot = path.join(tempHome, 'papers');
+  const uploadRoot = path.join(tempHome, 'uploads');
+  const indexRoot = path.join(tempHome, 'index-store');
+  const previousHome = process.env.HOME;
+  const previousPapernexusHome = process.env.PAPERNEXUS_HOME;
+  process.env.HOME = tempHome;
+  process.env.PAPERNEXUS_HOME = tempHome;
+
+  await fs.mkdir(workspaceRoot, { recursive: true });
+  await fs.mkdir(inputRoot, { recursive: true });
+  await fs.mkdir(uploadRoot, { recursive: true });
+  for (const fileName of [
+    'retrieval-augmented-experiment-planning.md',
+    'graph-augmented-literature-mapping.md'
+  ]) {
+    await fs.copyFile(path.join(examplesRoot, fileName), path.join(inputRoot, fileName));
+  }
+
+  const [ingestion, enhancements] = await Promise.all([
+    import('../src/core/ingestion/pipeline.js'),
+    import('../src/core/enhancements/worker.js')
+  ]);
+
+  await ingestion.analyzeCorpus(inputRoot, {
+    rootPath: indexRoot,
+    name: 'python-remote-test',
+    force: true
+  });
+
+  await enhancements.runEnhancementQueueUntilIdle(indexRoot, {
+    maxPasses: 8,
+    backfillLimit: 2
+  });
+
+  const markdownUploadPath = path.join(uploadRoot, 'server-side-upload.md');
+  await fs.writeFile(
+    markdownUploadPath,
+    '# Remote Script Upload\n\n## Abstract\n\nUploaded through the Python remote scripts.\n',
+    'utf8'
+  );
+
+  return {
+    tempHome,
+    workspaceRoot,
+    inputRoot,
+    uploadRoot,
+    indexRoot,
+    markdownUploadPath,
+    previousHome,
+    previousPapernexusHome
+  };
+}
+
 async function cleanupFixture(fixture) {
-  if (fixture.previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
-  else process.env.PAPERNEXUS_HOME = fixture.previousHome;
+  if (fixture.previousPapernexusHome !== undefined) {
+    process.env.PAPERNEXUS_HOME = fixture.previousPapernexusHome;
+  } else if (fixture.previousHome !== undefined) {
+    process.env.PAPERNEXUS_HOME = fixture.previousHome;
+  } else {
+    delete process.env.PAPERNEXUS_HOME;
+  }
+  if (Object.prototype.hasOwnProperty.call(fixture, 'previousHome')) {
+    if (fixture.previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = fixture.previousHome;
+  }
   await fs.rm(fixture.workspaceRoot, { recursive: true, force: true });
   await fs.rm(fixture.tempHome, { recursive: true, force: true });
 }
@@ -291,6 +356,50 @@ exit 0
   }
 });
 
+test('pn_stage_sync.py accepts tilde-style remote directories for home-relative staging', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-stage-tilde-'));
+  const fakeBin = path.join(tempDir, 'bin');
+  const callsDir = path.join(tempDir, 'calls');
+  const localDir = path.join(tempDir, 'local');
+  await fs.mkdir(fakeBin, { recursive: true });
+  await fs.mkdir(callsDir, { recursive: true });
+  await fs.mkdir(localDir, { recursive: true });
+  await fs.writeFile(path.join(localDir, 'paper.md'), '# Demo\n', 'utf8');
+
+  await fs.writeFile(path.join(fakeBin, 'ssh'), `#!/bin/sh
+printf '%s\n' "$@" > "${path.join(callsDir, 'ssh.txt')}"
+exit 0
+`, { mode: 0o755 });
+
+  await fs.writeFile(path.join(fakeBin, 'rsync'), `#!/bin/sh
+printf '%s\n' "$@" > "${path.join(callsDir, 'rsync.txt')}"
+exit 0
+`, { mode: 0o755 });
+
+  try {
+    const result = await runPython('pn_stage_sync.py', [
+      '--json',
+      '--ssh-target', 'hyq@example.com',
+      '--remote-dir', '~/papernexus-import-staging/demo',
+      localDir
+    ], {
+      env: {
+        PATH: `${fakeBin}:${process.env.PATH || ''}`
+      }
+    });
+
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.remoteDir, '~/papernexus-import-staging/demo');
+    assert.equal(payload.remoteFiles[0], '~/papernexus-import-staging/demo/paper.md');
+    const sshArgs = await fs.readFile(path.join(callsDir, 'ssh.txt'), 'utf8');
+    const rsyncArgs = await fs.readFile(path.join(callsDir, 'rsync.txt'), 'utf8');
+    assert.match(sshArgs, /mkdir -p ~\/papernexus-import-staging\/demo/);
+    assert.match(rsyncArgs, /hyq@example\.com:~\/papernexus-import-staging\/demo\//);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('pn_import_submit.py and pn_import_queue.py submit a server-side file and wait for completion', async () => {
   const fixture = await createImportFixture();
   const port = 54000 + Math.floor(Math.random() * 500);
@@ -345,6 +454,33 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
       ]);
       const logPayload = JSON.parse(log.stdout);
       assert.match(logPayload.log, /stage materialize|completed import task/i);
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test('pn_import_submit.py accepts tilde-style serverFilePath values and reports portable root paths', async () => {
+  const fixture = await createHomeRelativeImportFixture();
+  const port = 54500 + Math.floor(Math.random() * 500);
+
+  try {
+    const server = await startServer(fixture, port, { enableImports: true });
+    try {
+      const submit = await runPython('pn_import_submit.py', [
+        '--json',
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
+        '--token', 'secret-token',
+        '--corpus', 'python-remote-test',
+        '--server-file-path', '~/uploads/server-side-upload.md'
+      ]);
+      const submitted = JSON.parse(submit.stdout);
+      assert.equal(submitted.rootPath, '~/index-store');
+      assert.equal(submitted.remoteFile, '~/uploads/server-side-upload.md');
+      assert.match(submitted.task.sourcesDir, /^~\/index-store\/\.papernexus\/imports\/tasks\//);
+      assert.match(submitted.task.files[0].storedPath, /^~\/index-store\/\.papernexus\/imports\/tasks\//);
     } finally {
       await server.stop();
     }

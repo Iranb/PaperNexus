@@ -34,6 +34,21 @@ Preferred wrappers:
 
 These wrappers talk to the remote HTTP MCP surface and hide JSON-RPC, task lookup, and staging details.
 
+## Remote Path Contract
+
+All server-owned filesystem paths must use a portable PaperNexus server form:
+
+- prefer `~/.papernexus/...` over `/home/<user>/.papernexus/...`
+- prefer `~/uploads/...` over `/home/<user>/uploads/...`
+- `/tmp/...` stays `/tmp/...`
+
+Rules:
+
+- when MCP or HTTP metadata shows a server-home path, treat the `~` form as canonical
+- do not rewrite the `~` form back into a guessed `/home/...` absolute path
+- if a wrapper accepts a server path, it accepts both absolute and `~/...` forms, but SKILL examples should use `~/...`
+- let the PaperNexus framework expand `~` on the server side
+
 ## MCP Tool Mapping
 
 The wrappers are thin adapters over these remote MCP tools:
@@ -55,6 +70,7 @@ The wrappers are thin adapters over these remote MCP tools:
    `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py --mcp-url <mcp-url>`
 2. Understand the path boundary:
    `import_workflow submit` sends `serverFilePath` to the remote PaperNexus server, so that path must exist on the server machine, not on the agent's local filesystem.
+   If the path is under the server user's home directory, keep it in `~/...` form instead of copying the raw `/home/...` prefix.
 3. If the paper is already on the server machine, use `--server-file-path`.
 4. If the paper is local to the agent machine, do not call `import_workflow submit` with the local path directly. Stage it with:
    `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`
@@ -79,6 +95,7 @@ Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging an
 
 - Never pass a local macOS path like `/Users/iranb/.../paper.pdf` as remote `serverFilePath`.
 - `serverFilePath` is only valid for files already present on the remote PaperNexus server.
+- If a remote metadata response shows `~/.papernexus/...`, keep that exact `~`-prefixed path when calling wrappers again.
 - For local files, use `pn_import_submit.py --source ...` or `pn_batch_import.py submit` so the wrapper can upload first.
 - For batch work, prefer one manifest and one wrapper call, not ad-hoc loops of raw MCP submits.
 

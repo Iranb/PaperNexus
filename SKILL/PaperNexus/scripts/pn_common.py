@@ -337,6 +337,16 @@ def build_default_remote_dir(local_root: Path, remote_root: typing.Optional[str]
     return f"{root}/{timestamp}-{leaf}-{digest}"
 
 
+def is_remote_path_reference(value: str) -> bool:
+    raw = str(value or "").strip()
+    return bool(raw) and (
+        raw.startswith("/")
+        or raw == "~"
+        or raw.startswith("~/")
+        or raw.startswith("~\\")
+    )
+
+
 def run_command(args: typing.List[str], timeout: float = DEFAULT_TIMEOUT, env: typing.Optional[typing.Dict[str, str]] = None) -> None:
     try:
         subprocess.run(args, check=True, timeout=timeout, env=env)
@@ -359,8 +369,8 @@ def stage_local_path(
     local_root = Path(local_path).expanduser().resolve()
     files = collect_supported_files(str(local_root))
     target_dir = (remote_dir or build_default_remote_dir(local_root, remote_root=remote_root or None)).rstrip("/")
-    if not target_dir.startswith("/"):
-        raise RemoteScriptError("Remote staging directory must be an absolute path.")
+    if not is_remote_path_reference(target_dir):
+        raise RemoteScriptError("Remote staging directory must be an absolute path or `~/...` path on the remote server.")
     run_command([ssh_bin, ssh_target, f"mkdir -p {urllib.parse.quote(target_dir, safe='/.-_~')}"])
     rsync_source = str(local_root)
     if local_root.is_dir():

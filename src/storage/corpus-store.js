@@ -3,6 +3,7 @@ import path from 'node:path';
 import { applyGraphMutations } from '../core/graph/mutations.js';
 import { summarizeCorpusGraph } from '../core/graph/summary.js';
 import { ensureDir, fileExists, readJson, removePath, withFileLock, writeJson } from '../lib/fs.js';
+import { collapseHomePath, isServerPathReference, resolveServerPathReference } from '../lib/server-paths.js';
 import { loadKnowledgeGraph } from '../core/graph/graph.js';
 import { slugify, stableHash } from '../lib/utils.js';
 import { loadRegistry, unregisterCorpus } from './registry.js';
@@ -467,7 +468,10 @@ export async function removeSemanticPaperSnapshot(rootPath, sourceKey) {
 
 export async function resolveCorpus(candidate, cwd = process.cwd()) {
   if (candidate) {
-    const absoluteCandidate = path.resolve(candidate);
+    const rawCandidate = String(candidate).trim();
+    const absoluteCandidate = isServerPathReference(rawCandidate)
+      ? resolveServerPathReference(rawCandidate, { baseDir: cwd })
+      : path.resolve(cwd, rawCandidate);
     const localMeta = getCorpusPaths(absoluteCandidate).metaPath;
     if (await fileExists(localMeta)) {
       return absoluteCandidate;
@@ -475,7 +479,10 @@ export async function resolveCorpus(candidate, cwd = process.cwd()) {
 
     const registry = await loadRegistry();
     const matched = registry.corpora.find(
-      (item) => item.name === candidate || item.rootPath === candidate
+      (item) => item.name === candidate
+        || item.rootPath === candidate
+        || item.rootPath === absoluteCandidate
+        || collapseHomePath(item.rootPath) === rawCandidate
     );
     if (matched) return matched.rootPath;
 

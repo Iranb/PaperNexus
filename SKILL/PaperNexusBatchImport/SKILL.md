@@ -47,6 +47,7 @@ Rules:
 - optional per-paper overrides: `remoteDir`, `serverFilePath`, `taskId`
 - `source` is the local file path on the agent machine
 - `serverFilePath` is only for files that already exist on the remote PaperNexus server
+- if a server-home path is known, store it as `~/...`, not `/home/<user>/...`
 - do not copy a local `/Users/...` path into `serverFilePath`
 
 ## Workflow
@@ -78,6 +79,7 @@ python3 SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py \
 - if a paper already has `serverFilePath`, the wrapper submits that remote file directly
 - if a paper only has local `source`, the wrapper stages it with `ssh`/`rsync` first
 - the remote MCP submit step always receives a server-side `serverFilePath`, never the raw local path
+- `remoteDir` may be `/tmp/...` or `~/...`; for server-home paths prefer `~/...`
 
 ## Status Rules
 

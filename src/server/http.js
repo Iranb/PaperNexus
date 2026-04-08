@@ -512,7 +512,8 @@ export async function serveCommand(options = {}) {
       const apiOptions = {
         cache: apiCache,
         config: options.config || {},
-        configBaseDir: options.configBaseDir || process.cwd()
+        configBaseDir: options.configBaseDir || process.cwd(),
+        portablePaths: true
       };
 
       if (url.pathname === mcpConfig.path) {
@@ -527,7 +528,9 @@ export async function serveCommand(options = {}) {
 
         const startedAt = Date.now();
         const result = await handleMcpHttpRequest(request, response, {
-          config: options.config || {}
+          config: options.config || {},
+          configBaseDir: options.configBaseDir || process.cwd(),
+          portablePaths: true
         });
         logMcpHttpRequest(
           workerLogger,
