@@ -158,6 +158,11 @@ Default MarkPDFDown PDF parser config:
     "pdfParser": "markpdfdown",
     "pythonCommand": "python3",
     "doclingCommand": "docling",
+    "doclingDevice": "cuda",
+    "doclingImageExportMode": "placeholder",
+    "doclingEnrichPictureClasses": false,
+    "doclingEnrichPictureDescription": false,
+    "doclingPreload": true,
     "doclingUseVlm": false,
     "doclingVlmPreset": "granite_docling"
   },
@@ -166,6 +171,17 @@ Default MarkPDFDown PDF parser config:
     "model": "gpt-4o-mini",
     "baseUrl": "https://api.openai.com/v1",
     "apiKeyEnv": "OPENAI_API_KEY"
+  }
+}
+```
+
+If you need Docling to pin a specific GPU or reuse a shared model cache during fallback parsing, extend the same config with:
+
+```json
+{
+  "analyze": {
+    "doclingCudaVisibleDevices": "2",
+    "doclingArtifactsPath": "/home/disk0/hyq/.cache/docling/models"
   }
 }
 ```

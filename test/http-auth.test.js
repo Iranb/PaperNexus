@@ -323,6 +323,9 @@ test('serveCommand forwards analyze parser config into the import worker', async
           stop() {},
           pollNow() {}
         };
+      },
+      warmDoclingRuntime() {
+        return Promise.resolve({ warmed: true });
       }
     });
 
@@ -333,6 +336,69 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].pythonCommand, './shared-python');
       assert.equal(calls[0].markpdfdownPython, './shared-python');
       assert.equal(calls[0].semanticExtraction, 'llm-primary');
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand warms Docling runtime in the background when imports are enabled', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-docling-warmup-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 53400 + Math.floor(Math.random() * 1000);
+  const calls = [];
+  const logs = [];
+  const logger = {
+    log(message) {
+      logs.push(String(message));
+    },
+    warn(message) {
+      logs.push(String(message));
+    },
+    error(message) {
+      logs.push(String(message));
+    }
+  };
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      logger,
+      config: {
+        analyze: {
+          pdfParser: 'docling',
+          doclingCommand: 'docling',
+          doclingDevice: 'cuda',
+          doclingCudaVisibleDevices: '2'
+        },
+        serve: {
+          apiToken: 'secret-token'
+        }
+      },
+      warmDoclingRuntime: async (warmupOptions) => {
+        calls.push(warmupOptions);
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].doclingCommand, 'docling');
+      assert.equal(calls[0].doclingDevice, 'cuda');
+      assert.equal(calls[0].doclingCudaVisibleDevices, '2');
+      assert.ok(logs.some((line) => line.includes('[serve] Docling warmup started')));
+      assert.ok(logs.some((line) => line.includes('[serve] Docling warmup finished')));
     } finally {
       await serverHandle.stop();
     }
@@ -385,6 +451,70 @@ test('serveCommand forwards paddleocr-vl parser config into the import worker', 
       assert.equal(calls[0].pythonCommand, './shared-python');
       assert.equal(calls[0].paddleocrVlPython, './shared-python');
       assert.equal(calls[0].paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1');
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand forwards Docling GPU config into the import worker', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-worker-docling-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const calls = [];
+  const port = 54150 + Math.floor(Math.random() * 1000);
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      config: {
+        analyze: {
+          pdfParser: 'docling',
+          pythonCommand: './shared-python',
+          doclingCommand: 'docling',
+          doclingDevice: 'cuda',
+          doclingCudaVisibleDevices: '2',
+          doclingArtifactsPath: '/home/hyq/.cache/docling/models',
+          doclingImageExportMode: 'placeholder',
+          doclingEnrichPictureClasses: false,
+          doclingEnrichPictureDescription: false,
+          doclingPreload: true
+        },
+        serve: {
+          apiToken: 'secret-token'
+        }
+      },
+      startImportWorker(workerOptions) {
+        calls.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].pdfParser, 'docling');
+      assert.equal(calls[0].doclingPython, './shared-python');
+      assert.equal(calls[0].doclingDevice, 'cuda');
+      assert.equal(calls[0].doclingCudaVisibleDevices, '2');
+      assert.equal(calls[0].doclingArtifactsPath, '/home/hyq/.cache/docling/models');
+      assert.equal(calls[0].doclingImageExportMode, 'placeholder');
+      assert.equal(calls[0].doclingEnrichPictureClasses, false);
+      assert.equal(calls[0].doclingEnrichPictureDescription, false);
+      assert.equal(calls[0].doclingPreload, true);
     } finally {
       await serverHandle.stop();
     }

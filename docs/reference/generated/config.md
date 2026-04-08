@@ -21,7 +21,12 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
     "pythonCommand": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
     "doclingCommand": "docling",
+    "doclingDevice": "cuda",
     "doclingPdfBackend": "pdfplumber",
+    "doclingImageExportMode": "placeholder",
+    "doclingEnrichPictureClasses": false,
+    "doclingEnrichPictureDescription": false,
+    "doclingPreload": true,
     "doclingUseVlm": false,
     "doclingVlmPreset": "granite_docling"
   },
@@ -64,7 +69,12 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze.pythonCommand` | string | `python3` |
 | `analyze.mineruHttpUrl` | string | `http://127.0.0.1:30000` |
 | `analyze.doclingCommand` | string | `docling` |
+| `analyze.doclingDevice` | string | `cuda` |
 | `analyze.doclingPdfBackend` | string | `pdfplumber` |
+| `analyze.doclingImageExportMode` | string | `placeholder` |
+| `analyze.doclingEnrichPictureClasses` | boolean | `false` |
+| `analyze.doclingEnrichPictureDescription` | boolean | `false` |
+| `analyze.doclingPreload` | boolean | `true` |
 | `analyze.doclingUseVlm` | boolean | `false` |
 | `analyze.doclingVlmPreset` | string | `granite_docling` |
 | `global` | object | section |

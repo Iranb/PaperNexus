@@ -14,7 +14,12 @@
     "pythonCommand": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
     "doclingCommand": "docling",
+    "doclingDevice": "cuda",
     "doclingPdfBackend": "pdfplumber",
+    "doclingImageExportMode": "placeholder",
+    "doclingEnrichPictureClasses": false,
+    "doclingEnrichPictureDescription": false,
+    "doclingPreload": true,
     "doclingUseVlm": false,
     "doclingVlmPreset": "granite_docling"
   },

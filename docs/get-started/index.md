@@ -29,6 +29,16 @@ python -m pip install -U "paddleocr[doc-parser]"
 
 If you want Docling to use its VLM pipeline during fallback parsing, enable `analyze.doclingUseVlm` and reuse the normal PaperNexus `llm` config.
 
+For the default Docling CLI fallback path, PaperNexus now assumes a GPU-first profile:
+
+- `analyze.doclingDevice = "cuda"`
+- `analyze.doclingImageExportMode = "placeholder"`
+- `analyze.doclingEnrichPictureClasses = false`
+- `analyze.doclingEnrichPictureDescription = false`
+- `analyze.doclingPreload = true`
+
+If a machine has multiple GPUs, set `analyze.doclingCudaVisibleDevices` to a value such as `"0"` or `"2"`. If you want Docling to reuse a shared model cache across runs, set `analyze.doclingArtifactsPath`.
+
 ## 2. Create Or Choose A Paper Source Directory
 
 The conventional default is:

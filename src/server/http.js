@@ -36,7 +36,7 @@ import { getMcpHttpConfig, handleMcpHttpRequest } from '../mcp/http.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
-import { warmMineruHttpEndpoint } from '../core/ingestion/marker.js';
+import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/marker.js';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -340,6 +340,54 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       analyzeConfig.doclingPdfBackend,
       watchConfig.doclingPdfBackend
     ),
+    doclingDevice: firstDefined(
+      options.doclingDevice,
+      materializeConfig.doclingDevice,
+      analyzeConfig.doclingDevice,
+      watchConfig.doclingDevice
+    ),
+    doclingCudaVisibleDevices: firstDefined(
+      options.doclingCudaVisibleDevices,
+      materializeConfig.doclingCudaVisibleDevices,
+      analyzeConfig.doclingCudaVisibleDevices,
+      watchConfig.doclingCudaVisibleDevices
+    ),
+    doclingArtifactsPath: firstDefined(
+      options.doclingArtifactsPath,
+      materializeConfig.doclingArtifactsPath,
+      analyzeConfig.doclingArtifactsPath,
+      watchConfig.doclingArtifactsPath
+    ),
+    doclingImageExportMode: firstDefined(
+      options.doclingImageExportMode,
+      materializeConfig.doclingImageExportMode,
+      analyzeConfig.doclingImageExportMode,
+      watchConfig.doclingImageExportMode
+    ),
+    doclingEnrichPictureClasses: firstDefined(
+      options.doclingEnrichPictureClasses,
+      materializeConfig.doclingEnrichPictureClasses,
+      analyzeConfig.doclingEnrichPictureClasses,
+      watchConfig.doclingEnrichPictureClasses
+    ),
+    doclingEnrichPictureDescription: firstDefined(
+      options.doclingEnrichPictureDescription,
+      materializeConfig.doclingEnrichPictureDescription,
+      analyzeConfig.doclingEnrichPictureDescription,
+      watchConfig.doclingEnrichPictureDescription
+    ),
+    doclingPreload: firstDefined(
+      options.doclingPreload,
+      materializeConfig.doclingPreload,
+      analyzeConfig.doclingPreload,
+      watchConfig.doclingPreload
+    ),
+    doclingPreloadTimeoutMs: firstDefined(
+      options.doclingPreloadTimeoutMs,
+      materializeConfig.doclingPreloadTimeoutMs,
+      analyzeConfig.doclingPreloadTimeoutMs,
+      watchConfig.doclingPreloadTimeoutMs
+    ),
     markerCommand: firstDefined(
       options.markerCommand,
       materializeConfig.markerCommand,
@@ -518,6 +566,7 @@ export async function serveCommand(options = {}) {
   const enhancementWorkerStarter = options.startEnhancementWorker || startEnhancementWorker;
   const authoritativeSyncWorkerStarter = options.startAuthoritativeSyncWorker || startAuthoritativeSyncWorker;
   const importWorkerStarter = options.startImportWorker || startImportWorker;
+  const importWorkerOptions = buildImportWorkerOptions(options, rootPaths, workerLogger);
   const enhancementWorker = startNamedWorker(
     'enhancement worker',
     options.enableEnhancements !== false,
@@ -540,10 +589,18 @@ export async function serveCommand(options = {}) {
     'import worker',
     options.enableImports !== false,
     importWorkerStarter,
-    buildImportWorkerOptions(options, rootPaths, workerLogger),
+    importWorkerOptions,
     workerLogger
   );
   const triggerMineruWarmup = options.warmMineruBackends || warmMineruBackends;
+  const triggerDoclingWarmup = options.warmDoclingRuntime || warmDoclingRuntime;
+  const shouldWarmDocling = options.enableImports !== false
+    && options.enableDoclingWarmup !== false
+    && importWorkerOptions.doclingPreload !== false
+    && (
+      importWorkerOptions.pdfParser === 'docling'
+      || options.enableDoclingWarmup === true
+    );
   if (options.enableImports !== false && options.enableMineruWarmup !== false) {
     workerLogger.log?.('[serve] MinerU warmup started');
     Promise.resolve()
@@ -562,6 +619,22 @@ export async function serveCommand(options = {}) {
       })
       .catch((error) => {
         workerLogger.warn?.(`[serve] MinerU warmup failed (${error.message || error})`);
+      });
+  }
+  if (shouldWarmDocling) {
+    workerLogger.log?.('[serve] Docling warmup started');
+    Promise.resolve()
+      .then(() => triggerDoclingWarmup({
+        ...importWorkerOptions,
+        rootPaths,
+        logger: workerLogger,
+        skipDoclingWarmup: true
+      }))
+      .then(() => {
+        workerLogger.log?.('[serve] Docling warmup finished');
+      })
+      .catch((error) => {
+        workerLogger.warn?.(`[serve] Docling warmup failed (${error.message || error})`);
       });
   }
 

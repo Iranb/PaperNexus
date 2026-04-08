@@ -80,6 +80,14 @@ function buildPdfOptions(flags, config) {
     doclingSshHost: firstDefined(flags['docling-ssh-host'], materializeConfig.doclingSshHost, analyzeConfig.doclingSshHost, materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
     doclingOcrEngine: firstDefined(flags['docling-ocr-engine'], materializeConfig.doclingOcrEngine, analyzeConfig.doclingOcrEngine),
     doclingPdfBackend: firstDefined(flags['docling-pdf-backend'], materializeConfig.doclingPdfBackend, analyzeConfig.doclingPdfBackend),
+    doclingDevice: firstDefined(flags['docling-device'], materializeConfig.doclingDevice, analyzeConfig.doclingDevice, 'cuda'),
+    doclingCudaVisibleDevices: firstDefined(flags['docling-cuda-visible-devices'], materializeConfig.doclingCudaVisibleDevices, analyzeConfig.doclingCudaVisibleDevices),
+    doclingArtifactsPath: firstDefined(flags['docling-artifacts-path'], materializeConfig.doclingArtifactsPath, analyzeConfig.doclingArtifactsPath),
+    doclingImageExportMode: firstDefined(flags['docling-image-export-mode'], materializeConfig.doclingImageExportMode, analyzeConfig.doclingImageExportMode, 'placeholder'),
+    doclingEnrichPictureClasses: toBoolean(firstDefined(flags['docling-enrich-picture-classes'], materializeConfig.doclingEnrichPictureClasses, analyzeConfig.doclingEnrichPictureClasses), false),
+    doclingEnrichPictureDescription: toBoolean(firstDefined(flags['docling-enrich-picture-description'], materializeConfig.doclingEnrichPictureDescription, analyzeConfig.doclingEnrichPictureDescription), false),
+    doclingPreload: toBoolean(firstDefined(flags['docling-preload'], materializeConfig.doclingPreload, analyzeConfig.doclingPreload), true),
+    doclingPreloadTimeoutMs: toNumber(firstDefined(flags['docling-preload-timeout-ms'], materializeConfig.doclingPreloadTimeoutMs, analyzeConfig.doclingPreloadTimeoutMs), 120000),
     markerCommand: firstDefined(flags['marker-cmd'], materializeConfig.markerCommand, analyzeConfig.markerCommand),
     markerSshHost: firstDefined(flags['marker-ssh-host'], materializeConfig.markerSshHost, analyzeConfig.markerSshHost, materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
     markerBlockBlacklist: firstDefined(flags['marker-block-blacklist'], materializeConfig.markerBlockBlacklist, analyzeConfig.markerBlockBlacklist),
@@ -229,6 +237,7 @@ function printUsage() {
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--config <path>] [--no-config] [--force] [--json]
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--python-command <python>]
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--verify-docling-fallback] [--fallback-primary-parser <parser>]
+  node ./scripts/test-pdf-to-markdown.js <pdf-path> [--docling-device cuda] [--docling-cuda-visible-devices 2]
 
 Behavior:
   - loads the same config resolution flow as PaperNexus CLI

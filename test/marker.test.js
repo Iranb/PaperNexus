@@ -121,13 +121,24 @@ test('buildRemoteDoclingScript includes docling command and output directory', (
     doclingCommand: '/opt/docling/bin/docling',
     remotePdfPath: '/tmp/run/paper.pdf',
     remoteRunDir: '/tmp/run/out',
-    ocrEngine: 'ocrmac'
+    ocrEngine: 'ocrmac',
+    device: 'cuda',
+    cudaVisibleDevices: '2',
+    artifactsPath: '/home/hyq/.cache/docling/models',
+    imageExportMode: 'placeholder',
+    enrichPictureClasses: false,
+    enrichPictureDescription: false
   });
 
   assert.match(script, /\/opt\/docling\/bin\/docling/);
-  assert.match(script, /--image-export-mode referenced/);
-  assert.match(script, /--ocr-engine 'ocrmac'/);
-  assert.match(script, /--output '\/tmp\/run\/out'/);
+  assert.match(script, /export CUDA_VISIBLE_DEVICES='2'/);
+  assert.match(script, /'--device' 'cuda'/);
+  assert.match(script, /'--artifacts-path' '\/home\/hyq\/\.cache\/docling\/models'/);
+  assert.match(script, /'--image-export-mode' 'placeholder'/);
+  assert.match(script, /--no-enrich-picture-classes/);
+  assert.match(script, /--no-enrich-picture-description/);
+  assert.match(script, /'--ocr-engine' 'ocrmac'/);
+  assert.match(script, /'--output' '\/tmp\/run\/out'/);
   assert.match(script, /find "\$run_dir" -type f -name '\*\.md'/);
 });
 
@@ -575,6 +586,76 @@ test('convertPdfToMarkdown can run docling in VLM mode with PaperNexus LLM confi
     assert.match(markdown, /BASE_URL=https:\/\/api\.openai\.com\/v1\/chat\/completions/);
     assert.match(markdown, /API_KEY=test-key/);
   } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown passes Docling GPU and image flags through the local CLI path', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-docling-gpu-flags-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const fakeDoclingPath = path.join(tempDir, 'fake-docling.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'out_dir=""',
+        'args_log="${TMPDIR:-/tmp}/papernexus-docling-args.log"',
+        'env_log="${TMPDIR:-/tmp}/papernexus-docling-env.log"',
+        'shift',
+        'printf "%s\\n" "$CUDA_VISIBLE_DEVICES" > "$env_log"',
+        'printf "%s\\n" "$pdf_path" > "$args_log"',
+        'while [ "$#" -gt 0 ]; do',
+        '  printf "%s\\n" "$1" >> "$args_log"',
+        '  case "$1" in',
+        '    --output) out_dir="$2"; printf "%s\\n" "$2" >> "$args_log"; shift 2 ;;',
+        '    --device|--ocr-engine|--pdf-backend|--artifacts-path|--image-export-mode) printf "%s\\n" "$2" >> "$args_log"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'base=$(basename "$pdf_path" .pdf)',
+        'mkdir -p "$out_dir"',
+        'printf "# %s Title\\n\\n## Abstract\\n\\nDocling GPU parse.\\n" "$base" > "$out_dir/$base.md"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'docling',
+      doclingCommand: fakeDoclingPath,
+      doclingPreload: false,
+      doclingDevice: 'cuda',
+      doclingCudaVisibleDevices: '2',
+      doclingArtifactsPath: '/home/hyq/.cache/docling/models',
+      doclingImageExportMode: 'placeholder',
+      doclingEnrichPictureClasses: false,
+      doclingEnrichPictureDescription: false,
+      doclingOcrEngine: 'easyocr',
+      doclingPdfBackend: 'pypdfium2',
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'docling');
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /Docling GPU parse/);
+
+    const argsLog = await fs.readFile(path.join(os.tmpdir(), 'papernexus-docling-args.log'), 'utf8');
+    const envLog = await fs.readFile(path.join(os.tmpdir(), 'papernexus-docling-env.log'), 'utf8');
+    assert.match(envLog, /^2/m);
+    assert.match(argsLog, /--device\ncuda/);
+    assert.match(argsLog, /--artifacts-path\n\/home\/hyq\/\.cache\/docling\/models/);
+    assert.match(argsLog, /--image-export-mode\nplaceholder/);
+    assert.match(argsLog, /--no-enrich-picture-classes/);
+    assert.match(argsLog, /--no-enrich-picture-description/);
+    assert.match(argsLog, /--ocr-engine\neasyocr/);
+    assert.match(argsLog, /--pdf-backend\npypdfium2/);
+  } finally {
+    await fs.rm(path.join(os.tmpdir(), 'papernexus-docling-args.log'), { force: true });
+    await fs.rm(path.join(os.tmpdir(), 'papernexus-docling-env.log'), { force: true });
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });

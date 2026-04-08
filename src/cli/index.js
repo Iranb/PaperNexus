@@ -23,8 +23,8 @@ Global options:
 
 Commands:
   papernexus init [--force]
-  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
-  papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
+  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
   papernexus llm-optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus build-graph [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>]
   papernexus merge-graph [<path>] [--continue] [--force] [--quiet] [--node-llm-check]
@@ -33,8 +33,8 @@ Commands:
   papernexus stage2 [<path>] [--name <corpus>] [--continue] [--force]
   papernexus stage3 [<path>] [--name <corpus>] [--continue] [--force]
   papernexus stage4 [<path>] [--continue] [--force]
-  papernexus optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
-  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
@@ -70,6 +70,22 @@ Docling VLM Options:
     Run Docling through its VLM pipeline using the configured PaperNexus LLM endpoint.
   --docling-vlm-preset <preset>
     Docling VLM preset to use. Default: granite_docling
+  --docling-device <device>
+    Execution device for Docling CLI parsing. Default: cuda
+  --docling-cuda-visible-devices <ids>
+    Optional CUDA_VISIBLE_DEVICES value for Docling, for example "0" or "2".
+  --docling-artifacts-path <path>
+    Optional Docling model cache path to reuse downloaded artifacts across runs.
+  --docling-image-export-mode <mode>
+    Image export mode for Docling. Default: placeholder
+  --docling-enrich-picture-classes
+    Re-enable picture class enrichment. Disabled by default for faster batch parsing.
+  --docling-enrich-picture-description
+    Re-enable picture description enrichment. Disabled by default for faster batch parsing.
+  --docling-preload
+    Warm Docling once before the first parse in the current process. Enabled by default in config.
+  --docling-preload-timeout-ms <ms>
+    Timeout for Docling warmup runs. Default: 120000
 
 Examples:
   papernexus init
@@ -155,6 +171,19 @@ function firstDefined(...values) {
     }
   }
   return undefined;
+}
+
+function toBoolean(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return Boolean(value);
 }
 
 function parseCommaSeparatedList(value) {
@@ -396,11 +425,19 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], commandConfig.opendataloaderPdfPython, commandConfig.pythonCommand),
     doclingPython: firstDefined(flags['docling-python'], commandConfig.doclingPython, commandConfig.pythonCommand),
     doclingCommand: firstDefined(flags['docling-cmd'], commandConfig.doclingCommand),
-    doclingUseVlm: Boolean(firstDefined(flags['docling-vlm'], commandConfig.doclingUseVlm)),
+    doclingUseVlm: toBoolean(firstDefined(flags['docling-vlm'], commandConfig.doclingUseVlm), false),
     doclingVlmPreset: firstDefined(flags['docling-vlm-preset'], commandConfig.doclingVlmPreset),
     doclingSshHost: firstDefined(flags['docling-ssh-host'], commandConfig.doclingSshHost, commandConfig.pdfParserSshHost, commandConfig.pdfSshHost),
     doclingOcrEngine: firstDefined(flags['docling-ocr-engine'], commandConfig.doclingOcrEngine),
     doclingPdfBackend: firstDefined(flags['docling-pdf-backend'], commandConfig.doclingPdfBackend),
+    doclingDevice: firstDefined(flags['docling-device'], commandConfig.doclingDevice, 'cuda'),
+    doclingCudaVisibleDevices: firstDefined(flags['docling-cuda-visible-devices'], commandConfig.doclingCudaVisibleDevices),
+    doclingArtifactsPath: firstDefined(flags['docling-artifacts-path'], commandConfig.doclingArtifactsPath),
+    doclingImageExportMode: firstDefined(flags['docling-image-export-mode'], commandConfig.doclingImageExportMode, 'placeholder'),
+    doclingEnrichPictureClasses: toBoolean(firstDefined(flags['docling-enrich-picture-classes'], commandConfig.doclingEnrichPictureClasses), false),
+    doclingEnrichPictureDescription: toBoolean(firstDefined(flags['docling-enrich-picture-description'], commandConfig.doclingEnrichPictureDescription), false),
+    doclingPreload: toBoolean(firstDefined(flags['docling-preload'], commandConfig.doclingPreload), true),
+    doclingPreloadTimeoutMs: toNumber(firstDefined(flags['docling-preload-timeout-ms'], commandConfig.doclingPreloadTimeoutMs), 120000),
     markerCommand: firstDefined(flags['marker-cmd'], commandConfig.markerCommand),
     markerSshHost: firstDefined(flags['marker-ssh-host'], commandConfig.markerSshHost, commandConfig.pdfParserSshHost, commandConfig.pdfSshHost),
     markerBlockBlacklist: firstDefined(flags['marker-block-blacklist'], commandConfig.markerBlockBlacklist),

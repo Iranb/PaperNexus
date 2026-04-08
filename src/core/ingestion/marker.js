@@ -1,4 +1,5 @@
 import path from 'node:path';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +15,11 @@ const PDF_PARSER_MINERU = 'mineru';
 const PDF_PARSER_PADDLEOCR_VL = 'paddleocr-vl';
 const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
 const DEFAULT_MINERU_PROBE_CACHE_TTL_MS = 15_000;
+const DEFAULT_DOCLING_DEVICE = 'cuda';
+const DEFAULT_DOCLING_IMAGE_EXPORT_MODE = 'placeholder';
+const DEFAULT_DOCLING_PRELOAD_TIMEOUT_MS = 120_000;
 const mineruProbeCache = new Map();
+const doclingWarmupCache = new Map();
 const MARKPDFDOWN_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/markpdfdown_to_markdown.py', import.meta.url));
 const DOCLING_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/docling_to_markdown.py', import.meta.url));
 const OPENDATALOADER_PDF_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/opendataloader_pdf_to_markdown.py', import.meta.url));
@@ -212,6 +217,83 @@ function resolveDoclingVlmPreset(options = {}) {
     || process.env.PAPERNEXUS_DOCLING_VLM_PRESET
     || 'granite_docling'
   ).trim() || 'granite_docling';
+}
+
+function normalizeBooleanOption(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return Boolean(value);
+}
+
+function resolveDoclingDevice(options = {}) {
+  return String(
+    options.doclingDevice
+    || process.env.PAPERNEXUS_DOCLING_DEVICE
+    || DEFAULT_DOCLING_DEVICE
+  ).trim() || DEFAULT_DOCLING_DEVICE;
+}
+
+function resolveDoclingCudaVisibleDevices(options = {}) {
+  return String(
+    options.doclingCudaVisibleDevices
+    ?? process.env.PAPERNEXUS_DOCLING_CUDA_VISIBLE_DEVICES
+    ?? process.env.CUDA_VISIBLE_DEVICES
+    ?? ''
+  ).trim();
+}
+
+function resolveDoclingArtifactsPath(options = {}) {
+  return String(
+    options.doclingArtifactsPath
+    || process.env.PAPERNEXUS_DOCLING_ARTIFACTS_PATH
+    || ''
+  ).trim();
+}
+
+function resolveDoclingImageExportMode(options = {}) {
+  return String(
+    options.doclingImageExportMode
+    || process.env.PAPERNEXUS_DOCLING_IMAGE_EXPORT_MODE
+    || DEFAULT_DOCLING_IMAGE_EXPORT_MODE
+  ).trim() || DEFAULT_DOCLING_IMAGE_EXPORT_MODE;
+}
+
+function resolveDoclingEnrichPictureClasses(options = {}) {
+  return normalizeBooleanOption(
+    options.doclingEnrichPictureClasses ?? process.env.PAPERNEXUS_DOCLING_ENRICH_PICTURE_CLASSES,
+    false
+  );
+}
+
+function resolveDoclingEnrichPictureDescription(options = {}) {
+  return normalizeBooleanOption(
+    options.doclingEnrichPictureDescription ?? process.env.PAPERNEXUS_DOCLING_ENRICH_PICTURE_DESCRIPTION,
+    false
+  );
+}
+
+function resolveDoclingPreload(options = {}) {
+  return normalizeBooleanOption(
+    options.doclingPreload ?? process.env.PAPERNEXUS_DOCLING_PRELOAD,
+    true
+  );
+}
+
+function resolveDoclingPreloadTimeoutMs(options = {}) {
+  const raw = Number(
+    options.doclingPreloadTimeoutMs
+    ?? process.env.PAPERNEXUS_DOCLING_PRELOAD_TIMEOUT_MS
+    ?? DEFAULT_DOCLING_PRELOAD_TIMEOUT_MS
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_DOCLING_PRELOAD_TIMEOUT_MS;
+  return Math.max(1, Math.round(raw));
 }
 
 function resolvePaddleOcrVlPython(options = {}) {
@@ -490,6 +572,84 @@ function resolveRemoteDoclingHost(options = {}) {
     || '';
 }
 
+function buildDoclingCliArgv({
+  inputPath,
+  outputPath,
+  ocrEngine = '',
+  pdfBackend = '',
+  device = DEFAULT_DOCLING_DEVICE,
+  artifactsPath = '',
+  imageExportMode = DEFAULT_DOCLING_IMAGE_EXPORT_MODE,
+  enrichPictureClasses = false,
+  enrichPictureDescription = false
+} = {}) {
+  const argv = [
+    inputPath,
+    '--device',
+    device || DEFAULT_DOCLING_DEVICE,
+    '--output',
+    outputPath,
+    '--image-export-mode',
+    imageExportMode || DEFAULT_DOCLING_IMAGE_EXPORT_MODE
+  ];
+  if (artifactsPath) {
+    argv.push('--artifacts-path', artifactsPath);
+  }
+  if (!enrichPictureClasses) {
+    argv.push('--no-enrich-picture-classes');
+  }
+  if (!enrichPictureDescription) {
+    argv.push('--no-enrich-picture-description');
+  }
+  if (ocrEngine) {
+    argv.push('--ocr-engine', ocrEngine);
+  }
+  if (pdfBackend) {
+    argv.push('--pdf-backend', pdfBackend);
+  }
+  return argv;
+}
+
+function buildDoclingExecutionEnv(options = {}) {
+  const env = {};
+  const cudaVisibleDevices = resolveDoclingCudaVisibleDevices(options);
+  if (cudaVisibleDevices) {
+    env.CUDA_VISIBLE_DEVICES = cudaVisibleDevices;
+  }
+  return env;
+}
+
+function buildShellCommand(command, argv = []) {
+  return [String(command || '').trim(), ...argv.map((value) => shellQuote(value))].filter(Boolean).join(' ');
+}
+
+function createMinimalPdfBuffer(text = 'PaperNexus Docling Warmup') {
+  const safeText = String(text || 'Warmup').replace(/[()\\]/g, '\\$&');
+  const stream = `BT\n/F1 18 Tf\n36 120 Td\n(${safeText}) Tj\nET`;
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 160] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(stream, 'utf8')} >>\nstream\n${stream}\nendstream`
+  ];
+
+  let content = '%PDF-1.4\n';
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(content, 'utf8'));
+    content += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(content, 'utf8');
+  content += `xref\n0 ${objects.length + 1}\n`;
+  content += '0000000000 65535 f \n';
+  for (const offset of offsets.slice(1)) {
+    content += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  }
+  content += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(content, 'utf8');
+}
+
 export function resolveMineruHttpUrl(options = {}) {
   return options.mineruHttpUrl
     || options.pdfParserHttpUrl
@@ -719,21 +879,39 @@ function buildRemoteMarkerScript({ markerCommand, remotePdfPath, remoteRunDir, p
   ].join('\n');
 }
 
-function buildRemoteDoclingScript({ doclingCommand, remotePdfPath, remoteRunDir, ocrEngine, pdfBackend }) {
-  const command = [
+function buildRemoteDoclingScript({
+  doclingCommand,
+  remotePdfPath,
+  remoteRunDir,
+  ocrEngine,
+  pdfBackend,
+  device,
+  cudaVisibleDevices,
+  artifactsPath,
+  imageExportMode,
+  enrichPictureClasses,
+  enrichPictureDescription
+}) {
+  const command = buildShellCommand(
     doclingCommand,
-    shellQuote(remotePdfPath),
-    '--image-export-mode referenced',
-    '--output',
-    shellQuote(remoteRunDir),
-    ocrEngine ? `--ocr-engine ${shellQuote(ocrEngine)}` : '',
-    pdfBackend ? `--pdf-backend ${shellQuote(pdfBackend)}` : ''
-  ].filter(Boolean).join(' ');
+    buildDoclingCliArgv({
+      inputPath: remotePdfPath,
+      outputPath: remoteRunDir,
+      ocrEngine,
+      pdfBackend,
+      device,
+      artifactsPath,
+      imageExportMode,
+      enrichPictureClasses,
+      enrichPictureDescription
+    })
+  );
 
   return [
     'set -e',
     `tmp_root=${shellQuote(path.posix.dirname(remoteRunDir))}`,
     `run_dir=${shellQuote(remoteRunDir)}`,
+    ...(cudaVisibleDevices ? [`export CUDA_VISIBLE_DEVICES=${shellQuote(cudaVisibleDevices)}`] : []),
     'cleanup() { rm -rf "$tmp_root"; }',
     'trap cleanup EXIT',
     'mkdir -p "$run_dir"',
@@ -905,7 +1083,13 @@ async function convertPdfToMarkdownViaRemoteMarker(pdfPath, options = {}) {
 }
 
 async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
-  const { doclingCommand, doclingSshHost, pageRange, doclingOcrEngine, doclingPdfBackend } = options;
+  const {
+    doclingCommand,
+    doclingSshHost,
+    pageRange,
+    doclingOcrEngine,
+    doclingPdfBackend
+  } = options;
   if (pageRange) {
     throw new Error('Docling page-range forwarding is not currently supported.');
   }
@@ -934,7 +1118,13 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
     remotePdfPath,
     remoteRunDir,
     ocrEngine: doclingOcrEngine,
-    pdfBackend: doclingPdfBackend
+    pdfBackend: doclingPdfBackend,
+    device: resolveDoclingDevice(options),
+    cudaVisibleDevices: resolveDoclingCudaVisibleDevices(options),
+    artifactsPath: resolveDoclingArtifactsPath(options),
+    imageExportMode: resolveDoclingImageExportMode(options),
+    enrichPictureClasses: resolveDoclingEnrichPictureClasses(options),
+    enrichPictureDescription: resolveDoclingEnrichPictureDescription(options)
   });
 
   const { stdout } = await runRemoteCommand(doclingSshHost, script, {
@@ -952,6 +1142,133 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
     markdown,
     parserCommand: `${doclingCommand} (remote@${doclingSshHost})`
   };
+}
+
+async function runLocalDoclingCli(pdfPath, runDir, options = {}, executionOptions = {}) {
+  const argv = buildDoclingCliArgv({
+    inputPath: pdfPath,
+    outputPath: runDir,
+    ocrEngine: options.doclingOcrEngine,
+    pdfBackend: options.doclingPdfBackend,
+    device: resolveDoclingDevice(options),
+    artifactsPath: resolveDoclingArtifactsPath(options),
+    imageExportMode: resolveDoclingImageExportMode(options),
+    enrichPictureClasses: resolveDoclingEnrichPictureClasses(options),
+    enrichPictureDescription: resolveDoclingEnrichPictureDescription(options)
+  });
+  const env = buildDoclingExecutionEnv(options);
+  return runCommand('/bin/sh', ['-lc', buildShellCommand(options.doclingCommand, argv)], {
+    ...executionOptions,
+    env: {
+      ...env,
+      ...(executionOptions.env || {})
+    }
+  });
+}
+
+export async function warmDoclingRuntime(options = {}) {
+  if (!resolveDoclingPreload(options)) {
+    return {
+      attempted: false,
+      warmed: false,
+      skipped: true,
+      reason: 'docling preload disabled'
+    };
+  }
+
+  const warmupKey = stableHash(JSON.stringify({
+    doclingCommand: options.doclingCommand || process.env.PAPERNEXUS_DOCLING_CMD || 'docling',
+    doclingPython: resolveDoclingPython(options),
+    doclingUseVlm: resolveDoclingUseVlm(options),
+    doclingVlmPreset: resolveDoclingVlmPreset(options),
+    doclingSshHost: resolveRemoteDoclingHost(options),
+    doclingOcrEngine: options.doclingOcrEngine || '',
+    doclingPdfBackend: options.doclingPdfBackend || '',
+    doclingDevice: resolveDoclingDevice(options),
+    doclingCudaVisibleDevices: resolveDoclingCudaVisibleDevices(options),
+    doclingArtifactsPath: resolveDoclingArtifactsPath(options),
+    doclingImageExportMode: resolveDoclingImageExportMode(options),
+    doclingEnrichPictureClasses: resolveDoclingEnrichPictureClasses(options),
+    doclingEnrichPictureDescription: resolveDoclingEnrichPictureDescription(options),
+    llmProvider: options.llmProvider,
+    llmModel: options.llmModel,
+    llmBaseUrl: options.llmBaseUrl
+  }), 20);
+  if (doclingWarmupCache.has(warmupKey)) {
+    return doclingWarmupCache.get(warmupKey);
+  }
+
+  const warmupPromise = (async () => {
+    const timeoutMs = resolveDoclingPreloadTimeoutMs(options);
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'docling-warmup-'));
+    const warmupPdfPath = path.join(tempRoot, 'warmup.pdf');
+    const warmupMarkdownPath = path.join(tempRoot, 'warmup.md');
+    const warmupRunDir = path.join(tempRoot, 'out');
+    await fs.writeFile(warmupPdfPath, createMinimalPdfBuffer(), 'utf8');
+
+    try {
+      const remoteDoclingHost = resolveRemoteDoclingHost(options);
+      if (remoteDoclingHost) {
+        await convertPdfToMarkdownViaRemoteDocling(warmupPdfPath, {
+          ...options,
+          doclingSshHost: remoteDoclingHost,
+          pageRange: ''
+        });
+      } else if (resolveDoclingUseVlm(options)) {
+        const runtime = await buildDoclingVlmRuntime(options);
+        const args = [
+          DOCLING_WRAPPER_PATH,
+          '--input',
+          warmupPdfPath,
+          '--output',
+          warmupMarkdownPath,
+          '--use-vlm',
+          '--vlm-preset',
+          runtime.preset,
+          '--provider',
+          runtime.provider,
+          '--model-name',
+          runtime.modelName,
+          '--base-url',
+          runtime.baseUrl,
+          '--max-tokens',
+          String(runtime.maxTokens),
+          ...(options.doclingOcrEngine ? ['--ocr-engine', options.doclingOcrEngine] : []),
+          ...(options.doclingPdfBackend ? ['--pdf-backend', options.doclingPdfBackend] : [])
+        ];
+        await runCommand(resolveDoclingPython(options), args, {
+          env: runtime.env,
+          timeoutMs,
+          timeoutLabel: 'docling VLM warmup'
+        });
+      } else {
+        await fs.mkdir(warmupRunDir, { recursive: true });
+        await runLocalDoclingCli(warmupPdfPath, warmupRunDir, {
+          ...options,
+          doclingCommand: options.doclingCommand || process.env.PAPERNEXUS_DOCLING_CMD || 'docling'
+        }, {
+          timeoutMs,
+          timeoutLabel: 'docling warmup'
+        });
+      }
+      return {
+        attempted: true,
+        warmed: true,
+        remote: Boolean(resolveRemoteDoclingHost(options)),
+        useVlm: resolveDoclingUseVlm(options)
+      };
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  })();
+
+  doclingWarmupCache.set(warmupKey, warmupPromise);
+  try {
+    return await warmupPromise;
+  } catch (error) {
+    doclingWarmupCache.delete(warmupKey);
+    throw error;
+  }
 }
 
 async function convertPdfToMarkdownWithOpenDataLoader(pdfPath, options = {}) {
@@ -1388,6 +1705,24 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
   await ensureDir(runDir);
   await ensureDir(path.dirname(cachedMarkdownPath));
 
+  if (!options.skipDoclingWarmup) {
+    try {
+      await warmDoclingRuntime({
+        ...options,
+        doclingCommand,
+        doclingPython,
+        doclingOcrEngine,
+        doclingPdfBackend,
+        doclingSshHost,
+        pdfParserSshHost,
+        pdfSshHost,
+        skipDoclingWarmup: true
+      });
+    } catch (error) {
+      process.stderr.write(`[docling:${basename}] Warmup failed; continuing with direct parse (${error.message || error})\n`);
+    }
+  }
+
   const remoteDoclingHost = resolveRemoteDoclingHost({
     doclingSshHost,
     pdfParserSshHost,
@@ -1486,15 +1821,12 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
 
   try {
     process.stderr.write(`[docling:${basename}] Running local docling\n`);
-    await runCommand(doclingCommand, [
-      pdfPath,
-      '--image-export-mode',
-      'referenced',
-      '--output',
-      runDir,
-      ...(doclingOcrEngine ? ['--ocr-engine', doclingOcrEngine] : []),
-      ...(doclingPdfBackend ? ['--pdf-backend', doclingPdfBackend] : [])
-    ], {
+    await runLocalDoclingCli(pdfPath, runDir, {
+      ...options,
+      doclingCommand,
+      doclingOcrEngine,
+      doclingPdfBackend
+    }, {
       onStdout: progress,
       onStderr: progress,
       timeoutMs,
@@ -1841,6 +2173,14 @@ export const __markerTestables = {
   resolveMarkerBlockBlacklist,
   resolveOpenDataLoaderPdfPython,
   resolveDoclingPython,
+  resolveDoclingDevice,
+  resolveDoclingCudaVisibleDevices,
+  resolveDoclingArtifactsPath,
+  resolveDoclingImageExportMode,
+  resolveDoclingEnrichPictureClasses,
+  resolveDoclingEnrichPictureDescription,
+  resolveDoclingPreload,
+  resolveDoclingPreloadTimeoutMs,
   resolvePaddleOcrVlPython,
   resolvePaddleOcrVlServerUrl,
   resolveRemoteMarkerHost,
@@ -1851,5 +2191,6 @@ export const __markerTestables = {
   probeHttpEndpoint,
   resetMineruProbeCache,
   buildRemoteMarkerScript,
-  buildRemoteDoclingScript
+  buildRemoteDoclingScript,
+  warmDoclingRuntime
 };
