@@ -8,7 +8,7 @@ Preferred setup path: run `papernexus init`, then `papernexus analyze --force`.
 
 Local MCP still works through `papernexus mcp`, and `papernexus serve` can now optionally expose the same MCP surface remotely over authenticated HTTP at `/mcp`.
 
-[Getting Started](docs/getting-started.md) · [CLI Reference](docs/cli-reference.md) · [Configuration](docs/configuration.md) · [MCP Setup](docs/mcp-setup.md) · [Pipeline & Storage](docs/pipeline-and-storage.md) · [Architecture](docs/architecture.md) · [Services & UI](docs/services-and-ui.md) · [Manual Walkthrough](#manual-walkthrough)
+[Docs Home](docs/index.md) · [Overview](docs/overview/index.md) · [Get Started](docs/get-started/index.md) · [Pipeline](docs/pipeline/index.md) · [Graph](docs/graph/index.md) · [Interfaces](docs/interfaces/index.md) · [Storage](docs/storage/index.md) · [Operations](docs/operations/index.md) · [Reference](docs/reference/index.md) · [Manual Walkthrough](#manual-walkthrough)
 
 ## Install
 
@@ -65,6 +65,21 @@ Then open:
 
 ```text
 http://127.0.0.1:4821
+```
+
+## Documentation Site
+
+PaperNexus now ships a VitePress documentation site that can be served locally and deployed to GitHub Pages.
+
+```bash
+npm run docs:dev
+npm run docs:build
+```
+
+The generated reference pages are refreshed automatically by:
+
+```bash
+npm run docs:generate
 ```
 
 If you want the full background setup:

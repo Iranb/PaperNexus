@@ -6,6 +6,11 @@ config.json
 __pycache__/
 *.pyc
 *.py.bak
-docs/
 *.md
 !SKILL/**/SKILL.md
+!README.md
+!docs/
+!docs/**
+!manual/
+!manual/**
+docs/.vitepress/dist/
