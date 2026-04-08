@@ -1,0 +1,78 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.join(__dirname, '..');
+const scriptPath = path.join(repoRoot, 'scripts', 'pm2-papernexus-serve.sh');
+
+test('pm2 wrapper recent prints import-focused lines from the newest daily log', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pm2-logs-'));
+  const logDir = path.join(tempDir, 'logs');
+  await fs.mkdir(logDir, { recursive: true });
+
+  const olderLog = path.join(logDir, 'papernexus-serve-2026-04-07.log');
+  const latestLog = path.join(logDir, 'papernexus-serve-2026-04-08.log');
+
+  await fs.writeFile(olderLog, '[imports] GCD: completed task imp:old-task\n', 'utf8');
+  await fs.writeFile(latestLog, [
+    '[2026-04-08 10:00:00] [pm2-wrapper] starting papernexus serve',
+    '[serve] import worker started (/tmp/demo-index)',
+    '[2026-04-08T10:01:00Z] [mcp-http] 127.0.0.1 method=tools/call status=200 durationMs=5 transport=streamable-http',
+    '[imports] GCD: completed task imp:recent-success',
+    '[imports] GCD: task imp:recent-failure failed (boom)',
+  ].join('\n'), 'utf8');
+
+  try {
+    const { stdout } = await execFileAsync(scriptPath, ['recent', '--lines', '2'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PAPERNEXUS_LOG_DIR: logDir,
+      }
+    });
+
+    assert.match(stdout, /Log file: .*papernexus-serve-2026-04-08\.log/);
+    assert.match(stdout, /\[imports\] GCD: completed task imp:recent-success/);
+    assert.match(stdout, /\[imports\] GCD: task imp:recent-failure failed \(boom\)/);
+    assert.doesNotMatch(stdout, /mcp-http/);
+    assert.doesNotMatch(stdout, /imp:old-task/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('pm2 wrapper recent can filter by task id', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pm2-logs-filter-'));
+  const logDir = path.join(tempDir, 'logs');
+  await fs.mkdir(logDir, { recursive: true });
+
+  const latestLog = path.join(logDir, 'papernexus-serve-2026-04-08.log');
+  await fs.writeFile(latestLog, [
+    '[imports] GCD: completed task imp:target-task',
+    '[imports] GCD: task imp:other-task failed (boom)',
+    '[imports] GCD: background preparse prepared PDF markdown cache for paper.pdf',
+  ].join('\n'), 'utf8');
+
+  try {
+    const { stdout } = await execFileAsync(scriptPath, ['recent', '--task-id', 'imp:target-task'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PAPERNEXUS_LOG_DIR: logDir,
+      }
+    });
+
+    assert.match(stdout, /imp:target-task/);
+    assert.doesNotMatch(stdout, /imp:other-task/);
+    assert.doesNotMatch(stdout, /background preparse/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

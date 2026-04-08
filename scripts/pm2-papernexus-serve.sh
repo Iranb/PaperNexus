@@ -9,8 +9,6 @@ PM2_BIN="${PM2_BIN:-pm2}"
 NODE_BIN="${NODE_BIN:-node}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
 
-mkdir -p "${LOG_DIR}"
-
 usage() {
   cat <<'EOF'
 Usage:
@@ -20,12 +18,14 @@ Usage:
   scripts/pm2-papernexus-serve.sh delete
   scripts/pm2-papernexus-serve.sh status
   scripts/pm2-papernexus-serve.sh logs
+  scripts/pm2-papernexus-serve.sh recent [--lines <n>] [--task-id <id>] [--paper-id <text>] [--grep <text>] [--all]
   scripts/pm2-papernexus-serve.sh run [papernexus serve args...]
 
 Behavior:
   - Uses PM2 to keep `papernexus serve` alive.
   - Writes application logs to ~/.papernexus/log/papernexus-serve-YYYY-MM-DD.log
   - Rotates to a new daily log file by restarting the child process after the date changes.
+  - `recent` reads the newest daily log and shows upload/import-focused lines so recent paper processing status is easier to inspect.
 EOF
 }
 
@@ -33,6 +33,134 @@ current_log_file() {
   local day
   day="$(date '+%F')"
   printf '%s/%s-%s.log' "${LOG_DIR}" "${APP_NAME}" "${day}"
+}
+
+latest_existing_log_file() {
+  local candidates=()
+  local previous_nullglob_state
+  previous_nullglob_state="$(shopt -p nullglob || true)"
+  shopt -s nullglob
+  candidates=("${LOG_DIR}/${APP_NAME}-"*.log)
+  if [[ -n "${previous_nullglob_state}" ]]; then
+    eval "${previous_nullglob_state}"
+  else
+    shopt -u nullglob
+  fi
+  if [[ "${#candidates[@]}" -eq 0 ]]; then
+    return 1
+  fi
+  ls -1t "${candidates[@]}" | head -n 1
+}
+
+recent_log_focus_pattern() {
+  printf '%s' '(\[imports\]|imp:|import worker|materialize|llm-optimize|fast-commit|completed task|failed|background preparse|authoritative sync|Stage [0-9]+/[0-9]+)'
+}
+
+show_recent_logs() {
+  local lines="40"
+  local task_id=""
+  local paper_id=""
+  local grep_text=""
+  local show_all="0"
+  local log_file=""
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --lines)
+        lines="${2:-}"
+        shift 2
+        ;;
+      --task-id)
+        task_id="${2:-}"
+        shift 2
+        ;;
+      --paper-id)
+        paper_id="${2:-}"
+        shift 2
+        ;;
+      --grep)
+        grep_text="${2:-}"
+        shift 2
+        ;;
+      --log-file)
+        log_file="${2:-}"
+        shift 2
+        ;;
+      --all)
+        show_all="1"
+        shift
+        ;;
+      *)
+        printf 'Unknown recent option: %s\n' "$1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if ! [[ "${lines}" =~ ^[0-9]+$ ]] || [[ "${lines}" -le 0 ]]; then
+    printf 'recent requires --lines to be a positive integer.\n' >&2
+    exit 1
+  fi
+
+  if [[ -z "${log_file}" ]]; then
+    if ! log_file="$(latest_existing_log_file)"; then
+      printf 'No PaperNexus daily logs found under %s\n' "${LOG_DIR}" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ ! -f "${log_file}" ]]; then
+    printf 'Log file not found: %s\n' "${log_file}" >&2
+    exit 1
+  fi
+
+  printf 'Log file: %s\n' "${log_file}"
+  if [[ "${show_all}" == "1" ]]; then
+    printf 'Filter: all log lines\n'
+    tail -n "${lines}" "${log_file}"
+    return
+  fi
+
+  local focus_pattern
+  focus_pattern="$(recent_log_focus_pattern)"
+  printf 'Filter: import-focused recent lines'
+  if [[ -n "${task_id}" ]]; then
+    printf ' | task=%s' "${task_id}"
+  fi
+  if [[ -n "${paper_id}" ]]; then
+    printf ' | paper=%s' "${paper_id}"
+  fi
+  if [[ -n "${grep_text}" ]]; then
+    printf ' | grep=%s' "${grep_text}"
+  fi
+  printf '\n'
+
+  local filtered_output
+  filtered_output="$(
+    awk \
+      -v focus_pattern="${focus_pattern}" \
+      -v task_id="${task_id}" \
+      -v paper_id="${paper_id}" \
+      -v grep_text="${grep_text}" \
+      '
+        function contains(haystack, needle) {
+          return needle == "" || index(haystack, needle) > 0
+        }
+        {
+          if ($0 !~ focus_pattern) next
+          if (!contains($0, task_id)) next
+          if (!contains($0, paper_id)) next
+          if (!contains($0, grep_text)) next
+          print
+        }
+      ' "${log_file}" | tail -n "${lines}"
+  )"
+
+  if [[ -z "${filtered_output}" ]]; then
+    printf 'No matching recent import lines found.\n'
+    return
+  fi
+  printf '%s\n' "${filtered_output}"
 }
 
 run_serve() {
@@ -145,6 +273,9 @@ main() {
       ;;
     logs)
       "${PM2_BIN}" logs "${APP_NAME}"
+      ;;
+    recent)
+      show_recent_logs "$@"
       ;;
     run)
       run_serve "$@"
