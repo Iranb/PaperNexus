@@ -122,6 +122,7 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
         const prepared = await convertPdfToMarkdown(storedPath, {
           pdfParser: options.pdfParser,
           pdfCommand: options.pdfCommand,
+          pythonCommand: options.pythonCommand,
           markpdfdownPython: options.markpdfdownPython,
           opendataloaderPdfPython: options.opendataloaderPdfPython,
           doclingPython: options.doclingPython,

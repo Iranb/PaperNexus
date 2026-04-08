@@ -17,6 +17,8 @@ PaperNexus itself is a Node-based application, but PDF analysis depends on parse
 python -m pip install -U markpdfdown
 ```
 
+If you want one shared Python runtime setting for MarkPDFDown, OpenDataLoader, Docling VLM, and PaddleOCR-VL, set `analyze.pythonCommand`. Parser-specific fields like `markpdfdownPython` still work and override the shared default when needed.
+
 Optional parser families can be installed separately:
 
 ```bash

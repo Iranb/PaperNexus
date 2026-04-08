@@ -123,7 +123,7 @@ test('test-pdf-to-markdown defaults to markpdfdown and keeps markdown text-only'
 
     await fs.writeFile(configPath, `${JSON.stringify({
       analyze: {
-        markpdfdownPython: './fake-python.sh'
+        pythonCommand: './fake-python.sh'
       },
       llm: {
         provider: 'openai',

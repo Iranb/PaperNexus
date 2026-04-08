@@ -37,6 +37,7 @@ python -m pip install -U markpdfdown
 
 The default parser path now uses MarkPDFDown plus your PaperNexus `llm` config.
 If MarkPDFDown returns a failed parse or a degenerate title such as `Abstract`, PaperNexus automatically reparses the PDF with Docling before the paper can enter duplicate resolution.
+If you want one Python runtime setting for all Python-driven parsers, use `analyze.pythonCommand`; parser-specific fields such as `markpdfdownPython` or `doclingPython` remain supported as overrides.
 If you prefer the older OpenDataLoader path, install it separately:
 
 ```bash
@@ -155,7 +156,7 @@ Default MarkPDFDown PDF parser config:
 {
   "analyze": {
     "pdfParser": "markpdfdown",
-    "markpdfdownPython": "python3",
+    "pythonCommand": "python3",
     "doclingCommand": "docling",
     "doclingUseVlm": false,
     "doclingVlmPreset": "granite_docling"
@@ -176,7 +177,7 @@ Optional Docling VLM fallback config:
   "analyze": {
     "pdfParser": "markpdfdown",
     "doclingCommand": "docling",
-    "doclingPython": "python3",
+    "pythonCommand": "python3",
     "doclingUseVlm": true,
     "doclingVlmPreset": "granite_docling"
   },
@@ -195,7 +196,7 @@ Optional OpenDataLoader PDF parser config:
 {
   "analyze": {
     "pdfParser": "opendataloader",
-    "opendataloaderPdfPython": "python3"
+    "pythonCommand": "python3"
   }
 }
 ```
@@ -206,7 +207,7 @@ Optional PaddleOCR-VL remote parser config:
 {
   "analyze": {
     "pdfParser": "paddleocr-vl",
-    "paddleocrVlPython": "python3",
+    "pythonCommand": "python3",
     "paddleocrVlServerUrl": "http://127.0.0.1:8080/v1",
     "paddleocrVlLayoutModel": "PP-DocLayout-S"
   }

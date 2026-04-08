@@ -309,8 +309,8 @@ test('serveCommand forwards analyze parser config into the import worker', async
       enableImports: true,
       config: {
         analyze: {
-          pdfParser: 'mineru',
-          mineruHttpUrl: 'http://127.0.0.1:30000',
+          pdfParser: 'markpdfdown',
+          pythonCommand: './shared-python',
           semanticExtraction: 'llm-primary'
         },
         serve: {
@@ -329,9 +329,62 @@ test('serveCommand forwards analyze parser config into the import worker', async
     try {
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].pdfParser, 'mineru');
-      assert.equal(calls[0].mineruHttpUrl, 'http://127.0.0.1:30000');
+      assert.equal(calls[0].pdfParser, 'markpdfdown');
+      assert.equal(calls[0].pythonCommand, './shared-python');
+      assert.equal(calls[0].markpdfdownPython, './shared-python');
       assert.equal(calls[0].semanticExtraction, 'llm-primary');
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand forwards paddleocr-vl parser config into the import worker', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-worker-paddleocr-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const calls = [];
+  const port = 54000 + Math.floor(Math.random() * 1000);
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'secret-token',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      config: {
+        analyze: {
+          pdfParser: 'paddleocr-vl',
+          pythonCommand: './shared-python',
+          paddleocrVlServerUrl: 'http://127.0.0.1:8080/v1'
+        },
+        serve: {
+          apiToken: 'secret-token'
+        }
+      },
+      startImportWorker(workerOptions) {
+        calls.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].pdfParser, 'paddleocr-vl');
+      assert.equal(calls[0].pythonCommand, './shared-python');
+      assert.equal(calls[0].paddleocrVlPython, './shared-python');
+      assert.equal(calls[0].paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1');
     } finally {
       await serverHandle.stop();
     }

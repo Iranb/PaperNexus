@@ -174,7 +174,9 @@ export function normalizePdfParser(value) {
 function resolveMarkPdfDownPython(options = {}) {
   return String(
     options.markpdfdownPython
+    || options.pythonCommand
     || process.env.PAPERNEXUS_MARKPDFDOWN_PYTHON
+    || process.env.PAPERNEXUS_PYTHON_COMMAND
     || 'python3'
   ).trim() || 'python3';
 }
@@ -182,7 +184,9 @@ function resolveMarkPdfDownPython(options = {}) {
 function resolveOpenDataLoaderPdfPython(options = {}) {
   return String(
     options.opendataloaderPdfPython
+    || options.pythonCommand
     || process.env.PAPERNEXUS_OPENDATALOADER_PDF_PYTHON
+    || process.env.PAPERNEXUS_PYTHON_COMMAND
     || 'python3'
   ).trim() || 'python3';
 }
@@ -190,7 +194,9 @@ function resolveOpenDataLoaderPdfPython(options = {}) {
 function resolveDoclingPython(options = {}) {
   return String(
     options.doclingPython
+    || options.pythonCommand
     || process.env.PAPERNEXUS_DOCLING_PYTHON
+    || process.env.PAPERNEXUS_PYTHON_COMMAND
     || 'python3'
   ).trim() || 'python3';
 }
@@ -211,7 +217,9 @@ function resolveDoclingVlmPreset(options = {}) {
 function resolvePaddleOcrVlPython(options = {}) {
   return String(
     options.paddleocrVlPython
+    || options.pythonCommand
     || process.env.PAPERNEXUS_PADDLEOCR_VL_PYTHON
+    || process.env.PAPERNEXUS_PYTHON_COMMAND
     || 'python3'
   ).trim() || 'python3';
 }
@@ -1832,6 +1840,7 @@ export const __markerTestables = {
   resolveMarkPdfDownPython,
   resolveMarkerBlockBlacklist,
   resolveOpenDataLoaderPdfPython,
+  resolveDoclingPython,
   resolvePaddleOcrVlPython,
   resolvePaddleOcrVlServerUrl,
   resolveRemoteMarkerHost,

@@ -33,6 +33,32 @@ test('normalizePdfParser defaults to markpdfdown and accepts other parsers', () 
   assert.equal(__markerTestables.normalizePdfParser('unexpected'), 'docling');
 });
 
+test('shared pythonCommand is used by python-based parsers unless a parser-specific override is set', () => {
+  assert.equal(
+    __markerTestables.resolveMarkPdfDownPython({ pythonCommand: '/usr/local/bin/shared-python' }),
+    '/usr/local/bin/shared-python'
+  );
+  assert.equal(
+    __markerTestables.resolveOpenDataLoaderPdfPython({ pythonCommand: '/usr/local/bin/shared-python' }),
+    '/usr/local/bin/shared-python'
+  );
+  assert.equal(
+    __markerTestables.resolveDoclingPython({ pythonCommand: '/usr/local/bin/shared-python' }),
+    '/usr/local/bin/shared-python'
+  );
+  assert.equal(
+    __markerTestables.resolvePaddleOcrVlPython({ pythonCommand: '/usr/local/bin/shared-python' }),
+    '/usr/local/bin/shared-python'
+  );
+  assert.equal(
+    __markerTestables.resolveMarkPdfDownPython({
+      pythonCommand: '/usr/local/bin/shared-python',
+      markpdfdownPython: '/usr/local/bin/markpdfdown-python'
+    }),
+    '/usr/local/bin/markpdfdown-python'
+  );
+});
+
 test('resolveMarkerBlockBlacklist normalizes configured marker block names', () => {
   assert.deepEqual(
     __markerTestables.resolveMarkerBlockBlacklist({

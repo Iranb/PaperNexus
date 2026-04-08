@@ -267,11 +267,16 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     ),
     pdfParser: firstDefined(options.pdfParser, materializeConfig.pdfParser, analyzeConfig.pdfParser, watchConfig.pdfParser),
     pdfCommand: firstDefined(options.pdfCommand, materializeConfig.pdfCommand, analyzeConfig.pdfCommand, watchConfig.pdfCommand),
+    pythonCommand: firstDefined(options.pythonCommand, materializeConfig.pythonCommand, analyzeConfig.pythonCommand, watchConfig.pythonCommand),
     markpdfdownPython: firstDefined(
       options.markpdfdownPython,
       materializeConfig.markpdfdownPython,
       analyzeConfig.markpdfdownPython,
-      watchConfig.markpdfdownPython
+      watchConfig.markpdfdownPython,
+      options.pythonCommand,
+      materializeConfig.pythonCommand,
+      analyzeConfig.pythonCommand,
+      watchConfig.pythonCommand
     ),
     pdfParserSshHost: firstDefined(
       options.pdfParserSshHost,
@@ -283,13 +288,21 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       options.opendataloaderPdfPython,
       materializeConfig.opendataloaderPdfPython,
       analyzeConfig.opendataloaderPdfPython,
-      watchConfig.opendataloaderPdfPython
+      watchConfig.opendataloaderPdfPython,
+      options.pythonCommand,
+      materializeConfig.pythonCommand,
+      analyzeConfig.pythonCommand,
+      watchConfig.pythonCommand
     ),
     doclingPython: firstDefined(
       options.doclingPython,
       materializeConfig.doclingPython,
       analyzeConfig.doclingPython,
-      watchConfig.doclingPython
+      watchConfig.doclingPython,
+      options.pythonCommand,
+      materializeConfig.pythonCommand,
+      analyzeConfig.pythonCommand,
+      watchConfig.pythonCommand
     ),
     doclingCommand: firstDefined(
       options.doclingCommand,
@@ -362,6 +375,28 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       materializeConfig.mineruRemoteFailureMode,
       analyzeConfig.mineruRemoteFailureMode,
       watchConfig.mineruRemoteFailureMode
+    ),
+    paddleocrVlPython: firstDefined(
+      options.paddleocrVlPython,
+      materializeConfig.paddleocrVlPython,
+      analyzeConfig.paddleocrVlPython,
+      watchConfig.paddleocrVlPython,
+      options.pythonCommand,
+      materializeConfig.pythonCommand,
+      analyzeConfig.pythonCommand,
+      watchConfig.pythonCommand
+    ),
+    paddleocrVlServerUrl: firstDefined(
+      options.paddleocrVlServerUrl,
+      materializeConfig.paddleocrVlServerUrl,
+      analyzeConfig.paddleocrVlServerUrl,
+      watchConfig.paddleocrVlServerUrl
+    ),
+    paddleocrVlLayoutModel: firstDefined(
+      options.paddleocrVlLayoutModel,
+      materializeConfig.paddleocrVlLayoutModel,
+      analyzeConfig.paddleocrVlLayoutModel,
+      watchConfig.paddleocrVlLayoutModel
     ),
     pageRange: firstDefined(options.pageRange, materializeConfig.pageRange, analyzeConfig.pageRange, watchConfig.pageRange),
     pdfSshHost: firstDefined(options.pdfSshHost, materializeConfig.pdfSshHost, analyzeConfig.pdfSshHost, watchConfig.pdfSshHost),

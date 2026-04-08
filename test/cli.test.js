@@ -246,7 +246,7 @@ test('CLI defaults to markpdfdown for configured PDF analyze runs', async () => 
       },
       analyze: {
         name: 'configured-markpdfdown',
-        markpdfdownPython: './fake-python.sh'
+        pythonCommand: './fake-python.sh'
       },
       llm: {
         provider: 'openai',

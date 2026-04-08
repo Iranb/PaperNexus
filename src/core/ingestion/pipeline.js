@@ -4081,6 +4081,7 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
     let converted = await convertPdfToMarkdown(sourceState.inputPath, {
       pdfParser: options.pdfParser,
       pdfCommand: options.pdfCommand,
+      pythonCommand: options.pythonCommand,
       force: Boolean(sourceState.markdownCacheNeedsRefresh),
       markpdfdownPython: options.markpdfdownPython,
       opendataloaderPdfPython: options.opendataloaderPdfPython,
@@ -4925,10 +4926,32 @@ export async function analyzeCorpus(inputPath, options = {}) {
             ? firstDefinedValue(
               options.pdfCommand,
               options.markpdfdownPython,
+              options.pythonCommand,
               previousManifest?.pdfCommand,
               process.env.PAPERNEXUS_MARKPDFDOWN_PYTHON,
+              process.env.PAPERNEXUS_PYTHON_COMMAND,
               'python3'
             )
+            : pdfParser === 'opendataloader'
+              ? firstDefinedValue(
+                options.pdfCommand,
+                options.opendataloaderPdfPython,
+                options.pythonCommand,
+                previousManifest?.pdfCommand,
+                process.env.PAPERNEXUS_OPENDATALOADER_PDF_PYTHON,
+                process.env.PAPERNEXUS_PYTHON_COMMAND,
+                'python3'
+              )
+              : pdfParser === 'paddleocr-vl'
+                ? firstDefinedValue(
+                  options.pdfCommand,
+                  options.paddleocrVlPython,
+                  options.pythonCommand,
+                  previousManifest?.pdfCommand,
+                  process.env.PAPERNEXUS_PADDLEOCR_VL_PYTHON,
+                  process.env.PAPERNEXUS_PYTHON_COMMAND,
+                  'python3'
+                )
             : firstDefinedValue(
               options.pdfCommand,
               options.doclingCommand,

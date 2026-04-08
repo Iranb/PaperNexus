@@ -18,9 +18,8 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
     "name": "GCD",
     "semanticExtraction": "llm-primary",
     "pdfParser": "markpdfdown",
-    "markpdfdownPython": "python3",
+    "pythonCommand": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
-    "doclingPython": "python3",
     "doclingCommand": "docling",
     "doclingPdfBackend": "pdfplumber",
     "doclingUseVlm": false,
@@ -62,9 +61,8 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze.name` | string | `GCD` |
 | `analyze.semanticExtraction` | string | `llm-primary` |
 | `analyze.pdfParser` | string | `markpdfdown` |
-| `analyze.markpdfdownPython` | string | `python3` |
+| `analyze.pythonCommand` | string | `python3` |
 | `analyze.mineruHttpUrl` | string | `http://127.0.0.1:30000` |
-| `analyze.doclingPython` | string | `python3` |
 | `analyze.doclingCommand` | string | `docling` |
 | `analyze.doclingPdfBackend` | string | `pdfplumber` |
 | `analyze.doclingUseVlm` | boolean | `false` |

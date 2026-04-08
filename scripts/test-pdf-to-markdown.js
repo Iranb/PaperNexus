@@ -65,13 +65,15 @@ function buildPdfOptions(flags, config) {
   const materializeConfig = getSection(config, 'materialize');
   const llmConfig = getSection(config, 'llm');
   const ollamaConfig = getSection(config, 'ollama');
+  const pythonCommand = firstDefined(flags['python-command'], materializeConfig.pythonCommand, analyzeConfig.pythonCommand);
   return {
     pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'markpdfdown'),
     pdfCommand: firstDefined(flags['pdf-cmd'], materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
-    markpdfdownPython: firstDefined(flags['markpdfdown-python'], materializeConfig.markpdfdownPython, analyzeConfig.markpdfdownPython),
-    opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], materializeConfig.opendataloaderPdfPython, analyzeConfig.opendataloaderPdfPython),
+    pythonCommand,
+    markpdfdownPython: firstDefined(flags['markpdfdown-python'], materializeConfig.markpdfdownPython, analyzeConfig.markpdfdownPython, pythonCommand),
+    opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], materializeConfig.opendataloaderPdfPython, analyzeConfig.opendataloaderPdfPython, pythonCommand),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
-    doclingPython: firstDefined(flags['docling-python'], materializeConfig.doclingPython, analyzeConfig.doclingPython),
+    doclingPython: firstDefined(flags['docling-python'], materializeConfig.doclingPython, analyzeConfig.doclingPython, pythonCommand),
     doclingCommand: firstDefined(flags['docling-cmd'], materializeConfig.doclingCommand, analyzeConfig.doclingCommand),
     doclingUseVlm: toBoolean(firstDefined(flags['docling-vlm'], materializeConfig.doclingUseVlm, analyzeConfig.doclingUseVlm), false),
     doclingVlmPreset: firstDefined(flags['docling-vlm-preset'], materializeConfig.doclingVlmPreset, analyzeConfig.doclingVlmPreset),
@@ -84,7 +86,7 @@ function buildPdfOptions(flags, config) {
     mineruCommand: firstDefined(flags['mineru-cmd'], materializeConfig.mineruCommand, analyzeConfig.mineruCommand),
     mineruHttpUrl: firstDefined(flags['mineru-http-url'], materializeConfig.mineruHttpUrl, analyzeConfig.mineruHttpUrl, materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
     mineruRemoteFailureMode: firstDefined(flags['mineru-remote-failure'], materializeConfig.mineruRemoteFailureMode, analyzeConfig.mineruRemoteFailureMode, 'error'),
-    paddleocrVlPython: firstDefined(flags['paddleocr-vl-python'], materializeConfig.paddleocrVlPython, analyzeConfig.paddleocrVlPython),
+    paddleocrVlPython: firstDefined(flags['paddleocr-vl-python'], materializeConfig.paddleocrVlPython, analyzeConfig.paddleocrVlPython, pythonCommand),
     paddleocrVlServerUrl: firstDefined(flags['paddleocr-vl-server-url'], materializeConfig.paddleocrVlServerUrl, analyzeConfig.paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1'),
     paddleocrVlLayoutModel: firstDefined(flags['paddleocr-vl-layout-model'], materializeConfig.paddleocrVlLayoutModel, analyzeConfig.paddleocrVlLayoutModel, 'PP-DocLayout-S'),
     pdfParseTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], materializeConfig.pdfParseTimeoutMs, analyzeConfig.pdfParseTimeoutMs), undefined),
@@ -225,6 +227,7 @@ function buildTimingComparison(configuredProbe, fallbackProbe) {
 function printUsage() {
   console.log(`Usage:
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--config <path>] [--no-config] [--force] [--json]
+  node ./scripts/test-pdf-to-markdown.js <pdf-path> [--python-command <python>]
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--verify-docling-fallback] [--fallback-primary-parser <parser>]
 
 Behavior:
