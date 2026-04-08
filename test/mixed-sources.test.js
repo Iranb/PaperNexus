@@ -444,3 +444,77 @@ test('scrubDegeneratePapers removes degenerate-title papers from the graph even 
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('scrubDegeneratePapers rebuilds missing snapshots for retained papers before pruning degenerate entries', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scrub-recover-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scrub-recover-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const badPdfPath = path.join(tempCorpusRoot, 'bad-paper.pdf');
+  const goodMarkdownPath = path.join(tempCorpusRoot, 'good-paper.md');
+  const fakeDoclingPath = path.join(tempCorpusRoot, 'fake-docling.sh');
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    await fs.writeFile(badPdfPath, 'fake pdf payload\n', 'utf8');
+    await fs.writeFile(goodMarkdownPath, '# Good Paper\n\n## Abstract\n\nKeep me.\n', 'utf8');
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'out_dir=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) out_dir="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$out_dir"',
+        'base="$(basename "$pdf_path" .pdf)"',
+        'cat > "$out_dir/$base.md" <<\'EOF\'',
+        '## Abstract',
+        '',
+        'Degenerate parser output.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const [{ analyzeCorpus, scrubDegeneratePapers }, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await analyzeCorpus(tempCorpusRoot, {
+      name: 'scrub-degenerate-recover-test',
+      force: true,
+      pdfParser: 'docling',
+      doclingCommand: fakeDoclingPath
+    });
+
+    const manifestBefore = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const goodEntry = manifestBefore.sources.find((entry) => path.basename(entry.inputPath) === 'good-paper.md');
+    assert.ok(goodEntry, 'expected good-paper.md to be tracked');
+    await corpusStore.removeSemanticPaperSnapshot(tempCorpusRoot, goodEntry.sourceKey);
+
+    const result = await scrubDegeneratePapers(tempCorpusRoot, {
+      rootPath: tempCorpusRoot,
+      quiet: true
+    });
+
+    assert.equal(result.removedSourceCount, 1);
+    const recoveredSnapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, goodEntry.sourceKey);
+    assert.ok(recoveredSnapshot, 'expected the retained paper snapshot to be rebuilt');
+    assert.equal(recoveredSnapshot.paperTitle, 'Good Paper');
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

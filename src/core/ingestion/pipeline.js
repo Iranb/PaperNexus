@@ -4480,19 +4480,100 @@ function createDegenerateScrubChangeSummary(remainingCount, removedCount) {
   };
 }
 
-async function recanonicalizeManifestEntries(rootPath, manifestEntries = []) {
+function buildScrubRecoveryOptions(manifest = {}, options = {}) {
+  const parser = normalizePdfParser(firstDefinedValue(options.pdfParser, manifest.pdfParser));
+  const manifestPdfCommand = firstDefinedValue(manifest.pdfCommand, manifest.markerCommand, manifest.mineruCommand);
+  return {
+    ...options,
+    quiet: true,
+    pdfParser: parser,
+    pdfCommand: firstDefinedValue(options.pdfCommand, manifestPdfCommand),
+    markpdfdownPython: firstDefinedValue(
+      options.markpdfdownPython,
+      parser === 'markpdfdown' ? manifestPdfCommand : undefined
+    ),
+    opendataloaderPdfPython: firstDefinedValue(
+      options.opendataloaderPdfPython,
+      parser === 'opendataloader' ? manifestPdfCommand : undefined
+    ),
+    markerCommand: firstDefinedValue(
+      options.markerCommand,
+      parser === 'marker' ? manifestPdfCommand : undefined
+    ),
+    mineruCommand: firstDefinedValue(
+      options.mineruCommand,
+      parser === 'mineru' ? manifestPdfCommand : undefined
+    ),
+    doclingCommand: firstDefinedValue(
+      options.doclingCommand,
+      parser === 'docling' ? manifestPdfCommand : undefined
+    )
+  };
+}
+
+async function recoverMissingSemanticSnapshot(rootPath, entry, manifest = {}, options = {}) {
+  const sourceState = createSourceStateFromManifestEntry(entry);
+  const cachedPaper = {
+    paperId: entry.paperId || `paper:${stableHash(sourceState.sourceKey)}`,
+    sourceMarkdownPath: entry.sourceMarkdownPath || entry.markdownCachePath || null,
+    sourceFingerprint: entry.sourceFingerprint || entry.fingerprint || null
+  };
+
+  const parsedFromCache = await loadParsedPaperFromMarkdownCache(sourceState, cachedPaper);
+  if (parsedFromCache) {
+    const semanticPaper = buildSemanticPaperView(parsedFromCache);
+    await saveSemanticPaperSnapshot(rootPath, entry.sourceKey, semanticPaper);
+    return {
+      semanticPaper,
+      recoveredFrom: 'markdown-cache'
+    };
+  }
+
+  if (!sourceState.inputPath || !await fileExists(sourceState.inputPath)) {
+    return {
+      semanticPaper: null,
+      recoveredFrom: null
+    };
+  }
+
+  const materialized = await materializeSemanticPaper(
+    rootPath,
+    sourceState,
+    buildScrubRecoveryOptions(manifest, options)
+  );
+  await saveSemanticPaperSnapshot(rootPath, entry.sourceKey, materialized.semanticPaper);
+  return {
+    semanticPaper: materialized.semanticPaper,
+    recoveredFrom: 'source-rematerialized'
+  };
+}
+
+async function recanonicalizeManifestEntries(rootPath, manifestEntries = [], manifest = {}, options = {}) {
   if (!manifestEntries.length) {
-    return [];
+    return {
+      sources: [],
+      removedEntries: []
+    };
   }
 
   const materializedSources = [];
+  const removedEntries = [];
   for (const entry of manifestEntries) {
-    const snapshot = await loadSemanticPaperSnapshot(rootPath, entry.sourceKey);
+    let snapshot = await loadSemanticPaperSnapshot(rootPath, entry.sourceKey);
     if (!snapshot) {
-      throw new Error(
-        `Cannot scrub degenerate papers because ${entry.sourceKey} is missing its semantic snapshot. `
-        + 'Run `papernexus analyze --force` first to rebuild the corpus state.'
-      );
+      const recovered = await recoverMissingSemanticSnapshot(rootPath, entry, manifest, options);
+      snapshot = recovered.semanticPaper;
+      if (!snapshot) {
+        removedEntries.push({
+          sourceKey: entry.sourceKey,
+          inputPath: entry.inputPath,
+          paperId: entry.paperId || null,
+          paperTitle: entry.paperTitle || null,
+          sourceMissing: true,
+          recoveryFailed: true
+        });
+        continue;
+      }
     }
 
     materializedSources.push({
@@ -4503,26 +4584,32 @@ async function recanonicalizeManifestEntries(rootPath, manifestEntries = []) {
   }
 
   if (!materializedSources.length) {
-    return [];
+    return {
+      sources: [],
+      removedEntries
+    };
   }
 
   const { normalizedRecords } = canonicalizeMaterializedSources(materializedSources);
-  return normalizedRecords
-    .map((record) => {
-      const previousEntry = record.sourceState.previous || {};
-      return {
-        ...previousEntry,
-        ...buildManifestEntry(
-          rootPath,
-          createSourceStateFromManifestEntry(previousEntry),
-          record.semanticPaper,
-          previousEntry.markerCommand || null
-        ),
-        excludedReason: null,
-        excludedAt: null
-      };
-    })
-    .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
+  return {
+    sources: normalizedRecords
+      .map((record) => {
+        const previousEntry = record.sourceState.previous || {};
+        return {
+          ...previousEntry,
+          ...buildManifestEntry(
+            rootPath,
+            createSourceStateFromManifestEntry(previousEntry),
+            record.semanticPaper,
+            previousEntry.markerCommand || null
+          ),
+          excludedReason: null,
+          excludedAt: null
+        };
+      })
+      .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
+    removedEntries
+  };
 }
 
 async function materializeSourceStates(rootPath, sourceStates, options = {}) {
@@ -5802,14 +5889,21 @@ export async function scrubDegeneratePapers(target, options = {}) {
       return latestManifest;
     }
 
-    const recanonicalizedSources = await recanonicalizeManifestEntries(rootPath, keptEntries);
+    const {
+      sources: recanonicalizedSources,
+      removedEntries: unrecoverableEntries
+    } = await recanonicalizeManifestEntries(rootPath, keptEntries, latestManifest, options);
+    removedSources.push(...unrecoverableEntries);
     const scrubbedManifest = {
       ...latestManifest,
       indexedAt: new Date().toISOString(),
       lastChangeSummary: createDegenerateScrubChangeSummary(recanonicalizedSources.length, removedSources.length),
       sources: recanonicalizedSources
     };
-    await Promise.all(degenerateEntries.map((entry) => removeSemanticPaperSnapshot(rootPath, entry.sourceKey)));
+    await Promise.all(
+      [...degenerateEntries, ...unrecoverableEntries]
+        .map((entry) => removeSemanticPaperSnapshot(rootPath, entry.sourceKey))
+    );
     await saveSourceManifest(rootPath, scrubbedManifest);
     await removeStagedCorpusBuild(rootPath);
     return scrubbedManifest;
