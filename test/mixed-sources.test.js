@@ -364,3 +364,83 @@ test('analyzeCorpus refreshes stale cached pdf snapshots when the stored title i
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('scrubDegeneratePapers removes degenerate-title papers from the graph even when the source file still exists', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scrub-degenerate-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scrub-degenerate-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const badPdfPath = path.join(tempCorpusRoot, 'bad-paper.pdf');
+  const goodMarkdownPath = path.join(tempCorpusRoot, 'good-paper.md');
+  const fakeDoclingPath = path.join(tempCorpusRoot, 'fake-docling.sh');
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    await fs.writeFile(badPdfPath, 'fake pdf payload\n', 'utf8');
+    await fs.writeFile(goodMarkdownPath, '# Good Paper\n\n## Abstract\n\nKeep me.\n', 'utf8');
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'out_dir=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) out_dir="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$out_dir"',
+        'base="$(basename "$pdf_path" .pdf)"',
+        'cat > "$out_dir/$base.md" <<\'EOF\'',
+        '## Abstract',
+        '',
+        'Degenerate parser output.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const [{ analyzeCorpus, scrubDegeneratePapers }, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await analyzeCorpus(tempCorpusRoot, {
+      name: 'scrub-degenerate-direct-test',
+      force: true,
+      pdfParser: 'docling',
+      doclingCommand: fakeDoclingPath
+    });
+
+    const manifestBefore = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(manifestBefore.sources.length, 2);
+
+    const result = await scrubDegeneratePapers(tempCorpusRoot, {
+      rootPath: tempCorpusRoot,
+      quiet: true
+    });
+
+    assert.equal(result.removedSourceCount, 1);
+    assert.equal(result.purgedMissingSourceCount, 0);
+    assert.equal(result.meta.paperCount, 1);
+
+    const manifestAfter = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(manifestAfter.sources.length, 1);
+    assert.equal(path.basename(manifestAfter.sources[0].inputPath), 'good-paper.md');
+
+    const corpus = await corpusStore.loadCorpus(tempCorpusRoot);
+    const paperNodes = corpus.graph.nodes.filter((node) => node.type === 'Paper');
+    assert.equal(paperNodes.length, 1);
+    assert.equal(paperNodes[0].name, 'Good Paper');
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

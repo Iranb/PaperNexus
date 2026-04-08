@@ -37,6 +37,7 @@ Commands:
   papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
+  papernexus scrub-degenerate-papers [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
   papernexus catalyst-backfill [<path>] [--name <corpus>] [--semantic-extraction <llm-assisted|llm-primary>] [--force]
   papernexus backup-export [archive-path] [--corpus <name>]
@@ -125,6 +126,7 @@ Examples:
   papernexus impact "Graph-Augmented Literature Mapping for Biomedical Discovery" --corpus ml-papers
   papernexus ideas "experiment planning with evidence tracing" --corpus ml-papers
   papernexus brainstorm "semi-supervised learning" --corpus ml-papers --mode diverge --hops 2
+  papernexus scrub-degenerate-papers --corpus ml-papers
   papernexus serve
 `;
 
@@ -1971,6 +1973,36 @@ async function main() {
   if (command === 'clean') {
     const cleanedRoot = await runtime.cleanCorpus(resolveConfiguredCorpus(flags, config, positionals[0], configBaseDir));
     console.log(`Removed PaperNexus index from ${cleanedRoot}`);
+    return;
+  }
+
+  if (command === 'scrub-degenerate-papers' || command === 'prune-degenerate-papers') {
+    const rootPath = await runtime.resolveCorpus(resolveConfiguredCorpus(flags, config, positionals[0], configBaseDir));
+    const result = await runtime.scrubDegeneratePapers(rootPath, {
+      quiet: Boolean(flags.quiet),
+      rootPath
+    });
+    const quiet = Boolean(flags.quiet);
+
+    if (quiet) {
+      console.log(
+        `Scrubbed degenerate papers for "${result.meta.name}" - removed ${result.removedSourceCount} sources, purged ${result.purgedMissingSourceCount} missing sources`
+      );
+    } else {
+      console.log(`Scrubbed degenerate papers for "${result.meta.name}" at ${result.rootPath}`);
+      console.log(`Removed ${result.removedSourceCount} degenerate source${result.removedSourceCount === 1 ? '' : 's'}.`);
+      console.log(`Purged ${result.purgedMissingSourceCount} missing source${result.purgedMissingSourceCount === 1 ? '' : 's'}.`);
+      if (result.removedSources?.length) {
+        const preview = result.removedSources
+          .slice(0, 8)
+          .map((entry) => `- ${path.basename(entry.inputPath || entry.sourceKey)}${entry.sourceMissing ? ' (missing source)' : ''}`)
+          .join('\n');
+        console.log(preview);
+      } else {
+        console.log('No degenerate sources were found.');
+      }
+      console.log(runtime.renderStatus(result.meta));
+    }
     return;
   }
 

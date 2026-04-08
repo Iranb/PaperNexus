@@ -56,6 +56,7 @@ import {
   loadSemanticPaperSnapshot,
   removeStagedCorpusBuild,
   removeStage2JobState,
+  resolveCorpus,
   resolveGraphStorageMode,
   removeSemanticPaperSnapshot,
   saveCorpus,
@@ -4470,6 +4471,60 @@ function canonicalizeMaterializedSources(materializedSources = []) {
   };
 }
 
+function createDegenerateScrubChangeSummary(remainingCount, removedCount) {
+  return {
+    added: 0,
+    updated: 0,
+    removed: removedCount,
+    reused: remainingCount
+  };
+}
+
+async function recanonicalizeManifestEntries(rootPath, manifestEntries = []) {
+  if (!manifestEntries.length) {
+    return [];
+  }
+
+  const materializedSources = [];
+  for (const entry of manifestEntries) {
+    const snapshot = await loadSemanticPaperSnapshot(rootPath, entry.sourceKey);
+    if (!snapshot) {
+      throw new Error(
+        `Cannot scrub degenerate papers because ${entry.sourceKey} is missing its semantic snapshot. `
+        + 'Run `papernexus analyze --force` first to rebuild the corpus state.'
+      );
+    }
+
+    materializedSources.push({
+      sourceState: createSourceStateFromManifestEntry(entry),
+      semanticPaper: snapshot,
+      markerCommand: entry.markerCommand || null
+    });
+  }
+
+  if (!materializedSources.length) {
+    return [];
+  }
+
+  const { normalizedRecords } = canonicalizeMaterializedSources(materializedSources);
+  return normalizedRecords
+    .map((record) => {
+      const previousEntry = record.sourceState.previous || {};
+      return {
+        ...previousEntry,
+        ...buildManifestEntry(
+          rootPath,
+          createSourceStateFromManifestEntry(previousEntry),
+          record.semanticPaper,
+          previousEntry.markerCommand || null
+        ),
+        excludedReason: null,
+        excludedAt: null
+      };
+    })
+    .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
+}
+
 async function materializeSourceStates(rootPath, sourceStates, options = {}) {
   const materializedSources = [];
   const failedSources = [];
@@ -5702,6 +5757,141 @@ export async function writeIndexCorpus(inputPath, options = {}) {
     reused: false,
     enhancement,
     stage: 'index-written'
+  };
+}
+
+export async function scrubDegeneratePapers(target, options = {}) {
+  const rootPath = options.rootPath
+    ? path.resolve(options.rootPath)
+    : await resolveCorpus(target);
+  const manifest = await loadSourceManifest(rootPath);
+  if (!manifest) {
+    throw new Error(`No source manifest found in ${rootPath}. Run \`papernexus analyze\` first.`);
+  }
+
+  const removedSources = [];
+  const nextManifest = await withFileLock(getCorpusLockPath(rootPath), async () => {
+    const latestManifest = await loadSourceManifest(rootPath);
+    if (!latestManifest) {
+      throw new Error(`No source manifest found in ${rootPath}. Run \`papernexus analyze\` first.`);
+    }
+
+    const keptEntries = [];
+    const degenerateEntries = [];
+    for (const entry of latestManifest.sources || []) {
+      const snapshot = await loadSemanticPaperSnapshot(rootPath, entry.sourceKey);
+      const degenerate = paperHasDegenerateTitle(snapshot || entry, entry.inputPath || entry.sourcePath || '');
+      if (!degenerate) {
+        keptEntries.push(entry);
+        continue;
+      }
+
+      const sourceMissing = !(await fileExists(entry.inputPath || ''));
+      const removedRecord = {
+        sourceKey: entry.sourceKey,
+        inputPath: entry.inputPath,
+        paperId: entry.paperId || snapshot?.paperId || null,
+        paperTitle: snapshot?.paperTitle || entry.paperTitle || null,
+        sourceMissing
+      };
+      removedSources.push(removedRecord);
+      degenerateEntries.push(removedRecord);
+    }
+
+    if (!removedSources.length) {
+      return latestManifest;
+    }
+
+    const recanonicalizedSources = await recanonicalizeManifestEntries(rootPath, keptEntries);
+    const scrubbedManifest = {
+      ...latestManifest,
+      indexedAt: new Date().toISOString(),
+      lastChangeSummary: createDegenerateScrubChangeSummary(recanonicalizedSources.length, removedSources.length),
+      sources: recanonicalizedSources
+    };
+    await Promise.all(degenerateEntries.map((entry) => removeSemanticPaperSnapshot(rootPath, entry.sourceKey)));
+    await saveSourceManifest(rootPath, scrubbedManifest);
+    await removeStagedCorpusBuild(rootPath);
+    return scrubbedManifest;
+  }, options.lockOptions);
+
+  if (!removedSources.length) {
+    return {
+      rootPath,
+      meta: await loadCorpusMeta(rootPath),
+      manifest: nextManifest,
+      removedSources,
+      removedSourceCount: 0,
+      purgedMissingSourceCount: 0,
+      reused: true,
+      stage: 'degenerate-scrubbed'
+    };
+  }
+
+  const manifestInput = resolveManifestInputPath(nextManifest);
+  if (nextManifest.sources?.length) {
+    await buildGraphCorpus(manifestInput, {
+      ...options,
+      rootPath
+    });
+    await mergeGraphCorpus(manifestInput, {
+      ...options,
+      rootPath
+    });
+    const result = await writeIndexCorpus(manifestInput, {
+      ...options,
+      rootPath
+    });
+    return {
+      ...result,
+      manifest: nextManifest,
+      removedSources,
+      removedSourceCount: removedSources.length,
+      purgedMissingSourceCount: removedSources.filter((entry) => entry.sourceMissing).length,
+      stage: 'degenerate-scrubbed'
+    };
+  }
+
+  const emptyGraph = createKnowledgeGraph();
+  const emptyMeta = await createMeta({
+    name: nextManifest.corpusName || path.basename(rootPath),
+    rootPath,
+    graph: emptyGraph,
+    sourceMode: nextManifest.sourceMode || 'markdown',
+    problems: [],
+    semanticPapers: [],
+    pdfParser: nextManifest.pdfParser || null,
+    pdfCommand: nextManifest.pdfCommand || nextManifest.markerCommand || nextManifest.mineruCommand || null,
+    semanticExtractionMode: nextManifest.semanticExtractionMode || 'heuristic-only',
+    changes: nextManifest.lastChangeSummary || null,
+    acceptedCrossPaperJudgments: 0,
+    failedSources: [],
+    sourceCount: 0
+  });
+  const committedManifest = {
+    ...nextManifest,
+    indexedAt: emptyMeta.indexedAt
+  };
+  await commitPreparedCorpusIndex({
+    rootPath,
+    graph: emptyGraph,
+    meta: emptyMeta,
+    manifest: committedManifest,
+    sourceStateByKey: null,
+    analysisOptions: options,
+    cleanupStagedBuild: true
+  });
+
+  return {
+    rootPath,
+    graph: emptyGraph,
+    meta: emptyMeta,
+    manifest: committedManifest,
+    removedSources,
+    removedSourceCount: removedSources.length,
+    purgedMissingSourceCount: removedSources.filter((entry) => entry.sourceMissing).length,
+    reused: false,
+    stage: 'degenerate-scrubbed'
   };
 }
 

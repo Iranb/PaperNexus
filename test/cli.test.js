@@ -321,6 +321,86 @@ test('CLI test-pdf-config reuses the standalone PDF config probe script', async 
   }
 });
 
+test('CLI scrub-degenerate-papers removes degenerate graph sources and purges missing backing files', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-scrub-degenerate-'));
+  const badPdfPath = path.join(workspaceRoot, 'bad-paper.pdf');
+  const goodMarkdownPath = path.join(workspaceRoot, 'good-paper.md');
+  const fakeDoclingPath = path.join(workspaceRoot, 'fake-docling.sh');
+
+  try {
+    await fs.writeFile(badPdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(goodMarkdownPath, '# Good Paper\n\n## Abstract\n\nKeep me.\n', 'utf8');
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'out_dir=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) out_dir="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$out_dir"',
+        'base="$(basename "$pdf_path" .pdf)"',
+        'cat > "$out_dir/$base.md" <<\'EOF\'',
+        '## Abstract',
+        '',
+        'Degenerate parser output.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    await fs.writeFile(path.join(workspaceRoot, 'config.json'), `${JSON.stringify({
+      sources: {
+        inputs: ['.']
+      },
+      storage: {
+        home: '.configured-home',
+        indexDir: './index-store'
+      },
+      analyze: {
+        name: 'degenerate-scrub-test',
+        pdfParser: 'docling',
+        doclingCommand: './fake-docling.sh'
+      }
+    }, null, 2)}\n`);
+
+    await execFileAsync('node', [cliPath, 'analyze', '--force'], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+
+    const corpusStore = await import('../src/storage/corpus-store.js');
+    const manifestBefore = await corpusStore.loadSourceManifest(path.join(workspaceRoot, 'index-store'));
+    const degenerateEntry = manifestBefore.sources.find((entry) => path.basename(entry.inputPath) === 'bad-paper.pdf');
+    assert.ok(degenerateEntry, 'expected the degenerate PDF source to be tracked before scrubbing');
+    assert.ok(await fs.stat(corpusStore.getSemanticPaperSnapshotPath(path.join(workspaceRoot, 'index-store'), degenerateEntry.sourceKey)));
+
+    await fs.rm(badPdfPath, { force: true });
+
+    const scrubRun = await execFileAsync('node', [cliPath, 'scrub-degenerate-papers'], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+
+    assert.match(scrubRun.stdout, /Removed 1 degenerate source/);
+    assert.match(scrubRun.stdout, /Purged 1 missing source/);
+
+    const manifestAfter = await corpusStore.loadSourceManifest(path.join(workspaceRoot, 'index-store'));
+    assert.equal(manifestAfter.sources.length, 1);
+    assert.equal(path.basename(manifestAfter.sources[0].inputPath), 'good-paper.md');
+
+    const metaAfter = await corpusStore.loadCorpusMeta(path.join(workspaceRoot, 'index-store'));
+    assert.equal(metaAfter.paperCount, 1);
+    await assert.rejects(fs.access(corpusStore.getSemanticPaperSnapshotPath(path.join(workspaceRoot, 'index-store'), degenerateEntry.sourceKey)));
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('CLI can analyze multiple configured source directories from config.json', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-multi-source-'));
   const inputA = path.join(workspaceRoot, 'papers-a');
