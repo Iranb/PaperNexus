@@ -81,6 +81,21 @@ export function buildInterdisciplinaryPotentialReport(graph, params = {}) {
       const domainDistance = scoreDomainDistance(domainDistanceMatrix, targetDomain, domain);
       const bridgeStrength = clampScore(Number(bridgeEntry?.score || 0) / 4.5);
       const takeawaySupport = clampScore(domainTakeaways.length / 3);
+      const depthOfIntegration = clampScore(
+        (bridgeStrength * 0.4)
+        + (clampScore(sharedMechanisms.length / 3) * 0.35)
+        + (takeawaySupport * 0.25)
+      );
+      const multiStageDisciplinaryEngagement = clampScore(
+        (clampScore(Math.min(1, bridgeNodeCount / 3)) * 0.45)
+        + (clampScore(Math.min(1, domainTakeaways.length / 3)) * 0.35)
+        + (latentNeighborOverlap * 0.2)
+      );
+      const innovationPayoff = clampScore(
+        (clampScore(domainDistance) * 0.45)
+        + (bridgeStrength * 0.3)
+        + (takeawaySupport * 0.25)
+      );
       const interdisciplinaryPotentialScore = clampScore(
         (bridgeStrength * 0.34)
         + (clampScore(domainDistance) * 0.24)
@@ -88,15 +103,26 @@ export function buildInterdisciplinaryPotentialReport(graph, params = {}) {
         + (takeawaySupport * 0.12)
         + (latentNeighborOverlap * 0.12)
       );
+      const noveltyPlusFeasibility = clampScore(
+        (innovationPayoff * 0.55)
+        + (depthOfIntegration * 0.25)
+        + (multiStageDisciplinaryEngagement * 0.2)
+      );
 
       return {
         domain,
         interdisciplinaryPotentialScore,
+        depthOfIntegration,
+        multiStageDisciplinaryEngagement,
+        innovationPayoff,
+        noveltyPlusFeasibility,
         bridgeNodeCount,
         sharedMechanisms,
         communityBridgeWeight: Number(communityBridgeWeight.toFixed(4)),
         domainDistance,
         topTakeaways: domainTakeaways,
+        supportingPapers: unique(domainTakeaways.flatMap((entry) => entry.supporting_papers || [])).slice(0, 8),
+        selectionRationale: `Rank ${domain} highly when it offers ${sharedMechanisms.length || 0} shared mechanisms, ${domainTakeaways.length} grounded takeaways, and a domain distance of ${domainDistance}.`,
         evidence: {
           crossCommunityBridges: Number(profileEntry?.bridgeCount || 0),
           latentNeighborOverlap,

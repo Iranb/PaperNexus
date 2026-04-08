@@ -7,6 +7,7 @@ import {
 import { buildStructuralAnalogy } from './analogy.js';
 import { buildBridgeRetrieval } from './bridge-retrieval.js';
 import { queryCrossDomainBridges } from './domain-bridges.js';
+import { buildIdeaCatalystPacketBundle } from './idea-catalyst-packets.js';
 import { normalizeDomainTags, normalizeFieldOfStudy } from './domain-taxonomy.js';
 import { buildInterdisciplinaryPotentialRanking } from './interdisciplinary-ranking.js';
 import { EDGE_TYPES, NODE_TYPES } from './schema.js';
@@ -22,6 +23,11 @@ function normalizeMechanismQuery(value) {
     return normalizeAbstractMechanismNames(value.split(','));
   }
   return [];
+}
+
+function normalizeCatalystDomainLabel(value, fallback = '') {
+  const text = String(value || '').trim();
+  return text || fallback;
 }
 
 function collectNodeDomains(node) {
@@ -445,6 +451,8 @@ export function buildDomainRankedScoutingQuery(graph, params = {}) {
 export function buildCatalystQuery(graph, params = {}) {
   const targetMechanisms = normalizeMechanismQuery(params.mechanisms || params.mechanism);
   const bridgeResult = queryCrossDomainBridges(graph, params);
+  const fineGrainedDomain = normalizeCatalystDomainLabel(params.fineGrainedDomain, bridgeResult.targetDomain);
+  const coarseGrainedDomain = normalizeCatalystDomainLabel(params.coarseGrainedDomain, bridgeResult.targetDomain);
   const scouting = buildDomainRankedScoutingQuery(graph, params);
   const mechanismTraversal = buildMechanismTraversal(graph, {
     mechanisms: targetMechanisms.length
@@ -490,11 +498,12 @@ export function buildCatalystQuery(graph, params = {}) {
       coverage: entry.coverage
     }))
   };
-
-  return {
+  const result = {
     contractVersion: CATALYST_QUERY_CONTRACT_VERSION,
     bridgeContractVersion: bridgeResult.contractVersion,
     targetDomain: bridgeResult.targetDomain,
+    fineGrainedDomain,
+    coarseGrainedDomain,
     abstractChallenge: bridgeResult.abstractChallenge,
     targetMechanisms,
     relevancePolicy: bridgeResult.relevancePolicy,
@@ -509,5 +518,23 @@ export function buildCatalystQuery(graph, params = {}) {
     structuralAnalogy,
     interdisciplinaryPotentialRanking,
     coverage
+  };
+  const packetBundle = buildIdeaCatalystPacketBundle(graph, result, {
+    targetDomain: bridgeResult.targetDomain,
+    fineGrainedDomain,
+    coarseGrainedDomain,
+    abstractChallenge: bridgeResult.abstractChallenge,
+    mechanisms: targetMechanisms,
+    numSourceDomains: params.numSourceDomains,
+    relevanceThreshold: params.relevanceThreshold,
+    limit: params.limit
+  });
+
+  return {
+    ...result,
+    researchQuestions: packetBundle.decomposition.research_questions,
+    remainingChallenges: packetBundle.target_domain_analysis[0]?.remaining_challenges || [],
+    crossDomainSearches: packetBundle.cross_domain_queries,
+    packetBundle
   };
 }

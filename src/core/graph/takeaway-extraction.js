@@ -58,6 +58,10 @@ export function extractTakeawaysFromBridgeNodes(graph, params = {}) {
       mechanism: mechanismNodes[0]?.name || mechanisms[0] || bridge.nodeName,
       source_domain_formulation: buildSourceFormulation({ bridge, mechanisms }),
       mechanism_explanation: mechanismExplanation,
+      selection_rationale: bridge.matchedChallenge
+        ? `${bridge.nodeName} was selected because it directly matches the challenge "${bridge.matchedChallenge}" in ${bridge.domain}.`
+        : `${bridge.nodeName} was selected as transferable evidence from ${bridge.domain}.`,
+      supporting_papers: Array.isArray(bridge.evidence?.paperTitles) ? bridge.evidence.paperTitles.slice(0, 5) : [],
       kg_evidence: {
         node_id: bridge.nodeId,
         node_type: bridge.nodeType,
