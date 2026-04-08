@@ -37,6 +37,8 @@ Commands:
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
   papernexus logs watch
+  papernexus test-pdf-config <pdf-path> [--json] [--verify-docling-fallback]
+  papernexus test-pdf-to-markdown <pdf-path> [--json] [--verify-docling-fallback]
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus apikey [--provider <name>] [--base-url <url>]  Set LLM API key securely
   papernexus setup
@@ -85,6 +87,7 @@ Examples:
   papernexus init
   papernexus service install
   papernexus logs watch
+  papernexus test-pdf-config ./paper.pdf --json
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus analyze ./papers --name ml-papers
   papernexus analyze ./papers --name ml-papers --concurrency 4
@@ -164,3 +167,10 @@ Examples:
 | `setup` | Print connection snippets and setup guidance for MCP clients. | `papernexus setup` |
 | `serve` | Run the browser UI, authenticated HTTP API, and remote HTTP MCP surface. | `papernexus serve [--host 127.0.0.1] [--port 4821] [--api-token &lt;token&gt;]` |
 | `mcp` | Run PaperNexus as a local stdio MCP server. | `papernexus mcp` |
+
+## Other
+
+| Command | Purpose | Synopsis |
+| --- | --- | --- |
+| `test-pdf-config` | See synopsis and in-command help. | `papernexus test-pdf-config &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
+| `test-pdf-to-markdown` | See synopsis and in-command help. | `papernexus test-pdf-to-markdown &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |

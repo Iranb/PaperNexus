@@ -93,6 +93,12 @@ papernexus service status
 papernexus logs watch
 ```
 
+To verify your current parser configuration against a single PDF before a full corpus run:
+
+```bash
+papernexus test-pdf-config ./paper.pdf --json
+```
+
 ## Most Common Commands
 
 ```bash

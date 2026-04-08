@@ -43,6 +43,8 @@ Commands:
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
   papernexus logs watch
+  papernexus test-pdf-config <pdf-path> [--json] [--verify-docling-fallback]
+  papernexus test-pdf-to-markdown <pdf-path> [--json] [--verify-docling-fallback]
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus apikey [--provider <name>] [--base-url <url>]  Set LLM API key securely
   papernexus setup
@@ -91,6 +93,7 @@ Examples:
   papernexus init
   papernexus service install
   papernexus logs watch
+  papernexus test-pdf-config ./paper.pdf --json
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus analyze ./papers --name ml-papers
   papernexus analyze ./papers --name ml-papers --concurrency 4
@@ -930,6 +933,33 @@ async function handleLogsCommand(positionals, config, configBaseDir) {
   process.stdout.write(content.endsWith('\n') ? content : `${content}\n`);
 }
 
+async function handleTestPdfConfigCommand(rawArgs = []) {
+  const scriptPath = fileURLToPath(new URL('../../scripts/test-pdf-to-markdown.js', import.meta.url));
+  const execFile = promisify(nodeExecFile);
+
+  try {
+    const result = await execFile(process.execPath, [scriptPath, ...rawArgs], {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024
+    });
+    if (result.stdout) {
+      process.stdout.write(result.stdout);
+    }
+    if (result.stderr) {
+      process.stderr.write(result.stderr);
+    }
+  } catch (error) {
+    if (error.stdout) {
+      process.stdout.write(error.stdout);
+    }
+    if (error.stderr) {
+      process.stderr.write(error.stderr);
+    }
+    throw error;
+  }
+}
+
 async function handleServiceCommand(flags, positionals, config, configPath) {
   const [action = 'status'] = positionals;
   if (!['install', 'uninstall', 'status'].includes(action)) {
@@ -1551,6 +1581,11 @@ async function main() {
 
   if (command === 'probe') {
     await handleProbeLlmCommand(flags, config);
+    return;
+  }
+
+  if (command === 'test-pdf-config' || command === 'test-pdf-to-markdown') {
+    await handleTestPdfConfigCommand(rest);
     return;
   }
 

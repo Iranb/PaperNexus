@@ -272,6 +272,55 @@ test('CLI defaults to markpdfdown for configured PDF analyze runs', async () => 
   }
 });
 
+test('CLI test-pdf-config reuses the standalone PDF config probe script', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-test-pdf-config-'));
+  const fakePdfPath = path.join(workspaceRoot, 'paper.pdf');
+  const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(fakePdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'server_url=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    --server-url) server_url="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'printf "# Config Test\\n\\n## Abstract\\n\\nRemote server: %s\\n" "$server_url" > "$output"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    await fs.writeFile(path.join(workspaceRoot, 'config.json'), `${JSON.stringify({
+      analyze: {
+        pdfParser: 'paddleocr-vl',
+        paddleocrVlPython: './fake-python.sh',
+        paddleocrVlServerUrl: 'http://127.0.0.1:8080/v1'
+      }
+    }, null, 2)}\n`);
+
+    const probeRun = await execFileAsync('node', [cliPath, 'test-pdf-config', 'paper.pdf', '--json'], {
+      cwd: workspaceRoot,
+      env: process.env
+    });
+
+    const payload = JSON.parse(probeRun.stdout);
+    assert.equal(payload.result.parser, 'paddleocr-vl');
+    assert.equal(payload.result.generated, true);
+    assert.match(payload.result.markdownPath, /paddleocr-vl/);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('CLI can analyze multiple configured source directories from config.json', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-multi-source-'));
   const inputA = path.join(workspaceRoot, 'papers-a');
