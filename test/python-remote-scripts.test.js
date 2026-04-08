@@ -79,6 +79,19 @@ test('PaperNexus skill scripts live under skill directories and skills do not po
   }
 });
 
+test('PaperNexusIdeaCatalyst exposes exactly one canonical skill file and one canonical scripts directory', async () => {
+  const catalystRoot = path.join(skillRoot, 'PaperNexusIdeaCatalyst');
+  const entries = await fs.readdir(catalystRoot, { withFileTypes: true });
+  const skillFiles = entries.filter((entry) => entry.isFile() && /^SKILL.*\.md$/.test(entry.name)).map((entry) => entry.name).sort();
+  const scriptDirs = entries.filter((entry) => entry.isDirectory() && entry.name.startsWith('scripts')).map((entry) => entry.name).sort();
+
+  assert.deepEqual(skillFiles, ['SKILL.md']);
+  assert.deepEqual(scriptDirs, ['scripts']);
+
+  await fs.access(path.join(catalystRoot, 'SKILL.md'));
+  await fs.access(path.join(catalystRoot, 'scripts', 'pn_idea_catalyst.py'));
+});
+
 async function createImportFixture() {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-remote-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-py-remote-workspace-'));

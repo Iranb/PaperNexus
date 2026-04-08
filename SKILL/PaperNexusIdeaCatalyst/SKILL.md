@@ -7,6 +7,18 @@ description: Use this skill when the goal is to decompose a research problem, se
 
 Use this skill when the user wants interdisciplinary ideation grounded in the current PaperNexus graph.
 
+## Canonical Entry
+
+This directory has exactly one canonical skill document:
+
+- `SKILL/PaperNexusIdeaCatalyst/SKILL.md`
+
+And exactly one canonical script entry:
+
+- `SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py`
+
+Do not create or rely on local duplicate copies such as `SKILL 2.md` or `scripts 2/`. Those are stale local artifacts, not supported skill entry points.
+
 ## Live Graph Policy
 
 - use the skill-local wrapper over remote HTTP MCP
