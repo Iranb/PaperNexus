@@ -39,6 +39,7 @@ function getSkillScriptPath(...segments) {
 
 test('PaperNexus skill scripts live under skill directories and skills do not point agents at top-level scripts', async () => {
   const canonicalSkillScripts = [
+    ['PaperNexusMainGraphName', 'scripts', 'pn_main_graph_name.py'],
     ['PaperNexus', 'scripts', 'pn_common.py'],
     ['PaperNexus', 'scripts', 'pn_stage_sync.py'],
     ['PaperNexus', 'scripts', 'pn_import_submit.py'],
@@ -68,6 +69,7 @@ test('PaperNexus skill scripts live under skill directories and skills do not po
   }
 
   for (const skillDoc of [
+    'PaperNexusMainGraphName/SKILL.md',
     'PaperNexus/SKILL.md',
     'PaperNexusAgenticReasoning/SKILL.md',
     'PaperNexusBatchImport/SKILL.md',
@@ -76,6 +78,32 @@ test('PaperNexus skill scripts live under skill directories and skills do not po
   ]) {
     const text = await fs.readFile(getSkillScriptPath(skillDoc), 'utf8');
     assert.doesNotMatch(text, /\bpython3 scripts\/pn_/);
+  }
+});
+
+test('pn_main_graph_name.py resolves the current live corpus name over remote HTTP MCP', async () => {
+  const fixture = await createImportFixture();
+  const port = 56200 + Math.floor(Math.random() * 500);
+  const scriptPath = path.join(repoRoot, 'SKILL', 'PaperNexusMainGraphName', 'scripts', 'pn_main_graph_name.py');
+
+  try {
+    const server = await startServer(fixture, port, { enableImports: false });
+    try {
+      const result = await runPythonPath(scriptPath, [
+        '--json',
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
+        '--token', 'secret-token',
+      ]);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.primaryGraphName, 'python-remote-test');
+      assert.equal(payload.resolvedBy, 'single-remote-corpus');
+      assert.ok(Array.isArray(payload.availableCorpora));
+      assert.ok(payload.availableCorpora.includes('python-remote-test'));
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
   }
 });
 

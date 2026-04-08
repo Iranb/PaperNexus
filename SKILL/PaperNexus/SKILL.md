@@ -24,6 +24,7 @@ Default runtime settings:
 
 Preferred wrappers:
 
+- `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`
 - `python3 SKILL/PaperNexus/scripts/pn_batch_import.py`
 - `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
 - `python3 SKILL/PaperNexus/scripts/pn_import_submit.py`
@@ -50,6 +51,8 @@ The wrappers are thin adapters over these remote MCP tools:
 ## Remote Import Checklist
 
 1. Resolve `mcp-url`, token, and corpus before touching the graph.
+   If the current corpus name is unknown, query it first with:
+   `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py --mcp-url <mcp-url>`
 2. Understand the path boundary:
    `import_workflow submit` sends `serverFilePath` to the remote PaperNexus server, so that path must exist on the server machine, not on the agent's local filesystem.
 3. If the paper is already on the server machine, use `--server-file-path`.
