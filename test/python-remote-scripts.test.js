@@ -40,6 +40,7 @@ function getSkillScriptPath(...segments) {
 test('PaperNexus skill scripts live under skill directories and skills do not point agents at top-level scripts', async () => {
   const canonicalSkillScripts = [
     ['PaperNexusMainGraphName', 'scripts', 'pn_main_graph_name.py'],
+    ['PaperNexusPaperRefresh', 'scripts', 'pn_paper_refresh.py'],
     ['PaperNexus', 'scripts', 'pn_common.py'],
     ['PaperNexus', 'scripts', 'pn_stage_sync.py'],
     ['PaperNexus', 'scripts', 'pn_import_submit.py'],
@@ -70,6 +71,7 @@ test('PaperNexus skill scripts live under skill directories and skills do not po
 
   for (const skillDoc of [
     'PaperNexusMainGraphName/SKILL.md',
+    'PaperNexusPaperRefresh/SKILL.md',
     'PaperNexus/SKILL.md',
     'PaperNexusAgenticReasoning/SKILL.md',
     'PaperNexusBatchImport/SKILL.md',
@@ -99,6 +101,41 @@ test('pn_main_graph_name.py resolves the current live corpus name over remote HT
       assert.equal(payload.resolvedBy, 'single-remote-corpus');
       assert.ok(Array.isArray(payload.availableCorpora));
       assert.ok(payload.availableCorpora.includes('python-remote-test'));
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test('pn_paper_refresh.py force-refreshes one paper over remote HTTP MCP', async () => {
+  const fixture = await createImportFixture();
+  const port = 56300 + Math.floor(Math.random() * 500);
+  const scriptPath = path.join(repoRoot, 'SKILL', 'PaperNexusPaperRefresh', 'scripts', 'pn_paper_refresh.py');
+  const sourcePath = path.join(fixture.inputRoot, 'graph-augmented-literature-mapping.md');
+
+  try {
+    const server = await startServer(fixture, port, { enableImports: false });
+    try {
+      await fs.writeFile(
+        sourcePath,
+        '# Graph-Augmented Literature Mapping for Biomedical Discovery Revised\n\n## Abstract\n\nUpdated through the paper refresh skill.\n',
+        'utf8'
+      );
+
+      const result = await runPythonPath(scriptPath, [
+        '--json',
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
+        '--token', 'secret-token',
+        '--corpus', 'python-remote-test',
+        '--source', sourcePath
+      ]);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.contractVersion, 'paper-graph-refresh-v1');
+      assert.ok(Array.isArray(payload.refreshedSourceKeys));
+      assert.ok(payload.refreshedSourceKeys.includes(sourcePath));
+      assert.equal(payload.fastCommit.reused, false);
     } finally {
       await server.stop();
     }

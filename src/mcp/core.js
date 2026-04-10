@@ -192,6 +192,21 @@ export async function executeTool(name, args, options = {}) {
     return renderStatus(meta);
   }
 
+  if (name === 'refresh_paper_graph') {
+    const rootPath = await resolveCorpus(args.corpus);
+    const { refreshPaperGraphContent } = await import('../core/ingestion/pipeline.js');
+    return JSON.stringify(await refreshPaperGraphContent(rootPath, {
+      rootPath,
+      paperId: args.paperId,
+      sourceKey: args.sourceKey,
+      source: args.source,
+      paperTitle: args.paperTitle,
+      includeDuplicateGroup: args.includeDuplicateGroup !== false,
+      rebuildPdfMarkdown: args.rebuildPdfMarkdown !== false,
+      semanticExtraction: args.semanticExtraction
+    }), null, 2);
+  }
+
   if (name === 'research_lookup') {
     return executeResearchLookupTool(args, options);
   }

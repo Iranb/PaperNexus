@@ -25,6 +25,7 @@ Default runtime settings:
 Preferred wrappers:
 
 - `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`
+- `python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py`
 - `python3 SKILL/PaperNexus/scripts/pn_batch_import.py`
 - `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
 - `python3 SKILL/PaperNexus/scripts/pn_import_submit.py`
@@ -62,6 +63,8 @@ The wrappers are thin adapters over these remote MCP tools:
   Important operations: `submit`, `status`, `progress`, `queue_progress`, `log`, `wait`
 - `idea_catalyst`
   Used by `SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py`
+- `refresh_paper_graph`
+  Used by `SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py` to force-refresh one already-indexed paper or one duplicate group
 
 ## Remote Import Checklist
 
@@ -144,6 +147,25 @@ python3 SKILL/PaperNexus/scripts/pn_graph_query.py \
 - `summary.overallPercent`: aggregate progress across the returned task set
 
 Only call a paper synchronized when the returned task state says it is completed.
+
+## Single-Paper Graph Repair
+
+If one already-indexed paper has stale graph content, a bad title, or a parser-correctable snapshot issue, prefer the dedicated paper refresh wrapper:
+
+```bash
+python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py \
+  --mcp-url "http://<host>:4821/mcp" \
+  --corpus "<corpus>" \
+  --paper-id "<paper-id>" \
+  --json
+```
+
+Rules:
+
+- use this only for already-indexed papers
+- do not use it as an upload path
+- it refreshes one paper or one duplicate group, not the entire corpus
+- default behavior is to include the canonical duplicate group and rebuild PDF markdown before fast-committing the graph update
 
 ## Repo-Local Exception
 

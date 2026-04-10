@@ -184,6 +184,7 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(tools.tools.some((tool) => tool.name === 'research_briefing'));
   assert.ok(tools.tools.some((tool) => tool.name === 'import_workflow'));
   assert.ok(tools.tools.some((tool) => tool.name === 'idea_catalyst'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'refresh_paper_graph'));
 
   const prompts = await pending.request('prompts/list', {});
   assert.ok(prompts.prompts.some((prompt) => prompt.name === 'brainstorm_topic'));
@@ -390,6 +391,70 @@ test('import_workflow exposes task progress and queue progress over MCP', async 
   assert.equal(typeof queueProgressPayload.summary.overallPercent, 'number');
   assert.ok(Array.isArray(queueProgressPayload.tasks));
   assert.ok(queueProgressPayload.tasks.some((task) => task.id === submitted.task.id));
+});
+
+test('refresh_paper_graph force-refreshes one paper over MCP without rebuilding the whole corpus', async () => {
+  const localHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-paper-refresh-home-'));
+  const localCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-paper-refresh-corpus-'));
+  const localPaperPath = path.join(localCorpusRoot, 'refresh-target.md');
+  let localPending = null;
+
+  try {
+    await fs.writeFile(
+      localPaperPath,
+      '# Refresh Target Paper\n\n## Abstract\n\nOriginal abstract.\n\n## Method\n\nOriginal method.\n',
+      'utf8'
+    );
+
+    const [{ analyzeCorpus }, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+    await analyzeCorpus(localCorpusRoot, {
+      name: 'mcp-paper-refresh',
+      force: true
+    });
+
+    localPending = startMcpClient({
+      ...process.env,
+      PAPERNEXUS_HOME: localHome,
+      PAPERNEXUS_GRAPH_BACKEND: 'json'
+    });
+
+    await fs.writeFile(
+      localPaperPath,
+      '# Refresh Target Paper Revised\n\n## Abstract\n\nRevised abstract.\n\n## Method\n\nRevised method.\n',
+      'utf8'
+    );
+
+    const refreshResult = await localPending.request('tools/call', {
+      name: 'refresh_paper_graph',
+      arguments: {
+        corpus: localCorpusRoot,
+        source: localPaperPath
+      }
+    });
+    const refreshPayload = JSON.parse(refreshResult.content[0].text);
+    assert.equal(refreshPayload.contractVersion, 'paper-graph-refresh-v1');
+    assert.equal(refreshPayload.fastCommit.reused, false);
+    assert.ok(refreshPayload.refreshedSourceKeys.includes(localPaperPath));
+    assert.ok(refreshPayload.affectedSourceKeys.includes(localPaperPath));
+
+    const manifest = await corpusStore.loadSourceManifest(localCorpusRoot);
+    const manifestEntry = manifest.sources.find((entry) => entry.sourceKey === localPaperPath);
+    assert.ok(manifestEntry);
+    assert.equal(manifestEntry.paperTitle, 'Refresh Target Paper Revised');
+
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(localCorpusRoot, localPaperPath);
+    assert.ok(snapshot);
+    assert.equal(snapshot.paperTitle, 'Refresh Target Paper Revised');
+  } finally {
+    if (localPending) {
+      await localPending.close();
+    }
+    await fs.rm(localCorpusRoot, { recursive: true, force: true });
+    await fs.rm(localHome, { recursive: true, force: true });
+  }
 });
 
 test('MCP mutate_graph previews and applies validated graph edits', async () => {

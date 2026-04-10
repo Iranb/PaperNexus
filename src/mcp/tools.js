@@ -641,5 +641,49 @@ export const PAPERNEXUS_TOOLS = [
         }
       }
     }
+  },
+  {
+    name: 'refresh_paper_graph',
+    description: 'Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or root path. Omit to use the default corpus.'
+        },
+        paperId: {
+          type: 'string',
+          description: 'Exact paperId to refresh.'
+        },
+        sourceKey: {
+          type: 'string',
+          description: 'Exact manifest sourceKey to refresh.'
+        },
+        source: {
+          type: 'string',
+          description: 'Exact source/input path on the server. Accepts absolute paths or ~/... paths.'
+        },
+        paperTitle: {
+          type: 'string',
+          description: 'Exact normalized paper title to refresh.'
+        },
+        includeDuplicateGroup: {
+          type: 'boolean',
+          description: 'When true (default), refresh and recanonicalize the entire duplicate/canonical group that contains the selected paper.',
+          default: true
+        },
+        rebuildPdfMarkdown: {
+          type: 'boolean',
+          description: 'When true (default), force PDF markdown regeneration for matched PDF sources before graph refresh.',
+          default: true
+        },
+        semanticExtraction: {
+          type: 'string',
+          enum: ['auto', 'heuristic-only', 'llm-assisted', 'llm-primary'],
+          description: 'Optional semantic extraction mode override for the refresh run.'
+        }
+      }
+    }
   }
 ];

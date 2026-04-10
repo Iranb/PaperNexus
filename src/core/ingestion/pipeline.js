@@ -86,6 +86,7 @@ import {
 } from './markdown.js';
 import { postIngestionRefinement, precomputePaperGraphFragments } from './graph-precompute.js';
 import { countGraphPostprocessTasks, precomputeGraphPostprocess } from './graph-postprocess.js';
+import { isServerPathReference, resolveServerPathReference } from '../../lib/server-paths.js';
 
 const GENERIC_TERMS = new Set([
   'paper', 'study', 'approach', 'method', 'methods', 'framework', 'system', 'model', 'models',
@@ -4591,6 +4592,10 @@ async function recanonicalizeManifestEntries(rootPath, manifestEntries = [], man
   }
 
   const { normalizedRecords } = canonicalizeMaterializedSources(materializedSources);
+  await mapWithConcurrency(normalizedRecords, resolveMetadataConcurrency(options), async (record) => {
+    await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+    return record.sourceState.sourceKey;
+  });
   return {
     sources: normalizedRecords
       .map((record) => {
@@ -4609,6 +4614,285 @@ async function recanonicalizeManifestEntries(rootPath, manifestEntries = [], man
       })
       .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
     removedEntries
+  };
+}
+
+function normalizePaperRefreshTitle(value = '') {
+  return normalizeText(String(value || '')).replace(/\s+/g, ' ').trim();
+}
+
+function normalizePaperRefreshPath(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (isServerPathReference(raw)) {
+    return path.resolve(resolveServerPathReference(raw));
+  }
+  return path.resolve(raw);
+}
+
+function manifestEntryMatchesPaperRefresh(entry, reference = {}) {
+  const paperId = String(reference.paperId || '').trim();
+  const sourceKey = String(reference.sourceKey || '').trim();
+  const source = String(reference.source || '').trim();
+  const paperTitle = normalizePaperRefreshTitle(reference.paperTitle || reference.title || '');
+
+  if (!paperId && !sourceKey && !source && !paperTitle) {
+    throw new Error('Missing paper refresh selector. Pass paperId, sourceKey, source, or paperTitle.');
+  }
+
+  if (paperId && String(entry.paperId || '').trim() !== paperId) {
+    return false;
+  }
+
+  if (sourceKey && String(entry.sourceKey || '').trim() !== sourceKey) {
+    return false;
+  }
+
+  if (paperTitle) {
+    const candidateTitle = normalizePaperRefreshTitle(entry.paperTitle || '');
+    if (!candidateTitle || candidateTitle !== paperTitle) {
+      return false;
+    }
+  }
+
+  if (source) {
+    const requestedPath = normalizePaperRefreshPath(source);
+    const candidatePaths = unique([
+      entry.inputPath,
+      entry.sourcePath,
+      entry.sourceMarkdownPath,
+      entry.sourcePdfPath,
+      entry.markdownCachePath
+    ].filter(Boolean).map((candidate) => normalizePaperRefreshPath(candidate)));
+    if (!candidatePaths.includes(requestedPath)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function getManifestEntryPaperGroupKey(entry) {
+  return String(
+    entry.canonicalSourceKey
+    || entry.duplicateOfSourceKey
+    || entry.paperId
+    || entry.sourceKey
+    || ''
+  ).trim();
+}
+
+function formatPaperRefreshEntry(entry) {
+  return {
+    sourceKey: entry.sourceKey,
+    paperId: entry.paperId || null,
+    paperTitle: entry.paperTitle || null,
+    inputPath: entry.inputPath || entry.sourcePath || null,
+    activeInGraph: entry.activeInGraph !== false,
+    canonicalSourceKey: entry.canonicalSourceKey || entry.sourceKey,
+    duplicateOfSourceKey: entry.duplicateOfSourceKey || null
+  };
+}
+
+function summarizePaperRefreshChanges(totalSourceCount, refreshedCount, removedCount) {
+  return {
+    added: 0,
+    updated: Number(refreshedCount || 0),
+    removed: Number(removedCount || 0),
+    reused: Math.max(0, Number(totalSourceCount || 0) - Number(refreshedCount || 0) - Number(removedCount || 0))
+  };
+}
+
+async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = {}) {
+  const inputPath = String(entry.inputPath || entry.sourcePath || '').trim();
+  if (!inputPath) {
+    throw new Error(`Cannot refresh ${entry.sourceKey} because it does not have an inputPath.`);
+  }
+
+  if (!await fileExists(inputPath)) {
+    throw new Error(
+      `Cannot refresh ${entry.sourceKey} because its source file is missing at ${inputPath}. `
+      + 'Re-upload the paper or use `papernexus scrub-degenerate-papers` if it should be removed.'
+    );
+  }
+
+  const stats = await fs.stat(inputPath);
+  const fingerprint = createSourceFingerprint(stats);
+  const expectedMarkdownCachePath = resolveExpectedMarkdownCachePath(rootPath, {
+    sourceKey: entry.sourceKey,
+    inputPath,
+    kind: entry.kind,
+    fingerprint
+  }, analysisOptions);
+  const llmSemanticRequired = resolveSemanticExtractionPlan(analysisOptions).shouldAttempt;
+  const llmRelationRequired = canAttemptLlmRelations(analysisOptions);
+
+  return {
+    sourceKey: entry.sourceKey,
+    inputPath,
+    kind: entry.kind,
+    fingerprint,
+    sourceMtimeMs: Number(stats.mtimeMs || 0),
+    sourceSizeBytes: Number(stats.size || 0),
+    previous: entry,
+    markdownCachePath: expectedMarkdownCachePath,
+    markdownCacheFingerprint: fingerprint,
+    markdownCacheExists: await fileExists(expectedMarkdownCachePath),
+    markdownCacheNeedsRefresh: entry.kind === 'markdown'
+      ? true
+      : Boolean(analysisOptions.rebuildPdfMarkdown !== false && entry.kind === 'pdf'),
+    cachedPaper: null,
+    llmRefreshState: {
+      semanticRequired: llmSemanticRequired,
+      relationRequired: llmRelationRequired,
+      anyRequired: llmSemanticRequired || llmRelationRequired
+    },
+    reuseCachedMaterialization: false,
+    changeType: 'updated'
+  };
+}
+
+function resolvePaperRefreshSelection(manifest, reference = {}, options = {}) {
+  const manifestSources = Array.isArray(manifest?.sources) ? manifest.sources : [];
+  const matchedEntries = manifestSources.filter((entry) => manifestEntryMatchesPaperRefresh(entry, reference));
+  if (!matchedEntries.length) {
+    throw new Error('No manifest source matched the requested paper refresh selector.');
+  }
+
+  const groupKeys = unique(matchedEntries.map((entry) => getManifestEntryPaperGroupKey(entry)).filter(Boolean));
+  if (groupKeys.length > 1) {
+    const matches = matchedEntries
+      .map((entry) => `${entry.sourceKey} (${entry.paperTitle || entry.paperId || 'untitled'})`)
+      .join(', ');
+    throw new Error(
+      `The paper refresh selector matched multiple distinct paper groups. Narrow the request with sourceKey or source. Matches: ${matches}`
+    );
+  }
+
+  const includeDuplicateGroup = options.includeDuplicateGroup !== false;
+  const groupKey = groupKeys[0];
+  const affectedEntries = includeDuplicateGroup
+    ? manifestSources.filter((entry) => getManifestEntryPaperGroupKey(entry) === groupKey)
+    : matchedEntries;
+
+  return {
+    matchedEntries,
+    affectedEntries,
+    groupKey,
+    includeDuplicateGroup
+  };
+}
+
+export async function refreshPaperGraphContent(target, options = {}) {
+  const rootPath = options.rootPath
+    ? path.resolve(options.rootPath)
+    : await resolveCorpus(target);
+  const manifest = await loadSourceManifest(rootPath);
+  if (!manifest) {
+    throw new Error(`No source manifest found in ${rootPath}. Run \`papernexus analyze\` first.`);
+  }
+
+  const analysisOptions = {
+    ...options,
+    force: true,
+    enableLlmEnrichment: true,
+    semanticExtraction: normalizeSemanticExtractionMode(
+      firstDefinedValue(options.semanticExtraction, manifest.semanticExtractionMode, 'auto')
+    )
+  };
+
+  const refreshResult = await withFileLock(getCorpusLockPath(rootPath), async () => {
+    const latestManifest = await loadSourceManifest(rootPath);
+    if (!latestManifest) {
+      throw new Error(`No source manifest found in ${rootPath}. Run \`papernexus analyze\` first.`);
+    }
+
+    const selection = resolvePaperRefreshSelection(latestManifest, options, analysisOptions);
+    const refreshedSourceStates = await mapWithConcurrency(
+      selection.matchedEntries,
+      Math.min(resolveMetadataConcurrency(analysisOptions), Math.max(selection.matchedEntries.length, 1)),
+      (entry) => createPaperRefreshSourceState(rootPath, entry, analysisOptions)
+    );
+    const { failedSources } = await materializeSourceStates(rootPath, refreshedSourceStates, {
+      ...analysisOptions,
+      quiet: analysisOptions.quiet ?? true
+    });
+    if (failedSources.length) {
+      throw new Error(failedSources[0].message || `Failed to refresh ${failedSources[0].sourceKey}.`);
+    }
+
+    const {
+      sources: recanonicalizedSources,
+      removedEntries
+    } = await recanonicalizeManifestEntries(rootPath, selection.affectedEntries, latestManifest, analysisOptions);
+    if (!recanonicalizedSources.length) {
+      throw new Error('The requested paper refresh removed every source in its canonical group. Re-upload the paper before retrying.');
+    }
+
+    const excludedSourceKeys = new Set(selection.affectedEntries.map((entry) => entry.sourceKey));
+    const untouchedSources = (latestManifest.sources || []).filter((entry) => !excludedSourceKeys.has(entry.sourceKey));
+    const nextManifest = {
+      ...latestManifest,
+      indexedAt: new Date().toISOString(),
+      lastChangeSummary: summarizePaperRefreshChanges(
+        untouchedSources.length + recanonicalizedSources.length,
+        recanonicalizedSources.length,
+        removedEntries.length
+      ),
+      sources: [...untouchedSources, ...recanonicalizedSources].sort((left, right) => left.sourceKey.localeCompare(right.sourceKey))
+    };
+
+    if (removedEntries.length) {
+      await Promise.all(
+        removedEntries.map((entry) => removeSemanticPaperSnapshot(rootPath, entry.sourceKey))
+      );
+    }
+    await saveSourceManifest(rootPath, nextManifest);
+
+    return {
+      manifest: nextManifest,
+      matchedEntries: selection.matchedEntries,
+      affectedEntries: selection.affectedEntries,
+      refreshedSourceStates,
+      removedEntries
+    };
+  }, options.lockOptions);
+
+  const affectedSourceKeys = unique([
+    ...refreshResult.affectedEntries.map((entry) => entry.sourceKey),
+    ...refreshResult.removedEntries.map((entry) => entry.sourceKey)
+  ]).sort();
+  const commitResult = await fastCommitCorpus(resolveManifestInputPath(refreshResult.manifest), {
+    ...analysisOptions,
+    rootPath,
+    changedSourceKeys: affectedSourceKeys
+  });
+
+  return {
+    contractVersion: 'paper-graph-refresh-v1',
+    rootPath,
+    requested: {
+      paperId: options.paperId || '',
+      sourceKey: options.sourceKey || '',
+      source: options.source || '',
+      paperTitle: options.paperTitle || options.title || '',
+      includeDuplicateGroup: options.includeDuplicateGroup !== false,
+      rebuildPdfMarkdown: options.rebuildPdfMarkdown !== false,
+      semanticExtraction: analysisOptions.semanticExtraction
+    },
+    matchedEntries: refreshResult.matchedEntries.map(formatPaperRefreshEntry),
+    affectedEntries: refreshResult.affectedEntries.map(formatPaperRefreshEntry),
+    refreshedSourceKeys: refreshResult.refreshedSourceStates.map((entry) => entry.sourceKey).sort(),
+    affectedSourceKeys,
+    removedEntries: refreshResult.removedEntries.map(formatPaperRefreshEntry),
+    manifestIndexedAt: refreshResult.manifest.indexedAt,
+    changes: refreshResult.manifest.lastChangeSummary || null,
+    fastCommit: {
+      stage: commitResult.stage,
+      reused: Boolean(commitResult.reused),
+      syncJob: commitResult.syncJob || null
+    },
+    meta: commitResult.meta
   };
 }
 
