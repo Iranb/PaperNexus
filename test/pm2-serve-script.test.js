@@ -115,3 +115,64 @@ exit 99
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('pm2 wrapper can locate pm2 from a common home-local install path when PATH does not provide it', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pm2-bin-discovery-'));
+  const homeDir = path.join(tempDir, 'home');
+  const fakePm2Dir = path.join(homeDir, 'miniconda3', 'bin');
+  const fakePm2Path = path.join(fakePm2Dir, 'pm2');
+
+  await fs.mkdir(fakePm2Dir, { recursive: true });
+  await fs.writeFile(fakePm2Path, '#!/bin/sh\necho \"FAKE_PM2:$@\"\n', 'utf8');
+  await fs.chmod(fakePm2Path, 0o755);
+
+  try {
+    const { stdout } = await execFileAsync(scriptPath, ['status'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HOME: homeDir,
+        PATH: '/usr/bin:/bin'
+      }
+    });
+
+    assert.match(stdout, /FAKE_PM2:status papernexus-serve/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('pm2 wrapper can locate node from a common home-local install path for run mode', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-bin-discovery-'));
+  const homeDir = path.join(tempDir, 'home');
+  const fakeNodeDir = path.join(homeDir, 'miniconda3', 'bin');
+  const fakeNodePath = path.join(fakeNodeDir, 'node');
+  const logDir = path.join(tempDir, 'logs');
+
+  await fs.mkdir(fakeNodeDir, { recursive: true });
+  await fs.mkdir(logDir, { recursive: true });
+  await fs.writeFile(fakeNodePath, '#!/bin/sh\necho \"FAKE_NODE:$@\"\n', 'utf8');
+  await fs.chmod(fakeNodePath, 0o755);
+
+  try {
+    await assert.rejects(
+      execFileAsync(scriptPath, ['run'], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          PATH: '/usr/bin:/bin',
+          PAPERNEXUS_LOG_DIR: logDir,
+          SLEEP_BIN: '/bin/false'
+        }
+      })
+    );
+
+    const latestLog = path.join(logDir, (await fs.readdir(logDir)).sort().at(-1));
+    const log = await fs.readFile(latestLog, 'utf8');
+    assert.match(log, new RegExp(`node=${fakeNodePath.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}`));
+    assert.doesNotMatch(log, /unable to locate a usable node binary/i);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

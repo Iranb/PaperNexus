@@ -9,6 +9,109 @@ PM2_BIN="${PM2_BIN:-pm2}"
 NODE_BIN="${NODE_BIN:-node}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
 
+resolve_first_executable() {
+  local candidate=""
+  for candidate in "$@"; do
+    [[ -n "${candidate}" ]] || continue
+    if [[ "${candidate}" == "~/"* ]]; then
+      candidate="${HOME}/${candidate#~/}"
+    fi
+    if [[ -x "${candidate}" && ! -d "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    if command -v "${candidate}" >/dev/null 2>&1; then
+      command -v "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_node_bin() {
+  local previous_nullglob_state
+  local candidate=""
+  previous_nullglob_state="$(shopt -p nullglob || true)"
+  shopt -s nullglob
+
+  if resolve_first_executable \
+    "${NODE_BIN}" \
+    node \
+    "${HOME}/miniconda3/bin/node" \
+    "${HOME}/mambaforge/bin/node" \
+    "${HOME}/.npm-global/bin/node" \
+    /opt/homebrew/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node; then
+    if [[ -n "${previous_nullglob_state}" ]]; then
+      eval "${previous_nullglob_state}"
+    else
+      shopt -u nullglob
+    fi
+    return 0
+  fi
+
+  for candidate in "${HOME}"/.nvm/versions/node/*/bin/node; do
+    if resolve_first_executable "${candidate}"; then
+      if [[ -n "${previous_nullglob_state}" ]]; then
+        eval "${previous_nullglob_state}"
+      else
+        shopt -u nullglob
+      fi
+      return 0
+    fi
+  done
+
+  if [[ -n "${previous_nullglob_state}" ]]; then
+    eval "${previous_nullglob_state}"
+  else
+    shopt -u nullglob
+  fi
+  return 1
+}
+
+resolve_pm2_bin() {
+  local previous_nullglob_state
+  local candidate=""
+  previous_nullglob_state="$(shopt -p nullglob || true)"
+  shopt -s nullglob
+
+  if resolve_first_executable \
+    "${PM2_BIN}" \
+    pm2 \
+    "${HOME}/miniconda3/bin/pm2" \
+    "${HOME}/mambaforge/bin/pm2" \
+    "${HOME}/.npm-global/bin/pm2" \
+    /opt/homebrew/bin/pm2 \
+    /usr/local/bin/pm2 \
+    /usr/bin/pm2; then
+    if [[ -n "${previous_nullglob_state}" ]]; then
+      eval "${previous_nullglob_state}"
+    else
+      shopt -u nullglob
+    fi
+    return 0
+  fi
+
+  for candidate in "${HOME}"/.nvm/versions/node/*/bin/pm2; do
+    if resolve_first_executable "${candidate}"; then
+      if [[ -n "${previous_nullglob_state}" ]]; then
+        eval "${previous_nullglob_state}"
+      else
+        shopt -u nullglob
+      fi
+      return 0
+    fi
+  done
+
+  if [[ -n "${previous_nullglob_state}" ]]; then
+    eval "${previous_nullglob_state}"
+  else
+    shopt -u nullglob
+  fi
+  return 1
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -160,6 +263,12 @@ show_recent_logs() {
 run_serve() {
   local child_pid=""
   local stop_requested="0"
+  local resolved_node_bin=""
+
+  if ! resolved_node_bin="$(resolve_node_bin)"; then
+    printf '[%s] [pm2-wrapper] unable to locate a usable node binary\n' "$(date '+%F %T')" >&2
+    exit 127
+  fi
 
   forward_and_exit() {
     stop_requested="1"
@@ -179,11 +288,12 @@ run_serve() {
     {
       printf '[%s] [pm2-wrapper] starting papernexus serve\n' "$(date '+%F %T')"
       printf '[%s] [pm2-wrapper] repo=%s\n' "$(date '+%F %T') " "${REPO_ROOT}"
+      printf '[%s] [pm2-wrapper] node=%s\n' "$(date '+%F %T') " "${resolved_node_bin}"
     } >> "${log_file}"
 
     (
       cd "${REPO_ROOT}"
-      exec "${NODE_BIN}" ./src/cli/index.js serve "$@"
+      exec "${resolved_node_bin}" ./src/cli/index.js serve "$@"
     ) >> "${log_file}" 2>&1 &
     child_pid="$!"
 
@@ -219,24 +329,82 @@ run_serve() {
 }
 
 pm2_start() {
-  "${PM2_BIN}" start "${BASH_SOURCE[0]}" \
+  local resolved_pm2_bin=""
+  local resolved_node_bin=""
+  if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
+    printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
+    exit 127
+  fi
+  if ! resolved_node_bin="$(resolve_node_bin)"; then
+    printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
+    exit 127
+  fi
+  NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" start "${BASH_SOURCE[0]}" \
     --name "${APP_NAME}" \
     --interpreter /bin/bash \
     --cwd "${REPO_ROOT}" \
     --output /dev/null \
     --error /dev/null \
     -- run "$@"
-  "${PM2_BIN}" save
+  NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
 }
 
 pm2_restart() {
-  if "${PM2_BIN}" describe "${APP_NAME}" >/dev/null 2>&1; then
-    "${PM2_BIN}" restart "${APP_NAME}" --update-env
+  local resolved_pm2_bin=""
+  local resolved_node_bin=""
+  if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
+    printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
+    exit 127
+  fi
+  if ! resolved_node_bin="$(resolve_node_bin)"; then
+    printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
+    exit 127
+  fi
+  if NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" describe "${APP_NAME}" >/dev/null 2>&1; then
+    NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" restart "${APP_NAME}" --update-env
   else
     pm2_start "$@"
     return
   fi
-  "${PM2_BIN}" save
+  NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
+}
+
+pm2_stop() {
+  local resolved_pm2_bin=""
+  if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
+    printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
+    exit 127
+  fi
+  "${resolved_pm2_bin}" stop "${APP_NAME}"
+  "${resolved_pm2_bin}" save
+}
+
+pm2_delete() {
+  local resolved_pm2_bin=""
+  if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
+    printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
+    exit 127
+  fi
+  "${resolved_pm2_bin}" delete "${APP_NAME}"
+  "${resolved_pm2_bin}" save
+}
+
+pm2_status() {
+  local resolved_pm2_bin=""
+  if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
+    printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
+    exit 127
+  fi
+  "${resolved_pm2_bin}" status "${APP_NAME}"
+}
+
+pm2_logs() {
+  local resolved_pm2_bin=""
+  if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
+    printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
+    exit 127
+  fi
+  "${resolved_pm2_bin}" logs "${APP_NAME}"
 }
 
 main() {
@@ -255,18 +423,16 @@ main() {
       pm2_restart "$@"
       ;;
     stop)
-      "${PM2_BIN}" stop "${APP_NAME}"
-      "${PM2_BIN}" save
+      pm2_stop
       ;;
     delete)
-      "${PM2_BIN}" delete "${APP_NAME}"
-      "${PM2_BIN}" save
+      pm2_delete
       ;;
     status)
-      "${PM2_BIN}" status "${APP_NAME}"
+      pm2_status
       ;;
     logs)
-      "${PM2_BIN}" logs "${APP_NAME}"
+      pm2_logs
       ;;
     recent)
       show_recent_logs "$@"

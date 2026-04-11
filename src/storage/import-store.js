@@ -365,9 +365,8 @@ async function saveImportTask(rootPath, task) {
   await writeJson(taskPath, task);
 }
 
-function updateQueuedJob(queue, task) {
-  const index = queue.jobs.findIndex((job) => job.id === task.id);
-  const nextJob = {
+function createQueueJobSnapshot(task = {}) {
+  return {
     id: task.id,
     status: task.status,
     stage: task.stage,
@@ -380,6 +379,27 @@ function updateQueuedJob(queue, task) {
     fileCount: Array.isArray(task.files) ? task.files.length : 0,
     inputPaths: Array.isArray(task.inputPaths) ? task.inputPaths : []
   };
+}
+
+function queueJobMatchesTask(job = {}, task = {}) {
+  return JSON.stringify(createQueueJobSnapshot(task)) === JSON.stringify({
+    id: job.id,
+    status: job.status,
+    stage: job.stage,
+    progress: job.progress || null,
+    includeInGraph: Boolean(job.includeInGraph),
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    finishedAt: job.finishedAt || null,
+    trigger: job.trigger || 'api',
+    fileCount: Number(job.fileCount || 0),
+    inputPaths: Array.isArray(job.inputPaths) ? job.inputPaths : []
+  });
+}
+
+function updateQueuedJob(queue, task) {
+  const index = queue.jobs.findIndex((job) => job.id === task.id);
+  const nextJob = createQueueJobSnapshot(task);
 
   if (index === -1) queue.jobs.push(nextJob);
   else queue.jobs[index] = nextJob;
@@ -387,6 +407,82 @@ function updateQueuedJob(queue, task) {
 
 function removeQueuedJob(queue, taskId) {
   queue.jobs = (queue.jobs || []).filter((job) => job.id !== taskId);
+}
+
+async function loadImportTasksOnDisk(rootPath) {
+  const { tasksDir } = getImportPaths(rootPath);
+  if (!await fileExists(tasksDir)) {
+    return [];
+  }
+
+  const entries = await fs.readdir(tasksDir, { withFileTypes: true });
+  const tasks = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const task = await readJson(path.join(tasksDir, entry.name, 'task.json'), null);
+    if (task?.id) {
+      tasks.push(task);
+    }
+  }
+  return tasks;
+}
+
+function buildReconciledImportQueue(queue, tasks = []) {
+  const taskById = new Map(tasks.filter(Boolean).map((task) => [task.id, task]));
+  const seen = new Set();
+  let changed = false;
+  const jobs = [];
+
+  for (const job of queue.jobs || []) {
+    const task = taskById.get(job.id);
+    if (!task) {
+      jobs.push(job);
+      continue;
+    }
+    seen.add(task.id);
+    jobs.push(createQueueJobSnapshot(task));
+    if (!queueJobMatchesTask(job, task)) {
+      changed = true;
+    }
+  }
+
+  const missingTasks = tasks
+    .filter((task) => task?.id && !seen.has(task.id))
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.createdAt || 0) || 0;
+      const rightTime = Date.parse(right.createdAt || 0) || 0;
+      return leftTime - rightTime;
+    });
+  if (missingTasks.length) {
+    changed = true;
+    for (const task of missingTasks) {
+      jobs.push(createQueueJobSnapshot(task));
+    }
+  }
+
+  return {
+    changed,
+    queue: {
+      version: queue.version || IMPORT_SCHEMA_VERSION,
+      updatedAt: changed ? new Date().toISOString() : (queue.updatedAt || new Date(0).toISOString()),
+      jobs
+    }
+  };
+}
+
+export async function reconcileImportQueue(rootPath) {
+  const { queueLockPath } = getImportPaths(rootPath);
+  return withFileLock(queueLockPath, async () => {
+    const [queue, tasks] = await Promise.all([
+      loadImportQueue(rootPath),
+      loadImportTasksOnDisk(rootPath)
+    ]);
+    const reconciled = buildReconciledImportQueue(queue, tasks);
+    if (reconciled.changed) {
+      await saveImportQueue(rootPath, reconciled.queue);
+    }
+    return reconciled.queue;
+  });
 }
 
 export async function appendImportTaskLog(rootPath, taskId, entry = {}) {
@@ -556,7 +652,7 @@ export async function createImportTask(rootPath, options = {}) {
 }
 
 export async function listImportTasks(rootPath) {
-  const queue = await loadImportQueue(rootPath);
+  const queue = await reconcileImportQueue(rootPath);
   const tasks = await Promise.all(queue.jobs.map((job) => loadImportTask(rootPath, job.id)));
   const rawQueueOrderedTasks = buildQueueOrderedTasks(queue, tasks);
   const queueOrderedTasks = rawQueueOrderedTasks.map((task) => decorateTaskWithQueueProgress(task, rawQueueOrderedTasks));
@@ -607,8 +703,16 @@ async function updateTaskWithQueue(rootPath, taskId, mutate) {
 export async function reserveNextImportTask(rootPath) {
   const { queueLockPath } = getImportPaths(rootPath);
   return withFileLock(queueLockPath, async () => {
-    const queue = await loadImportQueue(rootPath);
-    const jobs = [...queue.jobs].sort((left, right) => {
+    const [queue, tasks] = await Promise.all([
+      loadImportQueue(rootPath),
+      loadImportTasksOnDisk(rootPath)
+    ]);
+    const reconciled = buildReconciledImportQueue(queue, tasks);
+    const activeQueue = reconciled.queue;
+    if (reconciled.changed) {
+      await saveImportQueue(rootPath, activeQueue);
+    }
+    const jobs = [...activeQueue.jobs].sort((left, right) => {
       const leftRunning = left.status === 'running' ? 0 : 1;
       const rightRunning = right.status === 'running' ? 0 : 1;
       if (leftRunning !== rightRunning) return leftRunning - rightRunning;
@@ -638,9 +742,9 @@ export async function reserveNextImportTask(rootPath) {
       message: `Running ${task.stage}`
     });
     await saveImportTask(rootPath, task);
-    updateQueuedJob(queue, task);
-    queue.updatedAt = now;
-    await saveImportQueue(rootPath, queue);
+    updateQueuedJob(activeQueue, task);
+    activeQueue.updatedAt = now;
+    await saveImportQueue(rootPath, activeQueue);
     await appendImportTaskLog(rootPath, task.id, {
       level: 'info',
       message: `reserved import task for stage ${task.stage}`

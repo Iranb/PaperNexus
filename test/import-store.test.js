@@ -264,3 +264,58 @@ test('quarantineImportTasks removes stale pending tasks from the active queue an
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
+
+test('listImportTasks reconciles stale queue.json statuses back to the task.json source of truth', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-reconcile-'));
+
+  try {
+    const {
+      createImportTask,
+      getImportPaths,
+      listImportTasks
+    } = await import('../src/storage/import-store.js');
+
+    const task = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'reconcile-paper.md',
+          contentBase64: Buffer.from('# Reconcile Paper\n\n## Abstract\n\nQueue repair test.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const { queuePath } = getImportPaths(rootPath);
+    const queue = JSON.parse(await fs.readFile(queuePath, 'utf8'));
+    queue.jobs = queue.jobs.map((job) => (
+      job.id === task.id
+        ? {
+            ...job,
+            status: 'failed',
+            stage: 'materialize',
+            progress: {
+              ...(job.progress || {}),
+              status: 'failed',
+              stage: 'materialize',
+              message: 'corrupted queue snapshot'
+            }
+          }
+        : job
+    ));
+    await fs.writeFile(queuePath, `${JSON.stringify(queue, null, 2)}\n`);
+
+    const listed = await listImportTasks(rootPath);
+    assert.equal(listed.tasks.length, 1);
+    assert.equal(listed.tasks[0].status, 'pending');
+    assert.equal(listed.tasks[0].stage, 'queued');
+
+    const repairedQueue = JSON.parse(await fs.readFile(queuePath, 'utf8'));
+    const repairedJob = repairedQueue.jobs.find((job) => job.id === task.id);
+    assert.equal(repairedJob.status, 'pending');
+    assert.equal(repairedJob.stage, 'queued');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
