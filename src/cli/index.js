@@ -7,6 +7,7 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileExists } from '../lib/fs.js';
 import { applyProcessConfig, getDefaultRuntimeConfigPath, getDefaultRuntimeConfigRoot, loadRuntimeConfig, resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
+import { collapseHomePath } from '../lib/server-paths.js';
 import { toNumber } from '../lib/utils.js';
 import { getWatchTmpLogPath } from '../lib/watch-log.js';
 
@@ -40,6 +41,9 @@ Commands:
   papernexus scrub-degenerate-papers [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
   papernexus catalyst-backfill [<path>] [--name <corpus>] [--semantic-extraction <llm-assisted|llm-primary>] [--force]
+  papernexus imports [status] [<corpus>] [--limit <n>] [--json]
+  papernexus imports running [<corpus>] [--limit <n>] [--json]
+  papernexus imports log [<task-id>] [<corpus>] [--task-id <id>] [--tail <n>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -143,6 +147,9 @@ Examples:
   papernexus backup-export
   papernexus backup-export ./papernexus-backup.tgz
   papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
+  papernexus imports status --corpus ml-papers
+  papernexus imports running --corpus ml-papers
+  papernexus imports log --corpus ml-papers --task-id imp:1234567890abcdef
   papernexus auth llm set --provider openai --base-url https://coding.dashscope.aliyuncs.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
   papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback" --mechanism "metacontrol policy" --corpus ml-papers
@@ -653,6 +660,7 @@ async function loadRuntimeModules() {
     mcpServer,
     httpServer,
     corpusStore,
+    importStore,
     registry,
     enhancementWorker,
     enhancementStore,
@@ -665,6 +673,7 @@ async function loadRuntimeModules() {
     import('../mcp/server.js'),
     import('../server/http.js'),
     import('../storage/corpus-store.js'),
+    import('../storage/import-store.js'),
     import('../storage/registry.js'),
     import('../core/enhancements/worker.js'),
     import('../storage/enhancement-store.js'),
@@ -679,6 +688,7 @@ async function loadRuntimeModules() {
     ...mcpServer,
     ...httpServer,
     ...corpusStore,
+    ...importStore,
     ...registry,
     ...enhancementWorker,
     ...enhancementStore,
@@ -1451,6 +1461,206 @@ function renderEnhancementSummary(summary) {
   ].join('\n');
 }
 
+function formatCliTimestamp(value) {
+  const parsed = Date.parse(String(value || ''));
+  if (!Number.isFinite(parsed)) {
+    return value ? String(value) : 'unknown';
+  }
+  return new Date(parsed).toLocaleString();
+}
+
+function formatCliPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '0%';
+  const rounded = Math.round(numeric * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1).replace(/\.0$/, '')}%`;
+}
+
+function presentCliPath(value) {
+  return collapseHomePath(String(value || '').trim());
+}
+
+function formatImportTaskFiles(task = {}) {
+  const files = Array.isArray(task.files) ? task.files : [];
+  if (!files.length) return 'no files';
+  const names = files
+    .slice(0, 3)
+    .map((file) => String(file?.originalName || file?.storedName || path.basename(String(file?.storedPath || ''))).trim())
+    .filter(Boolean);
+  if (!names.length) return 'no files';
+  return files.length > names.length
+    ? `${names.join(', ')} +${files.length - names.length} more`
+    : names.join(', ');
+}
+
+function renderImportTaskLines(task = {}) {
+  const progress = task.progress || {};
+  const stage = String(task.stage || progress.stage || 'queued').trim() || 'queued';
+  const status = String(task.status || progress.status || 'pending').trim() || 'pending';
+  const queueBits = [];
+  if (progress.queuePosition !== null && progress.queuePosition !== undefined) {
+    queueBits.push(`queue #${progress.queuePosition}`);
+  }
+  if (progress.queuedAhead !== null && progress.queuedAhead !== undefined) {
+    queueBits.push(`${progress.queuedAhead} ahead`);
+  }
+
+  const lines = [
+    `- ${task.id} · ${status}/${stage} · ${formatCliPercent(progress.percent)} · ${formatImportTaskFiles(task)}${queueBits.length ? ` · ${queueBits.join(', ')}` : ''}`
+  ];
+
+  if (progress.currentStep) {
+    lines.push(`  step: ${progress.currentStep}`);
+  }
+  if (progress.message) {
+    lines.push(`  message: ${progress.message}`);
+  }
+  if (task.error?.message) {
+    lines.push(`  error: ${task.error.message}`);
+  }
+  if (task.quarantine?.reason) {
+    lines.push(`  quarantine: ${task.quarantine.reason}`);
+  }
+  lines.push(`  updated: ${formatCliTimestamp(task.updatedAt || progress.lastEventAt || task.createdAt)}`);
+  return lines;
+}
+
+function renderImportQueueStatusPayload(payload = {}, options = {}) {
+  const summary = payload.summary || {};
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+  const runningTasks = tasks.filter((task) => String(task?.status || '').trim().toLowerCase() === 'running');
+  const pendingTasks = tasks
+    .filter((task) => String(task?.status || '').trim().toLowerCase() === 'pending')
+    .sort((left, right) => {
+      const leftPosition = Number(left?.progress?.queuePosition ?? Number.MAX_SAFE_INTEGER);
+      const rightPosition = Number(right?.progress?.queuePosition ?? Number.MAX_SAFE_INTEGER);
+      if (leftPosition !== rightPosition) return leftPosition - rightPosition;
+      const leftTime = Date.parse(left?.createdAt || 0) || 0;
+      const rightTime = Date.parse(right?.createdAt || 0) || 0;
+      return leftTime - rightTime;
+    });
+  const failedTasks = tasks
+    .filter((task) => String(task?.status || '').trim().toLowerCase() === 'failed')
+    .sort((left, right) => {
+      const leftTime = Date.parse(left?.updatedAt || left?.finishedAt || 0) || 0;
+      const rightTime = Date.parse(right?.updatedAt || right?.finishedAt || 0) || 0;
+      return rightTime - leftTime;
+    });
+  const previewLimit = Math.max(1, Number(options.limit || 5));
+  const corpusLabel = payload.corpusName ? ` for ${payload.corpusName}` : '';
+
+  const lines = [
+    `Import queue${corpusLabel}`,
+    `Root: ${presentCliPath(payload.rootPath)}`,
+    `Updated at: ${formatCliTimestamp(payload.updatedAt)}`,
+    `Summary: ${summary.total || 0} total, ${summary.pending || 0} pending, ${summary.running || 0} running, ${summary.completed || 0} completed, ${summary.failed || 0} failed`,
+    `Remaining: ${summary.remaining || 0}, overall progress: ${formatCliPercent(summary.overallPercent)}`
+  ];
+
+  if (summary.activeTaskId) {
+    lines.push(`Active task: ${summary.activeTaskId}${summary.activeStage ? ` (${summary.activeStage})` : ''}`);
+  }
+
+  if (runningTasks.length) {
+    lines.push('', 'Running:');
+    for (const task of runningTasks.slice(0, previewLimit)) {
+      lines.push(...renderImportTaskLines(task));
+    }
+  }
+
+  if (pendingTasks.length) {
+    lines.push('', 'Queued next:');
+    for (const task of pendingTasks.slice(0, previewLimit)) {
+      lines.push(...renderImportTaskLines(task));
+    }
+  }
+
+  if (failedTasks.length) {
+    lines.push('', 'Recent failures:');
+    for (const task of failedTasks.slice(0, previewLimit)) {
+      lines.push(...renderImportTaskLines(task));
+    }
+  }
+
+  if (!tasks.length) {
+    lines.push('', 'No import tasks recorded yet.');
+  }
+
+  return lines.join('\n');
+}
+
+function renderImportRunningPayload(payload = {}, options = {}) {
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+  const runningTasks = tasks.filter((task) => String(task?.status || '').trim().toLowerCase() === 'running');
+  const previewLimit = Math.max(1, Number(options.limit || runningTasks.length || 5));
+  const corpusLabel = payload.corpusName ? ` for ${payload.corpusName}` : '';
+
+  if (!runningTasks.length) {
+    return [
+      `No import tasks are currently running${corpusLabel}.`,
+      `Root: ${presentCliPath(payload.rootPath)}`,
+      `Updated at: ${formatCliTimestamp(payload.updatedAt)}`
+    ].join('\n');
+  }
+
+  const lines = [
+    `Running import tasks${corpusLabel}`,
+    `Root: ${presentCliPath(payload.rootPath)}`,
+    `Updated at: ${formatCliTimestamp(payload.updatedAt)}`,
+    `Active count: ${runningTasks.length}`
+  ];
+  for (const task of runningTasks.slice(0, previewLimit)) {
+    lines.push(...renderImportTaskLines(task));
+  }
+  return lines.join('\n');
+}
+
+function renderImportTaskLogPayload(payload = {}, options = {}) {
+  const task = payload.task || {};
+  const log = String(payload.log || '');
+  const lines = [
+    `Import log for ${task.id || payload.taskId || 'unknown task'}`,
+    `Root: ${presentCliPath(payload.rootPath)}`,
+    `Status: ${String(task.status || 'unknown')} / ${String(task.stage || task.progress?.stage || 'unknown')}`,
+    `Files: ${formatImportTaskFiles(task)}`,
+    `Updated at: ${formatCliTimestamp(task.updatedAt || task.progress?.lastEventAt || payload.updatedAt)}`
+  ];
+
+  if (task.progress?.message) {
+    lines.push(`Message: ${task.progress.message}`);
+  }
+  if (task.error?.message) {
+    lines.push(`Error: ${task.error.message}`);
+  }
+  if (task.quarantine?.reason) {
+    lines.push(`Quarantine: ${task.quarantine.reason}`);
+  }
+
+  const rawLines = log.trimEnd().split('\n');
+  const tailCount = Number(options.tail || 0);
+  const outputLines = tailCount > 0 ? rawLines.slice(-tailCount) : rawLines;
+  lines.push('', outputLines.filter(Boolean).length ? outputLines.join('\n') : 'No log entries recorded.');
+  return lines.join('\n');
+}
+
+function resolveImportsSubcommand(positionals = []) {
+  const supported = new Set(['status', 'running', 'log']);
+  const candidate = String(positionals[0] || '').trim().toLowerCase();
+  if (supported.has(candidate)) {
+    return {
+      subcommand: candidate,
+      taskId: candidate === 'log' ? String(positionals[1] || '').trim() : '',
+      corpus: candidate === 'log' ? positionals[2] : positionals[1]
+    };
+  }
+
+  return {
+    subcommand: 'status',
+    taskId: '',
+    corpus: positionals[0]
+  };
+}
+
 async function loadSelectedCorpus(runtime, corpusFlag) {
   const rootPath = await runtime.resolveCorpus(corpusFlag);
   return runtime.loadCorpus(rootPath);
@@ -1908,6 +2118,78 @@ async function main() {
   if (command === 'status') {
     const { meta } = await loadSelectedCorpus(runtime, resolveConfiguredCorpus(flags, config, positionals[0], configBaseDir));
     console.log(runtime.renderStatus(meta));
+    return;
+  }
+
+  if (command === 'imports') {
+    const importCommand = resolveImportsSubcommand(positionals);
+    const corpusCandidate = resolveConfiguredCorpus(flags, config, importCommand.corpus, configBaseDir);
+    const rootPath = await runtime.resolveCorpus(corpusCandidate);
+    const [payload, meta] = await Promise.all([
+      runtime.listImportTasks(rootPath),
+      runtime.loadCorpusMeta(rootPath).catch(() => null)
+    ]);
+    const queuePayload = {
+      ...payload,
+      rootPath,
+      corpusName: meta?.name || null
+    };
+
+    if (importCommand.subcommand === 'status') {
+      if (flags.json) {
+        console.log(JSON.stringify(queuePayload, null, 2));
+      } else {
+        console.log(renderImportQueueStatusPayload(queuePayload, {
+          limit: toNumber(flags.limit, 5)
+        }));
+      }
+      return;
+    }
+
+    if (importCommand.subcommand === 'running') {
+      const runningTasks = (queuePayload.tasks || []).filter((task) => String(task?.status || '').trim().toLowerCase() === 'running');
+      if (flags.json) {
+        console.log(JSON.stringify({
+          rootPath,
+          corpusName: queuePayload.corpusName,
+          updatedAt: queuePayload.updatedAt,
+          summary: queuePayload.summary,
+          tasks: runningTasks
+        }, null, 2));
+      } else {
+        console.log(renderImportRunningPayload({
+          ...queuePayload,
+          tasks: runningTasks
+        }, {
+          limit: toNumber(flags.limit, runningTasks.length || 5)
+        }));
+      }
+      return;
+    }
+
+    const requestedTaskId = String(flags['task-id'] || importCommand.taskId || queuePayload.summary?.activeTaskId || '').trim();
+    if (!requestedTaskId) {
+      throw new Error('Missing import task id. Use `papernexus imports log --task-id <id>` or run it while a task is active.');
+    }
+    const task = await runtime.loadImportTask(rootPath, requestedTaskId);
+    if (!task) {
+      throw new Error(`No import task found for ${requestedTaskId}.`);
+    }
+    const logPayload = {
+      rootPath,
+      corpusName: queuePayload.corpusName,
+      updatedAt: queuePayload.updatedAt,
+      taskId: requestedTaskId,
+      task,
+      log: await runtime.loadImportTaskLog(rootPath, requestedTaskId)
+    };
+    if (flags.json) {
+      console.log(JSON.stringify(logPayload, null, 2));
+    } else {
+      console.log(renderImportTaskLogPayload(logPayload, {
+        tail: toNumber(flags.tail, 0)
+      }));
+    }
     return;
   }
 

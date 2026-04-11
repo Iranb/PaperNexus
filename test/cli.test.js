@@ -46,6 +46,93 @@ async function spawnCli(args, options = {}) {
   });
 }
 
+async function createImportQueueFixture(namePrefix = 'cli-imports') {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), `${namePrefix}-home-`));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), `${namePrefix}-corpus-`));
+  const corpusName = `${namePrefix}-corpus`;
+  const env = {
+    ...process.env,
+    PAPERNEXUS_HOME: tempHome
+  };
+
+  await fs.copyFile(
+    path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+    path.join(tempCorpusRoot, 'retrieval-augmented-experiment-planning.md')
+  );
+
+  await execFileAsync('node', [cliPath, 'analyze', '--no-config=true', tempCorpusRoot, '--name', corpusName, '--force'], {
+    cwd: projectRoot,
+    env
+  });
+
+  const importStore = await import('../src/storage/import-store.js');
+  const runningTask = await importStore.createImportTask(tempCorpusRoot, {
+    trigger: 'api',
+    inputPaths: [tempCorpusRoot],
+    files: [
+      {
+        name: 'running-paper.md',
+        contentBase64: Buffer.from('# Running Paper\n\n## Abstract\n\nQueue fixture.\n', 'utf8').toString('base64'),
+        mimeType: 'text/markdown'
+      }
+    ]
+  });
+  await importStore.reserveNextImportTask(tempCorpusRoot);
+  await importStore.markImportTaskStage(tempCorpusRoot, runningTask.id, 'llm-optimize', 'semantic extraction');
+  await importStore.updateImportTaskProgress(tempCorpusRoot, runningTask.id, {
+    stage: 'llm-optimize',
+    status: 'running',
+    stagePercent: 45,
+    processedUnits: 40,
+    totalUnits: 96,
+    currentStep: 'semantic extraction',
+    message: 'batch 5/12, 40/96 papers completed'
+  });
+  await importStore.appendImportTaskLog(tempCorpusRoot, runningTask.id, {
+    level: 'info',
+    message: 'semantic batch started'
+  });
+  await importStore.appendImportTaskLog(tempCorpusRoot, runningTask.id, {
+    level: 'info',
+    message: 'semantic batch completed'
+  });
+
+  const pendingTask = await importStore.createImportTask(tempCorpusRoot, {
+    trigger: 'api',
+    inputPaths: [tempCorpusRoot],
+    files: [
+      {
+        name: 'pending-paper.md',
+        contentBase64: Buffer.from('# Pending Paper\n\n## Abstract\n\nQueue fixture.\n', 'utf8').toString('base64'),
+        mimeType: 'text/markdown'
+      }
+    ]
+  });
+
+  const failedTask = await importStore.createImportTask(tempCorpusRoot, {
+    trigger: 'api',
+    inputPaths: [tempCorpusRoot],
+    files: [
+      {
+        name: 'failed-paper.md',
+        contentBase64: Buffer.from('# Failed Paper\n\n## Abstract\n\nQueue fixture.\n', 'utf8').toString('base64'),
+        mimeType: 'text/markdown'
+      }
+    ]
+  });
+  await importStore.failImportTask(tempCorpusRoot, failedTask.id, new Error('synthetic failure'));
+
+  return {
+    tempHome,
+    tempCorpusRoot,
+    corpusName,
+    env,
+    runningTask,
+    pendingTask,
+    failedTask
+  };
+}
+
 test('CLI analyze and brainstorm commands work end-to-end on example corpus', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-corpus-'));
@@ -208,6 +295,54 @@ test('CLI can analyze PDFs with paddleocr-vl selected from config.json', async (
     assert.match(statusRun.stdout, /PDF parser: paddleocr-vl/);
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('CLI imports status and running report local queue progress directly from the corpus store', async () => {
+  const fixture = await createImportQueueFixture('papernexus-cli-import-status');
+
+  try {
+    const statusRun = await execFileAsync('node', [cliPath, 'imports', 'status', '--corpus', fixture.corpusName], {
+      cwd: projectRoot,
+      env: fixture.env
+    });
+
+    assert.match(statusRun.stdout, new RegExp(`Import queue for ${fixture.corpusName}`));
+    assert.match(statusRun.stdout, /Summary: 3 total, 1 pending, 1 running, 0 completed, 1 failed/);
+    assert.match(statusRun.stdout, new RegExp(fixture.runningTask.id));
+    assert.match(statusRun.stdout, new RegExp(fixture.pendingTask.id));
+    assert.match(statusRun.stdout, new RegExp(fixture.failedTask.id));
+
+    const runningRun = await execFileAsync('node', [cliPath, 'imports', 'running', '--corpus', fixture.corpusName], {
+      cwd: projectRoot,
+      env: fixture.env
+    });
+
+    assert.match(runningRun.stdout, new RegExp(`Running import tasks for ${fixture.corpusName}`));
+    assert.match(runningRun.stdout, new RegExp(fixture.runningTask.id));
+    assert.match(runningRun.stdout, /semantic extraction/);
+    assert.doesNotMatch(runningRun.stdout, new RegExp(fixture.pendingTask.id));
+  } finally {
+    await fs.rm(fixture.tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(fixture.tempHome, { recursive: true, force: true });
+  }
+});
+
+test('CLI imports log can default to the active task and tail the task log', async () => {
+  const fixture = await createImportQueueFixture('papernexus-cli-import-log');
+
+  try {
+    const logRun = await execFileAsync('node', [cliPath, 'imports', 'log', '--corpus', fixture.corpusName, '--tail', '1'], {
+      cwd: projectRoot,
+      env: fixture.env
+    });
+
+    assert.match(logRun.stdout, new RegExp(`Import log for ${fixture.runningTask.id}`));
+    assert.match(logRun.stdout, /semantic batch completed/);
+    assert.doesNotMatch(logRun.stdout, /semantic batch started/);
+  } finally {
+    await fs.rm(fixture.tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(fixture.tempHome, { recursive: true, force: true });
   }
 });
 
