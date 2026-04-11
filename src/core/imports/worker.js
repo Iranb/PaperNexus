@@ -6,6 +6,7 @@ import {
   getImportPaths,
   listImportTasks,
   markImportTaskStage,
+  quarantineImportTasks,
   reserveNextImportTask,
   updateImportTaskProgress
 } from '../../storage/import-store.js';
@@ -20,6 +21,8 @@ import { cacheMarkdownSource, convertPdfToMarkdown } from '../ingestion/pdf-pars
 
 const DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS = 20_000;
 const DEFAULT_IMPORT_WORKER_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
+const DEFAULT_IMPORT_TASK_TIMEOUT_MS = 45 * 60 * 1000;
+const DEFAULT_IMPORT_PENDING_TIMEOUT_MS = 48 * 60 * 60 * 1000;
 const DEFAULT_IMPORT_PREPARSE_CONCURRENCY = 4;
 const importPreparseInFlight = new Map();
 
@@ -43,6 +46,99 @@ function clampProgressPercent(value, fallback = 0) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return Math.max(0, Math.min(100, Math.round(numeric * 100) / 100));
+}
+
+function resolveImportTaskTimeoutMs(options = {}) {
+  const raw = Number(options.importTaskTimeoutMs || options.taskTimeoutMs || DEFAULT_IMPORT_TASK_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DEFAULT_IMPORT_TASK_TIMEOUT_MS;
+  }
+  return Math.max(60_000, Math.floor(raw));
+}
+
+function resolveImportPendingTimeoutMs(options = {}) {
+  const raw = Number(options.importPendingTimeoutMs || options.pendingTimeoutMs || DEFAULT_IMPORT_PENDING_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DEFAULT_IMPORT_PENDING_TIMEOUT_MS;
+  }
+  return Math.max(60_000, Math.floor(raw));
+}
+
+function getImportTaskHeartbeatMs(task = {}) {
+  return Date.parse(
+    task?.progress?.lastEventAt
+    || task?.updatedAt
+    || task?.startedAt
+    || task?.createdAt
+    || 0
+  ) || 0;
+}
+
+async function recoverTimedOutImportTasks(rootPath, options = {}) {
+  const timeoutMs = resolveImportTaskTimeoutMs(options);
+  const now = Date.now();
+  const { tasks } = await listImportTasks(rootPath);
+  const timedOutTasks = tasks.filter((task) => {
+    const status = String(task?.status || '').trim().toLowerCase();
+    if (status !== 'running') return false;
+    const heartbeatMs = getImportTaskHeartbeatMs(task);
+    if (!heartbeatMs) return false;
+    return (now - heartbeatMs) >= timeoutMs;
+  });
+
+  for (const task of timedOutTasks) {
+    const heartbeatAgeMs = now - getImportTaskHeartbeatMs(task);
+    const stageLabel = String(task?.stage || task?.progress?.stage || 'unknown').trim() || 'unknown';
+    await failImportTask(
+      rootPath,
+      task.id,
+      new Error(
+        `Import task timed out after ${heartbeatAgeMs}ms without progress while in stage ${stageLabel}. `
+        + `Configured timeout=${timeoutMs}ms.`
+      )
+    );
+  }
+
+  return timedOutTasks.map((task) => task.id);
+}
+
+function getImportTaskQueueAgeMs(task = {}) {
+  return Date.parse(task?.updatedAt || task?.createdAt || 0) || 0;
+}
+
+async function quarantineStalePendingImportTasks(rootPath, options = {}) {
+  const timeoutMs = resolveImportPendingTimeoutMs(options);
+  const now = Date.now();
+  const { tasks } = await listImportTasks(rootPath);
+  const runningTasks = tasks.filter((task) => String(task?.status || '').trim().toLowerCase() === 'running');
+  if (runningTasks.length) {
+    return null;
+  }
+
+  const stalePendingTasks = tasks.filter((task) => {
+    const status = String(task?.status || '').trim().toLowerCase();
+    const stage = String(task?.stage || task?.progress?.stage || '').trim().toLowerCase();
+    if (status !== 'pending') return false;
+    if (stage && stage !== 'queued') return false;
+    if (task?.startedAt) return false;
+    const ageAnchor = getImportTaskQueueAgeMs(task);
+    if (!ageAnchor) return false;
+    return (now - ageAnchor) >= timeoutMs;
+  });
+
+  if (!stalePendingTasks.length) {
+    return null;
+  }
+
+  const result = await quarantineImportTasks(
+    rootPath,
+    stalePendingTasks.map((task) => task.id),
+    {
+      reason: 'stale-pending-timeout',
+      message: `Import task sat in queued/pending state longer than ${timeoutMs}ms with no active import worker progress.`
+    }
+  );
+  return result.count ? result : null;
 }
 
 function createTaskProgressReporter(rootPath, taskId, stage) {
@@ -399,11 +495,16 @@ export async function runImportQueueOnce(rootPath, options = {}) {
 
   try {
     return await withFileLock(workerLockPath, async () => {
+      const timedOutTaskIds = await recoverTimedOutImportTasks(rootPath, options);
+      const quarantineResult = await quarantineStalePendingImportTasks(rootPath, options);
       const reserved = await reserveNextImportTask(rootPath);
       if (!reserved?.task) {
         return {
           processed: false,
-          reason: 'idle'
+          reason: quarantineResult?.count ? 'recovered-pending' : 'idle',
+          timedOutTaskIds,
+          quarantinedTaskIds: quarantineResult?.tasks?.map((task) => task.taskId) || [],
+          quarantineBatchId: quarantineResult?.batchId || null
         };
       }
 
@@ -506,6 +607,12 @@ export function startImportWorker(options = {}) {
       const results = await runImportsForAllCorporaOnce(options);
       for (const result of results) {
         if (!result.processed) {
+          if (result.reason === 'recovered-pending' && result.quarantinedTaskIds?.length) {
+            logger.warn?.(
+              `[imports] ${result.corpusName || result.rootPath}: quarantined ${result.quarantinedTaskIds.length} stale pending task(s)`
+              + (result.quarantineBatchId ? ` batch=${result.quarantineBatchId}` : '')
+            );
+          }
           if (result.reason === 'busy') {
             logger.warn?.(`[imports] ${result.corpusName || result.rootPath}: waiting for import worker lock`);
           }

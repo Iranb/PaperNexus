@@ -202,3 +202,57 @@ test('failed import tasks are not reused for identical uploaded content', async 
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
+
+test('quarantineImportTasks removes stale pending tasks from the active queue and preserves a quarantine snapshot', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-quarantine-'));
+
+  try {
+    const {
+      createImportTask,
+      listImportTasks,
+      quarantineImportTasks
+    } = await import('../src/storage/import-store.js');
+    const contentBase64 = Buffer.from('# Quarantine Paper\n\n## Abstract\n\nQueue cleanup test.\n', 'utf8').toString('base64');
+
+    const task = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'quarantine-paper.md',
+          contentBase64,
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const quarantined = await quarantineImportTasks(rootPath, [task.id], {
+      reason: 'stale-pending-timeout',
+      message: 'Task was quarantined because it remained pending too long.'
+    });
+
+    assert.equal(quarantined.count, 1);
+    assert.equal(quarantined.tasks[0].taskId, task.id);
+    await fs.access(path.join(quarantined.batchDir, 'summary.json'));
+    await fs.access(path.join(quarantined.tasks[0].taskDir, 'task.json'));
+    await fs.access(path.join(quarantined.tasks[0].taskDir, 'quarantine.json'));
+
+    const listed = await listImportTasks(rootPath);
+    assert.equal(listed.tasks.length, 0);
+
+    const recreated = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'quarantine-paper.md',
+          contentBase64,
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    assert.notEqual(recreated.id, task.id);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});

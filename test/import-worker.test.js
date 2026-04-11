@@ -441,6 +441,102 @@ test('import worker leaves a non-stale busy worker lock in place after timeout',
   }
 });
 
+test('import worker quarantines stale pending tasks before processing newer queue entries', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-quarantine-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-quarantine-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-quarantine-test',
+      force: true
+    });
+
+    const staleTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'stale-queued-paper.md',
+          contentBase64: Buffer.from('# Stale Pending Paper\n\n## Abstract\n\nThis task should be quarantined.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const freshTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'fresh-paper.md',
+          contentBase64: Buffer.from('# Fresh Paper\n\n## Abstract\n\nThis task should still be processed.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const staleTimestamp = new Date(Date.now() - (3 * 24 * 60 * 60 * 1000)).toISOString();
+    const { queuePath, quarantineDir } = importStore.getImportPaths(indexRoot);
+    const stalePaths = importStore.getImportTaskPaths(indexRoot, staleTask.id);
+    const staleTaskPayload = JSON.parse(await fs.readFile(stalePaths.taskPath, 'utf8'));
+    staleTaskPayload.createdAt = staleTimestamp;
+    staleTaskPayload.updatedAt = staleTimestamp;
+    staleTaskPayload.progress.createdAt = staleTimestamp;
+    staleTaskPayload.progress.lastEventAt = staleTimestamp;
+    await fs.writeFile(stalePaths.taskPath, `${JSON.stringify(staleTaskPayload, null, 2)}\n`);
+
+    const queuePayload = JSON.parse(await fs.readFile(queuePath, 'utf8'));
+    queuePayload.updatedAt = staleTimestamp;
+    queuePayload.jobs = queuePayload.jobs.map((job) => (
+      job.id === staleTask.id
+        ? { ...job, createdAt: staleTimestamp, updatedAt: staleTimestamp }
+        : job
+    ));
+    await fs.writeFile(queuePath, `${JSON.stringify(queuePayload, null, 2)}\n`);
+
+    const result = await importWorker.runImportQueueOnce(indexRoot, {
+      semanticExtraction: 'heuristic-only'
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.taskId, freshTask.id);
+
+    const listed = await importStore.listImportTasks(indexRoot);
+    assert.equal(listed.tasks.some((task) => task.id === staleTask.id), false);
+    assert.equal(listed.tasks.some((task) => task.id === freshTask.id), true);
+
+    const quarantineBatches = await fs.readdir(quarantineDir);
+    assert.equal(quarantineBatches.length >= 1, true);
+    const summaryPath = path.join(quarantineDir, quarantineBatches[0], 'summary.json');
+    const summary = JSON.parse(await fs.readFile(summaryPath, 'utf8'));
+    assert.equal(summary.reason, 'stale-pending-timeout');
+    assert.equal(summary.tasks.some((entry) => entry.taskId === staleTask.id), true);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('import worker fails tasks whose uploaded files never enter the source manifest', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-missing-source-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-missing-source-workspace-'));

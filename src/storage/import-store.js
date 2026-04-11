@@ -15,6 +15,7 @@ import { slugify, stableHash } from '../lib/utils.js';
 
 const IMPORT_SCHEMA_VERSION = 1;
 const IMPORT_CONTENT_INDEX_SCHEMA_VERSION = 1;
+const IMPORT_QUARANTINE_SCHEMA_VERSION = 1;
 const IMPORT_PROGRESS_CONTRACT_VERSION = 'import-progress-v1';
 const IMPORT_QUEUE_PROGRESS_CONTRACT_VERSION = 'import-queue-progress-v1';
 const IMPORT_STAGE_TOTAL = 4;
@@ -201,6 +202,10 @@ function createEmptyContentIndex() {
   };
 }
 
+function createImportQuarantineBatchId(timestamp = new Date()) {
+  return `quarantine-${timestamp.toISOString().replace(/[:.]/g, '-')}`;
+}
+
 function getFileKind(fileName) {
   const extension = path.extname(String(fileName || '')).toLowerCase();
   if (extension === '.pdf') return 'pdf';
@@ -259,6 +264,7 @@ export function getImportPaths(rootPath) {
   return {
     importsDir,
     contentIndexPath: path.join(importsDir, 'content-index.json'),
+    quarantineDir: path.join(importsDir, 'quarantine'),
     tasksDir: path.join(importsDir, 'tasks'),
     queuePath: path.join(importsDir, 'queue.json'),
     queueLockPath: path.join(rootPath, '.papernexus-imports.lock'),
@@ -347,6 +353,10 @@ function updateQueuedJob(queue, task) {
 
   if (index === -1) queue.jobs.push(nextJob);
   else queue.jobs[index] = nextJob;
+}
+
+function removeQueuedJob(queue, taskId) {
+  queue.jobs = (queue.jobs || []).filter((job) => job.id !== taskId);
 }
 
 export async function appendImportTaskLog(rootPath, taskId, entry = {}) {
@@ -681,4 +691,138 @@ export async function failImportTask(rootPath, taskId, error) {
   });
   await clearImportFingerprintEntry(rootPath, task.importFingerprint, task.id);
   return task;
+}
+
+async function resolveUniqueQuarantineTaskDir(baseDir) {
+  let candidate = baseDir;
+  let suffix = 2;
+  while (await fileExists(candidate)) {
+    candidate = `${baseDir}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+export async function quarantineImportTasks(rootPath, taskIds = [], options = {}) {
+  const normalizedTaskIds = [...new Set(
+    (Array.isArray(taskIds) ? taskIds : [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+  if (!normalizedTaskIds.length) {
+    return {
+      batchId: '',
+      batchDir: '',
+      count: 0,
+      tasks: []
+    };
+  }
+
+  const { queueLockPath, quarantineDir } = getImportPaths(rootPath);
+  return withFileLock(queueLockPath, async () => {
+    const [queue, contentIndex] = await Promise.all([
+      loadImportQueue(rootPath),
+      loadImportContentIndex(rootPath)
+    ]);
+    const timestamp = new Date();
+    const quarantinedAt = timestamp.toISOString();
+    const batchId = String(options.batchId || createImportQuarantineBatchId(timestamp)).trim() || createImportQuarantineBatchId(timestamp);
+    const batchDir = path.join(quarantineDir, batchId);
+    await ensureDir(batchDir);
+
+    const tasks = [];
+
+    for (const taskId of normalizedTaskIds) {
+      const existingTask = await loadImportTask(rootPath, taskId);
+      if (!existingTask) continue;
+
+      const nextTask = {
+        ...existingTask,
+        status: 'failed',
+        includeInGraph: false,
+        finishedAt: quarantinedAt,
+        updatedAt: quarantinedAt,
+        quarantinedAt,
+        quarantine: {
+          batchId,
+          reason: String(options.reason || 'stale-pending-timeout'),
+          queueStatusAtQuarantine: String(existingTask.status || '').trim().toLowerCase() || 'pending',
+          queueStageAtQuarantine: String(existingTask.stage || '').trim() || 'queued'
+        },
+        error: {
+          message: String(options.message || 'Import task was quarantined from the active queue.')
+        }
+      };
+      nextTask.progress = createImportProgress(nextTask, {
+        status: 'failed',
+        stage: nextTask.stage || 'queued',
+        message: nextTask.error.message
+      });
+
+      await saveImportTask(rootPath, nextTask);
+      await appendImportTaskLog(rootPath, taskId, {
+        level: 'warn',
+        message: `${nextTask.error.message} reason=${nextTask.quarantine.reason}`
+      });
+
+      const sourceTaskDir = getImportTaskPaths(rootPath, taskId).taskDir;
+      const targetTaskDir = await resolveUniqueQuarantineTaskDir(path.join(batchDir, stableHash(taskId, 20)));
+      if (await fileExists(sourceTaskDir)) {
+        await fs.rename(sourceTaskDir, targetTaskDir);
+      } else {
+        await ensureDir(targetTaskDir);
+      }
+
+      await writeJson(path.join(targetTaskDir, 'quarantine.json'), {
+        version: IMPORT_QUARANTINE_SCHEMA_VERSION,
+        taskId,
+        quarantinedAt,
+        reason: nextTask.quarantine.reason,
+        message: nextTask.error.message,
+        originalStatus: nextTask.quarantine.queueStatusAtQuarantine,
+        originalStage: nextTask.quarantine.queueStageAtQuarantine
+      });
+
+      tasks.push({
+        taskId,
+        batchId,
+        taskDir: targetTaskDir,
+        originalStatus: nextTask.quarantine.queueStatusAtQuarantine,
+        originalStage: nextTask.quarantine.queueStageAtQuarantine,
+        createdAt: nextTask.createdAt,
+        quarantinedAt,
+        reason: nextTask.quarantine.reason,
+        fileCount: Array.isArray(nextTask.files) ? nextTask.files.length : 0
+      });
+
+      removeQueuedJob(queue, taskId);
+      if (nextTask.importFingerprint && contentIndex.entries?.[nextTask.importFingerprint]?.taskId === taskId) {
+        delete contentIndex.entries[nextTask.importFingerprint];
+      }
+    }
+
+    queue.updatedAt = quarantinedAt;
+    contentIndex.updatedAt = quarantinedAt;
+    await Promise.all([
+      saveImportQueue(rootPath, queue),
+      saveImportContentIndex(rootPath, contentIndex),
+      writeJson(path.join(batchDir, 'summary.json'), {
+        version: IMPORT_QUARANTINE_SCHEMA_VERSION,
+        batchId,
+        rootPath: path.resolve(rootPath),
+        quarantinedAt,
+        reason: String(options.reason || 'stale-pending-timeout'),
+        message: String(options.message || 'Import tasks were quarantined from the active queue.'),
+        count: tasks.length,
+        tasks
+      })
+    ]);
+
+    return {
+      batchId,
+      batchDir,
+      count: tasks.length,
+      tasks
+    };
+  });
 }
