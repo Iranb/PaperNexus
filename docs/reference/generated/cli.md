@@ -34,6 +34,9 @@ Commands:
   papernexus scrub-degenerate-papers [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
   papernexus catalyst-backfill [<path>] [--name <corpus>] [--semantic-extraction <llm-assisted|llm-primary>] [--force]
+  papernexus imports [status] [<corpus>] [--limit <n>] [--json]
+  papernexus imports running [<corpus>] [--limit <n>] [--json]
+  papernexus imports log [<task-id>] [<corpus>] [--task-id <id>] [--tail <n>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -137,6 +140,9 @@ Examples:
   papernexus backup-export
   papernexus backup-export ./papernexus-backup.tgz
   papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
+  papernexus imports status --corpus ml-papers
+  papernexus imports running --corpus ml-papers
+  papernexus imports log --corpus ml-papers --task-id imp:1234567890abcdef
   papernexus auth llm set --provider openai --base-url https://coding.dashscope.aliyuncs.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
   papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback" --mechanism "metacontrol policy" --corpus ml-papers
@@ -185,6 +191,9 @@ Examples:
 | Command | Purpose | Synopsis |
 | --- | --- | --- |
 | `scrub-degenerate-papers` | See synopsis and in-command help. | `papernexus scrub-degenerate-papers [--corpus &lt;name&gt;]` |
+| `imports` | See synopsis and in-command help. | `papernexus imports [status] [&lt;corpus&gt;] [--limit &lt;n&gt;] [--json]` |
+| `imports` | See synopsis and in-command help. | `papernexus imports running [&lt;corpus&gt;] [--limit &lt;n&gt;] [--json]` |
+| `imports` | See synopsis and in-command help. | `papernexus imports log [&lt;task-id&gt;] [&lt;corpus&gt;] [--task-id &lt;id&gt;] [--tail &lt;n&gt;] [--json]` |
 | `test-pdf-config` | See synopsis and in-command help. | `papernexus test-pdf-config &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
 | `test-pdf-to-markdown` | See synopsis and in-command help. | `papernexus test-pdf-to-markdown &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
 

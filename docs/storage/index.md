@@ -16,6 +16,7 @@ Each corpus maintains several classes of stored state:
 - enhancement queue state
 - authoritative sync queue state
 - registry entries
+- PDF parser runtime pointers and logs under the global runtime root
 
 ## Typical Corpus Layout
 
@@ -23,17 +24,23 @@ The exact layout varies by corpus root, but conceptually you should expect:
 
 ```text
 index-store/
-  <corpus>/
+  .papernexus/
     graph.json or graph.kuzu
+    graph.lite.json
+    graph.lite.state.json
     meta.json
     sources.json
-    staging/
-    snapshots/
+    staged/
+    papers/
     markdown/
+    marker/
     imports/
+      queue.json
+      content-index.json
+      tasks/
+      quarantine/
     enhancements/
     authoritative-sync/
-    lite/
 ```
 
 The important design point is that not all of these files serve the same audience. Some are for build resumability, some are for interactive reads, and some are purely worker-facing.
@@ -48,6 +55,69 @@ The storage model is intentionally decomposed because each artifact answers a di
 - authoritative graph answers “what is the full source of truth?”
 - lite graph answers “what should interactive reads and search use?”
 - queue stores answer “what background work is still in flight?”
+
+## Import Queue Storage
+
+The import store is deliberately split into:
+
+- `queue.json`: queue-ordered snapshots of import tasks
+- `content-index.json`: upload fingerprint to task mapping
+- `tasks/<task-hash>/task.json`: authoritative per-task state
+- `tasks/<task-hash>/events.log`: append-only task events
+- `tasks/<task-hash>/sources/`: preserved uploaded files
+- `quarantine/<batch-id>/`: isolated historical tasks
+
+`task.json` is treated as the source of truth when it diverges from `queue.json`. The queue store has self-healing logic that reconciles stale queue snapshots from task files.
+
+This matters after restarts or older deployments because it prevents stale `queue.json` status from hiding the actual task state.
+
+## Failed Import Recovery Storage
+
+Recoverable failures update the task record itself.
+
+A failed task that can be retried becomes:
+
+```json
+{
+  "status": "pending",
+  "stage": "queued",
+  "recovery": {
+    "status": "queued-retry",
+    "retryCount": 1
+  }
+}
+```
+
+A failed task that was already recovered by another equivalent task becomes:
+
+```json
+{
+  "status": "completed",
+  "stage": "completed",
+  "recovery": {
+    "status": "superseded",
+    "supersededByTaskIds": ["imp:..."]
+  }
+}
+```
+
+The original error remains in `events.log`, so auditability is preserved while the final task state reflects the current truth.
+
+## PDF Parser Runtime Storage
+
+PDF parser runs are global runtime artifacts, not corpus-local graph artifacts.
+
+They live under:
+
+```text
+~/.papernexus/pdf-parser/
+  latest/<sourceHash>.json
+  runs/<runId>/
+    state.json
+    events.log
+```
+
+This lets operators inspect parser progress even if the import worker restarts or a task later fails at graph commit.
 
 ## Lite Graph
 
@@ -64,6 +134,8 @@ Recent work ensures that derived graph structures are refreshed not only during 
 - fast commit
 - authoritative sync
 - graph mutation writeback
+- recovered import retries
+- scoped import Stage 2 and fast commit updates
 
 That closes one of the common consistency gaps where lite state could be fresher than higher-order metadata.
 
@@ -75,3 +147,5 @@ PaperNexus favors **more explicit files with narrower responsibility** over a si
 
 - [Generated Module Map](/reference/generated/module-map)
 - [Generated Graph Schema](/reference/generated/graph-schema)
+- [Imports And Queue](/pipeline/imports-and-queue)
+- [Import Recovery And Performance](/pipeline/import-recovery-and-performance)

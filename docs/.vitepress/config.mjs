@@ -29,7 +29,9 @@ function sidebarPipeline() {
       text: 'Pipeline',
       items: [
         { text: 'Pipeline Overview', link: '/pipeline/' },
-        { text: 'Imports And Queue', link: '/pipeline/imports-and-queue' }
+        { text: 'PDF Parsers And Runtime', link: '/pipeline/pdf-parsers-and-runtime' },
+        { text: 'Imports And Queue', link: '/pipeline/imports-and-queue' },
+        { text: 'Import Recovery And Performance', link: '/pipeline/import-recovery-and-performance' }
       ]
     }
   ];
@@ -41,7 +43,8 @@ function sidebarGraph() {
       text: 'Graph',
       items: [
         { text: 'Graph Overview', link: '/graph/' },
-        { text: 'Cross-Domain Intelligence', link: '/graph/cross-domain-intelligence' }
+        { text: 'Cross-Domain Intelligence', link: '/graph/cross-domain-intelligence' },
+        { text: 'KG Innovation Discovery Review', link: '/graph/knowledge-graph-innovation-discovery-review.zh-CN' }
       ]
     }
   ];

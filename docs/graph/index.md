@@ -106,6 +106,30 @@ PaperNexus goes beyond flat semantic retrieval by adding:
 
 Those capabilities are what make the graph useful for research reasoning rather than keyword lookup alone.
 
+## Innovation Discovery View
+
+The graph can also be interpreted as an innovation-discovery substrate.
+
+In that mode, the important objects are not only papers and keywords, but potential new links such as:
+
+- `Problem -> Method`
+- `Challenge -> AbstractMechanism`
+- `Limitation -> Takeaway`
+- `Domain -> Transferable method`
+- `Evidence -> Research direction`
+
+The system already supports several ingredients for this style of analysis:
+
+- typed heterogeneous graph structure
+- domain distance and bridge profiles
+- mechanism abstraction
+- challenge decomposition
+- takeaway and idea-fragment nodes
+- evidence-grounded path tracing
+- catalyst and brainstorming views
+
+The Chinese review page linked below summarizes the broader research literature behind knowledge-graph-based innovation discovery and how it maps onto PaperNexus.
+
 ## Provenance And Grounding
 
 A key design rule is that higher-level abstractions should still point back to paper evidence.
@@ -133,4 +157,5 @@ These derived structures are part of the practical contract of the system, becau
 ## Read Next
 
 - [Cross-Domain Intelligence](/graph/cross-domain-intelligence)
+- [KG Innovation Discovery Review](/graph/knowledge-graph-innovation-discovery-review.zh-CN)
 - [Generated Graph Schema Reference](/reference/generated/graph-schema)

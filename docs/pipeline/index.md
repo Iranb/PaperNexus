@@ -78,6 +78,7 @@ The pipeline can integrate multiple parser families, but it treats them as a sou
 
 Current parser families include:
 
+- MarkItDown
 - OpenDataLoader
 - Docling
 - Marker
@@ -114,6 +115,7 @@ PaperNexus tries to avoid full rebuilds when the change scope is small.
 Examples:
 
 - import tasks reuse existing manifest inputs and only add changed sources
+- import Stage 2 receives `changedSourceKeys` so it avoids whole-corpus LLM refresh
 - lite graph state is updated through delta logic
 - derived graph summaries such as `domainDistanceMatrix` are refreshed alongside incremental commits
 - authoritative sync jobs replay prepared deltas instead of recomputing the entire corpus from scratch
@@ -128,6 +130,37 @@ The pipeline also appears in background workers:
 
 Those workers do not invent a new processing model. They orchestrate the same staged data model in asynchronous form.
 
+## Import Queue Pipeline
+
+Live imports are the asynchronous version of the staged pipeline.
+
+The current import path is:
+
+```text
+uploaded task sources
+  -> task-local materialize
+  -> manifest merge
+  -> scoped llm-optimize(changedSourceKeys)
+  -> scoped fast-commit(changedSourceKeys)
+  -> authoritative sync follow-up
+```
+
+Two details are essential:
+
+- uploaded task files are materialized from the task’s own `sources/` directory
+- Stage 2 and fast commit are scoped by `changedSourceKeys`
+
+This prevents one uploaded PDF from accidentally forcing the whole corpus through Stage 2 again.
+
+The queue also has recovery logic:
+
+- stale `running` tasks can time out
+- stale `pending` tasks can be quarantined
+- recoverable `failed` tasks can be requeued
+- historical `failed` tasks can be marked `completed / superseded` if an equivalent later import succeeded
+
+For agents, this means import status should be interpreted as current state, not just the first error ever written to the log.
+
 ## Maintainability Rule
 
 When adding new graph-native semantics, the maintenance question should always be:
@@ -141,6 +174,8 @@ That question is what keeps new features aligned with the staged architecture in
 
 ## Read Next
 
+- [PDF Parsers And Runtime](/pipeline/pdf-parsers-and-runtime)
 - [Imports And Queue](/pipeline/imports-and-queue)
+- [Import Recovery And Performance](/pipeline/import-recovery-and-performance)
 - [Graph Overview](/graph/)
 - [Generated CLI Reference](/reference/generated/cli)

@@ -19,6 +19,8 @@ hero:
 features:
   - title: Cache-first staged pipeline
     details: Materialize, optimize, build, merge, and write are resumable stages rather than a monolithic all-or-nothing rebuild.
+  - title: Recoverable import queues
+    details: Upload tasks keep durable logs, retry failed work when source files still exist, and mark historical failures completed when later equivalent imports already succeeded.
   - title: Graph-native research analysis
     details: Query, context, impact, brainstorming, catalyst, bridge retrieval, structural analogy, and interdisciplinary ranking all operate on indexed graph state.
   - title: Remote MCP control plane
