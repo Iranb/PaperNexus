@@ -7,6 +7,7 @@ import {
   listImportTasks,
   markImportTaskStage,
   quarantineImportTasks,
+  recoverFailedImportTasks,
   reserveNextImportTask,
   updateImportTaskProgress
 } from '../../storage/import-store.js';
@@ -520,13 +521,18 @@ export async function runImportQueueOnce(rootPath, options = {}) {
   try {
     return await withFileLock(workerLockPath, async () => {
       const timedOutTaskIds = await recoverTimedOutImportTasks(rootPath, options);
+      const failedRecovery = await recoverFailedImportTasks(rootPath, options);
       const quarantineResult = await quarantineStalePendingImportTasks(rootPath, options);
       const reserved = await reserveNextImportTask(rootPath);
       if (!reserved?.task) {
         return {
           processed: false,
-          reason: quarantineResult?.count ? 'recovered-pending' : 'idle',
+          reason: quarantineResult?.count
+            ? 'recovered-pending'
+            : (failedRecovery.recovered.length || failedRecovery.superseded.length ? 'recovered-failed' : 'idle'),
           timedOutTaskIds,
+          recoveredFailedTaskIds: failedRecovery.recovered.map((entry) => entry.taskId),
+          supersededFailedTaskIds: failedRecovery.superseded.map((entry) => entry.taskId),
           quarantinedTaskIds: quarantineResult?.tasks?.map((task) => task.taskId) || [],
           quarantineBatchId: quarantineResult?.batchId || null
         };

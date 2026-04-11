@@ -19,6 +19,8 @@ const IMPORT_QUARANTINE_SCHEMA_VERSION = 1;
 const IMPORT_PROGRESS_CONTRACT_VERSION = 'import-progress-v1';
 const IMPORT_QUEUE_PROGRESS_CONTRACT_VERSION = 'import-queue-progress-v1';
 const IMPORT_STAGE_TOTAL = 4;
+const DEFAULT_FAILED_IMPORT_RETRY_DELAY_MS = 5 * 60 * 1000;
+const DEFAULT_FAILED_IMPORT_RETRY_MAX = 3;
 const IMPORT_STAGE_WEIGHTS = {
   queued: { index: 0, startPercent: 0, weight: 0 },
   materialize: { index: 1, startPercent: 0, weight: 50 },
@@ -256,6 +258,54 @@ function createImportFingerprint(rootPath, files = []) {
     rootPath: path.resolve(rootPath),
     files: normalizedFiles
   })).digest('hex');
+}
+
+function normalizeImportFileIdentityName(value = '') {
+  return path.basename(String(value || '').trim(), path.extname(String(value || '').trim()))
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function createImportTaskContentKey(task = {}) {
+  const files = Array.isArray(task.files) ? task.files : [];
+  const parts = files
+    .map((file) => {
+      const fingerprint = String(file?.contentFingerprint || '').trim();
+      const kind = String(file?.kind || '').trim().toLowerCase();
+      const size = Number(file?.sizeBytes || 0);
+      if (!fingerprint || !kind || !Number.isFinite(size) || size <= 0) return '';
+      return `${kind}:${size}:${fingerprint}`;
+    })
+    .filter(Boolean)
+    .sort();
+  return parts.length === files.length && parts.length ? parts.join('|') : '';
+}
+
+function createImportTaskNameKey(task = {}) {
+  const files = Array.isArray(task.files) ? task.files : [];
+  const parts = files
+    .map((file) => normalizeImportFileIdentityName(
+      file?.originalName || file?.storedName || file?.storedPath || ''
+    ))
+    .filter(Boolean)
+    .sort();
+  return parts.length ? parts.join('|') : '';
+}
+
+function getImportFailedRetryCount(task = {}) {
+  return Math.max(0, Number(task?.recovery?.retryCount || task?.retryCount || 0) || 0);
+}
+
+function resolveFailedImportRetryDelayMs(options = {}) {
+  const raw = Number(options.importFailedRetryDelayMs ?? options.failedRetryDelayMs ?? DEFAULT_FAILED_IMPORT_RETRY_DELAY_MS);
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_FAILED_IMPORT_RETRY_DELAY_MS;
+  return Math.floor(raw);
+}
+
+function resolveFailedImportRetryMax(options = {}) {
+  const raw = Number(options.importFailedRetryMax ?? options.failedRetryMax ?? DEFAULT_FAILED_IMPORT_RETRY_MAX);
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_FAILED_IMPORT_RETRY_MAX;
+  return Math.floor(raw);
 }
 
 export function getImportPaths(rootPath) {
@@ -517,6 +567,214 @@ async function clearImportFingerprintEntry(rootPath, importFingerprint, taskId =
     index.updatedAt = new Date().toISOString();
     await saveImportContentIndex(rootPath, index);
     return true;
+  });
+}
+
+async function importTaskStoredFilesExist(task = {}) {
+  const files = Array.isArray(task.files) ? task.files : [];
+  if (!files.length) return false;
+  for (const file of files) {
+    const storedPath = String(file?.storedPath || '').trim();
+    if (!storedPath || !await fileExists(storedPath)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function indexCompletedEquivalentTasks(tasks = []) {
+  const byContentKey = new Map();
+  const byNameKey = new Map();
+  for (const task of tasks) {
+    if (String(task?.status || '').trim().toLowerCase() !== 'completed') continue;
+    const contentKey = createImportTaskContentKey(task);
+    const nameKey = createImportTaskNameKey(task);
+    if (contentKey) {
+      if (!byContentKey.has(contentKey)) byContentKey.set(contentKey, []);
+      byContentKey.get(contentKey).push(task);
+    }
+    if (nameKey) {
+      if (!byNameKey.has(nameKey)) byNameKey.set(nameKey, []);
+      byNameKey.get(nameKey).push(task);
+    }
+  }
+  return {
+    byContentKey,
+    byNameKey
+  };
+}
+
+function findCompletedEquivalentImportTasks(task = {}, completedIndex = {}) {
+  const contentKey = createImportTaskContentKey(task);
+  if (contentKey && completedIndex.byContentKey?.has(contentKey)) {
+    return completedIndex.byContentKey.get(contentKey);
+  }
+
+  const nameKey = createImportTaskNameKey(task);
+  if (nameKey && completedIndex.byNameKey?.has(nameKey)) {
+    return completedIndex.byNameKey.get(nameKey);
+  }
+
+  return [];
+}
+
+export async function recoverFailedImportTasks(rootPath, options = {}) {
+  const { queueLockPath } = getImportPaths(rootPath);
+  return withFileLock(queueLockPath, async () => {
+    const [queue, contentIndex, tasks] = await Promise.all([
+      loadImportQueue(rootPath),
+      loadImportContentIndex(rootPath),
+      loadImportTasksOnDisk(rootPath)
+    ]);
+    const activeQueue = buildReconciledImportQueue(queue, tasks).queue;
+    const completedIndex = indexCompletedEquivalentTasks(tasks);
+    const retryDelayMs = resolveFailedImportRetryDelayMs(options);
+    const retryMax = resolveFailedImportRetryMax(options);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const recovered = [];
+    const superseded = [];
+    const skipped = [];
+
+    for (const task of tasks) {
+      if (String(task?.status || '').trim().toLowerCase() !== 'failed') continue;
+
+      const equivalents = findCompletedEquivalentImportTasks(task, completedIndex)
+        .filter((entry) => entry.id !== task.id);
+      if (equivalents.length) {
+        const nextTask = {
+          ...task,
+          status: 'completed',
+          stage: 'completed',
+          includeInGraph: true,
+          finishedAt: task.finishedAt || nowIso,
+          error: null,
+          result: {
+            ...(task.result || {}),
+            recovered: {
+              status: 'superseded',
+              reason: 'equivalent-completed-import',
+              recoveredAt: nowIso,
+              supersededByTaskIds: equivalents.map((entry) => entry.id)
+            }
+          },
+          recovery: {
+            ...(task.recovery || {}),
+            status: 'superseded',
+            recoveredAt: nowIso,
+            supersededByTaskIds: equivalents.map((entry) => entry.id),
+            previousError: task.error || null
+          }
+        };
+        nextTask.progress = createImportProgress(nextTask, {
+          stage: 'completed',
+          status: 'completed',
+          stagePercent: 100,
+          processedUnits: task.progress?.processedUnits,
+          totalUnits: task.progress?.totalUnits,
+          currentStep: 'superseded by completed retry',
+          message: `Recovered historical failed import as completed; equivalent completed task ${equivalents[0].id}.`
+        });
+        nextTask.updatedAt = nowIso;
+        await saveImportTask(rootPath, nextTask);
+        updateQueuedJob(activeQueue, nextTask);
+        superseded.push({
+          taskId: task.id,
+          supersededByTaskIds: equivalents.map((entry) => entry.id)
+        });
+        await appendImportTaskLog(rootPath, task.id, {
+          level: 'info',
+          timestamp: nowIso,
+          message: `recovered failed import as completed; superseded by ${equivalents.map((entry) => entry.id).join(', ')}`
+        });
+        continue;
+      }
+
+      const retryCount = getImportFailedRetryCount(task);
+      if (retryCount >= retryMax) {
+        skipped.push({
+          taskId: task.id,
+          reason: 'retry-limit'
+        });
+        continue;
+      }
+
+      if (!await importTaskStoredFilesExist(task)) {
+        skipped.push({
+          taskId: task.id,
+          reason: 'missing-uploaded-files'
+        });
+        continue;
+      }
+
+      const lastFailureMs = Date.parse(task.finishedAt || task.updatedAt || task.createdAt || 0) || 0;
+      if (lastFailureMs && now.getTime() - lastFailureMs < retryDelayMs) {
+        skipped.push({
+          taskId: task.id,
+          reason: 'retry-delay'
+        });
+        continue;
+      }
+
+      const nextTask = {
+        ...task,
+        status: 'pending',
+        stage: 'queued',
+        includeInGraph: false,
+        startedAt: null,
+        finishedAt: null,
+        error: null,
+        recovery: {
+          ...(task.recovery || {}),
+          status: 'queued-retry',
+          retryCount: retryCount + 1,
+          recoveredAt: nowIso,
+          previousError: task.error || null
+        }
+      };
+      nextTask.progress = createImportProgress(nextTask, {
+        stage: 'queued',
+        status: 'pending',
+        stagePercent: 0,
+        processedUnits: 0,
+        totalUnits: 0,
+        currentStep: 'queued for retry',
+        message: `Recovered failed import for retry ${retryCount + 1}/${retryMax}.`
+      });
+      nextTask.updatedAt = nowIso;
+      await saveImportTask(rootPath, nextTask);
+      updateQueuedJob(activeQueue, nextTask);
+      if (nextTask.importFingerprint) {
+        contentIndex.entries[nextTask.importFingerprint] = {
+          taskId: nextTask.id,
+          updatedAt: nowIso
+        };
+        contentIndex.updatedAt = nowIso;
+      }
+      recovered.push({
+        taskId: nextTask.id,
+        retryCount: retryCount + 1
+      });
+      await appendImportTaskLog(rootPath, nextTask.id, {
+        level: 'info',
+        timestamp: nowIso,
+        message: `recovered failed import for retry ${retryCount + 1}/${retryMax}`
+      });
+    }
+
+    if (recovered.length || superseded.length) {
+      activeQueue.updatedAt = nowIso;
+      await Promise.all([
+        saveImportQueue(rootPath, activeQueue),
+        saveImportContentIndex(rootPath, contentIndex)
+      ]);
+    }
+
+    return {
+      recovered,
+      superseded,
+      skipped
+    };
   });
 }
 
