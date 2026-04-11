@@ -22,6 +22,13 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
     "mineruHttpUrl": "http://127.0.0.1:30000",
     "doclingCommand": "docling",
     "doclingDevice": "cuda",
+    "doclingAutoGpu": true,
+    "doclingGpuLockRoot": "/tmp/papernexus-gpu-locks",
+    "doclingGpuMinFreeMb": 18000,
+    "doclingGpuWaitTimeoutMs": 1800000,
+    "doclingGpuPollIntervalMs": 5000,
+    "doclingGpuLockStaleMs": 7200000,
+    "doclingCpuThreads": 4,
     "doclingPdfBackend": "pdfplumber",
     "doclingImageExportMode": "placeholder",
     "doclingEnrichPictureClasses": false,
@@ -70,6 +77,13 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze.mineruHttpUrl` | string | `http://127.0.0.1:30000` |
 | `analyze.doclingCommand` | string | `docling` |
 | `analyze.doclingDevice` | string | `cuda` |
+| `analyze.doclingAutoGpu` | boolean | `true` |
+| `analyze.doclingGpuLockRoot` | string | `/tmp/papernexus-gpu-locks` |
+| `analyze.doclingGpuMinFreeMb` | number | `18000` |
+| `analyze.doclingGpuWaitTimeoutMs` | number | `1800000` |
+| `analyze.doclingGpuPollIntervalMs` | number | `5000` |
+| `analyze.doclingGpuLockStaleMs` | number | `7200000` |
+| `analyze.doclingCpuThreads` | number | `4` |
 | `analyze.doclingPdfBackend` | string | `pdfplumber` |
 | `analyze.doclingImageExportMode` | string | `placeholder` |
 | `analyze.doclingEnrichPictureClasses` | boolean | `false` |

@@ -23,6 +23,7 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/Iranb/PaperN
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
 | [`mutate_graph`](#tool-mutate_graph) | Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Trigger incremental re-analysis of a corpus to pick up new or changed papers. Returns the updated corpus status after refresh. |
+| [`refresh_paper_graph`](#tool-refresh_paper_graph) | Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus. |
 
 ## Tool: list_corpora
 
@@ -295,3 +296,22 @@ Trigger incremental re-analysis of a corpus to pick up new or changed papers. Re
 | `corpus` | optional | string | Corpus name or root path. Omit to use the default corpus. |
 | `incremental` | optional | boolean | When true (default), only process papers added since last analysis. When false, rebuild the entire graph. |
 | `force` | optional | boolean | Force re-analysis even if no changes detected. |
+
+## Tool: refresh_paper_graph
+
+<a id="tool-refresh_paper_graph"></a>
+
+Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus.
+
+### Input Schema
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `corpus` | optional | string | Corpus name or root path. Omit to use the default corpus. |
+| `paperId` | optional | string | Exact paperId to refresh. |
+| `sourceKey` | optional | string | Exact manifest sourceKey to refresh. |
+| `source` | optional | string | Exact source/input path on the server. Accepts absolute paths or ~/... paths. |
+| `paperTitle` | optional | string | Exact normalized paper title to refresh. |
+| `includeDuplicateGroup` | optional | boolean | When true (default), refresh and recanonicalize the entire duplicate/canonical group that contains the selected paper. |
+| `rebuildPdfMarkdown` | optional | boolean | When true (default), force PDF markdown regeneration for matched PDF sources before graph refresh. |
+| `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction mode override for the refresh run. |

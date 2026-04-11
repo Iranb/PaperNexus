@@ -19,6 +19,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py) | Pn Batch Import implementation. |
 | [`SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py) | Run one-shot cross-domain ideation through the remote MCP surface. |
 | [`SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py) | Resolve the current live corpus name through remote HTTP MCP. |
+| [`SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py) | Pn Paper Refresh implementation. |
 | [`SKILL/PaperNexusReflection/scripts/pn_batch_import.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusReflection/scripts/pn_batch_import.py) | Pn Batch Import implementation. |
 | [`SKILL/PaperNexusReflection/scripts/pn_import_queue.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusReflection/scripts/pn_import_queue.py) | Pn Import Queue implementation. |
 | [`SKILL/PaperNexusReflection/scripts/pn_import_submit.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusReflection/scripts/pn_import_submit.py) | Pn Import Submit implementation. |

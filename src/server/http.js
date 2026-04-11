@@ -352,6 +352,48 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       analyzeConfig.doclingCudaVisibleDevices,
       watchConfig.doclingCudaVisibleDevices
     ),
+    doclingAutoGpu: firstDefined(
+      options.doclingAutoGpu,
+      materializeConfig.doclingAutoGpu,
+      analyzeConfig.doclingAutoGpu,
+      watchConfig.doclingAutoGpu
+    ),
+    doclingGpuLockRoot: firstDefined(
+      options.doclingGpuLockRoot,
+      materializeConfig.doclingGpuLockRoot,
+      analyzeConfig.doclingGpuLockRoot,
+      watchConfig.doclingGpuLockRoot
+    ),
+    doclingGpuMinFreeMb: firstDefined(
+      options.doclingGpuMinFreeMb,
+      materializeConfig.doclingGpuMinFreeMb,
+      analyzeConfig.doclingGpuMinFreeMb,
+      watchConfig.doclingGpuMinFreeMb
+    ),
+    doclingGpuWaitTimeoutMs: firstDefined(
+      options.doclingGpuWaitTimeoutMs,
+      materializeConfig.doclingGpuWaitTimeoutMs,
+      analyzeConfig.doclingGpuWaitTimeoutMs,
+      watchConfig.doclingGpuWaitTimeoutMs
+    ),
+    doclingGpuPollIntervalMs: firstDefined(
+      options.doclingGpuPollIntervalMs,
+      materializeConfig.doclingGpuPollIntervalMs,
+      analyzeConfig.doclingGpuPollIntervalMs,
+      watchConfig.doclingGpuPollIntervalMs
+    ),
+    doclingGpuLockStaleMs: firstDefined(
+      options.doclingGpuLockStaleMs,
+      materializeConfig.doclingGpuLockStaleMs,
+      analyzeConfig.doclingGpuLockStaleMs,
+      watchConfig.doclingGpuLockStaleMs
+    ),
+    doclingCpuThreads: firstDefined(
+      options.doclingCpuThreads,
+      materializeConfig.doclingCpuThreads,
+      analyzeConfig.doclingCpuThreads,
+      watchConfig.doclingCpuThreads
+    ),
     doclingArtifactsPath: firstDefined(
       options.doclingArtifactsPath,
       materializeConfig.doclingArtifactsPath,

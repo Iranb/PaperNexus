@@ -132,7 +132,9 @@ test('buildRemoteDoclingScript includes docling command and output directory', (
 
   assert.match(script, /\/opt\/docling\/bin\/docling/);
   assert.match(script, /export CUDA_VISIBLE_DEVICES='2'/);
+  assert.doesNotMatch(script, /\nselect_gpu\n/);
   assert.match(script, /'--device' 'cuda'/);
+  assert.match(script, /export OPENBLAS_NUM_THREADS='4'/);
   assert.match(script, /'--artifacts-path' '\/home\/hyq\/\.cache\/docling\/models'/);
   assert.match(script, /'--image-export-mode' 'placeholder'/);
   assert.match(script, /--no-enrich-picture-classes/);
@@ -140,6 +142,52 @@ test('buildRemoteDoclingScript includes docling command and output directory', (
   assert.match(script, /'--ocr-engine' 'ocrmac'/);
   assert.match(script, /'--output' '\/tmp\/run\/out'/);
   assert.match(script, /find "\$run_dir" -type f -name '\*\.md'/);
+});
+
+test('buildRemoteDoclingScript auto-selects an unlocked GPU when CUDA devices are not pinned', () => {
+  const script = __markerTestables.buildRemoteDoclingScript({
+    doclingCommand: 'docling',
+    remotePdfPath: '/tmp/run/paper.pdf',
+    remoteRunDir: '/tmp/run/out',
+    device: 'cuda',
+    gpuMinFreeMb: 24000,
+    gpuWaitTimeoutMs: 120000,
+    gpuPollIntervalMs: 2000,
+    cpuThreads: 3
+  });
+
+  assert.match(script, /gpu_lock_root='\/tmp\/papernexus-gpu-locks'/);
+  assert.match(script, /gpu_min_free_mb='24000'/);
+  assert.match(script, /gpu_wait_seconds='120'/);
+  assert.match(script, /gpu_poll_seconds='2'/);
+  assert.match(script, /select_gpu/);
+  assert.match(script, /\nselect_gpu\n/);
+  assert.match(script, /export CUDA_VISIBLE_DEVICES="\$best_gpu"/);
+  assert.match(script, /export OPENBLAS_NUM_THREADS='3'/);
+  assert.match(script, /Waiting for an available Docling GPU/);
+});
+
+test('Docling GPU helpers parse nvidia-smi output and build conservative execution env', () => {
+  const gpus = __markerTestables.parseNvidiaSmiGpuLines([
+    '0, NVIDIA A100-SXM4-40GB, 32100',
+    '1, NVIDIA RTX 4090, 4096',
+    ''
+  ].join('\n'));
+
+  assert.deepEqual(gpus, [
+    { index: '0', name: 'NVIDIA A100-SXM4-40GB', freeMemoryMb: 32100 },
+    { index: '1', name: 'NVIDIA RTX 4090', freeMemoryMb: 4096 }
+  ]);
+
+  const env = __markerTestables.buildDoclingExecutionEnv({
+    doclingCudaVisibleDevices: '2',
+    doclingCpuThreads: 2
+  });
+  assert.equal(env.CUDA_VISIBLE_DEVICES, '2');
+  assert.equal(env.OPENBLAS_NUM_THREADS, '2');
+  assert.equal(env.OMP_NUM_THREADS, '2');
+  assert.equal(env.MKL_NUM_THREADS, '2');
+  assert.equal(env.NUMEXPR_NUM_THREADS, '2');
 });
 
 test('resolveMineruRemoteFailureMode defaults to error and accepts docling', () => {
