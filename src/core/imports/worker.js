@@ -15,7 +15,7 @@ import {
   llmOptimizeCorpus,
   materializeCorpus,
 } from '../ingestion/pipeline.js';
-import { withFileLock } from '../../lib/fs.js';
+import { fileExists, withFileLock } from '../../lib/fs.js';
 import { loadRegistry } from '../../storage/registry.js';
 import { cacheMarkdownSource, convertPdfToMarkdown } from '../ingestion/pdf-parser.js';
 
@@ -381,10 +381,28 @@ async function resolveTaskChangedSourceKeys(rootPath, task) {
   return changedSourceKeys;
 }
 
+async function assertImportTaskStoredFilesExist(task) {
+  const missingFiles = [];
+  for (const file of Array.isArray(task?.files) ? task.files : []) {
+    const storedPath = String(file?.storedPath || '').trim();
+    if (!storedPath) continue;
+    if (!await fileExists(storedPath)) {
+      missingFiles.push(file?.originalName || storedPath);
+    }
+  }
+  if (missingFiles.length) {
+    throw new Error(
+      `Imported files were not materialized into the source manifest: ${missingFiles.join(', ')}. ` +
+      'The uploaded source may be missing, unreadable, or failed during parsing.'
+    );
+  }
+}
+
 async function processImportTask(rootPath, task, options = {}) {
   await waitForImportTaskPreparse(rootPath, task.id);
   const corpusMeta = await loadCorpusMeta(rootPath);
-  const inputPath = await resolveTaskInputPath(rootPath, task);
+  let inputPath = await resolveTaskInputPath(rootPath, task);
+  const materializeInputPath = task?.sourcesDir || inputPath;
   const startStage = (() => {
     switch (task.stage) {
       case 'llm-optimize':
@@ -412,10 +430,14 @@ async function processImportTask(rootPath, task, options = {}) {
   };
 
   if (startStage === 'materialize') {
+    await assertImportTaskStoredFilesExist(task);
     await markImportTaskStage(rootPath, task.id, 'materialize', 'stage materialize');
     const materializeProgress = createTaskProgressReporter(rootPath, task.id, 'materialize');
-    const materialized = await materializeCorpus(inputPath, {
+    const materialized = await materializeCorpus(materializeInputPath, {
       ...sharedOptions,
+      mergeWithExistingManifestSources: true,
+      includeActiveImportSources: false,
+      includePersistentImportSources: false,
       onProgress(event = {}) {
         void materializeProgress.report(event);
       }
@@ -433,6 +455,7 @@ async function processImportTask(rootPath, task, options = {}) {
       paperCount: materialized?.meta?.paperCount || 0,
       timings: materialized?.timings || null
     };
+    inputPath = await resolveTaskInputPath(rootPath, task);
   }
 
   const changedSourceKeys = await resolveTaskChangedSourceKeys(rootPath, task);
@@ -441,6 +464,7 @@ async function processImportTask(rootPath, task, options = {}) {
   const llmProgress = createTaskProgressReporter(rootPath, task.id, 'llm-optimize');
   const optimized = await llmOptimizeCorpus(inputPath, {
     ...sharedOptions,
+    changedSourceKeys,
     onProgress(event = {}) {
       void llmProgress.report(event);
     }

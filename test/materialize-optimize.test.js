@@ -167,6 +167,112 @@ We use a batched llm optimizer.
   }
 });
 
+test('llmOptimizeCorpus can scope Stage 2 work to changed source keys for import-sized updates', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scoped-stage2-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scoped-stage2-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const requestedPaperIds = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Scoped Stage Two Paper A
+
+## Abstract
+
+Paper A should remain heuristic-only during the scoped import optimization.
+`, 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-b.md'), `# Scoped Stage Two Paper B
+
+## Abstract
+
+Paper B is the only changed import source that should call the LLM.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'scoped-stage2-test',
+      force: true
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const changedEntry = manifest.sources.find((entry) => entry.inputPath.endsWith('paper-b.md'));
+    assert.ok(changedEntry);
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const papers = extractPromptPapers(request.messages?.[0]?.content || '');
+      requestedPaperIds.push(...papers.map((paper) => paper.id));
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [{
+                        name: `Scoped problem for ${paper.title}`,
+                        type: 'Problem',
+                        evidenceText: 'Paper B is the only changed import source.',
+                        sectionHeading: 'Abstract',
+                        sectionRole: 'abstract',
+                        confidence: 0.9
+                      }]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'scoped-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmRelations: false,
+      changedSourceKeys: [changedEntry.sourceKey],
+      llmBatchSize: 8
+    });
+
+    assert.deepEqual(requestedPaperIds, [changedEntry.sourceKey]);
+
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    const paperA = snapshots.find((snapshot) => snapshot.sourcePath.endsWith('paper-a.md'));
+    const paperB = snapshots.find((snapshot) => snapshot.sourcePath.endsWith('paper-b.md'));
+    assert.equal(paperA.llm.semanticExtractionParticipated, false);
+    assert.equal(paperB.llm.semanticExtractionParticipated, true);
+
+    const nextManifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(nextManifest.llmOptimization, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('materializeCorpus renders an initial paper progress bar before the first paper completes', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-progress-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-progress-corpus-'));

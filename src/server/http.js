@@ -225,6 +225,8 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
   const analyzeConfig = getConfigSection(options, 'analyze');
   const materializeConfig = getConfigSection(options, 'materialize');
   const watchConfig = getConfigSection(options, 'watch');
+  const importsConfig = getConfigSection(options, 'imports');
+  const importConfig = getConfigSection(options, 'import');
   const llmConfig = getConfigSection(options, 'llm');
   const ollamaConfig = getConfigSection(options, 'ollama');
   const llmSshHost = firstDefined(
@@ -254,6 +256,8 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     ),
     semanticExtraction: firstDefined(
       options.semanticExtraction,
+      importsConfig.semanticExtraction,
+      importConfig.semanticExtraction,
       materializeConfig.semanticExtraction,
       analyzeConfig.semanticExtraction,
       watchConfig.semanticExtraction
@@ -533,14 +537,38 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     llmApiKeyService: firstDefined(options.llmApiKeyService, llmConfig.apiKeyService),
     llmApiKeyAccount: firstDefined(options.llmApiKeyAccount, llmConfig.apiKeyAccount),
     llmSshHost,
-    llmRelations: firstDefined(options.llmRelations, llmConfig.relations, ollamaConfig.relations),
+    llmRelations: firstDefined(
+      options.importLlmRelations,
+      importsConfig.llmRelations,
+      importsConfig.relations,
+      importConfig.llmRelations,
+      importConfig.relations,
+      options.llmRelations,
+      false
+    ),
     llmTimeoutMs: firstNumber(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
-    llmBatchSize: firstNumber(options.llmBatchSize, llmConfig.batchSize, ollamaConfig.batchSize),
+    llmBatchSize: firstNumber(
+      options.importLlmBatchSize,
+      importsConfig.llmBatchSize,
+      importsConfig.batchSize,
+      importConfig.llmBatchSize,
+      importConfig.batchSize,
+      options.llmBatchSize,
+      12,
+      llmConfig.batchSize,
+      ollamaConfig.batchSize
+    ),
     llmMaxTokens: firstNumber(options.llmMaxTokens, llmConfig.maxTokens),
     ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),
     ollamaUrl: firstDefined(options.ollamaUrl, ollamaConfig.url),
     ollamaSshHost: firstDefined(options.ollamaSshHost, llmSshHost),
-    ollamaRelations: firstDefined(options.ollamaRelations, ollamaConfig.relations, llmConfig.relations),
+    ollamaRelations: firstDefined(
+      options.importOllamaRelations,
+      importsConfig.ollamaRelations,
+      importConfig.ollamaRelations,
+      options.ollamaRelations,
+      false
+    ),
     ollamaTimeoutMs: firstNumber(options.ollamaTimeoutMs, ollamaConfig.timeoutMs),
     ollamaBatchSize: firstNumber(options.ollamaBatchSize, ollamaConfig.batchSize)
   };

@@ -85,6 +85,8 @@ test('import worker processes queued uploads and merges them into the single gra
     assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Uploaded Paper'));
 
     const manifest = await corpusStore.loadSourceManifest(indexRoot);
+    assert.deepEqual(manifest.inputPaths, [inputRoot]);
+    assert.equal(manifest.sources.length, 2);
     assert.equal(
       manifest.sources.some((entry) => String(entry.sourcePath || '').includes(path.join('.papernexus', 'imports'))),
       true

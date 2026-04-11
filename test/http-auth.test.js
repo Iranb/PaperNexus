@@ -313,6 +313,10 @@ test('serveCommand forwards analyze parser config into the import worker', async
           pythonCommand: './shared-python',
           semanticExtraction: 'llm-primary'
         },
+        llm: {
+          relations: true,
+          batchSize: 8
+        },
         serve: {
           apiToken: 'secret-token'
         }
@@ -336,6 +340,8 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].pythonCommand, './shared-python');
       assert.equal(calls[0].markitdownPython, './shared-python');
       assert.equal(calls[0].semanticExtraction, 'llm-primary');
+      assert.equal(calls[0].llmRelations, false);
+      assert.equal(calls[0].llmBatchSize, 12);
     } finally {
       await serverHandle.stop();
     }

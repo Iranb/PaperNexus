@@ -365,6 +365,87 @@ test('analyzeCorpus refreshes stale cached pdf snapshots when the stored title i
   }
 });
 
+test('analyzeCorpus repairs a degenerate PDF title without Docling when primary markdown content is usable', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-title-repair-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-title-repair-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const pdfPath = path.join(tempCorpusRoot, 'usable-primary.pdf');
+  const fakeMarkerPath = path.join(tempCorpusRoot, 'fake-marker.mjs');
+  const fakeDoclingPath = path.join(tempCorpusRoot, 'fake-docling.sh');
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    await fs.writeFile(pdfPath, 'fake pdf payload\n', 'utf8');
+    await fs.writeFile(
+      fakeMarkerPath,
+      `#!/usr/bin/env node
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+const args = process.argv.slice(2);
+const pdfArg = args[0];
+const outputDir = args[args.indexOf('--output_dir') + 1];
+const basename = path.basename(pdfArg, path.extname(pdfArg));
+await fs.mkdir(outputDir, { recursive: true });
+await fs.writeFile(path.join(outputDir, \`\${basename}.md\`), \`## Abstract
+
+This primary parser lost the title but preserved a long and useful abstract about queue scheduling, import isolation, semantic extraction, graph updates, fallback prevention, and operational monitoring. This paragraph is intentionally verbose so PaperNexus can trust the markdown body even though the first heading is a section label rather than a real paper title.
+
+## Introduction
+
+The body continues with enough scientific text to avoid a Docling fallback. It describes how parser output can be useful even when metadata extraction fails, and why a filename fallback is safer than invoking a GPU parser for every title-only defect. The queue should therefore avoid spending GPU time on documents whose markdown body is already materialized with coherent sections and evidence.
+
+## Method
+
+We evaluate parser quality with body length and section structure before deciding whether a title defect requires a second parser. This keeps import throughput high while preserving a route to Docling when the extracted markdown is genuinely too sparse.
+\`);
+`,
+      'utf8'
+    );
+    await fs.chmod(fakeMarkerPath, 0o755);
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'echo "docling should not be called for usable primary markdown" >&2',
+        'exit 42'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    const result = await ingestion.analyzeCorpus(tempCorpusRoot, {
+      name: 'title-repair-test',
+      force: true,
+      pdfParser: 'marker',
+      markerCommand: fakeMarkerPath,
+      doclingCommand: fakeDoclingPath
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(result.meta.paperCount, 1);
+    assert.equal(manifest.sources[0].paperTitle, 'usable-primary');
+    assert.match(manifest.sources[0].sourceMarkdownPath, /marker/);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.titleValidation.repairedFromDegenerateTitle, true);
+    assert.equal(snapshot.titleValidation.needsReparse, false);
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('paper refresh prefers an explicitly selected PDF server path and reruns the PDF input flow', async () => {
   const { __pipelineTestables } = await import('../src/core/ingestion/pipeline.js');
   const entry = {

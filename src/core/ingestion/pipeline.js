@@ -1948,6 +1948,7 @@ function createStage2ManifestFromRecords(rootPath, manifest, records, options = 
 
 async function runStage2LlmOptimization(rootPath, manifest, records, options = {}, existingJobState = null) {
   const quiet = Boolean(options.quiet);
+  const scopedToChangedSources = normalizeChangedSourceKeySet(options.changedSourceKeys).size > 0;
   const semanticExtractionPlan = resolveSemanticExtractionPlan(options);
   const normalizedSemanticExtractionMode = normalizeSemanticExtractionMode(
     firstDefinedValue(options.semanticExtraction, manifest.semanticExtractionMode, 'auto')
@@ -2047,6 +2048,9 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   const relationPending = [];
   for (const record of records) {
+    if (record.sourceState.llmRefreshState?.scopedOut) {
+      continue;
+    }
     record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
     if (record.sourceState.llmRefreshState.relationRequired) {
       await ensureParsedPaperForLlmRecord(record);
@@ -2110,6 +2114,9 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   }
 
   for (const record of records) {
+    if (record.sourceState.llmRefreshState?.scopedOut) {
+      continue;
+    }
     record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
     const paperStatus = getOrCreateStage2PaperStatus(jobState, record.sourceState.sourceKey);
     if (!record.sourceState.llmRefreshState.semanticRequired && paperStatus.semantic.status === 'pending') {
@@ -2122,26 +2129,32 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   refreshStage2PhaseStatus(jobState, records, 'semantic');
   refreshStage2PhaseStatus(jobState, records, 'relation');
-  const completed = records.every((record) => !summarizeLlmRefreshState(record.semanticPaper, options).anyRequired);
-  jobState.status = completed ? 'completed' : 'partial';
-  jobState.completedAt = completed ? new Date().toISOString() : null;
+  const scopedWorkCompleted = records.every((record) => (
+    record.sourceState.llmRefreshState?.scopedOut
+    || !summarizeLlmRefreshState(record.semanticPaper, options).anyRequired
+  ));
+  const manifestOptimizationCompleted = scopedWorkCompleted && !scopedToChangedSources;
+  jobState.status = manifestOptimizationCompleted ? 'completed' : 'partial';
+  jobState.completedAt = manifestOptimizationCompleted ? new Date().toISOString() : null;
   jobState.updatedAt = new Date().toISOString();
   await saveStage2JobState(rootPath, jobState);
   emitPipelineProgress(options, {
     stage: 'llm-optimize',
-    currentStep: completed ? 'llm optimization complete' : 'llm optimization partial',
+    currentStep: scopedWorkCompleted ? 'llm optimization complete' : 'llm optimization partial',
     processedUnits: totalLlmUnits,
     totalUnits: totalLlmUnits,
-    stagePercent: completed ? 100 : (totalLlmUnits ? ((llmCompletedUnits / totalLlmUnits) * 100) : 100),
-    message: completed ? 'Completed batch LLM optimization' : 'LLM optimization finished with pending work'
+    stagePercent: scopedWorkCompleted ? 100 : (totalLlmUnits ? ((llmCompletedUnits / totalLlmUnits) * 100) : 100),
+    message: scopedWorkCompleted
+      ? (scopedToChangedSources ? 'Completed scoped batch LLM optimization' : 'Completed batch LLM optimization')
+      : 'LLM optimization finished with pending work'
   });
 
   const nextManifest = createStage2ManifestFromRecords(rootPath, manifest, records, {
     ...options,
     semanticExtraction: normalizedSemanticExtractionMode,
-    completed
+    completed: manifestOptimizationCompleted
   });
-  if (completed) {
+  if (manifestOptimizationCompleted) {
     jobState.token = createStage2JobToken(nextManifest, options);
     jobState.manifestToken = createManifestCommitToken(nextManifest);
   }
@@ -2149,7 +2162,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   return {
     nextManifest,
     jobState,
-    completed
+    completed: scopedWorkCompleted
   };
 }
 
@@ -3050,6 +3063,18 @@ function createEmptyManifest({ corpusName, rootPath, inputPath, inputPaths, sour
   };
 }
 
+function inferSourceModeFromManifestSources(sources = [], fallback = 'markdown') {
+  const kinds = new Set(
+    (sources || [])
+      .map((entry) => String(entry?.kind || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (kinds.size > 1) return 'mixed';
+  if (kinds.has('pdf')) return 'pdf';
+  if (kinds.has('markdown')) return 'markdown';
+  return fallback || 'markdown';
+}
+
 function summarizeSourceChanges(sourceStates, removedSources) {
   const summary = {
     added: 0,
@@ -3272,8 +3297,11 @@ function createSourceFingerprintMap(sourceStates = []) {
   );
 }
 
-async function collectCurrentSourceFingerprintMap(inputPath, rootPath, metadataConcurrency) {
-  const discovery = await discoverCorpusSources(inputPath, { rootPath });
+async function collectCurrentSourceFingerprintMap(inputPath, rootPath, metadataConcurrency, discoveryOptions = {}) {
+  const discovery = await discoverCorpusSources(inputPath, {
+    rootPath,
+    ...discoveryOptions
+  });
   const currentSources = await mapWithConcurrency(
     discovery.sources,
     metadataConcurrency,
@@ -3294,7 +3322,7 @@ function sourceFingerprintMapsEqual(left, right) {
   return true;
 }
 
-async function assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency) {
+async function assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency, discoveryOptions = {}) {
   const latestManifest = await loadSourceManifest(rootPath);
   const baseToken = createManifestCommitToken(previousManifest);
   const latestToken = createManifestCommitToken(latestManifest);
@@ -3303,7 +3331,7 @@ async function assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, 
   }
 
   const expectedSources = createSourceFingerprintMap(sourceStates);
-  const currentSources = await collectCurrentSourceFingerprintMap(inputPath, rootPath, metadataConcurrency);
+  const currentSources = await collectCurrentSourceFingerprintMap(inputPath, rootPath, metadataConcurrency, discoveryOptions);
   if (!sourceFingerprintMapsEqual(expectedSources, currentSources)) {
     throw new Error('Source inputs changed while PaperNexus was processing. Re-run the command so the final graph is built from the latest files.');
   }
@@ -3837,19 +3865,23 @@ async function discoverCorpusSources(inputPath, options = {}) {
     Math.min(Math.max(1, absoluteInputs.length), 4),
     (absoluteInput) => collectSourcesFromInput(absoluteInput)
   );
-  const importInputDirs = await listActiveImportSourceDirs(rootPath);
-  const importInputEntries = await mapWithConcurrency(
-    importInputDirs,
-    Math.min(Math.max(1, importInputDirs.length), 4),
-    async (absoluteInput) => {
-      try {
-        return await collectSourcesFromInput(absoluteInput);
-      } catch (error) {
-        if (error?.code === 'ENOENT') return null;
-        throw error;
+  const importInputDirs = options.includeActiveImportSources === false
+    ? []
+    : await listActiveImportSourceDirs(rootPath);
+  const importInputEntries = importInputDirs.length
+    ? await mapWithConcurrency(
+      importInputDirs,
+      Math.min(Math.max(1, importInputDirs.length), 4),
+      async (absoluteInput) => {
+        try {
+          return await collectSourcesFromInput(absoluteInput);
+        } catch (error) {
+          if (error?.code === 'ENOENT') return null;
+          throw error;
+        }
       }
-    }
-  );
+    )
+    : [];
   const inputEntries = [
     ...baseInputEntries,
     ...importInputEntries.filter(Boolean)
@@ -3862,13 +3894,15 @@ async function discoverCorpusSources(inputPath, options = {}) {
   }
 
   const manifest = await loadSourceManifest(rootPath);
-  const persistentImportSources = await collectPersistentImportManifestSources(
-    rootPath,
-    manifest,
-    new Set(dedupedSources.keys())
-  );
-  for (const source of persistentImportSources) {
-    dedupedSources.set(source.sourceKey, source);
+  if (options.includePersistentImportSources !== false) {
+    const persistentImportSources = await collectPersistentImportManifestSources(
+      rootPath,
+      manifest,
+      new Set(dedupedSources.keys())
+    );
+    for (const source of persistentImportSources) {
+      dedupedSources.set(source.sourceKey, source);
+    }
   }
 
   const kinds = new Set([...dedupedSources.values()].map((source) => source.kind));
@@ -4036,6 +4070,44 @@ async function buildStage2RecordsFromManifest(rootPath, manifest, options = {}) 
   return records;
 }
 
+function normalizeChangedSourceKeySet(value) {
+  return new Set(
+    (Array.isArray(value) ? value : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  );
+}
+
+function disableLlmRefreshForScopedOutRecord(record) {
+  record.sourceState.llmRefreshState = {
+    semanticRequired: false,
+    relationRequired: false,
+    anyRequired: false,
+    scopedOut: true
+  };
+}
+
+function scopeStage2RecordsToChangedSources(records = [], changedSourceKeys = []) {
+  const changedSourceKeySet = normalizeChangedSourceKeySet(changedSourceKeys);
+  if (!changedSourceKeySet.size) {
+    return {
+      scoped: false,
+      records
+    };
+  }
+
+  for (const record of records) {
+    if (!changedSourceKeySet.has(record.sourceState.sourceKey)) {
+      disableLlmRefreshForScopedOutRecord(record);
+    }
+  }
+
+  return {
+    scoped: true,
+    records
+  };
+}
+
 function resolveExpectedMarkdownCachePath(rootPath, sourceState, options = {}) {
   const { markdownDir, markerDir } = getCorpusPaths(rootPath);
 
@@ -4050,6 +4122,50 @@ function resolveExpectedMarkdownCachePath(rootPath, sourceState, options = {}) {
   return getMarkdownSourceCachePath(sourceState.inputPath, {
     markdownDir
   });
+}
+
+function countParsedPaperBodyCharacters(parsed = {}) {
+  return (parsed.sections || [])
+    .filter((section) => section.role !== 'references')
+    .reduce((total, section) => total + String(section.text || '').trim().length, 0);
+}
+
+function parsedPaperHasUsableBody(parsed = {}) {
+  const bodyCharacters = countParsedPaperBodyCharacters(parsed);
+  const nonReferenceSections = (parsed.sections || []).filter((section) => section.role !== 'references');
+  const chunkCount = nonReferenceSections.reduce((total, section) => total + (section.chunks?.length || 0), 0);
+  return bodyCharacters >= 1200 || chunkCount >= 3;
+}
+
+function shouldFallbackToDoclingForDegenerateTitle(parsed = {}, options = {}) {
+  const rawMode = firstDefinedValue(
+    options.doclingFallbackOnDegenerateTitle,
+    options.pdfFallbackOnDegenerateTitle,
+    'content-poor'
+  );
+  const mode = String(rawMode).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'always'].includes(mode)) return true;
+  if (['0', 'false', 'no', 'never', 'off'].includes(mode)) return false;
+  return !parsedPaperHasUsableBody(parsed);
+}
+
+function repairDegenerateParsedTitle(parsed = {}, sourcePath = '') {
+  const titleValidation = parsed.titleValidation || assessPaperTitleCandidate(parsed.title, sourcePath);
+  const fallbackTitle = titleValidation.fallbackTitle || path.basename(sourcePath || 'paper', path.extname(sourcePath || '')) || 'paper';
+  parsed.title = fallbackTitle;
+  parsed.paperTitle = fallbackTitle;
+  parsed.titleValidation = {
+    ...titleValidation,
+    displayTitle: fallbackTitle,
+    fallbackTitle,
+    isValid: true,
+    usedFallbackTitle: true,
+    needsReparse: false,
+    repairedFromDegenerateTitle: true,
+    originalReason: titleValidation.reason || null,
+    reason: 'fallback-title-repair'
+  };
+  return parsed;
 }
 
 async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
@@ -4152,30 +4268,38 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
 
     let parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
     if (parsed.titleValidation?.needsReparse && parserUsed !== 'docling') {
-      process.stderr.write(
-        `[materialize:${path.basename(sourceState.inputPath)}] Detected degenerate title "${parsed.titleValidation.rawTitle || parsed.title}"; reparsing with docling\n`
-      );
-      const doclingStartedAt = Date.now();
-      converted = await convertPdfToMarkdown(sourceState.inputPath, {
-        ...options,
-        rootPath,
-        sourceKey: sourceState.sourceKey,
-        importTaskId: options.importTaskId,
-        importStage: options.importTaskId ? 'materialize' : null,
-        pdfParser: 'docling',
-        pdfCommand: options.doclingCommand || options.pdfCommand,
-        force: true,
-        markerDir,
-        markdownDir
-      });
-      timings.pdfToMarkdownMs += Date.now() - doclingStartedAt;
-      mergeMaterializeTimings(timings, {
-        parser: converted.timings || null
-      });
-      markdownPath = converted.markdownPath;
-      sourcePdfPath = converted.sourcePdfPath;
-      pdfCommand = converted.parserCommand || converted.markerCommand || null;
-      parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
+      const rawTitle = parsed.titleValidation.rawTitle || parsed.title;
+      if (shouldFallbackToDoclingForDegenerateTitle(parsed, options)) {
+        process.stderr.write(
+          `[materialize:${path.basename(sourceState.inputPath)}] Detected degenerate title "${rawTitle}" with weak markdown body; reparsing with docling\n`
+        );
+        const doclingStartedAt = Date.now();
+        converted = await convertPdfToMarkdown(sourceState.inputPath, {
+          ...options,
+          rootPath,
+          sourceKey: sourceState.sourceKey,
+          importTaskId: options.importTaskId,
+          importStage: options.importTaskId ? 'materialize' : null,
+          pdfParser: 'docling',
+          pdfCommand: options.doclingCommand || options.pdfCommand,
+          force: true,
+          markerDir,
+          markdownDir
+        });
+        timings.pdfToMarkdownMs += Date.now() - doclingStartedAt;
+        mergeMaterializeTimings(timings, {
+          parser: converted.timings || null
+        });
+        markdownPath = converted.markdownPath;
+        sourcePdfPath = converted.sourcePdfPath;
+        pdfCommand = converted.parserCommand || converted.markerCommand || null;
+        parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
+      } else {
+        process.stderr.write(
+          `[materialize:${path.basename(sourceState.inputPath)}] Detected degenerate title "${rawTitle}"; using fallback title "${parsed.titleValidation.fallbackTitle || parsed.title}" because markdown body is usable\n`
+        );
+        parsed = repairDegenerateParsedTitle(parsed, sourceState.inputPath);
+      }
     }
 
     const semanticSnapshotStartedAt = Date.now();
@@ -5144,7 +5268,9 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
 
 export async function analyzeCorpus(inputPath, options = {}) {
   const discovery = await discoverCorpusSources(inputPath, {
-    rootPath: options.rootPath
+    rootPath: options.rootPath,
+    includeActiveImportSources: options.includeActiveImportSources,
+    includePersistentImportSources: options.includePersistentImportSources
   });
   const { absoluteInput, absoluteInputs, inputStats, rootPath } = discovery;
 
@@ -5161,6 +5287,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
     const materializeOnly = Boolean(options.materializeOnly);
     const llmOnly = Boolean(options.llmOnly);
     const optimizeOnly = Boolean(options.optimizeOnly);
+    const mergeWithExistingManifestSources = Boolean(options.mergeWithExistingManifestSources && previousManifest);
     const analysisOptions = {
       ...options,
       semanticExtraction: normalizedSemanticExtractionMode
@@ -5201,7 +5328,9 @@ export async function analyzeCorpus(inputPath, options = {}) {
           anyRequired: resolveSemanticExtractionPlan(analysisOptions).shouldAttempt || canAttemptLlmRelations(analysisOptions)
         };
 
-    await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(previousManifest));
+    if (!mergeWithExistingManifestSources) {
+      await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(previousManifest));
+    }
 
     if (!discovery.sources.length && !previousIndexExists) {
       throw new Error(`No PDF or Markdown files found in ${inputLabel}.`);
@@ -5304,7 +5433,9 @@ export async function analyzeCorpus(inputPath, options = {}) {
     });
     const sourceStateByKey = new Map(sourceStates.map((source) => [source.sourceKey, source]));
 
-    const removedSources = (previousManifest?.sources || []).filter((entry) => !currentKeys.has(entry.sourceKey));
+    const removedSources = mergeWithExistingManifestSources
+      ? []
+      : (previousManifest?.sources || []).filter((entry) => !currentKeys.has(entry.sourceKey));
     const changes = summarizeSourceChanges(sourceStates, removedSources);
     const inputSourcesChanged = hasInputSourceChanges(sourceStates, removedSources);
 
@@ -5366,7 +5497,15 @@ export async function analyzeCorpus(inputPath, options = {}) {
         ? 'markdown cache and heuristic semantic snapshots'
         : (optimizeOnly || llmOnly ? 'cache-first snapshot reuse before optimization' : 'cache-first materialization and snapshot reuse')
     );
-    const { semanticPapers, manifestSources, failedSources, timings: materializeTimings } = await materializeSourceStates(rootPath, sourceStates, materializeOptions);
+    const { semanticPapers, manifestSources: materializedManifestSources, failedSources, timings: materializeTimings } = await materializeSourceStates(rootPath, sourceStates, materializeOptions);
+    let manifestSources = materializedManifestSources;
+    if (mergeWithExistingManifestSources) {
+      const materializedSourceKeys = new Set(materializedManifestSources.map((entry) => entry.sourceKey));
+      manifestSources = [
+        ...(previousManifest?.sources || []).filter((entry) => !materializedSourceKeys.has(entry.sourceKey)),
+        ...materializedManifestSources
+      ];
+    }
 
     await mapWithConcurrency(removedSources, metadataConcurrency, async (removedSource) => {
       await removeSemanticPaperSnapshot(rootPath, removedSource.sourceKey);
@@ -5381,9 +5520,11 @@ export async function analyzeCorpus(inputPath, options = {}) {
       throw new Error(firstFailure?.message || `No papers could be materialized from ${inputLabel}.`);
     }
 
-    const sourceMode = discovery.sources.length
-      ? discovery.sourceMode
-      : (previousManifest?.sourceMode || 'markdown');
+    const sourceMode = mergeWithExistingManifestSources
+      ? inferSourceModeFromManifestSources(manifestSources, previousManifest?.sourceMode || discovery.sourceMode || 'markdown')
+      : (discovery.sources.length
+          ? discovery.sourceMode
+          : (previousManifest?.sourceMode || 'markdown'));
     const hasPdfSources = discovery.sources.some((source) => source.kind === 'pdf');
     const pdfParser = hasPdfSources
       ? normalizePdfParser(firstDefinedValue(options.pdfParser, previousManifest?.pdfParser))
@@ -5455,6 +5596,14 @@ export async function analyzeCorpus(inputPath, options = {}) {
               'docling'
             ))
       : (previousManifest?.pdfCommand || previousManifest?.markerCommand || null);
+    const manifestInputPath = mergeWithExistingManifestSources
+      ? (previousManifest.inputPath || absoluteInput)
+      : absoluteInput;
+    const manifestInputPaths = mergeWithExistingManifestSources
+      ? (Array.isArray(previousManifest.inputPaths) && previousManifest.inputPaths.length
+          ? previousManifest.inputPaths
+          : normalizeInputPaths(previousManifest.inputPath || absoluteInput))
+      : absoluteInputs;
 
     if (materializeOnly) {
       announceStage(materializeOptions, 2, 2, 'Writing source manifest', 'persisting reusable snapshot metadata');
@@ -5467,8 +5616,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
       const nextManifest = createEmptyManifest({
         corpusName,
         rootPath,
-        inputPath: absoluteInput,
-        inputPaths: absoluteInputs,
+        inputPath: manifestInputPath,
+        inputPaths: manifestInputPaths,
         sourceMode,
         pdfParser,
         pdfCommand,
@@ -5478,7 +5627,19 @@ export async function analyzeCorpus(inputPath, options = {}) {
         changes
       });
       await withFileLock(getCorpusLockPath(rootPath), async () => {
-        await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
+        await assertAnalyzeCommitStillFresh(
+          inputPath,
+          rootPath,
+          sourceStates,
+          previousManifest,
+          metadataConcurrency,
+          mergeWithExistingManifestSources
+            ? {
+                includeActiveImportSources: false,
+                includePersistentImportSources: false
+              }
+            : {}
+        );
         if (shouldBackupBeforePersist) {
           await backupExistingCorpusRoot(rootPath, {
             backupDir: analysisOptions.backupDir
@@ -5518,8 +5679,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
       const nextManifest = createEmptyManifest({
         corpusName,
         rootPath,
-        inputPath: absoluteInput,
-        inputPaths: absoluteInputs,
+        inputPath: manifestInputPath,
+        inputPaths: manifestInputPaths,
         sourceMode,
         pdfParser,
         pdfCommand,
@@ -5608,8 +5769,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
     const nextManifest = createEmptyManifest({
       corpusName,
       rootPath,
-      inputPath: absoluteInput,
-      inputPaths: absoluteInputs,
+      inputPath: manifestInputPath,
+      inputPaths: manifestInputPaths,
       sourceMode,
       pdfParser,
       pdfCommand,
@@ -5696,8 +5857,15 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
     };
   }
 
+  const changedSourceKeySet = normalizeChangedSourceKeySet(options.changedSourceKeys);
   const records = await buildStage2RecordsFromManifest(rootPath, manifest, analysisOptions);
+  if (changedSourceKeySet.size) {
+    scopeStage2RecordsToChangedSources(records, [...changedSourceKeySet]);
+  }
   const hasPendingWork = records.some((record) => {
+    if (record.sourceState.llmRefreshState?.scopedOut) {
+      return false;
+    }
     const refresh = summarizeLlmRefreshState(record.semanticPaper, analysisOptions);
     record.sourceState.llmRefreshState = refresh;
     return refresh.anyRequired;
@@ -5708,8 +5876,8 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
       ? previousJobState
       : createStage2JobState(manifest, analysisOptions);
     seedStage2JobStateFromRecords(jobState, records);
-    jobState.status = 'completed';
-    jobState.completedAt = new Date().toISOString();
+    jobState.status = changedSourceKeySet.size ? 'partial' : 'completed';
+    jobState.completedAt = changedSourceKeySet.size ? null : new Date().toISOString();
     jobState.updatedAt = new Date().toISOString();
     await saveStage2JobState(rootPath, jobState);
 
