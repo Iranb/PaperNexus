@@ -8,6 +8,7 @@ LOG_DIR="${PAPERNEXUS_LOG_DIR:-$HOME/.papernexus/log}"
 PM2_BIN="${PM2_BIN:-pm2}"
 NODE_BIN="${NODE_BIN:-node}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
+DISK0_ROOT="${PAPERNEXUS_DISK0_ROOT:-/home/disk0}"
 
 resolve_first_executable() {
   local candidate=""
@@ -39,6 +40,8 @@ resolve_node_bin() {
     node \
     "${HOME}/miniconda3/bin/node" \
     "${HOME}/mambaforge/bin/node" \
+    "${DISK0_ROOT}/${USER:-}/miniconda3/bin/node" \
+    "${DISK0_ROOT}/${USER:-}/mambaforge/bin/node" \
     "${HOME}/.npm-global/bin/node" \
     /opt/homebrew/bin/node \
     /usr/local/bin/node \
@@ -81,6 +84,8 @@ resolve_pm2_bin() {
     pm2 \
     "${HOME}/miniconda3/bin/pm2" \
     "${HOME}/mambaforge/bin/pm2" \
+    "${DISK0_ROOT}/${USER:-}/miniconda3/bin/pm2" \
+    "${DISK0_ROOT}/${USER:-}/mambaforge/bin/pm2" \
     "${HOME}/.npm-global/bin/pm2" \
     /opt/homebrew/bin/pm2 \
     /usr/local/bin/pm2 \
@@ -339,14 +344,14 @@ pm2_start() {
     printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
     exit 127
   fi
-  NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" start "${BASH_SOURCE[0]}" \
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" start "${BASH_SOURCE[0]}" \
     --name "${APP_NAME}" \
     --interpreter /bin/bash \
     --cwd "${REPO_ROOT}" \
     --output /dev/null \
     --error /dev/null \
     -- run "$@"
-  NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
 }
 
 pm2_restart() {
@@ -360,51 +365,71 @@ pm2_restart() {
     printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
     exit 127
   fi
-  if NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" describe "${APP_NAME}" >/dev/null 2>&1; then
-    NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" restart "${APP_NAME}" --update-env
+  if PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" describe "${APP_NAME}" >/dev/null 2>&1; then
+    PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" restart "${APP_NAME}" --update-env
   else
     pm2_start "$@"
     return
   fi
-  NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
 }
 
 pm2_stop() {
   local resolved_pm2_bin=""
+  local resolved_node_bin=""
   if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
     printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
     exit 127
   fi
-  "${resolved_pm2_bin}" stop "${APP_NAME}"
-  "${resolved_pm2_bin}" save
+  if ! resolved_node_bin="$(resolve_node_bin)"; then
+    printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
+    exit 127
+  fi
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" stop "${APP_NAME}"
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
 }
 
 pm2_delete() {
   local resolved_pm2_bin=""
+  local resolved_node_bin=""
   if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
     printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
     exit 127
   fi
-  "${resolved_pm2_bin}" delete "${APP_NAME}"
-  "${resolved_pm2_bin}" save
+  if ! resolved_node_bin="$(resolve_node_bin)"; then
+    printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
+    exit 127
+  fi
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" delete "${APP_NAME}"
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" save
 }
 
 pm2_status() {
   local resolved_pm2_bin=""
+  local resolved_node_bin=""
   if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
     printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
     exit 127
   fi
-  "${resolved_pm2_bin}" status "${APP_NAME}"
+  if ! resolved_node_bin="$(resolve_node_bin)"; then
+    printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
+    exit 127
+  fi
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" status "${APP_NAME}"
 }
 
 pm2_logs() {
   local resolved_pm2_bin=""
+  local resolved_node_bin=""
   if ! resolved_pm2_bin="$(resolve_pm2_bin)"; then
     printf 'Unable to locate pm2. Set PM2_BIN or install pm2 in a standard location.\n' >&2
     exit 127
   fi
-  "${resolved_pm2_bin}" logs "${APP_NAME}"
+  if ! resolved_node_bin="$(resolve_node_bin)"; then
+    printf 'Unable to locate node. Set NODE_BIN or install node in a standard location.\n' >&2
+    exit 127
+  fi
+  PATH="$(dirname "${resolved_node_bin}"):${PATH}" NODE_BIN="${resolved_node_bin}" PM2_BIN="${resolved_pm2_bin}" "${resolved_pm2_bin}" logs "${APP_NAME}"
 }
 
 main() {

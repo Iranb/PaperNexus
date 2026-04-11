@@ -121,10 +121,13 @@ test('pm2 wrapper can locate pm2 from a common home-local install path when PATH
   const homeDir = path.join(tempDir, 'home');
   const fakePm2Dir = path.join(homeDir, 'miniconda3', 'bin');
   const fakePm2Path = path.join(fakePm2Dir, 'pm2');
+  const fakeNodePath = path.join(fakePm2Dir, 'node');
 
   await fs.mkdir(fakePm2Dir, { recursive: true });
   await fs.writeFile(fakePm2Path, '#!/bin/sh\necho \"FAKE_PM2:$@\"\n', 'utf8');
+  await fs.writeFile(fakeNodePath, '#!/bin/sh\necho \"FAKE_NODE:$@\"\n', 'utf8');
   await fs.chmod(fakePm2Path, 0o755);
+  await fs.chmod(fakeNodePath, 0o755);
 
   try {
     const { stdout } = await execFileAsync(scriptPath, ['status'], {
@@ -137,6 +140,38 @@ test('pm2 wrapper can locate pm2 from a common home-local install path when PATH
     });
 
     assert.match(stdout, /FAKE_PM2:status papernexus-serve/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('pm2 wrapper can locate pm2 from the /home/disk0 user install path used by the GPU server', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pm2-disk0-discovery-'));
+  const fakeRoot = path.join(tempDir, 'disk0');
+  const fakeUser = `pnuser-${process.pid}`;
+  const fakePm2Dir = path.join(fakeRoot, fakeUser, 'miniconda3', 'bin');
+  const fakePm2Path = path.join(fakePm2Dir, 'pm2');
+  const fakeNodePath = path.join(fakePm2Dir, 'node');
+
+  await fs.mkdir(fakePm2Dir, { recursive: true });
+  await fs.writeFile(fakePm2Path, '#!/bin/sh\necho \"FAKE_DISK0_PM2:$@\"\n', 'utf8');
+  await fs.writeFile(fakeNodePath, '#!/bin/sh\necho \"FAKE_DISK0_NODE:$@\"\n', 'utf8');
+  await fs.chmod(fakePm2Path, 0o755);
+  await fs.chmod(fakeNodePath, 0o755);
+
+  try {
+    const { stdout } = await execFileAsync(scriptPath, ['status'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HOME: path.join(tempDir, 'home'),
+        USER: fakeUser,
+        PATH: '/usr/bin:/bin',
+        PAPERNEXUS_DISK0_ROOT: fakeRoot
+      }
+    });
+
+    assert.match(stdout, /FAKE_DISK0_PM2:status papernexus-serve/);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
