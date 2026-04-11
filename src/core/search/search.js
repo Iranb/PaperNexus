@@ -325,8 +325,20 @@ export function buildImpact(graph, query, options = {}) {
     return { query, node: null, direction, byDepth: [], risk: 'LOW' };
   }
 
-  const node = candidates[0];
   const { outgoing, incoming } = buildRelationIndex(graph);
+  const findTraversableRoot = (candidate) => {
+    const relationships = direction === 'upstream'
+      ? (incoming.get(candidate.id) || [])
+      : (outgoing.get(candidate.id) || []);
+    return relationships.some((relationship) => {
+      if (!relationTypes.has(relationship.type)) return false;
+      if (!relationshipMatchesLayerMode(relationship, layerMode)) return false;
+      const nextNodeId = direction === 'upstream' ? relationship.sourceId : relationship.targetId;
+      const nextNode = graph.getNode(nextNodeId);
+      return nodeInAllowedLayers(nextNode, allowedLayers);
+    });
+  };
+  const node = candidates.find(findTraversableRoot) || candidates[0];
   const buckets = new Map();
   const visited = new Set([node.id]);
   const queue = [{ nodeId: node.id, depth: 0 }];

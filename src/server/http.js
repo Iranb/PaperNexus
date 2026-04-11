@@ -997,9 +997,11 @@ export async function serveCommand(options = {}) {
   const stop = async () => {
     process.off('SIGINT', shutdown);
     process.off('SIGTERM', shutdown);
-    enhancementWorker?.stop();
-    authoritativeSyncWorker?.stop();
-    importWorker?.stop();
+    await Promise.all([
+      enhancementWorker?.stop?.(),
+      authoritativeSyncWorker?.stop?.(),
+      importWorker?.stop?.()
+    ]);
     await new Promise((resolve) => {
       server.close(resolve);
     });

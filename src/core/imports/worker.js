@@ -635,9 +635,12 @@ export function startImportWorker(options = {}) {
   void tick();
 
   return {
-    stop() {
+    async stop() {
       closed = true;
       clearTimeout(timer);
+      while (running) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
     },
     pollNow() {
       clearTimeout(timer);
