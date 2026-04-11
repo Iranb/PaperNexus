@@ -214,10 +214,23 @@ test('backup archive unpack tolerates large tar stderr output', async () => {
 
   try {
     await fs.writeFile(archivePath, 'placeholder archive');
-    await fs.writeFile(
+await fs.writeFile(
       fakeTarPath,
       `#!/bin/sh
 set -eu
+case " $* " in
+  *" -tzf "*)
+    printf './\\n./export.json\\n./index/.papernexus/meta.json\\n./sources/0/test.md\\n'
+    exit 0
+    ;;
+  *" -tvzf "*)
+    printf '%s\\n' 'drwxr-xr-x user group 0 2026-04-11 00:00 ./'
+    printf '%s\\n' '-rw-r--r-- user group 14 2026-04-11 00:00 ./export.json'
+    printf '%s\\n' '-rw-r--r-- user group 16 2026-04-11 00:00 ./index/.papernexus/meta.json'
+    printf '%s\\n' '-rw-r--r-- user group 14 2026-04-11 00:00 ./sources/0/test.md'
+    exit 0
+    ;;
+esac
 target=""
 prev=""
 for arg in "$@"; do
@@ -250,6 +263,51 @@ printf '# fake source\\n' > "$target/sources/0/test.md"
     await fs.access(path.join(unpackRoot, 'export.json'));
     await fs.access(path.join(unpackRoot, 'index', '.papernexus', 'meta.json'));
     await fs.access(path.join(unpackRoot, 'sources', '0', 'test.md'));
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('backup archive unpack rejects unsafe tar member paths before extraction', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-backup-archive-unsafe-'));
+  const archivePath = path.join(workspaceRoot, 'unsafe-backup.tgz');
+  const unpackRoot = path.join(workspaceRoot, 'unpacked');
+  const fakeTarPath = path.join(workspaceRoot, 'fake-tar.sh');
+  const extractionMarker = path.join(workspaceRoot, 'extracted.txt');
+
+  try {
+    await fs.writeFile(archivePath, 'placeholder archive');
+    await fs.writeFile(
+      fakeTarPath,
+      `#!/bin/sh
+set -eu
+case " $* " in
+  *" -tzf "*)
+    printf '../evil.txt\\n'
+    exit 0
+    ;;
+  *" -tvzf "*)
+    printf '%s\\n' '-rw-r--r-- user group 5 2026-04-11 00:00 ../evil.txt'
+    exit 0
+    ;;
+  *" -xzf "*)
+    printf extracted > ${JSON.stringify(extractionMarker)}
+    exit 0
+    ;;
+esac
+exit 0
+`
+    );
+    await fs.chmod(fakeTarPath, 0o755);
+
+    const backupArchive = await import('../src/storage/backup-archive.js');
+    await assert.rejects(
+      () => backupArchive.unpackCorpusArchive(archivePath, unpackRoot, {
+        tarBin: fakeTarPath
+      }),
+      /Unsafe backup archive entry/
+    );
+    await assert.rejects(fs.access(extractionMarker));
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }

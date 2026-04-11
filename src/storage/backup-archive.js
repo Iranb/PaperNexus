@@ -31,17 +31,37 @@ async function runTar(args, options = {}) {
     ...process.env,
     ...(options.env || {})
   };
+  const maxCapturedStdoutBytes = 1024 * 1024;
   const maxCapturedStderrBytes = 16 * 1024;
 
-  await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const child = spawn(tarBin, args, {
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       env
     });
 
+    let stdout = '';
+    let stdoutBytes = 0;
+    let stdoutTruncated = false;
     let stderr = '';
     let stderrBytes = 0;
     let stderrTruncated = false;
+
+    child.stdout.on('data', (chunk) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk || '');
+      const chunkBytes = Buffer.byteLength(text);
+      if (stdoutBytes < maxCapturedStdoutBytes) {
+        const remainingBytes = maxCapturedStdoutBytes - stdoutBytes;
+        const slice = Buffer.from(text, 'utf8').subarray(0, remainingBytes).toString('utf8');
+        stdout += slice;
+      } else {
+        stdoutTruncated = true;
+      }
+      stdoutBytes += chunkBytes;
+      if (stdoutBytes > maxCapturedStdoutBytes) {
+        stdoutTruncated = true;
+      }
+    });
 
     child.stderr.on('data', (chunk) => {
       const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk || '');
@@ -62,7 +82,7 @@ async function runTar(args, options = {}) {
     child.once('error', reject);
     child.once('close', (code) => {
       if (code === 0) {
-        resolve();
+        resolve(`${stdout}${stdoutTruncated ? '\n...stdout truncated...' : ''}`);
         return;
       }
       const detail = stderr.trim()
@@ -71,6 +91,43 @@ async function runTar(args, options = {}) {
       reject(new Error(detail));
     });
   });
+}
+
+function normalizeArchiveMemberPath(memberPath = '') {
+  return String(memberPath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .trim();
+}
+
+function validateArchiveMemberPath(memberPath = '') {
+  const normalized = normalizeArchiveMemberPath(memberPath);
+  if (!normalized || normalized === '.') return;
+  if (normalized.startsWith('/')) {
+    throw new Error(`Unsafe backup archive entry uses an absolute path: ${memberPath}`);
+  }
+  if (normalized.split('/').some((part) => part === '..')) {
+    throw new Error(`Unsafe backup archive entry escapes the output directory: ${memberPath}`);
+  }
+}
+
+function validateArchiveVerboseListing(verboseOutput = '') {
+  for (const rawLine of String(verboseOutput || '').split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (/^[lh]/.test(line) || line.includes(' -> ')) {
+      throw new Error(`Unsafe backup archive entry uses a link: ${line}`);
+    }
+  }
+}
+
+async function validateBackupArchiveBeforeUnpack(absoluteArchivePath, options = {}) {
+  const listing = await runTar(['-tzf', absoluteArchivePath], options);
+  for (const memberPath of listing.split('\n').map((line) => line.trim()).filter(Boolean)) {
+    validateArchiveMemberPath(memberPath);
+  }
+  const verboseListing = await runTar(['-tvzf', absoluteArchivePath], options);
+  validateArchiveVerboseListing(verboseListing);
 }
 
 function createArchiveStamp() {
@@ -356,6 +413,7 @@ export async function unpackCorpusArchive(archivePath, outputPath, options = {})
     total: totalSteps,
     label: 'prepared output directory'
   });
+  await validateBackupArchiveBeforeUnpack(absoluteArchivePath, options);
   await runTar(['-xzf', absoluteArchivePath, '-C', absoluteOutputPath], options);
   completed += 1;
   emitProgress(options, {

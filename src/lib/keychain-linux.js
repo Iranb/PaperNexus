@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -34,7 +34,7 @@ async function storeViaSecretTool({ service, account, secret }) {
   const label = `${service}:${account}`;
   
   try {
-    const child = require('child_process').spawn('secret-tool', 
+    const child = spawn('secret-tool',
       ['store', '--label', label, 'service', service, 'account', account]
     );
     
@@ -77,7 +77,7 @@ async function storeViaPass({ service, account, secret }) {
   const passPath = `papernexus/${service}/${account}`;
   
   try {
-    const child = require('child_process').spawn('pass', 
+    const child = spawn('pass',
       ['insert', '--force', passPath]
     );
     

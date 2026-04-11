@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   backupCorpusPayload,
@@ -112,6 +113,15 @@ function readRequestApiToken(request) {
   return '';
 }
 
+function timingSafeStringEqual(left = '', right = '') {
+  const leftBuffer = Buffer.from(String(left), 'utf8');
+  const rightBuffer = Buffer.from(String(right), 'utf8');
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function requireApiToken(request, response, expectedToken) {
   if (!expectedToken) {
     sendJson(response, 503, {
@@ -121,7 +131,7 @@ function requireApiToken(request, response, expectedToken) {
   }
 
   const providedToken = readRequestApiToken(request);
-  if (!providedToken || providedToken !== expectedToken) {
+  if (!providedToken || !timingSafeStringEqual(providedToken, expectedToken)) {
     response.setHeader('WWW-Authenticate', 'Bearer realm="PaperNexus API"');
     sendJson(response, 401, {
       error: 'Unauthorized. Provide the PaperNexus API token as `Authorization: Bearer <token>`.'

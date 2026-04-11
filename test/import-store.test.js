@@ -381,6 +381,62 @@ test('recoverFailedImportTasks marks historical failures completed when an equiv
   }
 });
 
+test('recoverFailedImportTasks does not supersede different content just because filenames match', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-same-name-different-content-'));
+
+  try {
+    const {
+      completeImportTask,
+      createImportTask,
+      failImportTask,
+      loadImportTask,
+      recoverFailedImportTasks
+    } = await import('../src/storage/import-store.js');
+
+    const failedTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'paper.md',
+          contentBase64: Buffer.from('# Paper A\n\n## Abstract\n\nOriginal failed content.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    await failImportTask(rootPath, failedTask.id, new Error('old transient failure'));
+
+    const completedTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'paper.md',
+          contentBase64: Buffer.from('# Paper B\n\n## Abstract\n\nDifferent completed content.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    await completeImportTask(rootPath, completedTask.id, {
+      ok: true
+    });
+
+    const recovered = await recoverFailedImportTasks(rootPath, {
+      importFailedRetryDelayMs: 0
+    });
+
+    assert.deepEqual(recovered.superseded, []);
+    assert.deepEqual(recovered.recovered.map((entry) => entry.taskId), [failedTask.id]);
+
+    const loaded = await loadImportTask(rootPath, failedTask.id);
+    assert.equal(loaded.status, 'pending');
+    assert.equal(loaded.stage, 'queued');
+    assert.equal(loaded.recovery.status, 'queued-retry');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('listImportTasks reconciles stale queue.json statuses back to the task.json source of truth', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-reconcile-'));
 

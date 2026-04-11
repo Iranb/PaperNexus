@@ -6,6 +6,8 @@ Scope: current code under `src/`, `scripts/`, `web/`, `SKILL/`, `test/`, `config
 Files inventoried: 183 tracked code/config/test files
 Recommendation: REQUEST CHANGES
 
+Resolution addendum: The code issues in this report were addressed after the review, except the `serverFilePath` allowlist recommendation, which was explicitly accepted as out of scope for the current design. See the repository history after this report for the corresponding fix commits.
+
 ## Executive Summary
 
 The current codebase is materially healthier than the earlier review baseline. The previously observed high-impact issues around repository-wide tests, stale lock heartbeats, quarantined task lookup, browser token persistence, and `update --force` have been addressed. The staged pipeline, import queue, parser state, and remote MCP surfaces are now much more operationally coherent.

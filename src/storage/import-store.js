@@ -606,8 +606,8 @@ function indexCompletedEquivalentTasks(tasks = []) {
 
 function findCompletedEquivalentImportTasks(task = {}, completedIndex = {}) {
   const contentKey = createImportTaskContentKey(task);
-  if (contentKey && completedIndex.byContentKey?.has(contentKey)) {
-    return completedIndex.byContentKey.get(contentKey);
+  if (contentKey) {
+    return completedIndex.byContentKey?.get(contentKey) || [];
   }
 
   const nameKey = createImportTaskNameKey(task);
