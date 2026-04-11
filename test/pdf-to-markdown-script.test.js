@@ -88,8 +88,8 @@ await fs.writeFile(
   }
 });
 
-test('test-pdf-to-markdown defaults to markpdfdown and keeps markdown text-only', async () => {
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pdf2md-markpdfdown-'));
+test('test-pdf-to-markdown defaults to markitdown and keeps markdown text-only', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pdf2md-markitdown-'));
   const pdfPath = path.join(workspaceRoot, 'paper.pdf');
   const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
   const configPath = path.join(workspaceRoot, 'config.json');
@@ -148,7 +148,7 @@ test('test-pdf-to-markdown defaults to markpdfdown and keeps markdown text-only'
     });
 
     const payload = JSON.parse(stdout);
-    assert.equal(payload.config.parser, 'markpdfdown');
+    assert.equal(payload.config.parser, 'markitdown');
     const markdown = await fs.readFile(payload.result.markdownPath, 'utf8');
     assert.match(markdown, /Body text only\./);
     assert.match(markdown, /Tail text\./);
@@ -215,7 +215,7 @@ test('test-pdf-to-markdown can compare configured parser timing with docling fal
 
     await fs.writeFile(configPath, `${JSON.stringify({
       analyze: {
-        markpdfdownPython: './fake-python.sh',
+        markitdownPython: './fake-python.sh',
         doclingCommand: './fake-docling.sh'
       },
       llm: {
@@ -244,8 +244,8 @@ test('test-pdf-to-markdown can compare configured parser timing with docling fal
     });
 
     const payload = JSON.parse(stdout);
-    assert.equal(payload.config.parser, 'markpdfdown');
-    assert.equal(payload.result.parser, 'markpdfdown');
+    assert.equal(payload.config.parser, 'markitdown');
+    assert.equal(payload.result.parser, 'markitdown');
     assert.equal(payload.fallbackCheck.checked, true);
     assert.equal(payload.fallbackCheck.primaryParser, 'marker');
     assert.equal(payload.fallbackCheck.fallbackTriggered, true);
@@ -253,7 +253,7 @@ test('test-pdf-to-markdown can compare configured parser timing with docling fal
     assert.ok(payload.timings.elapsedMs >= 0);
     assert.ok(payload.fallbackCheck.timings.elapsedMs >= 0);
     assert.ok(payload.comparison.deltaMs >= 0);
-    assert.equal(payload.comparison.configuredParser, 'markpdfdown');
+    assert.equal(payload.comparison.configuredParser, 'markitdown');
     assert.equal(payload.comparison.doclingFallbackParser, 'docling');
 
     const fallbackMarkdown = await fs.readFile(payload.fallbackCheck.result.markdownPath, 'utf8');

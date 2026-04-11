@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { applyProcessConfig, getDefaultRuntimeConfigRoot, loadRuntimeConfig, resolvePathWithHome } from '../src/lib/config.js';
-import { convertPdfToMarkdown, normalizePdfParser } from '../src/core/ingestion/marker.js';
+import { convertPdfToMarkdown, normalizePdfParser } from '../src/core/ingestion/pdf-parser.js';
 
 function parseArgv(argv) {
   const flags = {};
@@ -67,9 +67,10 @@ function buildPdfOptions(flags, config) {
   const ollamaConfig = getSection(config, 'ollama');
   const pythonCommand = firstDefined(flags['python-command'], materializeConfig.pythonCommand, analyzeConfig.pythonCommand);
   return {
-    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'markpdfdown'),
+    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'markitdown'),
     pdfCommand: firstDefined(flags['pdf-cmd'], materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
     pythonCommand,
+    markitdownPython: firstDefined(flags['markitdown-python'], materializeConfig.markitdownPython, analyzeConfig.markitdownPython, pythonCommand),
     markpdfdownPython: firstDefined(flags['markpdfdown-python'], materializeConfig.markpdfdownPython, analyzeConfig.markpdfdownPython, pythonCommand),
     opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], materializeConfig.opendataloaderPdfPython, analyzeConfig.opendataloaderPdfPython, pythonCommand),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
@@ -163,6 +164,16 @@ function buildFailingPrimaryProbeOptions(baseOptions, requestedParser) {
     disableDoclingFallback: false
   };
 
+  if (primaryParser === 'markitdown') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        markitdownPython: missingCommand
+      }
+    };
+  }
+
   if (primaryParser === 'markpdfdown') {
     return {
       primaryParser,
@@ -217,7 +228,7 @@ function buildFailingPrimaryProbeOptions(baseOptions, requestedParser) {
 
   throw new Error(
     `Cannot run a docling fallback probe with primary parser \`${primaryParser}\`. `
-    + 'Use one of: markpdfdown, opendataloader, marker, mineru, paddleocr-vl.'
+    + 'Use one of: markitdown, markpdfdown, opendataloader, marker, mineru, paddleocr-vl.'
   );
 }
 

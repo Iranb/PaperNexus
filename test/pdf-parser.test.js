@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { __markerTestables, convertPdfToMarkdown } from '../src/core/ingestion/marker.js';
+import { __pdfParserTestables, convertPdfToMarkdown } from '../src/core/ingestion/pdf-parser.js';
+
+const __markerTestables = __pdfParserTestables;
 
 test('resolveRemoteMarkerHost prefers explicit marker host then pdf host', () => {
   assert.equal(
@@ -22,8 +24,9 @@ test('resolveRemoteMarkerHost prefers explicit marker host then pdf host', () =>
   );
 });
 
-test('normalizePdfParser defaults to markpdfdown and accepts other parsers', () => {
-  assert.equal(__markerTestables.normalizePdfParser(undefined), 'markpdfdown');
+test('normalizePdfParser defaults to markitdown and accepts other parsers', () => {
+  assert.equal(__markerTestables.normalizePdfParser(undefined), 'markitdown');
+  assert.equal(__markerTestables.normalizePdfParser('markitdown'), 'markitdown');
   assert.equal(__markerTestables.normalizePdfParser('markpdfdown'), 'markpdfdown');
   assert.equal(__markerTestables.normalizePdfParser('opendataloader'), 'opendataloader');
   assert.equal(__markerTestables.normalizePdfParser('mineru'), 'mineru');
@@ -34,6 +37,10 @@ test('normalizePdfParser defaults to markpdfdown and accepts other parsers', () 
 });
 
 test('shared pythonCommand is used by python-based parsers unless a parser-specific override is set', () => {
+  assert.equal(
+    __markerTestables.resolveMarkItDownPython({ pythonCommand: '/usr/local/bin/shared-python' }),
+    '/usr/local/bin/shared-python'
+  );
   assert.equal(
     __markerTestables.resolveMarkPdfDownPython({ pythonCommand: '/usr/local/bin/shared-python' }),
     '/usr/local/bin/shared-python'
@@ -57,6 +64,25 @@ test('shared pythonCommand is used by python-based parsers unless a parser-speci
     }),
     '/usr/local/bin/markpdfdown-python'
   );
+  assert.equal(
+    __markerTestables.resolveMarkItDownPython({
+      pythonCommand: '/usr/local/bin/shared-python',
+      markitdownPython: '/usr/local/bin/markitdown-python'
+    }),
+    '/usr/local/bin/markitdown-python'
+  );
+});
+
+test('getPdfParserProfile centralizes concurrency and lease behavior per parser', () => {
+  const markitdownProfile = __markerTestables.getPdfParserProfile('markitdown', {});
+  assert.equal(markitdownProfile.recommendedConcurrency, 2);
+  assert.equal(markitdownProfile.allowLlmConcurrencyBoost, false);
+  assert.equal(markitdownProfile.leaseStrategy, 'none');
+
+  const doclingProfile = __markerTestables.getPdfParserProfile('docling', {});
+  assert.equal(doclingProfile.recommendedConcurrency, 4);
+  assert.equal(doclingProfile.fallbackParser, '');
+  assert.equal(doclingProfile.leaseStrategy, 'docling-gpu');
 });
 
 test('resolveMarkerBlockBlacklist normalizes configured marker block names', () => {
@@ -476,6 +502,51 @@ test('convertPdfToMarkdown can materialize markdown via the opendataloader wrapp
   }
 });
 
+test('convertPdfToMarkdown can materialize markdown via the markitdown wrapper', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markitdown-success-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const fakePythonPath = path.join(tempDir, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'cat > "$output" <<\'EOF\'',
+        '# MarkItDown',
+        '',
+        'Structured markdown from markitdown.',
+        'EOF'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'markitdown',
+      markitdownPython: fakePythonPath,
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'markitdown');
+    assert.match(result.markdownPath, /markitdown/);
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /Structured markdown from markitdown/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('convertPdfToMarkdown can materialize markdown via the markpdfdown wrapper and reuse PaperNexus LLM config', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markpdfdown-success-'));
   const pdfPath = path.join(tempDir, 'paper.pdf');
@@ -521,6 +592,59 @@ test('convertPdfToMarkdown can materialize markdown via the markpdfdown wrapper 
     assert.match(markdown, /OPENAI_BASE_URL=https:\/\/dashscope\.example\/v1/);
     assert.match(markdown, /OPENAI_API_BASE=https:\/\/dashscope\.example\/v1/);
     assert.match(markdown, /MAX_TOKENS=4096/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('convertPdfToMarkdown falls back to docling when markitdown fails', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markitdown-fallback-docling-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const failingPythonPath = path.join(tempDir, 'fail-markitdown.sh');
+  const fakeDoclingPath = path.join(tempDir, 'fake-docling.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      failingPythonPath,
+      [
+        '#!/bin/sh',
+        'echo "markitdown failed" >&2',
+        'exit 1'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    await fs.writeFile(
+      fakeDoclingPath,
+      [
+        '#!/bin/sh',
+        'pdf_path="$1"',
+        'out_dir=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) out_dir="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'base=$(basename "$pdf_path" .pdf)',
+        'mkdir -p "$out_dir"',
+        'printf "# %s Title\\n\\n## Abstract\\n\\nRecovered from markitdown failure.\\n" "$base" > "$out_dir/$base.md"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'markitdown',
+      markitdownPython: failingPythonPath,
+      doclingCommand: fakeDoclingPath,
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'docling');
+    assert.equal(result.fallbackFromParser, 'markitdown');
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /Recovered from markitdown failure/);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

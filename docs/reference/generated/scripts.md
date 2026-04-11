@@ -34,6 +34,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/graph_manage/delete_graph_index_snapshot.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/graph_manage/delete_graph_index_snapshot.sh) | Delete Graph Index Snapshot implementation. |
 | [`scripts/install-service.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/install-service.sh) | Install platform-specific background services for watch and serve. |
 | [`scripts/manage-service.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/manage-service.sh) | Inspect and control installed services on supported platforms. |
+| [`scripts/markitdown_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/markitdown_to_markdown.py) | Standalone MarkItDown PDF-to-markdown bridge. |
 | [`scripts/markpdfdown_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/markpdfdown_to_markdown.py) | Markpdfdown To Markdown implementation. |
 | [`scripts/opendataloader_pdf_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/opendataloader_pdf_to_markdown.py) | Standalone OpenDataLoader PDF-to-markdown bridge. |
 | [`scripts/paddleocr_vl_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/paddleocr_vl_to_markdown.py) | Standalone PaddleOCR-VL PDF-to-markdown bridge. |

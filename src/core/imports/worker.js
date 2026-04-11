@@ -16,7 +16,7 @@ import {
 } from '../ingestion/pipeline.js';
 import { withFileLock } from '../../lib/fs.js';
 import { loadRegistry } from '../../storage/registry.js';
-import { cacheMarkdownSource, convertPdfToMarkdown } from '../ingestion/marker.js';
+import { cacheMarkdownSource, convertPdfToMarkdown } from '../ingestion/pdf-parser.js';
 
 const DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS = 20_000;
 const DEFAULT_IMPORT_WORKER_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
@@ -124,6 +124,7 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
           pdfParser: options.pdfParser,
           pdfCommand: options.pdfCommand,
           pythonCommand: options.pythonCommand,
+          markitdownPython: options.markitdownPython,
           markpdfdownPython: options.markpdfdownPython,
           opendataloaderPdfPython: options.opendataloaderPdfPython,
           doclingPython: options.doclingPython,

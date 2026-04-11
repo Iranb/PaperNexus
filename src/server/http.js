@@ -36,7 +36,7 @@ import { getMcpHttpConfig, handleMcpHttpRequest } from '../mcp/http.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
-import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/marker.js';
+import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -268,6 +268,16 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     pdfParser: firstDefined(options.pdfParser, materializeConfig.pdfParser, analyzeConfig.pdfParser, watchConfig.pdfParser),
     pdfCommand: firstDefined(options.pdfCommand, materializeConfig.pdfCommand, analyzeConfig.pdfCommand, watchConfig.pdfCommand),
     pythonCommand: firstDefined(options.pythonCommand, materializeConfig.pythonCommand, analyzeConfig.pythonCommand, watchConfig.pythonCommand),
+    markitdownPython: firstDefined(
+      options.markitdownPython,
+      materializeConfig.markitdownPython,
+      analyzeConfig.markitdownPython,
+      watchConfig.markitdownPython,
+      options.pythonCommand,
+      materializeConfig.pythonCommand,
+      analyzeConfig.pythonCommand,
+      watchConfig.pythonCommand
+    ),
     markpdfdownPython: firstDefined(
       options.markpdfdownPython,
       materializeConfig.markpdfdownPython,

@@ -74,10 +74,11 @@ import { buildLiteStateSnapshot, GLOBAL_SOURCE_KEY } from '../../storage/lite-vi
 import {
   cacheMarkdownSource,
   convertPdfToMarkdown,
+  getPdfParserProfile,
   getMarkdownSourceCachePath,
   getPdfMarkdownCachePath,
   normalizePdfParser
-} from './marker.js';
+} from './pdf-parser.js';
 import {
   assessPaperTitleCandidate,
   extractConceptCandidates,
@@ -4085,6 +4086,7 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       pdfCommand: options.pdfCommand,
       pythonCommand: options.pythonCommand,
       force: Boolean(sourceState.markdownCacheNeedsRefresh),
+      markitdownPython: options.markitdownPython,
       markpdfdownPython: options.markpdfdownPython,
       opendataloaderPdfPython: options.opendataloaderPdfPython,
       doclingPython: options.doclingPython,
@@ -4273,35 +4275,17 @@ function resolveAnalyzeConcurrency(options = {}) {
   }
 
   const parser = normalizePdfParser(options.pdfParser);
+  const profile = getPdfParserProfile(parser, options);
   if (parser === 'marker') {
     return resolveMarkerConcurrency(options);
-  }
-
-  if (parser === 'paddleocr-vl') {
-    return 1;
-  }
-
-  if (parser === 'markpdfdown') {
-    return 1;
   }
 
   const available = resolveAvailableParallelism(options);
   const semanticPlan = resolveSemanticExtractionPlan(options);
   const llmEnabled = semanticPlan.requestedMode !== 'heuristic-only' || canAttemptLlmRelations(options);
-  const hasRemotePdfRuntime = Boolean(
-    options.doclingSshHost
-    || options.markerSshHost
-    || options.pdfParserSshHost
-    || options.pdfSshHost
-    || options.mineruHttpUrl
-  );
+  let concurrency = Math.min(available, profile.recommendedConcurrency);
 
-  let concurrency = hasRemotePdfRuntime ? Math.min(available, 6) : Math.min(available, 4);
-  if (parser === 'mineru' && !hasRemotePdfRuntime) {
-    concurrency = Math.min(concurrency, 3);
-  }
-
-  if (llmEnabled) {
+  if (llmEnabled && profile.allowLlmConcurrencyBoost !== false) {
     concurrency = available;
   }
 
@@ -4496,6 +4480,10 @@ function buildScrubRecoveryOptions(manifest = {}, options = {}) {
     quiet: true,
     pdfParser: parser,
     pdfCommand: firstDefinedValue(options.pdfCommand, manifestPdfCommand),
+    markitdownPython: firstDefinedValue(
+      options.markitdownPython,
+      parser === 'markitdown' ? manifestPdfCommand : undefined
+    ),
     markpdfdownPython: firstDefinedValue(
       options.markpdfdownPython,
       parser === 'markpdfdown' ? manifestPdfCommand : undefined
@@ -5415,6 +5403,16 @@ export async function analyzeCorpus(inputPath, options = {}) {
               process.env.PAPERNEXUS_PYTHON_COMMAND,
               'python3'
             )
+            : pdfParser === 'markitdown'
+              ? firstDefinedValue(
+                options.pdfCommand,
+                options.markitdownPython,
+                options.pythonCommand,
+                previousManifest?.pdfCommand,
+                process.env.PAPERNEXUS_MARKITDOWN_PYTHON,
+                process.env.PAPERNEXUS_PYTHON_COMMAND,
+                'python3'
+              )
             : pdfParser === 'opendataloader'
               ? firstDefinedValue(
                 options.pdfCommand,

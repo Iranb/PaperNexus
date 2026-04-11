@@ -150,7 +150,7 @@ printf '# %s\\n\\n## Abstract\\n\\nPrepared by fake docling.\\n' "$base" > "$out
       import('../src/storage/corpus-store.js'),
       import('../src/storage/import-store.js'),
       import('../src/core/imports/worker.js'),
-      import('../src/core/ingestion/marker.js')
+      import('../src/core/ingestion/pdf-parser.js')
     ]);
 
     await ingestion.analyzeCorpus(inputRoot, {

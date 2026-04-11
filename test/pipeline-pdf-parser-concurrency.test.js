@@ -43,6 +43,21 @@ test('resolveAnalyzeConcurrency keeps markpdfdown conservative for local multimo
   }), 1);
 });
 
+test('resolveAnalyzeConcurrency gives markitdown a moderate local default', () => {
+  assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
+    pdfParser: 'markitdown',
+    availableParallelism: 8
+  }), 2);
+});
+
+test('resolveAnalyzeConcurrency keeps markitdown moderate even when llm extraction is enabled', () => {
+  assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
+    pdfParser: 'markitdown',
+    semanticExtraction: 'llm-assisted',
+    availableParallelism: 8
+  }), 2);
+});
+
 test('resolveAnalyzeConcurrency keeps higher concurrency when llm-assisted extraction is enabled', () => {
   assert.equal(__pipelineTestables.resolveAnalyzeConcurrency({
     pdfParser: 'docling',

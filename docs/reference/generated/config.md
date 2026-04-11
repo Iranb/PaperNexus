@@ -17,9 +17,10 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
   "analyze": {
     "name": "GCD",
     "semanticExtraction": "llm-primary",
-    "pdfParser": "markpdfdown",
+    "pdfParser": "markitdown",
     "pythonCommand": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
+    "markitdownPython": "python3",
     "doclingCommand": "docling",
     "doclingDevice": "cuda",
     "doclingAutoGpu": true,
@@ -72,9 +73,10 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze` | object | section |
 | `analyze.name` | string | `GCD` |
 | `analyze.semanticExtraction` | string | `llm-primary` |
-| `analyze.pdfParser` | string | `markpdfdown` |
+| `analyze.pdfParser` | string | `markitdown` |
 | `analyze.pythonCommand` | string | `python3` |
 | `analyze.mineruHttpUrl` | string | `http://127.0.0.1:30000` |
+| `analyze.markitdownPython` | string | `python3` |
 | `analyze.doclingCommand` | string | `docling` |
 | `analyze.doclingDevice` | string | `cuda` |
 | `analyze.doclingAutoGpu` | boolean | `true` |
