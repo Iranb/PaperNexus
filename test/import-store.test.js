@@ -209,6 +209,8 @@ test('quarantineImportTasks removes stale pending tasks from the active queue an
   try {
     const {
       createImportTask,
+      loadImportTask,
+      loadImportTaskLog,
       listImportTasks,
       quarantineImportTasks
     } = await import('../src/storage/import-store.js');
@@ -236,6 +238,12 @@ test('quarantineImportTasks removes stale pending tasks from the active queue an
     await fs.access(path.join(quarantined.batchDir, 'summary.json'));
     await fs.access(path.join(quarantined.tasks[0].taskDir, 'task.json'));
     await fs.access(path.join(quarantined.tasks[0].taskDir, 'quarantine.json'));
+
+    const quarantinedTask = await loadImportTask(rootPath, task.id);
+    assert.equal(quarantinedTask.status, 'failed');
+    assert.equal(quarantinedTask.quarantine.reason, 'stale-pending-timeout');
+    const quarantinedLog = await loadImportTaskLog(rootPath, task.id);
+    assert.match(quarantinedLog, /quarantined from the active queue/i);
 
     const listed = await listImportTasks(rootPath);
     assert.equal(listed.tasks.length, 0);

@@ -283,6 +283,32 @@ export function getImportTaskPaths(rootPath, taskId) {
   };
 }
 
+async function findQuarantinedImportTaskDir(rootPath, taskId) {
+  const { quarantineDir } = getImportPaths(rootPath);
+  if (!await fileExists(quarantineDir)) {
+    return null;
+  }
+
+  const taskDirPrefix = stableHash(taskId, 20);
+  const batches = await fs.readdir(quarantineDir, { withFileTypes: true });
+  const batchDirectories = batches
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+
+  for (const batchName of batchDirectories) {
+    const batchDir = path.join(quarantineDir, batchName);
+    const entries = await fs.readdir(batchDir, { withFileTypes: true });
+    const matchedEntry = entries.find((entry) => entry.isDirectory() && (entry.name === taskDirPrefix || entry.name.startsWith(`${taskDirPrefix}-`)));
+    if (matchedEntry) {
+      return path.join(batchDir, matchedEntry.name);
+    }
+  }
+
+  return null;
+}
+
 export async function loadImportQueue(rootPath) {
   const { queuePath } = getImportPaths(rootPath);
   const queue = (await readJson(queuePath, createEmptyQueue())) || createEmptyQueue();
@@ -326,7 +352,11 @@ async function saveImportContentIndex(rootPath, index) {
 }
 
 export async function loadImportTask(rootPath, taskId) {
-  return readJson(getImportTaskPaths(rootPath, taskId).taskPath, null);
+  const activeTask = await readJson(getImportTaskPaths(rootPath, taskId).taskPath, null);
+  if (activeTask) return activeTask;
+  const quarantinedTaskDir = await findQuarantinedImportTaskDir(rootPath, taskId);
+  if (!quarantinedTaskDir) return null;
+  return readJson(path.join(quarantinedTaskDir, 'task.json'), null);
 }
 
 async function saveImportTask(rootPath, task) {
@@ -370,7 +400,13 @@ export async function appendImportTaskLog(rootPath, taskId, entry = {}) {
 
 export async function loadImportTaskLog(rootPath, taskId) {
   const { logPath } = getImportTaskPaths(rootPath, taskId);
-  return (await fileExists(logPath)) ? readText(logPath) : '';
+  if (await fileExists(logPath)) {
+    return readText(logPath);
+  }
+  const quarantinedTaskDir = await findQuarantinedImportTaskDir(rootPath, taskId);
+  if (!quarantinedTaskDir) return '';
+  const quarantinedLogPath = path.join(quarantinedTaskDir, 'events.log');
+  return (await fileExists(quarantinedLogPath)) ? readText(quarantinedLogPath) : '';
 }
 
 async function clearImportFingerprintEntry(rootPath, importFingerprint, taskId = null) {
@@ -762,7 +798,7 @@ export async function quarantineImportTasks(rootPath, taskIds = [], options = {}
       await saveImportTask(rootPath, nextTask);
       await appendImportTaskLog(rootPath, taskId, {
         level: 'warn',
-        message: `${nextTask.error.message} reason=${nextTask.quarantine.reason}`
+        message: `quarantined from the active queue: ${nextTask.error.message} reason=${nextTask.quarantine.reason}`
       });
 
       const sourceTaskDir = getImportTaskPaths(rootPath, taskId).taskDir;

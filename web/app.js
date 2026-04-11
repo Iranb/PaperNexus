@@ -205,7 +205,7 @@ let pendingFitFrame = 0;
 
 function loadApiTokenFromStorage() {
   try {
-    return window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || '';
+    return window.sessionStorage.getItem(API_TOKEN_STORAGE_KEY) || '';
   } catch {
     return '';
   }
@@ -215,9 +215,9 @@ function persistApiToken(token) {
   state.apiToken = String(token || '').trim();
   try {
     if (state.apiToken) {
-      window.localStorage.setItem(API_TOKEN_STORAGE_KEY, state.apiToken);
+      window.sessionStorage.setItem(API_TOKEN_STORAGE_KEY, state.apiToken);
     } else {
-      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+      window.sessionStorage.removeItem(API_TOKEN_STORAGE_KEY);
     }
   } catch {}
 }

@@ -84,6 +84,63 @@ test('import API payload helpers create, list, inspect, and show logs for upload
   }
 });
 
+test('import API payload helpers can still inspect quarantined tasks by taskId', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-quarantine-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-quarantine-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [ingestion, api, importStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/server/api.js'),
+      import('../src/storage/import-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-api-quarantine-test',
+      force: true
+    });
+
+    const created = await api.createImportTaskPayload(indexRoot, {
+      files: [
+        {
+          name: 'quarantine-upload.md',
+          contentBase64: Buffer.from('# Quarantine Upload\n\n## Abstract\n\nCreated through the API helper.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    await importStore.quarantineImportTasks(indexRoot, [created.task.id], {
+      reason: 'stale-pending-timeout',
+      message: 'Task was quarantined because it remained pending too long.'
+    });
+
+    const detail = await api.importTaskPayload(indexRoot, created.task.id);
+    assert.equal(detail.task.id, created.task.id);
+    assert.equal(detail.task.status, 'failed');
+    assert.equal(detail.task.quarantine.reason, 'stale-pending-timeout');
+
+    const log = await api.importTaskLogPayload(indexRoot, created.task.id);
+    assert.match(log.log, /quarantined from the active queue/i);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('API payload helpers prefer the configured storage index over stale registry roots', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-config-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-config-workspace-'));

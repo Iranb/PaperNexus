@@ -1498,16 +1498,13 @@ async function handleUpdateCommand(flags) {
     if (currentBranch !== 'main') {
       console.warn(`Warning: You are on branch "${currentBranch}", not "main".`);
       const { createPromptSession } = await import('../lib/prompt.js');
-      const shouldSwitch = await createPromptSession().promptConfirm('Switch to main and update?', true);
+      const shouldSwitch = flags.force
+        ? true
+        : await createPromptSession().promptConfirm('Switch to main and update?', true);
       
-      if (!shouldSwitch && !flags.force) {
+      if (!shouldSwitch) {
         console.log('Update cancelled.');
         return;
-      }
-      
-      if (shouldSwitch) {
-        console.log('Switching to main branch...');
-        await execFile('git', ['checkout', 'main'], { cwd: papernexusDir });
       }
     }
     
@@ -1525,12 +1522,18 @@ async function handleUpdateCommand(flags) {
       
       if (hasChanges && flags.force) {
         console.warn('Warning: Discarding local changes...');
-        await execFile('git', ['checkout', '.'], { cwd: papernexusDir });
+        await execFile('git', ['restore', '--source=HEAD', '--staged', '--worktree', '.'], { cwd: papernexusDir });
+        await execFile('git', ['clean', '-fd'], { cwd: papernexusDir });
       }
     } catch (error) {
       if (!String(error?.message || '').includes('ENOENT')) {
         throw error;
       }
+    }
+
+    if (currentBranch !== 'main') {
+      console.log('Switching to main branch...');
+      await execFile('git', ['switch', 'main'], { cwd: papernexusDir });
     }
     
     // Pull latest changes

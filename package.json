@@ -13,7 +13,7 @@
     "docs:build": "npm run docs:generate && vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "reinstall": "bash ./scripts/reinstall.sh",
-    "test": "node --test",
+    "test": "node --test $(find test -name '*.test.js' -print)",
     "serve": "node ./src/cli/index.js serve",
     "mcp": "node ./src/cli/index.js mcp"
   },

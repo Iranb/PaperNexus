@@ -103,6 +103,10 @@ export async function withFileLock(lockPath, fn, options = {}) {
   const timeoutMs = Math.max(250, Number(options.timeoutMs || 30000));
   const pollIntervalMs = Math.max(25, Number(options.pollIntervalMs || 125));
   const staleMs = Math.max(timeoutMs, Number(options.staleMs || 60 * 60 * 1000));
+  const heartbeatIntervalMs = Math.max(
+    250,
+    Number(options.heartbeatIntervalMs || Math.min(5000, Math.max(1000, Math.floor(staleMs / 4))))
+  );
   const startedAt = Date.now();
   const onWait = typeof options.onWait === 'function' ? options.onWait : null;
   const onAcquired = typeof options.onAcquired === 'function' ? options.onAcquired : null;
@@ -167,6 +171,9 @@ export async function withFileLock(lockPath, fn, options = {}) {
     await fs.rm(lockPath, { recursive: true, force: true });
   };
   const handleSignal = (signal) => {
+    if (heartbeatHandle) {
+      clearInterval(heartbeatHandle);
+    }
     releaseLockSync();
     process.off('SIGINT', onSigint);
     process.off('SIGTERM', onSigterm);
@@ -178,18 +185,37 @@ export async function withFileLock(lockPath, fn, options = {}) {
   };
   const onSigint = () => handleSignal('SIGINT');
   const onSigterm = () => handleSignal('SIGTERM');
+  const onExit = () => releaseLockSync();
   process.once('SIGINT', onSigint);
   process.once('SIGTERM', onSigterm);
+  process.once('exit', onExit);
+  const ownerPath = path.join(lockPath, 'owner.json');
+  const writeOwnerHeartbeatSync = () => {
+    const now = new Date();
+    try {
+      fsSync.writeFileSync(ownerPath, `${JSON.stringify({
+        pid: process.pid,
+        acquiredAt: new Date(startedAt).toISOString(),
+        heartbeatAt: now.toISOString()
+      }, null, 2)}\n`, 'utf8');
+    } catch {}
+    try {
+      fsSync.utimesSync(lockPath, now, now);
+    } catch {}
+  };
+  let heartbeatHandle = null;
 
   try {
-    await fs.writeFile(path.join(lockPath, 'owner.json'), `${JSON.stringify({
-      pid: process.pid,
-      acquiredAt: new Date().toISOString()
-    }, null, 2)}\n`, 'utf8');
+    writeOwnerHeartbeatSync();
+    heartbeatHandle = setInterval(writeOwnerHeartbeatSync, heartbeatIntervalMs);
     return await fn();
   } finally {
+    if (heartbeatHandle) {
+      clearInterval(heartbeatHandle);
+    }
     process.off('SIGINT', onSigint);
     process.off('SIGTERM', onSigterm);
+    process.off('exit', onExit);
     await releaseLock();
   }
 }

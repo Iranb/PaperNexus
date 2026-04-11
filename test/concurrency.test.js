@@ -140,6 +140,35 @@ await withFileLock(${JSON.stringify(lockPath)}, async () => {
   }
 });
 
+test('withFileLock refreshes lock heartbeat so long-running holders are not reaped as stale', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-lock-heartbeat-'));
+  const lockPath = path.join(workspaceRoot, 'resource.lock');
+  let releaseFirstWriter = null;
+
+  try {
+    const firstWriterStarted = new Promise((resolve) => {
+      releaseFirstWriter = resolve;
+    });
+
+    const firstWriter = withFileLock(lockPath, async () => {
+      await firstWriterStarted;
+    }, {
+      timeoutMs: 5_000,
+      staleMs: 400,
+      heartbeatIntervalMs: 100
+    });
+
+    await sleep(700);
+    const lockStillExists = await fs.stat(lockPath).then(() => true).catch(() => false);
+    assert.equal(lockStillExists, true);
+
+    releaseFirstWriter();
+    await firstWriter;
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('corpusPayload reuses cached corpus snapshots until a new index is published', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cache-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cache-corpus-'));
