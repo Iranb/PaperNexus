@@ -147,6 +147,8 @@ async function runPdfProbe(pdfPath, options) {
       parser: rawResult.parser,
       parserCommand: rawResult.parserCommand,
       markdownPath: rawResult.markdownPath,
+      pdfParseStatePath: rawResult.pdfParseStatePath || null,
+      pdfParseLogPath: rawResult.pdfParseLogPath || null,
       markdownSizeBytes: markdownStats.size,
       markdownSizeHuman: formatBytes(markdownStats.size),
       generated: Boolean(rawResult.generated)
@@ -366,6 +368,12 @@ async function main() {
   console.log(`Parser: ${payload.config.parser}`);
   console.log(`Generated: ${payload.result.generated ? 'yes' : 'cache hit'}`);
   console.log(`Markdown: ${payload.result.markdownPath}`);
+  if (payload.result.pdfParseStatePath) {
+    console.log(`Parse state: ${payload.result.pdfParseStatePath}`);
+  }
+  if (payload.result.pdfParseLogPath) {
+    console.log(`Parse log: ${payload.result.pdfParseLogPath}`);
+  }
   console.log(`Markdown size: ${payload.result.markdownSizeHuman} (${payload.result.markdownSizeBytes} bytes)`);
   console.log(`Elapsed: ${payload.timings.elapsedMs} ms`);
   if (payload.result.parserCommand) {
