@@ -30,15 +30,20 @@ Do not create or rely on local duplicate copies such as `SKILL 2.md` or `scripts
 
 ## Live Graph Policy
 
-- use the skill-local wrapper over remote HTTP MCP
+- use the configured `papernexus-remote` MCP server first
 - do not call raw `/api/*`
 - do not use stdio/local MCP for live graph work
 
-Entry point:
+- do not repeat IPs, MCP URLs, or tokens in the skill
+
+Preferred path:
+
+- call the `idea_catalyst` MCP tool on `papernexus-remote`
+
+Shell fallback entry point:
 
 ```bash
 python3 SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   --problem "Your research problem statement here" \
   --target-domain "Computer Science" \
@@ -51,7 +56,7 @@ python3 SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py \
   [--json]
 ```
 
-This wrapper calls the remote `idea_catalyst` MCP tool.
+This wrapper is only a shell fallback around the remote `idea_catalyst` MCP tool.
 
 ## Expected Output
 

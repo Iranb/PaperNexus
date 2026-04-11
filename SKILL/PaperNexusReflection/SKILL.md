@@ -9,12 +9,17 @@ Use this skill when the task is about experiment reflection in a live PaperNexus
 
 ## Live Graph Policy
 
-- use remote HTTP MCP wrappers
+- use the configured `papernexus-remote` MCP server first
 - do not call raw `/api/*`
 - do not use stdio/local MCP for live graph work
 - do not run local live-graph CLI commands as the default path
 
-Preferred wrappers:
+Preferred MCP tools:
+
+- `import_workflow`
+- `research_briefing`
+
+Shell fallback wrappers:
 
 - `python3 SKILL/PaperNexusReflection/scripts/pn_import_submit.py`
 - `python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py`
@@ -31,7 +36,7 @@ Wrapper mapping:
 - Remote `import_workflow` runs on the PaperNexus server.
 - `serverFilePath` must therefore be a file path on the server, not a local `/Users/...` path on the agent machine.
 - If that server path is under the server user's home directory, keep it in `~/...` form.
-- For local PDFs or Markdown files, use `pn_import_submit.py --source ... --ssh-target ...` or `pn_batch_import.py submit`.
+- For local PDFs or Markdown files, use `pn_import_submit.py --source ...` or `pn_batch_import.py submit`.
 - Only read reflection overlays after the import task reaches `completed`.
 
 ## Typical Workflow
@@ -43,14 +48,14 @@ Wrapper mapping:
 5. Read `paper-enhancement` when you need raw overlay cards for one paper.
 6. Use `research-brief` or `evidence-chain` if you also need supporting claims and limitations.
 
-Examples:
+Shell fallback examples:
 
 ```bash
-python3 SKILL/PaperNexusReflection/scripts/pn_import_submit.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" --source "/absolute/path/paper.pdf" --ssh-target "hyq@<host>"
-python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" status --paper-id "<paperId>"
-python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" wait --paper-id "<paperId>" --timeout 1800 --interval 15
-python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" reflection-chain "<topic>" --limit 5
-python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" paper-enhancement --paper-id "<paperId>"
+python3 SKILL/PaperNexusReflection/scripts/pn_import_submit.py --corpus "<corpus>" --source "/absolute/path/paper.pdf"
+python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --corpus "<corpus>" status --paper-id "<paperId>"
+python3 SKILL/PaperNexusReflection/scripts/pn_import_queue.py --corpus "<corpus>" wait --paper-id "<paperId>" --timeout 1800 --interval 15
+python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py --corpus "<corpus>" reflection-chain "<topic>" --limit 5
+python3 SKILL/PaperNexusReflection/scripts/pn_research_chains.py --corpus "<corpus>" paper-enhancement --paper-id "<paperId>"
 ```
 
 When checking queue state, read:

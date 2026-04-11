@@ -16,13 +16,23 @@ For a running user graph, the control plane is:
 - no stdio/local MCP for live graph work
 - no local CLI graph reads against the live graph
 
-Default runtime settings:
+Default client assumption:
 
-- `PAPERNEXUS_MCP_URL`
-- `PAPERNEXUS_API_TOKEN`
-- `PAPERNEXUS_CORPUS`
+- OpenClaw or Codex already has a PaperNexus MCP server configured
+- the configured server name is `papernexus-remote`
+- live graph reads should use that MCP server directly
+- literal IPs, MCP URLs, and bearer tokens do not belong in SKILL instructions
 
-Preferred wrappers:
+Preferred MCP tools:
+
+- `list_corpora`
+- `research_lookup`
+- `research_briefing`
+- `idea_catalyst`
+- `import_workflow`
+- `refresh_paper_graph`
+
+Shell fallback wrappers:
 
 - `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`
 - `python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py`
@@ -33,7 +43,7 @@ Preferred wrappers:
 - `python3 SKILL/PaperNexus/scripts/pn_graph_query.py`
 - `python3 SKILL/PaperNexus/scripts/pn_research_chains.py`
 
-These wrappers talk to the remote HTTP MCP surface and hide JSON-RPC, task lookup, and staging details.
+These wrappers exist for shell-only fallback and local file staging. They should inherit connection details from the active PaperNexus setup and should never hardcode IPs in skill examples.
 
 ## Remote Path Contract
 
@@ -52,35 +62,37 @@ Rules:
 
 ## MCP Tool Mapping
 
-The wrappers are thin adapters over these remote MCP tools:
+For OpenClaw-native use, call these tools on the configured `papernexus-remote` server directly:
 
 - `research_lookup`
-  Used by `pn_graph_query.py` for `query`, `context`, `impact`, `ideas`, and `brainstorm`
+  Use for `query`, `context`, `impact`, `ideas`, and `brainstorm`
 - `research_briefing`
-  Used by `pn_research_chains.py` for `path-trace`, `evidence-chain`, `reflection-chain`, `theory-brief`, `storyline-brief`, `research-brief`, `brainstorm-brief`, and `paper-enhancement`
+  Use for `path-trace`, `evidence-chain`, `reflection-chain`, `theory-brief`, `storyline-brief`, `research-brief`, `brainstorm-brief`, and `paper-enhancement`
 - `import_workflow`
-  Used by `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py`
+  Use for queue submit, status, progress, log, and wait operations after a file is already on the server
   Important operations: `submit`, `status`, `progress`, `queue_progress`, `log`, `wait`
 - `idea_catalyst`
-  Used by `SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py`
+  Use for cross-domain ideation
 - `refresh_paper_graph`
-  Used by `SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py` to force-refresh one already-indexed paper or one duplicate group
+  Use to force-refresh one already-indexed paper or one duplicate group
+- `list_corpora`
+  Use to resolve the current corpus when the active corpus is not explicit
 
 ## Remote Import Checklist
 
-1. Resolve `mcp-url`, token, and corpus before touching the graph.
-   If the current corpus name is unknown, query it first with:
-   `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py --mcp-url <mcp-url>`
+1. Resolve the active corpus before touching the graph.
+   If the current corpus name is unknown, query `list_corpora` on `papernexus-remote` first.
 2. Understand the path boundary:
    `import_workflow submit` sends `serverFilePath` to the remote PaperNexus server, so that path must exist on the server machine, not on the agent's local filesystem.
    If the path is under the server user's home directory, keep it in `~/...` form instead of copying the raw `/home/...` prefix.
 3. If the paper is already on the server machine, use `--server-file-path`.
 4. If the paper is local to the agent machine, do not call `import_workflow submit` with the local path directly. Stage it with:
-   `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --ssh-target <ssh-target>`
+   `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file>`
    The wrapper will:
    - detect that the source is local
    - `ssh`/`rsync` it to remote staging
    - call remote `import_workflow submit` with the staged `serverFilePath`
+   Only pass `--ssh-target` when the local staging environment has not already been configured.
 5. For two or more files, prefer one JSON manifest plus:
    `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> submit`
 6. Single-paper progress:
@@ -96,7 +108,7 @@ Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging an
 
 ## Upload Rules
 
-- Never pass a local macOS path like `/Users/iranb/.../paper.pdf` as remote `serverFilePath`.
+- Never pass a local workstation path like `/Users/<user>/.../paper.pdf` as remote `serverFilePath`.
 - `serverFilePath` is only valid for files already present on the remote PaperNexus server.
 - If a remote metadata response shows `~/.papernexus/...`, keep that exact `~`-prefixed path when calling wrappers again.
 - For local files, use `pn_import_submit.py --source ...` or `pn_batch_import.py submit` so the wrapper can upload first.
@@ -104,32 +116,30 @@ Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging an
 
 ## Minimal Remote Examples
 
+For OpenClaw-native live graph work, prefer direct MCP tool calls against the configured `papernexus-remote` server.
+
+Use shell examples only when local file staging or shell-only execution is required.
+
 ```bash
 python3 SKILL/PaperNexus/scripts/pn_import_submit.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   --paper-id "data-shapley-iclr-2025" \
-  --source "/absolute/path/paper.pdf" \
-  --ssh-target "hyq@<host>"
+  --source "/absolute/path/paper.pdf"
 
 python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   status --paper-id "data-shapley-iclr-2025"
 
 python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   wait --paper-id "data-shapley-iclr-2025" --timeout 1800 --interval 15
 
 python3 SKILL/PaperNexus/scripts/pn_batch_import.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   --manifest "/absolute/path/batch-import.json" \
   status
 
 python3 SKILL/PaperNexus/scripts/pn_graph_query.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   query "Data Shapley in One Training Run" --limit 8
 ```
@@ -150,11 +160,11 @@ Only call a paper synchronized when the returned task state says it is completed
 
 ## Single-Paper Graph Repair
 
-If one already-indexed paper has stale graph content, a bad title, or a parser-correctable snapshot issue, prefer the dedicated paper refresh wrapper:
+If one already-indexed paper has stale graph content, a bad title, or a parser-correctable snapshot issue, prefer the `refresh_paper_graph` MCP tool.
+Use the dedicated wrapper only in shell-only fallback flows:
 
 ```bash
 python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   --paper-id "<paper-id>" \
   --json
@@ -165,6 +175,7 @@ Rules:
 - use this only for already-indexed papers
 - do not use it as an upload path
 - it refreshes one paper or one duplicate group, not the entire corpus
+- `--source` may be a server PDF path or a server Markdown path; a PDF source reruns the parser path
 - default behavior is to include the canonical duplicate group and rebuild PDF markdown before fast-committing the graph update
 
 ## Repo-Local Exception

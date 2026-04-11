@@ -6,6 +6,8 @@ description: Use when an agent needs to upload or track multiple local PDF or Ma
 # PaperNexus Batch Import
 
 Use this skill when the task is to ingest many local papers into a running PaperNexus server.
+Assume OpenClaw already exposes PaperNexus as MCP server `papernexus-remote`.
+Do not repeat IPs, MCP URLs, or bearer tokens in the skill.
 
 ## Default Rule
 
@@ -15,6 +17,7 @@ For two or more files, prefer:
 
 Do not write ad-hoc shell loops. The batch wrapper is the default control plane because it keeps one manifest format, one task registry, and one `summary/items` response shape.
 It also uses one remote `queue_progress` snapshot for status reads, so agents do not need to infer progress from elapsed time.
+For live graph status reads on already-staged files, `import_workflow` on `papernexus-remote` remains the authoritative MCP surface.
 
 ## Manifest Format
 
@@ -22,9 +25,7 @@ It also uses one remote `queue_progress` snapshot for status reads, so agents do
 {
   "version": 1,
   "defaults": {
-    "mcpUrl": "http://211.71.76.29:4821/mcp",
     "corpus": "GCD",
-    "sshTarget": "hyq@211.71.76.29",
     "remoteStagingRoot": "/tmp/papernexus-import-staging",
     "trigger": "mcp"
   },
@@ -44,32 +45,27 @@ Rules:
 - `papers` must be non-empty
 - each paper must include `source`
 - `paperId` is strongly recommended
+- only add manifest-scoped connection overrides when one batch truly needs different staging behavior from the default environment
 - optional per-paper overrides: `remoteDir`, `serverFilePath`, `taskId`
 - `source` is the local file path on the agent machine
 - `serverFilePath` is only for files that already exist on the remote PaperNexus server
 - if a server-home path is known, store it as `~/...`, not `/home/<user>/...`
 - do not copy a local `/Users/...` path into `serverFilePath`
 
-## Workflow
+## Shell Fallback Workflow
 
 ```bash
 python3 SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py template
 
 python3 SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py \
-  --mcp-url "http://<host>:4821/mcp" \
-  --token "<token>" \
   --manifest "/absolute/path/batch-import.json" \
   submit
 
 python3 SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py \
-  --mcp-url "http://<host>:4821/mcp" \
-  --token "<token>" \
   --manifest "/absolute/path/batch-import.json" \
   status
 
 python3 SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py \
-  --mcp-url "http://<host>:4821/mcp" \
-  --token "<token>" \
   --manifest "/absolute/path/batch-import.json" \
   wait --timeout 1800 --interval 15
 ```

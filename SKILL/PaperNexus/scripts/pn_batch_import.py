@@ -71,16 +71,15 @@ def manifest_template() -> dict:
     return {
         "version": BATCH_MANIFEST_VERSION,
         "defaults": {
-            "mcpUrl": "http://211.71.76.29:4821/mcp",
-            "corpus": "GCD",
-            "sshTarget": "hyq@211.71.76.29",
-            "remoteStagingRoot": "/tmp/papernexus-import-staging",
+            "corpus": os.environ.get("PAPERNEXUS_CORPUS", "GCD") or "GCD",
+            "remoteStagingRoot": os.environ.get("PAPERNEXUS_REMOTE_STAGING_ROOT", "/tmp/papernexus-import-staging")
+            or "/tmp/papernexus-import-staging",
             "trigger": "mcp",
         },
         "papers": [
             {
                 "paperId": "iclr2025-oral-data-shapley",
-                "source": "/Users/iranb/Documents/papers/2025/ICLR2025 oral/Data Shapley in One Training Run.pdf",
+                "source": "/absolute/local/path/to/paper.pdf",
                 "sourceKind": "pdf",
             }
         ],

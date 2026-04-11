@@ -6,6 +6,7 @@ description: Use when an already-indexed PaperNexus paper has stale graph conten
 # PaperNexus Paper Refresh
 
 Use this skill when one already-indexed paper needs a forced graph refresh without rebuilding the whole corpus.
+Assume OpenClaw already has a configured PaperNexus MCP server named `papernexus-remote`.
 
 ## Live Graph Policy
 
@@ -13,12 +14,12 @@ Use this skill when one already-indexed paper needs a forced graph refresh witho
 - do not call raw `/api/*`
 - do not run whole-corpus `refresh_corpus` when the task is to repair one paper
 - do not guess source paths from local folders; reuse the server-side source path or sourceKey already known to the graph
+- prefer the `refresh_paper_graph` MCP tool on `papernexus-remote`
 
-Entry point:
+Shell fallback entry point:
 
 ```bash
 python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py \
-  --mcp-url "http://<host>:4821/mcp" \
   --corpus "<corpus>" \
   --paper-id "<paper-id>" \
   [--source-key "<source-key>"] \
@@ -33,6 +34,7 @@ python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py \
 - prefer `--paper-id` when it is stable and known
 - otherwise prefer `--source-key`
 - `--source` must be a server path already known to PaperNexus, not a local workstation path
+- `--source` may point to either a server-side PDF path or a server-side Markdown path
 - `--paper-title` is exact-match only; use it only when the title is unique
 
 At least one selector is required:
@@ -45,6 +47,8 @@ At least one selector is required:
 ## Refresh Rules
 
 - this tool force-rematerializes the matched paper and then incrementally fast-commits only the affected paper group
+- if `--source` points to a server PDF path, the refresh uses that PDF as the input source and reruns the PDF parsing path
+- if `--source` points to a server Markdown path, the refresh reparses that Markdown directly
 - by default it refreshes the whole canonical duplicate group for the selected paper
 - by default it also rebuilds PDF markdown before refreshing graph content
 - do not disable duplicate-group refresh unless you are debugging a specific manifest edge case
@@ -78,9 +82,10 @@ If `removedEntries` is non-empty, report that clearly because part of the paper 
 
 ## Example
 
+This example is for shell-only fallback flows.
+
 ```bash
 python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py \
-  --mcp-url "http://211.71.76.29:4821/mcp" \
   --corpus "GCD" \
   --paper-id "2305.18909" \
   --json
