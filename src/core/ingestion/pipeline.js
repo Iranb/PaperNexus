@@ -74,10 +74,11 @@ import { buildLiteStateSnapshot, GLOBAL_SOURCE_KEY } from '../../storage/lite-vi
 import {
   cacheMarkdownSource,
   convertPdfToMarkdown,
+  getPdfParserProfile,
   getMarkdownSourceCachePath,
   getPdfMarkdownCachePath,
   normalizePdfParser
-} from './marker.js';
+} from './pdf-parser.js';
 import {
   assessPaperTitleCandidate,
   extractConceptCandidates,
@@ -4085,6 +4086,10 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       pdfCommand: options.pdfCommand,
       pythonCommand: options.pythonCommand,
       force: Boolean(sourceState.markdownCacheNeedsRefresh),
+      markitdownPython: options.markitdownPython,
+      markitdownUseLlm: options.markitdownUseLlm,
+      markitdownEnablePlugins: options.markitdownEnablePlugins,
+      markitdownLlmPrompt: options.markitdownLlmPrompt,
       markpdfdownPython: options.markpdfdownPython,
       opendataloaderPdfPython: options.opendataloaderPdfPython,
       doclingPython: options.doclingPython,
@@ -4096,6 +4101,13 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       doclingPdfBackend: options.doclingPdfBackend,
       doclingDevice: options.doclingDevice,
       doclingCudaVisibleDevices: options.doclingCudaVisibleDevices,
+      doclingAutoGpu: options.doclingAutoGpu,
+      doclingGpuLockRoot: options.doclingGpuLockRoot,
+      doclingGpuMinFreeMb: options.doclingGpuMinFreeMb,
+      doclingGpuWaitTimeoutMs: options.doclingGpuWaitTimeoutMs,
+      doclingGpuPollIntervalMs: options.doclingGpuPollIntervalMs,
+      doclingGpuLockStaleMs: options.doclingGpuLockStaleMs,
+      doclingCpuThreads: options.doclingCpuThreads,
       doclingArtifactsPath: options.doclingArtifactsPath,
       doclingImageExportMode: options.doclingImageExportMode,
       doclingEnrichPictureClasses: options.doclingEnrichPictureClasses,
@@ -4266,35 +4278,17 @@ function resolveAnalyzeConcurrency(options = {}) {
   }
 
   const parser = normalizePdfParser(options.pdfParser);
+  const profile = getPdfParserProfile(parser, options);
   if (parser === 'marker') {
     return resolveMarkerConcurrency(options);
-  }
-
-  if (parser === 'paddleocr-vl') {
-    return 1;
-  }
-
-  if (parser === 'markpdfdown') {
-    return 1;
   }
 
   const available = resolveAvailableParallelism(options);
   const semanticPlan = resolveSemanticExtractionPlan(options);
   const llmEnabled = semanticPlan.requestedMode !== 'heuristic-only' || canAttemptLlmRelations(options);
-  const hasRemotePdfRuntime = Boolean(
-    options.doclingSshHost
-    || options.markerSshHost
-    || options.pdfParserSshHost
-    || options.pdfSshHost
-    || options.mineruHttpUrl
-  );
+  let concurrency = Math.min(available, profile.recommendedConcurrency);
 
-  let concurrency = hasRemotePdfRuntime ? Math.min(available, 6) : Math.min(available, 4);
-  if (parser === 'mineru' && !hasRemotePdfRuntime) {
-    concurrency = Math.min(concurrency, 3);
-  }
-
-  if (llmEnabled) {
+  if (llmEnabled && profile.allowLlmConcurrencyBoost !== false) {
     concurrency = available;
   }
 
@@ -4489,6 +4483,13 @@ function buildScrubRecoveryOptions(manifest = {}, options = {}) {
     quiet: true,
     pdfParser: parser,
     pdfCommand: firstDefinedValue(options.pdfCommand, manifestPdfCommand),
+    markitdownPython: firstDefinedValue(
+      options.markitdownPython,
+      parser === 'markitdown' ? manifestPdfCommand : undefined
+    ),
+    markitdownUseLlm: firstDefinedValue(options.markitdownUseLlm, manifest.markitdownUseLlm),
+    markitdownEnablePlugins: firstDefinedValue(options.markitdownEnablePlugins, manifest.markitdownEnablePlugins),
+    markitdownLlmPrompt: firstDefinedValue(options.markitdownLlmPrompt, manifest.markitdownLlmPrompt),
     markpdfdownPython: firstDefinedValue(
       options.markpdfdownPython,
       parser === 'markpdfdown' ? manifestPdfCommand : undefined
@@ -4630,6 +4631,46 @@ function normalizePaperRefreshPath(value = '') {
   return path.resolve(raw);
 }
 
+function inferPaperRefreshSourceKind(candidatePath = '', fallbackKind = '') {
+  const extension = path.extname(String(candidatePath || '')).toLowerCase();
+  if (extension === '.pdf') return 'pdf';
+  if (extension === '.md' || extension === '.markdown') return 'markdown';
+  return fallbackKind || 'markdown';
+}
+
+function resolvePaperRefreshInputSpec(entry, reference = {}) {
+  const requestedSource = String(reference.source || '').trim();
+  const requestedPath = normalizePaperRefreshPath(requestedSource);
+  const candidateSpecs = unique([
+    entry.inputPath,
+    entry.sourcePath,
+    entry.sourcePdfPath,
+    entry.sourceMarkdownPath,
+    entry.markdownCachePath
+  ].filter(Boolean).map((candidatePath) => normalizePaperRefreshPath(candidatePath))).map((candidatePath) => ({
+    inputPath: candidatePath,
+    kind: inferPaperRefreshSourceKind(candidatePath, entry.kind)
+  }));
+
+  if (requestedPath) {
+    const matched = candidateSpecs.find((candidate) => candidate.inputPath === requestedPath);
+    if (matched) {
+      return {
+        inputPath: matched.inputPath,
+        kind: matched.kind,
+        selectedBy: 'requested-source'
+      };
+    }
+  }
+
+  const fallbackInputPath = normalizePaperRefreshPath(entry.inputPath || entry.sourcePath || '');
+  return {
+    inputPath: fallbackInputPath,
+    kind: inferPaperRefreshSourceKind(fallbackInputPath, entry.kind),
+    selectedBy: 'manifest-input'
+  };
+}
+
 function manifestEntryMatchesPaperRefresh(entry, reference = {}) {
   const paperId = String(reference.paperId || '').trim();
   const sourceKey = String(reference.sourceKey || '').trim();
@@ -4704,7 +4745,8 @@ function summarizePaperRefreshChanges(totalSourceCount, refreshedCount, removedC
 }
 
 async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = {}) {
-  const inputPath = String(entry.inputPath || entry.sourcePath || '').trim();
+  const inputSpec = resolvePaperRefreshInputSpec(entry, analysisOptions);
+  const inputPath = String(inputSpec.inputPath || '').trim();
   if (!inputPath) {
     throw new Error(`Cannot refresh ${entry.sourceKey} because it does not have an inputPath.`);
   }
@@ -4730,7 +4772,7 @@ async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = 
   return {
     sourceKey: entry.sourceKey,
     inputPath,
-    kind: entry.kind,
+    kind: inputSpec.kind,
     fingerprint,
     sourceMtimeMs: Number(stats.mtimeMs || 0),
     sourceSizeBytes: Number(stats.size || 0),
@@ -4738,9 +4780,9 @@ async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = 
     markdownCachePath: expectedMarkdownCachePath,
     markdownCacheFingerprint: fingerprint,
     markdownCacheExists: await fileExists(expectedMarkdownCachePath),
-    markdownCacheNeedsRefresh: entry.kind === 'markdown'
+    markdownCacheNeedsRefresh: inputSpec.kind === 'markdown'
       ? true
-      : Boolean(analysisOptions.rebuildPdfMarkdown !== false && entry.kind === 'pdf'),
+      : Boolean(analysisOptions.rebuildPdfMarkdown !== false && inputSpec.kind === 'pdf'),
     cachedPaper: null,
     llmRefreshState: {
       semanticRequired: llmSemanticRequired,
@@ -5367,6 +5409,16 @@ export async function analyzeCorpus(inputPath, options = {}) {
               process.env.PAPERNEXUS_PYTHON_COMMAND,
               'python3'
             )
+            : pdfParser === 'markitdown'
+              ? firstDefinedValue(
+                options.pdfCommand,
+                options.markitdownPython,
+                options.pythonCommand,
+                previousManifest?.pdfCommand,
+                process.env.PAPERNEXUS_MARKITDOWN_PYTHON,
+                process.env.PAPERNEXUS_PYTHON_COMMAND,
+                'python3'
+              )
             : pdfParser === 'opendataloader'
               ? firstDefinedValue(
                 options.pdfCommand,
@@ -6513,5 +6565,6 @@ export async function optimizeCorpus(inputPath, options = {}) {
 export const __pipelineTestables = {
   resolveAnalyzeConcurrency,
   resolveMarkerConcurrency,
-  refreshWatchedCorpus
+  refreshWatchedCorpus,
+  resolvePaperRefreshInputSpec
 };

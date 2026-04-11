@@ -365,6 +365,31 @@ test('analyzeCorpus refreshes stale cached pdf snapshots when the stored title i
   }
 });
 
+test('paper refresh prefers an explicitly selected PDF server path and reruns the PDF input flow', async () => {
+  const { __pipelineTestables } = await import('../src/core/ingestion/pipeline.js');
+  const entry = {
+    sourceKey: '/tmp/papers/paper.md',
+    kind: 'markdown',
+    inputPath: '/tmp/papers/paper.md',
+    sourcePath: '/tmp/papers/paper.md',
+    sourceMarkdownPath: '/tmp/papers/paper.md',
+    sourcePdfPath: '/tmp/papers/paper.pdf',
+    markdownCachePath: '/tmp/cache/paper.md'
+  };
+
+  const selected = __pipelineTestables.resolvePaperRefreshInputSpec(entry, {
+    source: '/tmp/papers/paper.pdf'
+  });
+  assert.equal(selected.inputPath, '/tmp/papers/paper.pdf');
+  assert.equal(selected.kind, 'pdf');
+  assert.equal(selected.selectedBy, 'requested-source');
+
+  const fallback = __pipelineTestables.resolvePaperRefreshInputSpec(entry, {});
+  assert.equal(fallback.inputPath, '/tmp/papers/paper.md');
+  assert.equal(fallback.kind, 'markdown');
+  assert.equal(fallback.selectedBy, 'manifest-input');
+});
+
 test('scrubDegeneratePapers removes degenerate-title papers from the graph even when the source file still exists', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scrub-degenerate-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scrub-degenerate-corpus-'));

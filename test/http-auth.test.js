@@ -309,7 +309,7 @@ test('serveCommand forwards analyze parser config into the import worker', async
       enableImports: true,
       config: {
         analyze: {
-          pdfParser: 'markpdfdown',
+          pdfParser: 'markitdown',
           pythonCommand: './shared-python',
           semanticExtraction: 'llm-primary'
         },
@@ -332,9 +332,9 @@ test('serveCommand forwards analyze parser config into the import worker', async
     try {
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].pdfParser, 'markpdfdown');
+      assert.equal(calls[0].pdfParser, 'markitdown');
       assert.equal(calls[0].pythonCommand, './shared-python');
-      assert.equal(calls[0].markpdfdownPython, './shared-python');
+      assert.equal(calls[0].markitdownPython, './shared-python');
       assert.equal(calls[0].semanticExtraction, 'llm-primary');
     } finally {
       await serverHandle.stop();

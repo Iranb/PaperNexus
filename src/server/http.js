@@ -36,7 +36,7 @@ import { getMcpHttpConfig, handleMcpHttpRequest } from '../mcp/http.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
-import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/marker.js';
+import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -268,6 +268,34 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     pdfParser: firstDefined(options.pdfParser, materializeConfig.pdfParser, analyzeConfig.pdfParser, watchConfig.pdfParser),
     pdfCommand: firstDefined(options.pdfCommand, materializeConfig.pdfCommand, analyzeConfig.pdfCommand, watchConfig.pdfCommand),
     pythonCommand: firstDefined(options.pythonCommand, materializeConfig.pythonCommand, analyzeConfig.pythonCommand, watchConfig.pythonCommand),
+    markitdownPython: firstDefined(
+      options.markitdownPython,
+      materializeConfig.markitdownPython,
+      analyzeConfig.markitdownPython,
+      watchConfig.markitdownPython,
+      options.pythonCommand,
+      materializeConfig.pythonCommand,
+      analyzeConfig.pythonCommand,
+      watchConfig.pythonCommand
+    ),
+    markitdownUseLlm: firstDefined(
+      options.markitdownUseLlm,
+      materializeConfig.markitdownUseLlm,
+      analyzeConfig.markitdownUseLlm,
+      watchConfig.markitdownUseLlm
+    ),
+    markitdownEnablePlugins: firstDefined(
+      options.markitdownEnablePlugins,
+      materializeConfig.markitdownEnablePlugins,
+      analyzeConfig.markitdownEnablePlugins,
+      watchConfig.markitdownEnablePlugins
+    ),
+    markitdownLlmPrompt: firstDefined(
+      options.markitdownLlmPrompt,
+      materializeConfig.markitdownLlmPrompt,
+      analyzeConfig.markitdownLlmPrompt,
+      watchConfig.markitdownLlmPrompt
+    ),
     markpdfdownPython: firstDefined(
       options.markpdfdownPython,
       materializeConfig.markpdfdownPython,
@@ -351,6 +379,48 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       materializeConfig.doclingCudaVisibleDevices,
       analyzeConfig.doclingCudaVisibleDevices,
       watchConfig.doclingCudaVisibleDevices
+    ),
+    doclingAutoGpu: firstDefined(
+      options.doclingAutoGpu,
+      materializeConfig.doclingAutoGpu,
+      analyzeConfig.doclingAutoGpu,
+      watchConfig.doclingAutoGpu
+    ),
+    doclingGpuLockRoot: firstDefined(
+      options.doclingGpuLockRoot,
+      materializeConfig.doclingGpuLockRoot,
+      analyzeConfig.doclingGpuLockRoot,
+      watchConfig.doclingGpuLockRoot
+    ),
+    doclingGpuMinFreeMb: firstDefined(
+      options.doclingGpuMinFreeMb,
+      materializeConfig.doclingGpuMinFreeMb,
+      analyzeConfig.doclingGpuMinFreeMb,
+      watchConfig.doclingGpuMinFreeMb
+    ),
+    doclingGpuWaitTimeoutMs: firstDefined(
+      options.doclingGpuWaitTimeoutMs,
+      materializeConfig.doclingGpuWaitTimeoutMs,
+      analyzeConfig.doclingGpuWaitTimeoutMs,
+      watchConfig.doclingGpuWaitTimeoutMs
+    ),
+    doclingGpuPollIntervalMs: firstDefined(
+      options.doclingGpuPollIntervalMs,
+      materializeConfig.doclingGpuPollIntervalMs,
+      analyzeConfig.doclingGpuPollIntervalMs,
+      watchConfig.doclingGpuPollIntervalMs
+    ),
+    doclingGpuLockStaleMs: firstDefined(
+      options.doclingGpuLockStaleMs,
+      materializeConfig.doclingGpuLockStaleMs,
+      analyzeConfig.doclingGpuLockStaleMs,
+      watchConfig.doclingGpuLockStaleMs
+    ),
+    doclingCpuThreads: firstDefined(
+      options.doclingCpuThreads,
+      materializeConfig.doclingCpuThreads,
+      analyzeConfig.doclingCpuThreads,
+      watchConfig.doclingCpuThreads
     ),
     doclingArtifactsPath: firstDefined(
       options.doclingArtifactsPath,

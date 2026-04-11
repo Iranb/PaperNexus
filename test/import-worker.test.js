@@ -150,7 +150,7 @@ printf '# %s\\n\\n## Abstract\\n\\nPrepared by fake docling.\\n' "$base" > "$out
       import('../src/storage/corpus-store.js'),
       import('../src/storage/import-store.js'),
       import('../src/core/imports/worker.js'),
-      import('../src/core/ingestion/marker.js')
+      import('../src/core/ingestion/pdf-parser.js')
     ]);
 
     await ingestion.analyzeCorpus(inputRoot, {
@@ -355,7 +355,8 @@ test('import worker clears a stale worker lock and continues processing the queu
     const result = await importWorker.runImportQueueUntilIdle(indexRoot, {
       semanticExtraction: 'heuristic-only',
       maxPasses: 4,
-      lockTimeoutMs: 20_000
+      lockTimeoutMs: 20_000,
+      lockStaleMs: 20_000
     });
 
     assert.equal(result.completedTaskIds.includes(task.id), true);
@@ -370,9 +371,9 @@ test('import worker clears a stale worker lock and continues processing the queu
   }
 });
 
-test('import worker clears the worker lock after timeout and retries once', async () => {
-  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-timeout-lock-home-'));
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-timeout-lock-workspace-'));
+test('import worker leaves a non-stale busy worker lock in place after timeout', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-busy-lock-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-busy-lock-workspace-'));
   const inputRoot = path.join(workspaceRoot, 'papers');
   const indexRoot = path.join(workspaceRoot, 'index-store');
   const previousHome = process.env.PAPERNEXUS_HOME;
@@ -397,7 +398,7 @@ test('import worker clears the worker lock after timeout and retries once', asyn
 
     await ingestion.analyzeCorpus(inputRoot, {
       rootPath: indexRoot,
-      name: 'import-worker-timeout-lock-test',
+      name: 'import-worker-busy-lock-test',
       force: true
     });
 
@@ -405,8 +406,8 @@ test('import worker clears the worker lock after timeout and retries once', asyn
       trigger: 'api',
       files: [
         {
-          name: 'timeout-lock-paper.md',
-          contentBase64: Buffer.from('# Timeout Lock Paper\n\n## Abstract\n\nThis upload should recover after a lock timeout.\n', 'utf8').toString('base64'),
+          name: 'busy-lock-paper.md',
+          contentBase64: Buffer.from('# Busy Lock Paper\n\n## Abstract\n\nThis upload should wait while another worker still owns the lock.\n', 'utf8').toString('base64'),
           mimeType: 'text/markdown'
         }
       ]
@@ -422,14 +423,16 @@ test('import worker clears the worker lock after timeout and retries once', asyn
     const result = await importWorker.runImportQueueUntilIdle(indexRoot, {
       semanticExtraction: 'heuristic-only',
       maxPasses: 4,
-      lockTimeoutMs: 250
+      lockTimeoutMs: 250,
+      lockStaleMs: 60_000
     });
 
-    assert.equal(result.completedTaskIds.includes(task.id), true);
+    assert.deepEqual(result.completedTaskIds, []);
+    assert.equal(result.failedCount, 0);
 
     const loadedTask = await importStore.loadImportTask(indexRoot, task.id);
-    assert.equal(loadedTask.status, 'completed');
-    await assert.rejects(fs.access(workerLockPath));
+    assert.equal(loadedTask.status, 'pending');
+    await assert.doesNotReject(fs.access(workerLockPath));
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

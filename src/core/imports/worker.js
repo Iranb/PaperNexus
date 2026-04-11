@@ -14,11 +14,12 @@ import {
   llmOptimizeCorpus,
   materializeCorpus,
 } from '../ingestion/pipeline.js';
-import { removePath, withFileLock } from '../../lib/fs.js';
+import { withFileLock } from '../../lib/fs.js';
 import { loadRegistry } from '../../storage/registry.js';
-import { cacheMarkdownSource, convertPdfToMarkdown } from '../ingestion/marker.js';
+import { cacheMarkdownSource, convertPdfToMarkdown } from '../ingestion/pdf-parser.js';
 
 const DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS = 20_000;
+const DEFAULT_IMPORT_WORKER_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_IMPORT_PREPARSE_CONCURRENCY = 4;
 const importPreparseInFlight = new Map();
 
@@ -123,6 +124,10 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
           pdfParser: options.pdfParser,
           pdfCommand: options.pdfCommand,
           pythonCommand: options.pythonCommand,
+          markitdownPython: options.markitdownPython,
+          markitdownUseLlm: options.markitdownUseLlm,
+          markitdownEnablePlugins: options.markitdownEnablePlugins,
+          markitdownLlmPrompt: options.markitdownLlmPrompt,
           markpdfdownPython: options.markpdfdownPython,
           opendataloaderPdfPython: options.opendataloaderPdfPython,
           doclingPython: options.doclingPython,
@@ -134,6 +139,13 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
           doclingPdfBackend: options.doclingPdfBackend,
           doclingDevice: options.doclingDevice,
           doclingCudaVisibleDevices: options.doclingCudaVisibleDevices,
+          doclingAutoGpu: options.doclingAutoGpu,
+          doclingGpuLockRoot: options.doclingGpuLockRoot,
+          doclingGpuMinFreeMb: options.doclingGpuMinFreeMb,
+          doclingGpuWaitTimeoutMs: options.doclingGpuWaitTimeoutMs,
+          doclingGpuPollIntervalMs: options.doclingGpuPollIntervalMs,
+          doclingGpuLockStaleMs: options.doclingGpuLockStaleMs,
+          doclingCpuThreads: options.doclingCpuThreads,
           doclingArtifactsPath: options.doclingArtifactsPath,
           doclingImageExportMode: options.doclingImageExportMode,
           doclingEnrichPictureClasses: options.doclingEnrichPictureClasses,
@@ -376,9 +388,10 @@ async function processImportTask(rootPath, task, options = {}) {
   return committed;
 }
 
-export async function runImportQueueOnce(rootPath, options = {}, retryState = { clearedTimedOutLock: false }) {
+export async function runImportQueueOnce(rootPath, options = {}) {
   const { workerLockPath } = getImportPaths(rootPath);
   const lockTimeoutMs = Math.max(250, Number(options.lockTimeoutMs || DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS));
+  const lockStaleMs = Math.max(lockTimeoutMs, Number(options.lockStaleMs || DEFAULT_IMPORT_WORKER_LOCK_STALE_MS));
 
   try {
     return await withFileLock(workerLockPath, async () => {
@@ -410,16 +423,10 @@ export async function runImportQueueOnce(rootPath, options = {}, retryState = { 
       }
     }, {
       timeoutMs: lockTimeoutMs,
-      staleMs: lockTimeoutMs
+      staleMs: lockStaleMs
     });
   } catch (error) {
     if (isLockTimeout(error)) {
-      if (!retryState.clearedTimedOutLock) {
-        await removePath(workerLockPath);
-        return runImportQueueOnce(rootPath, options, {
-          clearedTimedOutLock: true
-        });
-      }
       return {
         processed: false,
         reason: 'busy'

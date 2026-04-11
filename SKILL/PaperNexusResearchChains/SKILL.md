@@ -9,11 +9,16 @@ Use this skill when the task is to answer a research question through explicit g
 
 ## Live Graph Policy
 
-- use remote HTTP MCP wrappers first
+- use the configured `papernexus-remote` MCP server first
 - do not call raw `/api/*`
 - do not use local CLI graph queries against the live graph
 
-Default wrappers:
+Preferred MCP tools:
+
+- `research_lookup`
+- `research_briefing`
+
+Shell fallback wrappers:
 
 - `python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py`
 - `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py`
@@ -22,6 +27,8 @@ Underlying MCP tools:
 
 - `research_lookup`
 - `research_briefing`
+
+Assume OpenClaw already exposes PaperNexus as MCP server `papernexus-remote`.
 
 ## Which Wrapper Matches Which Task
 
@@ -46,13 +53,13 @@ Underlying MCP tools:
 - one paper's raw overlay:
   `pn_research_chains.py paper-enhancement`
 
-## Minimal Examples
+## Minimal Shell Fallback Examples
 
 ```bash
-python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" query "<topic>" --limit 8
-python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" evidence-chain "<topic>" --limit 5
-python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" reflection-chain "<topic>" --limit 5
-python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --mcp-url "http://<host>:4821/mcp" --corpus "<corpus>" research-brief "<topic>" --limit 5
+python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py --corpus "<corpus>" query "<topic>" --limit 8
+python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" evidence-chain "<topic>" --limit 5
+python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" reflection-chain "<topic>" --limit 5
+python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" research-brief "<topic>" --limit 5
 ```
 
 ## Output Discipline

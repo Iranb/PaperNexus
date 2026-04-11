@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { applyProcessConfig, getDefaultRuntimeConfigRoot, loadRuntimeConfig, resolvePathWithHome } from '../src/lib/config.js';
-import { convertPdfToMarkdown, normalizePdfParser } from '../src/core/ingestion/marker.js';
+import { convertPdfToMarkdown, normalizePdfParser } from '../src/core/ingestion/pdf-parser.js';
 
 function parseArgv(argv) {
   const flags = {};
@@ -67,9 +67,13 @@ function buildPdfOptions(flags, config) {
   const ollamaConfig = getSection(config, 'ollama');
   const pythonCommand = firstDefined(flags['python-command'], materializeConfig.pythonCommand, analyzeConfig.pythonCommand);
   return {
-    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'markpdfdown'),
+    pdfParser: firstDefined(flags['pdf-parser'], materializeConfig.pdfParser, analyzeConfig.pdfParser, 'markitdown'),
     pdfCommand: firstDefined(flags['pdf-cmd'], materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
     pythonCommand,
+    markitdownPython: firstDefined(flags['markitdown-python'], materializeConfig.markitdownPython, analyzeConfig.markitdownPython, pythonCommand),
+    markitdownUseLlm: toBoolean(firstDefined(flags['markitdown-use-llm'], materializeConfig.markitdownUseLlm, analyzeConfig.markitdownUseLlm), false),
+    markitdownEnablePlugins: toBoolean(firstDefined(flags['markitdown-enable-plugins'], materializeConfig.markitdownEnablePlugins, analyzeConfig.markitdownEnablePlugins, firstDefined(flags['markitdown-use-llm'], materializeConfig.markitdownUseLlm, analyzeConfig.markitdownUseLlm)), false),
+    markitdownLlmPrompt: firstDefined(flags['markitdown-llm-prompt'], materializeConfig.markitdownLlmPrompt, analyzeConfig.markitdownLlmPrompt),
     markpdfdownPython: firstDefined(flags['markpdfdown-python'], materializeConfig.markpdfdownPython, analyzeConfig.markpdfdownPython, pythonCommand),
     opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], materializeConfig.opendataloaderPdfPython, analyzeConfig.opendataloaderPdfPython, pythonCommand),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], materializeConfig.pdfParserSshHost, analyzeConfig.pdfParserSshHost),
@@ -82,6 +86,13 @@ function buildPdfOptions(flags, config) {
     doclingPdfBackend: firstDefined(flags['docling-pdf-backend'], materializeConfig.doclingPdfBackend, analyzeConfig.doclingPdfBackend),
     doclingDevice: firstDefined(flags['docling-device'], materializeConfig.doclingDevice, analyzeConfig.doclingDevice, 'cuda'),
     doclingCudaVisibleDevices: firstDefined(flags['docling-cuda-visible-devices'], materializeConfig.doclingCudaVisibleDevices, analyzeConfig.doclingCudaVisibleDevices),
+    doclingAutoGpu: toBoolean(firstDefined(flags['docling-auto-gpu'], materializeConfig.doclingAutoGpu, analyzeConfig.doclingAutoGpu), true),
+    doclingGpuLockRoot: firstDefined(flags['docling-gpu-lock-root'], materializeConfig.doclingGpuLockRoot, analyzeConfig.doclingGpuLockRoot),
+    doclingGpuMinFreeMb: toNumber(firstDefined(flags['docling-gpu-min-free-mb'], materializeConfig.doclingGpuMinFreeMb, analyzeConfig.doclingGpuMinFreeMb), undefined),
+    doclingGpuWaitTimeoutMs: toNumber(firstDefined(flags['docling-gpu-wait-timeout-ms'], materializeConfig.doclingGpuWaitTimeoutMs, analyzeConfig.doclingGpuWaitTimeoutMs), undefined),
+    doclingGpuPollIntervalMs: toNumber(firstDefined(flags['docling-gpu-poll-interval-ms'], materializeConfig.doclingGpuPollIntervalMs, analyzeConfig.doclingGpuPollIntervalMs), undefined),
+    doclingGpuLockStaleMs: toNumber(firstDefined(flags['docling-gpu-lock-stale-ms'], materializeConfig.doclingGpuLockStaleMs, analyzeConfig.doclingGpuLockStaleMs), undefined),
+    doclingCpuThreads: toNumber(firstDefined(flags['docling-cpu-threads'], materializeConfig.doclingCpuThreads, analyzeConfig.doclingCpuThreads), undefined),
     doclingArtifactsPath: firstDefined(flags['docling-artifacts-path'], materializeConfig.doclingArtifactsPath, analyzeConfig.doclingArtifactsPath),
     doclingImageExportMode: firstDefined(flags['docling-image-export-mode'], materializeConfig.doclingImageExportMode, analyzeConfig.doclingImageExportMode, 'placeholder'),
     doclingEnrichPictureClasses: toBoolean(firstDefined(flags['docling-enrich-picture-classes'], materializeConfig.doclingEnrichPictureClasses, analyzeConfig.doclingEnrichPictureClasses), false),
@@ -156,6 +167,16 @@ function buildFailingPrimaryProbeOptions(baseOptions, requestedParser) {
     disableDoclingFallback: false
   };
 
+  if (primaryParser === 'markitdown') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        markitdownPython: missingCommand
+      }
+    };
+  }
+
   if (primaryParser === 'markpdfdown') {
     return {
       primaryParser,
@@ -210,7 +231,7 @@ function buildFailingPrimaryProbeOptions(baseOptions, requestedParser) {
 
   throw new Error(
     `Cannot run a docling fallback probe with primary parser \`${primaryParser}\`. `
-    + 'Use one of: markpdfdown, opendataloader, marker, mineru, paddleocr-vl.'
+    + 'Use one of: markitdown, markpdfdown, opendataloader, marker, mineru, paddleocr-vl.'
   );
 }
 

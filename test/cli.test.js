@@ -211,8 +211,8 @@ test('CLI can analyze PDFs with paddleocr-vl selected from config.json', async (
   }
 });
 
-test('CLI defaults to markpdfdown for configured PDF analyze runs', async () => {
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-markpdfdown-'));
+test('CLI defaults to markitdown for configured PDF analyze runs', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-markitdown-'));
   const fakePdfPath = path.join(workspaceRoot, 'paper.pdf');
   const fakePythonPath = path.join(workspaceRoot, 'fake-python.sh');
 
@@ -231,7 +231,7 @@ test('CLI defaults to markpdfdown for configured PDF analyze runs', async () => 
         '  esac',
         'done',
         'mkdir -p "$(dirname "$output")"',
-        'printf "# Configured MarkPDFDown\\n\\n## Abstract\\n\\nConfigured parser output.\\n" > "$output"'
+        'printf "# Configured MarkItDown\\n\\n## Abstract\\n\\nConfigured parser output.\\n" > "$output"'
       ].join('\n'),
       { mode: 0o755 }
     );
@@ -245,7 +245,7 @@ test('CLI defaults to markpdfdown for configured PDF analyze runs', async () => 
         indexDir: './index-store'
       },
       analyze: {
-        name: 'configured-markpdfdown',
+        name: 'configured-markitdown',
         pythonCommand: './fake-python.sh'
       },
       llm: {
@@ -260,13 +260,13 @@ test('CLI defaults to markpdfdown for configured PDF analyze runs', async () => 
       cwd: workspaceRoot,
       env: process.env
     });
-    assert.match(analyzeRun.stdout, /Corpus: configured-markpdfdown/);
+    assert.match(analyzeRun.stdout, /Corpus: configured-markitdown/);
 
     const statusRun = await execFileAsync('node', [cliPath, 'status'], {
       cwd: workspaceRoot,
       env: process.env
     });
-    assert.match(statusRun.stdout, /PDF parser: markpdfdown/);
+    assert.match(statusRun.stdout, /PDF parser: markitdown/);
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -307,7 +307,7 @@ test('CLI test-pdf-config reuses the standalone PDF config probe script', async 
       }
     }, null, 2)}\n`);
 
-    const probeRun = await execFileAsync('node', [cliPath, 'test-pdf-config', 'paper.pdf', '--json'], {
+    const probeRun = await execFileAsync('node', [cliPath, 'test-pdf-config', 'paper.pdf', '--force', '--json'], {
       cwd: workspaceRoot,
       env: process.env
     });
@@ -804,7 +804,7 @@ test('CLI init creates a first-run config.json from interactive answers', async 
     const savedConfig = JSON.parse(await fs.readFile(path.join(workspaceRoot, 'config.json'), 'utf8'));
     assert.deepEqual(savedConfig.sources.inputs, ['./papers']);
     assert.equal(savedConfig.analyze.name, 'first-run-corpus');
-    assert.equal(savedConfig.analyze.pdfParser, 'markpdfdown');
+    assert.equal(savedConfig.analyze.pdfParser, 'markitdown');
     assert.equal(savedConfig.global.corpus, 'first-run-corpus');
     assert.equal(savedConfig.storage.indexDir, './index-store');
     assert.equal(savedConfig.serve.host, '127.0.0.1');

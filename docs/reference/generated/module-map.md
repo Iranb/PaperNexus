@@ -77,7 +77,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/ingestion/graph-postprocess.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/graph-postprocess.js) | Graph Postprocess implementation. |
 | [`src/core/ingestion/graph-precompute.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/graph-precompute.js) | Graph Precompute implementation. |
 | [`src/core/ingestion/markdown.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/markdown.js) | Markdown implementation. |
-| [`src/core/ingestion/marker.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/marker.js) | PDF-to-markdown parser integration layer for OpenDataLoader, Docling, Marker, MinerU, and related helpers. |
+| [`src/core/ingestion/pdf-parser.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js) | PDF-to-markdown parser integration layer for MarkItDown, Docling, Marker, MinerU, and related helpers. |
 | [`src/core/ingestion/pipeline.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pipeline.js) | Main staged build pipeline from sources to graph commit. |
 | [`src/core/llm/ollama.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/ollama.js) | Ollama implementation. |
 | [`src/core/search/brainstorm-communities.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/search/brainstorm-communities.js) | Brainstorm Communities implementation. |

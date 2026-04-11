@@ -8,22 +8,80 @@ import { stableHash } from '../../lib/utils.js';
 import { loadLlmApiKey, resolveLlmConfig } from '../llm/ollama.js';
 
 const PDF_PARSER_DOCLING = 'docling';
+const PDF_PARSER_MARKITDOWN = 'markitdown';
 const PDF_PARSER_MARKPDFDOWN = 'markpdfdown';
 const PDF_PARSER_OPENDATALOADER = 'opendataloader';
 const PDF_PARSER_MARKER = 'marker';
 const PDF_PARSER_MINERU = 'mineru';
 const PDF_PARSER_PADDLEOCR_VL = 'paddleocr-vl';
+const DEFAULT_PDF_PARSER = PDF_PARSER_MARKITDOWN;
 const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
 const DEFAULT_MINERU_PROBE_CACHE_TTL_MS = 15_000;
 const DEFAULT_DOCLING_DEVICE = 'cuda';
 const DEFAULT_DOCLING_IMAGE_EXPORT_MODE = 'placeholder';
 const DEFAULT_DOCLING_PRELOAD_TIMEOUT_MS = 120_000;
+const DEFAULT_DOCLING_GPU_LOCK_ROOT = '/tmp/papernexus-gpu-locks';
+const DEFAULT_DOCLING_GPU_MIN_FREE_MB = 18_000;
+const DEFAULT_DOCLING_GPU_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_DOCLING_GPU_POLL_INTERVAL_MS = 5000;
+const DEFAULT_DOCLING_GPU_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
+const DEFAULT_DOCLING_CPU_THREADS = 4;
 const mineruProbeCache = new Map();
 const doclingWarmupCache = new Map();
+const MARKITDOWN_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/markitdown_to_markdown.py', import.meta.url));
 const MARKPDFDOWN_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/markpdfdown_to_markdown.py', import.meta.url));
 const DOCLING_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/docling_to_markdown.py', import.meta.url));
 const OPENDATALOADER_PDF_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/opendataloader_pdf_to_markdown.py', import.meta.url));
 const PADDLEOCR_VL_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/paddleocr_vl_to_markdown.py', import.meta.url));
+
+const PDF_PARSER_PROFILES = {
+  [PDF_PARSER_MARKITDOWN]: {
+    fallbackParser: PDF_PARSER_DOCLING,
+    localConcurrency: 2,
+    remoteConcurrency: 2,
+    allowLlmConcurrencyBoost: false,
+    leaseStrategy: 'none'
+  },
+  [PDF_PARSER_MARKPDFDOWN]: {
+    fallbackParser: PDF_PARSER_DOCLING,
+    localConcurrency: 1,
+    remoteConcurrency: 1,
+    allowLlmConcurrencyBoost: false,
+    leaseStrategy: 'none'
+  },
+  [PDF_PARSER_OPENDATALOADER]: {
+    fallbackParser: PDF_PARSER_DOCLING,
+    localConcurrency: 2,
+    remoteConcurrency: 2,
+    leaseStrategy: 'none'
+  },
+  [PDF_PARSER_MARKER]: {
+    fallbackParser: PDF_PARSER_DOCLING,
+    localConcurrency: 1,
+    remoteConcurrency: 4,
+    allowLlmConcurrencyBoost: false,
+    leaseStrategy: 'none'
+  },
+  [PDF_PARSER_DOCLING]: {
+    fallbackParser: '',
+    localConcurrency: 4,
+    remoteConcurrency: 6,
+    leaseStrategy: 'docling-gpu'
+  },
+  [PDF_PARSER_MINERU]: {
+    fallbackParser: PDF_PARSER_DOCLING,
+    localConcurrency: 3,
+    remoteConcurrency: 6,
+    leaseStrategy: 'none'
+  },
+  [PDF_PARSER_PADDLEOCR_VL]: {
+    fallbackParser: PDF_PARSER_DOCLING,
+    localConcurrency: 1,
+    remoteConcurrency: 1,
+    allowLlmConcurrencyBoost: false,
+    leaseStrategy: 'none'
+  }
+};
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -166,14 +224,98 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
 export function normalizePdfParser(value) {
-  const normalized = String(value || process.env.PAPERNEXUS_PDF_PARSER || PDF_PARSER_MARKPDFDOWN).trim().toLowerCase();
+  const normalized = String(value || process.env.PAPERNEXUS_PDF_PARSER || DEFAULT_PDF_PARSER).trim().toLowerCase();
+  if (normalized === PDF_PARSER_MARKITDOWN) return PDF_PARSER_MARKITDOWN;
   if (normalized === PDF_PARSER_MARKPDFDOWN) return PDF_PARSER_MARKPDFDOWN;
   if (normalized === PDF_PARSER_OPENDATALOADER) return PDF_PARSER_OPENDATALOADER;
   if (normalized === PDF_PARSER_MARKER) return PDF_PARSER_MARKER;
   if (normalized === PDF_PARSER_MINERU) return PDF_PARSER_MINERU;
   if (normalized === PDF_PARSER_PADDLEOCR_VL) return PDF_PARSER_PADDLEOCR_VL;
   return PDF_PARSER_DOCLING;
+}
+
+export function getPdfParserProfile(parserName, options = {}) {
+  const parser = normalizePdfParser(parserName);
+  const baseProfile = PDF_PARSER_PROFILES[parser] || PDF_PARSER_PROFILES[PDF_PARSER_DOCLING];
+  const hasRemoteRuntime = Boolean(
+    options.doclingSshHost
+    || options.markerSshHost
+    || options.pdfParserSshHost
+    || options.pdfSshHost
+    || options.mineruHttpUrl
+  );
+  return {
+    parser,
+    ...baseProfile,
+    hasRemoteRuntime,
+    recommendedConcurrency: hasRemoteRuntime ? baseProfile.remoteConcurrency : baseProfile.localConcurrency
+  };
+}
+
+function resolvePdfParserFallback(parserName, options = {}) {
+  if (options.disableDoclingFallback) return '';
+  const parser = normalizePdfParser(parserName);
+  return getPdfParserProfile(parser, options).fallbackParser || '';
+}
+
+function resolveMarkItDownPython(options = {}) {
+  return String(
+    options.markitdownPython
+    || options.pythonCommand
+    || process.env.PAPERNEXUS_MARKITDOWN_PYTHON
+    || process.env.PAPERNEXUS_PYTHON_COMMAND
+    || 'python3'
+  ).trim() || 'python3';
+}
+
+function resolveMarkItDownUseLlm(options = {}) {
+  return normalizeBooleanOption(
+    options.markitdownUseLlm ?? process.env.PAPERNEXUS_MARKITDOWN_USE_LLM,
+    false
+  );
+}
+
+function resolveMarkItDownEnablePlugins(options = {}) {
+  return normalizeBooleanOption(
+    options.markitdownEnablePlugins ?? process.env.PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS,
+    resolveMarkItDownUseLlm(options)
+  );
+}
+
+function resolveMarkItDownLlmPrompt(options = {}) {
+  return String(
+    options.markitdownLlmPrompt
+    || process.env.PAPERNEXUS_MARKITDOWN_LLM_PROMPT
+    || ''
+  ).trim();
+}
+
+function resolvePdfParserCommandOption(parserName, options = {}) {
+  const parser = normalizePdfParser(parserName);
+  if (parser === PDF_PARSER_MARKITDOWN) {
+    return options.markitdownPython || options.pdfCommand;
+  }
+  if (parser === PDF_PARSER_MARKPDFDOWN) {
+    return options.markpdfdownPython || options.pdfCommand;
+  }
+  if (parser === PDF_PARSER_OPENDATALOADER) {
+    return options.opendataloaderPdfPython || options.pdfCommand;
+  }
+  if (parser === PDF_PARSER_MARKER) {
+    return options.markerCommand || options.pdfCommand;
+  }
+  if (parser === PDF_PARSER_MINERU) {
+    return options.mineruCommand || options.pdfCommand;
+  }
+  if (parser === PDF_PARSER_PADDLEOCR_VL) {
+    return options.paddleocrVlPython || options.pdfCommand;
+  }
+  return options.doclingCommand || options.pdfCommand;
 }
 
 function resolveMarkPdfDownPython(options = {}) {
@@ -232,6 +374,12 @@ function normalizeBooleanOption(value, defaultValue = false) {
   return Boolean(value);
 }
 
+function resolvePositiveInteger(value, defaultValue, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return defaultValue;
+  return Math.max(min, Math.min(max, Math.floor(numeric)));
+}
+
 function resolveDoclingDevice(options = {}) {
   return String(
     options.doclingDevice
@@ -240,13 +388,72 @@ function resolveDoclingDevice(options = {}) {
   ).trim() || DEFAULT_DOCLING_DEVICE;
 }
 
+function doclingUsesCuda(options = {}) {
+  return resolveDoclingDevice(options).trim().toLowerCase().startsWith('cuda');
+}
+
 function resolveDoclingCudaVisibleDevices(options = {}) {
-  return String(
+  const value = String(
     options.doclingCudaVisibleDevices
     ?? process.env.PAPERNEXUS_DOCLING_CUDA_VISIBLE_DEVICES
     ?? process.env.CUDA_VISIBLE_DEVICES
     ?? ''
   ).trim();
+  return value.toLowerCase() === 'auto' ? '' : value;
+}
+
+function resolveDoclingAutoGpu(options = {}) {
+  return normalizeBooleanOption(
+    options.doclingAutoGpu ?? process.env.PAPERNEXUS_DOCLING_AUTO_GPU,
+    true
+  );
+}
+
+function resolveDoclingGpuLockRoot(options = {}) {
+  return String(
+    options.doclingGpuLockRoot
+    || process.env.PAPERNEXUS_DOCLING_GPU_LOCK_ROOT
+    || process.env.PAPERNEXUS_GPU_LOCK_ROOT
+    || DEFAULT_DOCLING_GPU_LOCK_ROOT
+  ).trim() || DEFAULT_DOCLING_GPU_LOCK_ROOT;
+}
+
+function resolveDoclingGpuMinFreeMb(options = {}) {
+  return resolvePositiveInteger(
+    options.doclingGpuMinFreeMb ?? process.env.PAPERNEXUS_DOCLING_GPU_MIN_FREE_MB,
+    DEFAULT_DOCLING_GPU_MIN_FREE_MB
+  );
+}
+
+function resolveDoclingGpuWaitTimeoutMs(options = {}) {
+  return resolvePositiveInteger(
+    options.doclingGpuWaitTimeoutMs ?? process.env.PAPERNEXUS_DOCLING_GPU_WAIT_TIMEOUT_MS,
+    DEFAULT_DOCLING_GPU_WAIT_TIMEOUT_MS
+  );
+}
+
+function resolveDoclingGpuPollIntervalMs(options = {}) {
+  return resolvePositiveInteger(
+    options.doclingGpuPollIntervalMs ?? process.env.PAPERNEXUS_DOCLING_GPU_POLL_INTERVAL_MS,
+    DEFAULT_DOCLING_GPU_POLL_INTERVAL_MS,
+    { min: 250 }
+  );
+}
+
+function resolveDoclingGpuLockStaleMs(options = {}) {
+  return resolvePositiveInteger(
+    options.doclingGpuLockStaleMs ?? process.env.PAPERNEXUS_DOCLING_GPU_LOCK_STALE_MS,
+    DEFAULT_DOCLING_GPU_LOCK_STALE_MS
+  );
+}
+
+function resolveDoclingCpuThreads(options = {}) {
+  return resolvePositiveInteger(
+    options.doclingCpuThreads
+    ?? process.env.PAPERNEXUS_DOCLING_CPU_THREADS
+    ?? process.env.PAPERNEXUS_PDF_CPU_THREADS,
+    DEFAULT_DOCLING_CPU_THREADS
+  );
 }
 
 function resolveDoclingArtifactsPath(options = {}) {
@@ -425,6 +632,64 @@ async function buildMarkPdfDownRuntime(options = {}) {
   }
 
   return {
+    llmConfig,
+    modelName,
+    env
+  };
+}
+
+async function buildMarkItDownRuntime(options = {}) {
+  const useLlm = resolveMarkItDownUseLlm(options);
+  const enablePlugins = resolveMarkItDownEnablePlugins(options);
+  const env = {
+    PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS: enablePlugins ? '1' : '0'
+  };
+
+  if (!useLlm) {
+    return {
+      useLlm: false,
+      enablePlugins,
+      env
+    };
+  }
+
+  const llmConfig = resolveLlmConfig(options);
+  const provider = String(llmConfig.provider || '').trim().toLowerCase();
+  if (provider === 'anthropic') {
+    throw new Error('MarkItDown LLM mode currently expects an OpenAI-compatible client. Use an openai/ollama-style PaperNexus profile instead of Anthropic.');
+  }
+
+  const modelName = String(llmConfig.model || '').trim();
+  if (!modelName) {
+    throw new Error('MarkItDown LLM mode requires a configured LLM model. Set `llm.model` in PaperNexus config or pass `--model` / `--ollama-model`.');
+  }
+
+  const baseUrl = String(llmConfig.baseUrl || '').trim();
+  if (!baseUrl) {
+    throw new Error('MarkItDown LLM mode requires an OpenAI-compatible base URL. Configure `llm.baseUrl` or use an ollama/openai PaperNexus profile.');
+  }
+
+  const apiKey = llmConfig.apiKey || await loadLlmApiKey(llmConfig);
+  if (provider !== 'ollama' && !apiKey) {
+    throw new Error(
+      `MarkItDown LLM mode requires an API key for provider \`${provider || 'openai-compatible'}\`. `
+      + `Configure \`llm.apiKey\`, \`llm.apiKeySource="keychain"\`, or ${llmConfig.apiKeyEnv || 'the provider API key env var'}.`
+    );
+  }
+
+  env.PAPERNEXUS_MARKITDOWN_USE_LLM = '1';
+  env.PAPERNEXUS_MARKITDOWN_LLM_MODEL = modelName;
+  env.PAPERNEXUS_MARKITDOWN_LLM_BASE_URL = baseUrl;
+  env.PAPERNEXUS_MARKITDOWN_LLM_API_KEY = apiKey || 'ollama';
+
+  const prompt = resolveMarkItDownLlmPrompt(options);
+  if (prompt) {
+    env.PAPERNEXUS_MARKITDOWN_LLM_PROMPT = prompt;
+  }
+
+  return {
+    useLlm: true,
+    enablePlugins,
     llmConfig,
     modelName,
     env
@@ -610,13 +875,189 @@ function buildDoclingCliArgv({
   return argv;
 }
 
+function parseNvidiaSmiGpuLines(raw = '') {
+  return String(raw || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split(',').map((part) => part.trim());
+      const index = parts[0];
+      const name = parts.length > 2 ? parts.slice(1, -1).join(', ').trim() : (parts[1] || '');
+      const freeMemoryMb = Number(parts[parts.length - 1]);
+      if (!index || !Number.isFinite(freeMemoryMb)) return null;
+      return {
+        index,
+        name,
+        freeMemoryMb
+      };
+    })
+    .filter(Boolean);
+}
+
+async function queryAvailableNvidiaGpus(options = {}) {
+  try {
+    const { stdout } = await runCommand('nvidia-smi', [
+      '--query-gpu=index,name,memory.free',
+      '--format=csv,noheader,nounits'
+    ], {
+      timeoutMs: resolvePositiveInteger(
+        options.doclingGpuProbeTimeoutMs ?? process.env.PAPERNEXUS_DOCLING_GPU_PROBE_TIMEOUT_MS,
+        5000,
+        { min: 250 }
+      ),
+      timeoutLabel: 'nvidia-smi GPU probe'
+    });
+    return parseNvidiaSmiGpuLines(stdout);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return null;
+    }
+    return [];
+  }
+}
+
+async function cleanupStaleGpuLocks(lockRoot, staleMs) {
+  try {
+    const entries = await fs.readdir(lockRoot, { withFileTypes: true });
+    const now = Date.now();
+    await Promise.all(entries.map(async (entry) => {
+      if (!entry.isDirectory() || !/^gpu-.+\.lock$/.test(entry.name)) return;
+      const lockPath = path.join(lockRoot, entry.name);
+      try {
+        const stats = await fs.stat(lockPath);
+        if (now - Number(stats.mtimeMs || now) >= staleMs) {
+          await fs.rm(lockPath, { recursive: true, force: true });
+        }
+      } catch {
+        // Ignore races with other workers creating/removing the same lock.
+      }
+    }));
+  } catch {
+    // Missing or unreadable lock roots should not prevent a fresh mkdir attempt.
+  }
+}
+
+function shouldUseDoclingGpuScheduler(options = {}) {
+  if (!doclingUsesCuda(options)) return false;
+  if (!resolveDoclingAutoGpu(options)) return false;
+  return !resolveDoclingCudaVisibleDevices(options);
+}
+
+async function acquireDoclingGpuLease(options = {}, label = 'docling') {
+  if (!shouldUseDoclingGpuScheduler(options)) {
+    return null;
+  }
+
+  const lockRoot = resolveDoclingGpuLockRoot(options);
+  const minFreeMb = resolveDoclingGpuMinFreeMb(options);
+  const waitTimeoutMs = resolveDoclingGpuWaitTimeoutMs(options);
+  const pollIntervalMs = resolveDoclingGpuPollIntervalMs(options);
+  const staleMs = resolveDoclingGpuLockStaleMs(options);
+  const startedAt = Date.now();
+  let lastMessageAt = 0;
+
+  await fs.mkdir(lockRoot, { recursive: true });
+
+  while (true) {
+    await cleanupStaleGpuLocks(lockRoot, staleMs);
+    const probedGpus = await queryAvailableNvidiaGpus(options);
+    if (probedGpus === null) {
+      process.stderr.write(`[${label}] nvidia-smi not found; running Docling without automatic GPU scheduling\n`);
+      return null;
+    }
+    const gpus = probedGpus
+      .filter((gpu) => gpu.freeMemoryMb >= minFreeMb)
+      .sort((left, right) => right.freeMemoryMb - left.freeMemoryMb);
+
+    for (const gpu of gpus) {
+      const lockPath = path.join(lockRoot, `gpu-${gpu.index}.lock`);
+      try {
+        await fs.mkdir(lockPath);
+        await writeText(path.join(lockPath, 'owner.json'), `${JSON.stringify({
+          pid: process.pid,
+          label,
+          gpuIndex: gpu.index,
+          gpuName: gpu.name,
+          freeMemoryMb: gpu.freeMemoryMb,
+          acquiredAt: new Date().toISOString()
+        }, null, 2)}\n`);
+        const waitMs = Date.now() - startedAt;
+        process.stderr.write(
+          `[${label}] Using GPU ${gpu.index}${gpu.name ? ` (${gpu.name})` : ''} with ${gpu.freeMemoryMb} MiB free memory`
+          + (waitMs > 0 ? ` after waiting ${waitMs}ms` : '')
+          + '\n'
+        );
+        return {
+          gpuIndex: gpu.index,
+          env: {
+            CUDA_VISIBLE_DEVICES: String(gpu.index),
+            PYTORCH_CUDA_ALLOC_CONF: process.env.PYTORCH_CUDA_ALLOC_CONF || 'expandable_segments:True'
+          },
+          async release() {
+            await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
+          }
+        };
+      } catch {
+        // Another parser won this GPU slot; try the next candidate.
+      }
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= waitTimeoutMs) {
+      throw new Error(
+        `Timed out waiting ${waitTimeoutMs}ms for an available Docling GPU with at least ${minFreeMb} MiB free memory.`
+      );
+    }
+
+    if (Date.now() - lastMessageAt >= Math.max(1000, pollIntervalMs)) {
+      lastMessageAt = Date.now();
+      process.stderr.write(
+        `[${label}] Waiting for an available Docling GPU slot (minFreeMb=${minFreeMb}, elapsedMs=${elapsedMs})\n`
+      );
+    }
+    await sleep(pollIntervalMs);
+  }
+}
+
+function buildDoclingThreadEnv(options = {}) {
+  const threads = String(resolveDoclingCpuThreads(options));
+  return {
+    OPENBLAS_NUM_THREADS: threads,
+    OMP_NUM_THREADS: threads,
+    MKL_NUM_THREADS: threads,
+    NUMEXPR_NUM_THREADS: threads,
+    VECLIB_MAXIMUM_THREADS: threads
+  };
+}
+
 function buildDoclingExecutionEnv(options = {}) {
   const env = {};
   const cudaVisibleDevices = resolveDoclingCudaVisibleDevices(options);
   if (cudaVisibleDevices) {
     env.CUDA_VISIBLE_DEVICES = cudaVisibleDevices;
+    env.PYTORCH_CUDA_ALLOC_CONF = process.env.PYTORCH_CUDA_ALLOC_CONF || 'expandable_segments:True';
   }
-  return env;
+  return {
+    ...buildDoclingThreadEnv(options),
+    ...env
+  };
+}
+
+function buildPdfParserExecutionEnv(parserName, options = {}) {
+  const parser = normalizePdfParser(parserName);
+  if (parser === PDF_PARSER_DOCLING) {
+    return buildDoclingExecutionEnv(options);
+  }
+  return {};
+}
+
+async function acquirePdfParserLease(parserName, options = {}, label = 'pdf-parser') {
+  const profile = getPdfParserProfile(parserName, options);
+  if (profile.leaseStrategy === 'docling-gpu') {
+    return acquireDoclingGpuLease(options, label);
+  }
+  return null;
 }
 
 function buildShellCommand(command, argv = []) {
@@ -890,7 +1331,14 @@ function buildRemoteDoclingScript({
   artifactsPath,
   imageExportMode,
   enrichPictureClasses,
-  enrichPictureDescription
+  enrichPictureDescription,
+  gpuLockRoot = DEFAULT_DOCLING_GPU_LOCK_ROOT,
+  gpuMinFreeMb = DEFAULT_DOCLING_GPU_MIN_FREE_MB,
+  gpuWaitTimeoutMs = DEFAULT_DOCLING_GPU_WAIT_TIMEOUT_MS,
+  gpuPollIntervalMs = DEFAULT_DOCLING_GPU_POLL_INTERVAL_MS,
+  gpuLockStaleMs = DEFAULT_DOCLING_GPU_LOCK_STALE_MS,
+  cpuThreads = DEFAULT_DOCLING_CPU_THREADS,
+  autoGpu = true
 }) {
   const command = buildShellCommand(
     doclingCommand,
@@ -906,14 +1354,80 @@ function buildRemoteDoclingScript({
       enrichPictureDescription
     })
   );
+  const shouldAutoSelectGpu = String(device || '').trim().toLowerCase().startsWith('cuda')
+    && autoGpu !== false
+    && !String(cudaVisibleDevices || '').trim();
+  const gpuWaitSeconds = Math.max(1, Math.ceil(Number(gpuWaitTimeoutMs || DEFAULT_DOCLING_GPU_WAIT_TIMEOUT_MS) / 1000));
+  const gpuPollSeconds = Math.max(1, Math.ceil(Number(gpuPollIntervalMs || DEFAULT_DOCLING_GPU_POLL_INTERVAL_MS) / 1000));
+  const gpuLockStaleMinutes = Math.max(1, Math.floor(Number(gpuLockStaleMs || DEFAULT_DOCLING_GPU_LOCK_STALE_MS) / 60000));
+  const threadCount = String(resolvePositiveInteger(cpuThreads, DEFAULT_DOCLING_CPU_THREADS));
 
   return [
     'set -e',
     `tmp_root=${shellQuote(path.posix.dirname(remoteRunDir))}`,
     `run_dir=${shellQuote(remoteRunDir)}`,
+    `gpu_lock_root=${shellQuote(gpuLockRoot || DEFAULT_DOCLING_GPU_LOCK_ROOT)}`,
+    `gpu_wait_seconds=${shellQuote(String(gpuWaitSeconds))}`,
+    `gpu_poll_seconds=${shellQuote(String(gpuPollSeconds))}`,
+    `gpu_min_free_mb=${shellQuote(String(resolvePositiveInteger(gpuMinFreeMb, DEFAULT_DOCLING_GPU_MIN_FREE_MB)))}`,
+    `gpu_lock_stale_minutes=${shellQuote(String(gpuLockStaleMinutes))}`,
+    `export OPENBLAS_NUM_THREADS=${shellQuote(threadCount)}`,
+    `export OMP_NUM_THREADS=${shellQuote(threadCount)}`,
+    `export MKL_NUM_THREADS=${shellQuote(threadCount)}`,
+    `export NUMEXPR_NUM_THREADS=${shellQuote(threadCount)}`,
+    `export VECLIB_MAXIMUM_THREADS=${shellQuote(threadCount)}`,
     ...(cudaVisibleDevices ? [`export CUDA_VISIBLE_DEVICES=${shellQuote(cudaVisibleDevices)}`] : []),
-    'cleanup() { rm -rf "$tmp_root"; }',
+    ...(cudaVisibleDevices ? ['export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"'] : []),
+    'GPU_LOCK_DIR=""',
+    'select_gpu() {',
+    '  command -v nvidia-smi >/dev/null 2>&1 || { echo "nvidia-smi is required for Docling GPU scheduling but was not found." >&2; return 1; }',
+    '  mkdir -p "$gpu_lock_root"',
+    '  start_ts=$(date +%s)',
+    '  while true; do',
+    '    find "$gpu_lock_root" -maxdepth 1 -type d -name "gpu-*.lock" -mmin +"$gpu_lock_stale_minutes" -exec rm -rf {} + 2>/dev/null || true',
+    '    gpu_lines_file="$tmp_root/gpu-lines.txt"',
+    '    nvidia-smi --query-gpu=index,name,memory.free --format=csv,noheader,nounits > "$gpu_lines_file" 2>/dev/null || true',
+    '    best_gpu=""',
+    '    best_free=0',
+    '    best_name=""',
+    '    while IFS= read -r line; do',
+    '      idx=$(printf "%s" "$line" | cut -d"," -f1 | tr -d " ")',
+    '      name=$(printf "%s" "$line" | cut -d"," -f2 | sed "s/^ *//;s/ *$//")',
+    '      free=$(printf "%s" "$line" | awk -F"," \'{gsub(/ /, "", $NF); print $NF}\')',
+    '      [ -n "$idx" ] || continue',
+    '      [ -n "$free" ] || continue',
+    '      [ "$free" -ge "$gpu_min_free_mb" ] || continue',
+    '      [ -d "$gpu_lock_root/gpu-$idx.lock" ] && continue',
+    '      if [ -z "$best_gpu" ] || [ "$free" -gt "$best_free" ]; then',
+    '        best_gpu="$idx"',
+    '        best_free="$free"',
+    '        best_name="$name"',
+    '      fi',
+    '    done < "$gpu_lines_file"',
+    '    if [ -n "$best_gpu" ]; then',
+    '      lock_dir="$gpu_lock_root/gpu-$best_gpu.lock"',
+    '      if mkdir "$lock_dir" 2>/dev/null; then',
+    '        GPU_LOCK_DIR="$lock_dir"',
+    '        export CUDA_VISIBLE_DEVICES="$best_gpu"',
+    '        export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"',
+    '        printf \'{"pid":%s,"gpuIndex":"%s","gpuName":"%s","freeMemoryMb":%s,"acquiredAt":"%s"}\\n\' "$$" "$best_gpu" "$best_name" "$best_free" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock_dir/owner.json" 2>/dev/null || true',
+    '        echo "Using GPU $best_gpu ($best_name) with ${best_free} MiB free memory" >&2',
+    '        return 0',
+    '      fi',
+    '    fi',
+    '    now_ts=$(date +%s)',
+    '    elapsed=$((now_ts - start_ts))',
+    '    if [ "$elapsed" -ge "$gpu_wait_seconds" ]; then',
+    '      echo "Timed out waiting for an available Docling GPU with at least ${gpu_min_free_mb} MiB free memory" >&2',
+    '      return 1',
+    '    fi',
+    '    echo "Waiting for an available Docling GPU..." >&2',
+    '    sleep "$gpu_poll_seconds"',
+    '  done',
+    '}',
+    'cleanup() { [ -n "$GPU_LOCK_DIR" ] && rm -rf "$GPU_LOCK_DIR"; rm -rf "$tmp_root"; }',
     'trap cleanup EXIT',
+    ...(shouldAutoSelectGpu ? ['select_gpu'] : []),
     'mkdir -p "$run_dir"',
     `${command} 1>&2`,
     'markdown_file=$(find "$run_dir" -type f -name \'*.md\' | head -n 1)',
@@ -1032,6 +1546,95 @@ export async function cacheMarkdownSource(markdownPath, options = {}) {
   };
 }
 
+async function convertPdfToMarkdownWithMarkItDown(pdfPath, options = {}) {
+  const {
+    markerDir,
+    markdownDir,
+    force = false,
+    pageRange
+  } = options;
+
+  if (pageRange) {
+    throw new Error('MarkItDown page-range forwarding is not currently supported. Use `--pdf-parser marker` or `--pdf-parser markpdfdown` when you need `--page-range`.');
+  }
+
+  const pythonCommand = resolveMarkItDownPython(options);
+  const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const progress = createProgressReporter(`markitdown:${basename}`);
+  const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const runtime = await buildMarkItDownRuntime(options);
+  const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKITDOWN, basename, {
+    markerDir,
+    markdownDir
+  });
+
+  if (!force && await fileExists(cachedMarkdownPath)) {
+    return {
+      markdownPath: cachedMarkdownPath,
+      sourcePdfPath: pdfPath,
+      generated: false,
+      parser: PDF_PARSER_MARKITDOWN,
+      parserCommand: `${pythonCommand} ${MARKITDOWN_WRAPPER_PATH}`
+    };
+  }
+
+  if (force) {
+    await removePath(runDir);
+  }
+
+  await ensureDir(runDir);
+  await ensureDir(path.dirname(cachedMarkdownPath));
+
+  const lease = await acquirePdfParserLease(PDF_PARSER_MARKITDOWN, options, `markitdown:${basename}`);
+  try {
+    process.stderr.write(`[markitdown:${basename}] Running MarkItDown\n`);
+    await runCommand(pythonCommand, [
+      MARKITDOWN_WRAPPER_PATH,
+      '--input',
+      pdfPath,
+      '--output',
+      cachedMarkdownPath
+    ], {
+      env: {
+        ...buildPdfParserExecutionEnv(PDF_PARSER_MARKITDOWN, options),
+        ...runtime.env,
+        ...(lease?.env || {})
+      },
+      onStdout: progress,
+      onStderr: progress,
+      timeoutMs,
+      timeoutLabel: `markitdown parse for ${pdfPath}`
+    });
+    flushProgressReporter(progress);
+  } catch (error) {
+    throw new Error(
+      `MarkItDown failed for ${pdfPath}. ${error.message}\n`
+      + 'Tip: install `markitdown[pdf]` in the selected Python environment and verify the runtime can import `markitdown`.'
+    );
+  } finally {
+    await lease?.release?.();
+  }
+
+  if (!await fileExists(cachedMarkdownPath)) {
+    throw new Error(
+      `MarkItDown finished for ${pdfPath} but no markdown cache was written to ${cachedMarkdownPath}.`
+    );
+  }
+
+  const markdown = await readText(cachedMarkdownPath);
+  if (!markdown.trim()) {
+    throw new Error(`MarkItDown produced empty markdown for ${pdfPath}.`);
+  }
+
+  return {
+    markdownPath: cachedMarkdownPath,
+    sourcePdfPath: pdfPath,
+    generated: true,
+    parser: PDF_PARSER_MARKITDOWN,
+    parserCommand: `${pythonCommand} ${MARKITDOWN_WRAPPER_PATH}`
+  };
+}
+
 async function convertPdfToMarkdownViaRemoteMarker(pdfPath, options = {}) {
   const { markerCommand, markerSshHost, pageRange } = options;
   const pdfBuffer = await fs.readFile(pdfPath);
@@ -1098,6 +1701,7 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`docling:${basename}`);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const gpuWaitTimeoutMs = resolveDoclingGpuWaitTimeoutMs(options);
   const remoteRoot = `/tmp/papernexus-docling-${stableHash(`${pdfPath}:${Date.now()}`, 16)}`;
   const remotePdfPath = `${remoteRoot}/${basename}.pdf`;
   const remoteRunDir = `${remoteRoot}/out`;
@@ -1124,12 +1728,19 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
     artifactsPath: resolveDoclingArtifactsPath(options),
     imageExportMode: resolveDoclingImageExportMode(options),
     enrichPictureClasses: resolveDoclingEnrichPictureClasses(options),
-    enrichPictureDescription: resolveDoclingEnrichPictureDescription(options)
+    enrichPictureDescription: resolveDoclingEnrichPictureDescription(options),
+    gpuLockRoot: resolveDoclingGpuLockRoot(options),
+    gpuMinFreeMb: resolveDoclingGpuMinFreeMb(options),
+    gpuWaitTimeoutMs,
+    gpuPollIntervalMs: resolveDoclingGpuPollIntervalMs(options),
+    gpuLockStaleMs: resolveDoclingGpuLockStaleMs(options),
+    cpuThreads: resolveDoclingCpuThreads(options),
+    autoGpu: resolveDoclingAutoGpu(options)
   });
 
   const { stdout } = await runRemoteCommand(doclingSshHost, script, {
     onStderr: progress,
-    timeoutMs,
+    timeoutMs: timeoutMs + gpuWaitTimeoutMs,
     timeoutLabel: `remote docling parse for ${pdfPath}`
   });
   flushProgressReporter(progress);
@@ -1156,14 +1767,24 @@ async function runLocalDoclingCli(pdfPath, runDir, options = {}, executionOption
     enrichPictureClasses: resolveDoclingEnrichPictureClasses(options),
     enrichPictureDescription: resolveDoclingEnrichPictureDescription(options)
   });
-  const env = buildDoclingExecutionEnv(options);
-  return runCommand('/bin/sh', ['-lc', buildShellCommand(options.doclingCommand, argv)], {
-    ...executionOptions,
-    env: {
-      ...env,
-      ...(executionOptions.env || {})
-    }
-  });
+  const env = buildPdfParserExecutionEnv(PDF_PARSER_DOCLING, options);
+  const lease = await acquirePdfParserLease(
+    PDF_PARSER_DOCLING,
+    options,
+    executionOptions.label || `docling:${path.basename(pdfPath, path.extname(pdfPath))}`
+  );
+  try {
+    return await runCommand('/bin/sh', ['-lc', buildShellCommand(options.doclingCommand, argv)], {
+      ...executionOptions,
+      env: {
+        ...env,
+        ...(lease?.env || {}),
+        ...(executionOptions.env || {})
+      }
+    });
+  } finally {
+    await lease?.release?.();
+  }
 }
 
 export async function warmDoclingRuntime(options = {}) {
@@ -1190,6 +1811,13 @@ export async function warmDoclingRuntime(options = {}) {
     doclingImageExportMode: resolveDoclingImageExportMode(options),
     doclingEnrichPictureClasses: resolveDoclingEnrichPictureClasses(options),
     doclingEnrichPictureDescription: resolveDoclingEnrichPictureDescription(options),
+    doclingAutoGpu: resolveDoclingAutoGpu(options),
+    doclingGpuLockRoot: resolveDoclingGpuLockRoot(options),
+    doclingGpuMinFreeMb: resolveDoclingGpuMinFreeMb(options),
+    doclingGpuWaitTimeoutMs: resolveDoclingGpuWaitTimeoutMs(options),
+    doclingGpuPollIntervalMs: resolveDoclingGpuPollIntervalMs(options),
+    doclingGpuLockStaleMs: resolveDoclingGpuLockStaleMs(options),
+    doclingCpuThreads: resolveDoclingCpuThreads(options),
     llmProvider: options.llmProvider,
     llmModel: options.llmModel,
     llmBaseUrl: options.llmBaseUrl
@@ -1236,11 +1864,20 @@ export async function warmDoclingRuntime(options = {}) {
           ...(options.doclingOcrEngine ? ['--ocr-engine', options.doclingOcrEngine] : []),
           ...(options.doclingPdfBackend ? ['--pdf-backend', options.doclingPdfBackend] : [])
         ];
-        await runCommand(resolveDoclingPython(options), args, {
-          env: runtime.env,
-          timeoutMs,
-          timeoutLabel: 'docling VLM warmup'
-        });
+        const lease = await acquirePdfParserLease(PDF_PARSER_DOCLING, options, 'docling:warmup:vlm');
+        try {
+          await runCommand(resolveDoclingPython(options), args, {
+            env: {
+              ...buildPdfParserExecutionEnv(PDF_PARSER_DOCLING, options),
+              ...runtime.env,
+              ...(lease?.env || {})
+            },
+            timeoutMs,
+            timeoutLabel: 'docling VLM warmup'
+          });
+        } finally {
+          await lease?.release?.();
+        }
       } else {
         await fs.mkdir(warmupRunDir, { recursive: true });
         await runLocalDoclingCli(warmupPdfPath, warmupRunDir, {
@@ -1733,6 +2370,7 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
   if (remoteDoclingHost) {
     try {
       const remoteResult = await convertPdfToMarkdownViaRemoteDocling(pdfPath, {
+        ...options,
         doclingCommand,
         doclingSshHost: remoteDoclingHost,
         pageRange,
@@ -1784,10 +2422,15 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
       ...(doclingPdfBackend ? ['--pdf-backend', doclingPdfBackend] : [])
     ];
 
+    const lease = await acquirePdfParserLease(PDF_PARSER_DOCLING, options, `docling:${basename}:vlm`);
     try {
       process.stderr.write(`[docling:${basename}] Running docling VLM pipeline\n`);
       await runCommand(doclingPython, args, {
-        env: runtime.env,
+        env: {
+          ...buildPdfParserExecutionEnv(PDF_PARSER_DOCLING, options),
+          ...runtime.env,
+          ...(lease?.env || {})
+        },
         onStdout: progress,
         onStderr: progress,
         timeoutMs,
@@ -1799,6 +2442,8 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
         `Docling VLM failed for ${pdfPath}. ${error.message}\n`
         + 'Tip: verify the selected Python environment can import `docling`, and that the configured OpenAI-compatible endpoint is reachable.'
       );
+    } finally {
+      await lease?.release?.();
     }
 
     if (!await fileExists(cachedMarkdownPath)) {
@@ -2100,31 +2745,38 @@ export async function warmMineruHttpEndpoint(url, options = {}) {
 export async function convertPdfToMarkdown(pdfPath, options = {}) {
   const parser = normalizePdfParser(options.pdfParser);
   const convertWithSelectedParser = async () => {
+    if (parser === PDF_PARSER_MARKITDOWN) {
+      return convertPdfToMarkdownWithMarkItDown(pdfPath, {
+        ...options,
+        markitdownPython: resolvePdfParserCommandOption(PDF_PARSER_MARKITDOWN, options)
+      });
+    }
+
     if (parser === PDF_PARSER_MARKPDFDOWN) {
       return convertPdfToMarkdownWithMarkPdfDown(pdfPath, {
         ...options,
-        markpdfdownPython: options.markpdfdownPython || options.pdfCommand
+        markpdfdownPython: resolvePdfParserCommandOption(PDF_PARSER_MARKPDFDOWN, options)
       });
     }
 
     if (parser === PDF_PARSER_OPENDATALOADER) {
       return convertPdfToMarkdownWithOpenDataLoader(pdfPath, {
         ...options,
-        opendataloaderPdfPython: options.opendataloaderPdfPython || options.pdfCommand
+        opendataloaderPdfPython: resolvePdfParserCommandOption(PDF_PARSER_OPENDATALOADER, options)
       });
     }
 
     if (parser === PDF_PARSER_MARKER) {
       return convertPdfToMarkdownWithMarker(pdfPath, {
         ...options,
-        markerCommand: options.markerCommand || options.pdfCommand
+        markerCommand: resolvePdfParserCommandOption(PDF_PARSER_MARKER, options)
       });
     }
 
     if (parser === PDF_PARSER_MINERU) {
       return convertPdfToMarkdownWithMineru(pdfPath, {
         ...options,
-        mineruCommand: options.mineruCommand || options.pdfCommand
+        mineruCommand: resolvePdfParserCommandOption(PDF_PARSER_MINERU, options)
       });
     }
 
@@ -2134,26 +2786,27 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
 
     return convertPdfToMarkdownWithDocling(pdfPath, {
       ...options,
-      doclingCommand: options.doclingCommand || options.pdfCommand
+      doclingCommand: resolvePdfParserCommandOption(PDF_PARSER_DOCLING, options)
     });
   };
 
   try {
     return await convertWithSelectedParser();
   } catch (error) {
-    if (parser === PDF_PARSER_DOCLING || options.disableDoclingFallback) {
+    const fallbackParser = resolvePdfParserFallback(parser, options);
+    if (!fallbackParser) {
       throw error;
     }
 
     process.stderr.write(
-      `[${parser}:${path.basename(pdfPath, path.extname(pdfPath))}] Primary parser failed; falling back to docling\n`
+      `[${parser}:${path.basename(pdfPath, path.extname(pdfPath))}] Primary parser failed; falling back to ${fallbackParser}\n`
     );
 
     try {
-      const fallbackResult = await convertPdfToMarkdownWithDocling(pdfPath, {
+      const fallbackResult = await convertPdfToMarkdown(pdfPath, {
         ...options,
-        pdfParser: PDF_PARSER_DOCLING,
-        doclingCommand: options.doclingCommand || options.pdfCommand,
+        pdfParser: fallbackParser,
+        pdfCommand: resolvePdfParserCommandOption(fallbackParser, options),
         force: true
       });
       return {
@@ -2161,20 +2814,33 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
         fallbackFromParser: parser
       };
     } catch (fallbackError) {
-      throw new Error(`${error.message}\nDocling fallback also failed for ${pdfPath}. ${fallbackError.message}`);
+      throw new Error(`${error.message}\n${fallbackParser} fallback also failed for ${pdfPath}. ${fallbackError.message}`);
     }
   }
 }
 
-export const __markerTestables = {
+export const __pdfParserTestables = {
   shellQuote,
   normalizePdfParser,
+  getPdfParserProfile,
+  resolveMarkItDownPython,
+  resolveMarkItDownUseLlm,
+  resolveMarkItDownEnablePlugins,
+  resolveMarkItDownLlmPrompt,
+  buildMarkItDownRuntime,
   resolveMarkPdfDownPython,
   resolveMarkerBlockBlacklist,
   resolveOpenDataLoaderPdfPython,
   resolveDoclingPython,
   resolveDoclingDevice,
   resolveDoclingCudaVisibleDevices,
+  resolveDoclingAutoGpu,
+  resolveDoclingGpuLockRoot,
+  resolveDoclingGpuMinFreeMb,
+  resolveDoclingGpuWaitTimeoutMs,
+  resolveDoclingGpuPollIntervalMs,
+  resolveDoclingGpuLockStaleMs,
+  resolveDoclingCpuThreads,
   resolveDoclingArtifactsPath,
   resolveDoclingImageExportMode,
   resolveDoclingEnrichPictureClasses,
@@ -2190,7 +2856,14 @@ export const __markerTestables = {
   resolvePdfParseTimeoutMs,
   probeHttpEndpoint,
   resetMineruProbeCache,
+  parseNvidiaSmiGpuLines,
+  acquirePdfParserLease,
+  acquireDoclingGpuLease,
+  buildPdfParserExecutionEnv,
+  buildDoclingExecutionEnv,
   buildRemoteMarkerScript,
   buildRemoteDoclingScript,
   warmDoclingRuntime
 };
+
+export const __markerTestables = __pdfParserTestables;
