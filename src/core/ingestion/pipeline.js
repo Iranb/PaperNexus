@@ -4082,6 +4082,10 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
   if (sourceState.kind === 'pdf') {
     const convertStartedAt = Date.now();
     let converted = await convertPdfToMarkdown(sourceState.inputPath, {
+      rootPath,
+      sourceKey: sourceState.sourceKey,
+      importTaskId: options.importTaskId,
+      importStage: options.importTaskId ? 'materialize' : null,
       pdfParser: options.pdfParser,
       pdfCommand: options.pdfCommand,
       pythonCommand: options.pythonCommand,
@@ -4154,6 +4158,10 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       const doclingStartedAt = Date.now();
       converted = await convertPdfToMarkdown(sourceState.inputPath, {
         ...options,
+        rootPath,
+        sourceKey: sourceState.sourceKey,
+        importTaskId: options.importTaskId,
+        importStage: options.importTaskId ? 'materialize' : null,
         pdfParser: 'docling',
         pdfCommand: options.doclingCommand || options.pdfCommand,
         force: true,

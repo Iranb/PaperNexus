@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureDir, fileExists, listFilesRecursive, readText, removePath, writeText } from '../../lib/fs.js';
 import { stableHash } from '../../lib/utils.js';
 import { loadLlmApiKey, resolveLlmConfig } from '../llm/ollama.js';
+import { createPdfParseTracker } from '../../storage/pdf-parse-store.js';
 
 const PDF_PARSER_DOCLING = 'docling';
 const PDF_PARSER_MARKITDOWN = 'markitdown';
@@ -189,7 +190,7 @@ function runCommandWithStdin(command, args, stdinBuffer, options = {}) {
   });
 }
 
-function createProgressReporter(label) {
+function createProgressReporter(label, tracker = null) {
   let trailing = '';
 
   const report = (chunk) => {
@@ -202,6 +203,9 @@ function createProgressReporter(label) {
       const trimmed = line.trimEnd();
       if (!trimmed) continue;
       process.stderr.write(`[${label}] ${trimmed}\n`);
+      if (tracker?.log) {
+        void tracker.log('info', trimmed).catch(() => {});
+      }
     }
   };
 
@@ -209,6 +213,9 @@ function createProgressReporter(label) {
     const trimmed = trailing.trimEnd();
     if (trimmed) {
       process.stderr.write(`[${label}] ${trimmed}\n`);
+      if (tracker?.log) {
+        void tracker.log('info', trimmed).catch(() => {});
+      }
     }
     trailing = '';
   };
@@ -218,6 +225,30 @@ function createProgressReporter(label) {
 
 function flushProgressReporter(reporter) {
   reporter.flush?.();
+}
+
+async function resolvePdfParseTracker(pdfPath, parser, options = {}) {
+  if (options.pdfParseTracker) {
+    return {
+      tracker: options.pdfParseTracker,
+      owned: false
+    };
+  }
+
+  const tracker = await createPdfParseTracker(pdfPath, parser, {
+    selectedParser: options.pdfParseSelectedParser || normalizePdfParser(options.pdfParser || parser),
+    fallbackFromParser: options.pdfParseFallbackFrom || null,
+    rootPath: options.rootPath,
+    sourceKey: options.sourceKey,
+    importTaskId: options.importTaskId,
+    importStage: options.importStage,
+    pdfParseStateRoot: options.pdfParseStateRoot
+  });
+
+  return {
+    tracker,
+    owned: true
+  };
 }
 
 function shellQuote(value) {
@@ -276,7 +307,7 @@ function resolveMarkItDownPython(options = {}) {
 function resolveMarkItDownUseLlm(options = {}) {
   return normalizeBooleanOption(
     options.markitdownUseLlm ?? process.env.PAPERNEXUS_MARKITDOWN_USE_LLM,
-    false
+    true
   );
 }
 
@@ -285,6 +316,16 @@ function resolveMarkItDownEnablePlugins(options = {}) {
     options.markitdownEnablePlugins ?? process.env.PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS,
     resolveMarkItDownUseLlm(options)
   );
+}
+
+function hasExplicitMarkItDownUseLlmSetting(options = {}) {
+  return options.markitdownUseLlm !== undefined
+    || process.env.PAPERNEXUS_MARKITDOWN_USE_LLM !== undefined;
+}
+
+function hasExplicitMarkItDownEnablePluginsSetting(options = {}) {
+  return options.markitdownEnablePlugins !== undefined
+    || process.env.PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS !== undefined;
 }
 
 function resolveMarkItDownLlmPrompt(options = {}) {
@@ -639,16 +680,18 @@ async function buildMarkPdfDownRuntime(options = {}) {
 }
 
 async function buildMarkItDownRuntime(options = {}) {
-  const useLlm = resolveMarkItDownUseLlm(options);
-  const enablePlugins = resolveMarkItDownEnablePlugins(options);
+  const requestedUseLlm = resolveMarkItDownUseLlm(options);
+  const explicitUseLlm = hasExplicitMarkItDownUseLlmSetting(options);
+  const requestedEnablePlugins = resolveMarkItDownEnablePlugins(options);
+  const explicitEnablePlugins = hasExplicitMarkItDownEnablePluginsSetting(options);
   const env = {
-    PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS: enablePlugins ? '1' : '0'
+    PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS: '0'
   };
 
-  if (!useLlm) {
+  if (!requestedUseLlm) {
     return {
       useLlm: false,
-      enablePlugins,
+      enablePlugins: requestedEnablePlugins,
       env
     };
   }
@@ -660,23 +703,42 @@ async function buildMarkItDownRuntime(options = {}) {
   }
 
   const modelName = String(llmConfig.model || '').trim();
-  if (!modelName) {
-    throw new Error('MarkItDown LLM mode requires a configured LLM model. Set `llm.model` in PaperNexus config or pass `--model` / `--ollama-model`.');
-  }
-
   const baseUrl = String(llmConfig.baseUrl || '').trim();
-  if (!baseUrl) {
-    throw new Error('MarkItDown LLM mode requires an OpenAI-compatible base URL. Configure `llm.baseUrl` or use an ollama/openai PaperNexus profile.');
+  const missingPrereqs = [];
+  if (!modelName) missingPrereqs.push('llm.model');
+  if (!baseUrl) missingPrereqs.push('llm.baseUrl');
+
+  if (missingPrereqs.length) {
+    if (explicitUseLlm) {
+      throw new Error(
+        `MarkItDown LLM mode requires ${missingPrereqs.join(' and ')}. `
+        + 'Configure those fields in PaperNexus `llm.*` config or disable `markitdownUseLlm`.'
+      );
+    }
+    return {
+      useLlm: false,
+      enablePlugins: explicitEnablePlugins ? requestedEnablePlugins : false,
+      env
+    };
   }
 
   const apiKey = llmConfig.apiKey || await loadLlmApiKey(llmConfig);
   if (provider !== 'ollama' && !apiKey) {
-    throw new Error(
-      `MarkItDown LLM mode requires an API key for provider \`${provider || 'openai-compatible'}\`. `
-      + `Configure \`llm.apiKey\`, \`llm.apiKeySource="keychain"\`, or ${llmConfig.apiKeyEnv || 'the provider API key env var'}.`
-    );
+    if (explicitUseLlm) {
+      throw new Error(
+        `MarkItDown LLM mode requires an API key for provider \`${provider || 'openai-compatible'}\`. `
+        + `Configure \`llm.apiKey\`, \`llm.apiKeySource="keychain"\`, or ${llmConfig.apiKeyEnv || 'the provider API key env var'}.`
+      );
+    }
+    return {
+      useLlm: false,
+      enablePlugins: explicitEnablePlugins ? requestedEnablePlugins : false,
+      env
+    };
   }
 
+  const enablePlugins = explicitEnablePlugins ? requestedEnablePlugins : true;
+  env.PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS = enablePlugins ? '1' : '0';
   env.PAPERNEXUS_MARKITDOWN_USE_LLM = '1';
   env.PAPERNEXUS_MARKITDOWN_LLM_MODEL = modelName;
   env.PAPERNEXUS_MARKITDOWN_LLM_BASE_URL = baseUrl;
@@ -944,7 +1006,7 @@ function shouldUseDoclingGpuScheduler(options = {}) {
   return !resolveDoclingCudaVisibleDevices(options);
 }
 
-async function acquireDoclingGpuLease(options = {}, label = 'docling') {
+async function acquireDoclingGpuLease(options = {}, label = 'docling', tracker = null) {
   if (!shouldUseDoclingGpuScheduler(options)) {
     return null;
   }
@@ -958,12 +1020,19 @@ async function acquireDoclingGpuLease(options = {}, label = 'docling') {
   let lastMessageAt = 0;
 
   await fs.mkdir(lockRoot, { recursive: true });
+  await tracker?.update?.({
+    status: 'waiting-resource',
+    currentStep: 'waiting for available docling GPU',
+    message: `Waiting for a Docling GPU with >= ${minFreeMb} MiB free memory`,
+    activeParser: PDF_PARSER_DOCLING
+  });
 
   while (true) {
     await cleanupStaleGpuLocks(lockRoot, staleMs);
     const probedGpus = await queryAvailableNvidiaGpus(options);
     if (probedGpus === null) {
       process.stderr.write(`[${label}] nvidia-smi not found; running Docling without automatic GPU scheduling\n`);
+      await tracker?.log?.('warn', 'nvidia-smi not found; running without automatic GPU scheduling');
       return null;
     }
     const gpus = probedGpus
@@ -988,6 +1057,15 @@ async function acquireDoclingGpuLease(options = {}, label = 'docling') {
           + (waitMs > 0 ? ` after waiting ${waitMs}ms` : '')
           + '\n'
         );
+        await tracker?.update?.({
+          status: 'running',
+          currentStep: `using GPU ${gpu.index}`,
+          message: `Using GPU ${gpu.index}${gpu.name ? ` (${gpu.name})` : ''}`,
+          activeParser: PDF_PARSER_DOCLING,
+          gpuIndex: gpu.index,
+          gpuName: gpu.name,
+          gpuFreeMemoryMb: gpu.freeMemoryMb
+        });
         return {
           gpuIndex: gpu.index,
           env: {
@@ -1015,6 +1093,12 @@ async function acquireDoclingGpuLease(options = {}, label = 'docling') {
       process.stderr.write(
         `[${label}] Waiting for an available Docling GPU slot (minFreeMb=${minFreeMb}, elapsedMs=${elapsedMs})\n`
       );
+      await tracker?.update?.({
+        status: 'waiting-resource',
+        currentStep: 'waiting for available docling GPU',
+        message: `Waiting for Docling GPU slot (elapsed ${elapsedMs}ms)`,
+        activeParser: PDF_PARSER_DOCLING
+      });
     }
     await sleep(pollIntervalMs);
   }
@@ -1052,10 +1136,10 @@ function buildPdfParserExecutionEnv(parserName, options = {}) {
   return {};
 }
 
-async function acquirePdfParserLease(parserName, options = {}, label = 'pdf-parser') {
+async function acquirePdfParserLease(parserName, options = {}, label = 'pdf-parser', tracker = null) {
   const profile = getPdfParserProfile(parserName, options);
   if (profile.leaseStrategy === 'docling-gpu') {
-    return acquireDoclingGpuLease(options, label);
+    return acquireDoclingGpuLease(options, label, tracker);
   }
   return null;
 }
@@ -1560,7 +1644,8 @@ async function convertPdfToMarkdownWithMarkItDown(pdfPath, options = {}) {
 
   const pythonCommand = resolveMarkItDownPython(options);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`markitdown:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`markitdown:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const runtime = await buildMarkItDownRuntime(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKITDOWN, basename, {
@@ -1569,6 +1654,13 @@ async function convertPdfToMarkdownWithMarkItDown(pdfPath, options = {}) {
   });
 
   if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_MARKITDOWN,
+      currentStep: 'reusing cached markitdown markdown',
+      message: 'Reusing cached MarkItDown markdown',
+      parserCommand: `${pythonCommand} ${MARKITDOWN_WRAPPER_PATH}`
+    });
     return {
       markdownPath: cachedMarkdownPath,
       sourcePdfPath: pdfPath,
@@ -1585,7 +1677,13 @@ async function convertPdfToMarkdownWithMarkItDown(pdfPath, options = {}) {
   await ensureDir(runDir);
   await ensureDir(path.dirname(cachedMarkdownPath));
 
-  const lease = await acquirePdfParserLease(PDF_PARSER_MARKITDOWN, options, `markitdown:${basename}`);
+  await tracker?.update?.({
+    status: 'running',
+    activeParser: PDF_PARSER_MARKITDOWN,
+    currentStep: 'running markitdown',
+    message: runtime.useLlm ? 'Running MarkItDown with project LLM config' : 'Running MarkItDown'
+  });
+  const lease = await acquirePdfParserLease(PDF_PARSER_MARKITDOWN, options, `markitdown:${basename}`, tracker);
   try {
     process.stderr.write(`[markitdown:${basename}] Running MarkItDown\n`);
     await runCommand(pythonCommand, [
@@ -1639,13 +1737,20 @@ async function convertPdfToMarkdownViaRemoteMarker(pdfPath, options = {}) {
   const { markerCommand, markerSshHost, pageRange } = options;
   const pdfBuffer = await fs.readFile(pdfPath);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`marker:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`marker:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const remoteRoot = `/tmp/papernexus-marker-${stableHash(`${pdfPath}:${Date.now()}`, 16)}`;
   const remotePdfPath = `${remoteRoot}/${basename}.pdf`;
   const remoteRunDir = `${remoteRoot}/out`;
 
   process.stderr.write(`[marker:${basename}] Uploading PDF to ${markerSshHost}\n`);
+  await tracker?.update?.({
+    status: 'running',
+    activeParser: PDF_PARSER_MARKER,
+    currentStep: `uploading PDF to ${markerSshHost}`,
+    message: `Uploading PDF to remote marker host ${markerSshHost}`
+  });
   await runRemoteCommand(markerSshHost, `mkdir -p ${shellQuote(remoteRoot)}`, {
     timeoutMs,
     timeoutLabel: `remote marker setup for ${pdfPath}`
@@ -1655,6 +1760,12 @@ async function convertPdfToMarkdownViaRemoteMarker(pdfPath, options = {}) {
     timeoutLabel: `remote marker upload for ${pdfPath}`
   });
   process.stderr.write(`[marker:${basename}] Running remote marker on ${markerSshHost}\n`);
+  await tracker?.update?.({
+    status: 'running',
+    activeParser: PDF_PARSER_MARKER,
+    currentStep: `running remote marker on ${markerSshHost}`,
+    message: `Running remote Marker on ${markerSshHost}`
+  });
 
   const script = buildRemoteMarkerScript({
     markerCommand,
@@ -1699,7 +1810,8 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
 
   const pdfBuffer = await fs.readFile(pdfPath);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`docling:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`docling:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const gpuWaitTimeoutMs = resolveDoclingGpuWaitTimeoutMs(options);
   const remoteRoot = `/tmp/papernexus-docling-${stableHash(`${pdfPath}:${Date.now()}`, 16)}`;
@@ -1707,6 +1819,12 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
   const remoteRunDir = `${remoteRoot}/out`;
 
   process.stderr.write(`[docling:${basename}] Uploading PDF to ${doclingSshHost}\n`);
+  await tracker?.update?.({
+    status: 'running',
+    activeParser: PDF_PARSER_DOCLING,
+    currentStep: `uploading PDF to ${doclingSshHost}`,
+    message: `Uploading PDF to remote Docling host ${doclingSshHost}`
+  });
   await runRemoteCommand(doclingSshHost, `mkdir -p ${shellQuote(remoteRoot)}`, {
     timeoutMs,
     timeoutLabel: `remote docling setup for ${pdfPath}`
@@ -1716,6 +1834,12 @@ async function convertPdfToMarkdownViaRemoteDocling(pdfPath, options = {}) {
     timeoutLabel: `remote docling upload for ${pdfPath}`
   });
   process.stderr.write(`[docling:${basename}] Running remote docling on ${doclingSshHost}\n`);
+  await tracker?.update?.({
+    status: 'running',
+    activeParser: PDF_PARSER_DOCLING,
+    currentStep: `running remote docling on ${doclingSshHost}`,
+    message: `Running remote Docling on ${doclingSshHost}`
+  });
 
   const script = buildRemoteDoclingScript({
     doclingCommand,
@@ -1768,10 +1892,12 @@ async function runLocalDoclingCli(pdfPath, runDir, options = {}, executionOption
     enrichPictureDescription: resolveDoclingEnrichPictureDescription(options)
   });
   const env = buildPdfParserExecutionEnv(PDF_PARSER_DOCLING, options);
+  const tracker = executionOptions.tracker || options.pdfParseTracker || null;
   const lease = await acquirePdfParserLease(
     PDF_PARSER_DOCLING,
     options,
-    executionOptions.label || `docling:${path.basename(pdfPath, path.extname(pdfPath))}`
+    executionOptions.label || `docling:${path.basename(pdfPath, path.extname(pdfPath))}`,
+    tracker
   );
   try {
     return await runCommand('/bin/sh', ['-lc', buildShellCommand(options.doclingCommand, argv)], {
@@ -1917,7 +2043,8 @@ async function convertPdfToMarkdownWithOpenDataLoader(pdfPath, options = {}) {
 
   const pythonCommand = resolveOpenDataLoaderPdfPython(options);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`opendataloader:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`opendataloader:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_OPENDATALOADER, basename, {
     markerDir,
@@ -1925,6 +2052,13 @@ async function convertPdfToMarkdownWithOpenDataLoader(pdfPath, options = {}) {
   });
 
   if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_OPENDATALOADER,
+      currentStep: 'reusing cached opendataloader markdown',
+      message: 'Reusing cached OpenDataLoader markdown',
+      parserCommand: `${pythonCommand} ${OPENDATALOADER_PDF_WRAPPER_PATH}`
+    });
     return {
       markdownPath: cachedMarkdownPath,
       sourcePdfPath: pdfPath,
@@ -1950,6 +2084,12 @@ async function convertPdfToMarkdownWithOpenDataLoader(pdfPath, options = {}) {
   ];
 
   try {
+    await tracker?.update?.({
+      status: 'running',
+      activeParser: PDF_PARSER_OPENDATALOADER,
+      currentStep: 'running opendataloader',
+      message: 'Running OpenDataLoader PDF'
+    });
     process.stderr.write(`[opendataloader:${basename}] Running OpenDataLoader PDF\n`);
     await runCommand(pythonCommand, args, {
       onStdout: progress,
@@ -1997,7 +2137,8 @@ async function convertPdfToMarkdownWithMarkPdfDown(pdfPath, options = {}) {
 
   const pythonCommand = resolveMarkPdfDownPython(options);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`markpdfdown:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`markpdfdown:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { startPage, endPage } = resolveMarkPdfDownPageWindow(options.pageRange);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKPDFDOWN, basename, {
@@ -2006,6 +2147,13 @@ async function convertPdfToMarkdownWithMarkPdfDown(pdfPath, options = {}) {
   });
 
   if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_MARKPDFDOWN,
+      currentStep: 'reusing cached markpdfdown markdown',
+      message: 'Reusing cached MarkPDFDown markdown',
+      parserCommand: `${pythonCommand} ${MARKPDFDOWN_WRAPPER_PATH}`
+    });
     return {
       markdownPath: cachedMarkdownPath,
       sourcePdfPath: pdfPath,
@@ -2050,6 +2198,12 @@ async function convertPdfToMarkdownWithMarkPdfDown(pdfPath, options = {}) {
   }
 
   try {
+    await tracker?.update?.({
+      status: 'running',
+      activeParser: PDF_PARSER_MARKPDFDOWN,
+      currentStep: 'running markpdfdown',
+      message: `Running MarkPDFDown with provider ${runtime.llmConfig.provider}`
+    });
     process.stderr.write(`[markpdfdown:${basename}] Running MarkPDFDown with provider ${runtime.llmConfig.provider}\n`);
     await runCommand(pythonCommand, args, {
       env: runtime.env,
@@ -2187,7 +2341,8 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
   } = options;
 
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`marker:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`marker:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const markerBlockBlacklist = resolveMarkerBlockBlacklist(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKER, basename, {
@@ -2196,6 +2351,13 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
   });
 
   if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_MARKER,
+      currentStep: 'reusing cached marker markdown',
+      message: 'Reusing cached Marker markdown',
+      parserCommand: markerCommand
+    });
     return {
       markdownPath: cachedMarkdownPath,
       sourcePdfPath: pdfPath,
@@ -2220,7 +2382,14 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
 
   if (remoteMarkerHost) {
     try {
+      await tracker?.update?.({
+        status: 'running',
+        activeParser: PDF_PARSER_MARKER,
+        currentStep: `delegating to remote marker host ${remoteMarkerHost}`,
+        message: `Delegating to remote Marker host ${remoteMarkerHost}`
+      });
       const remoteResult = await convertPdfToMarkdownViaRemoteMarker(pdfPath, {
+        ...options,
         markerCommand,
         markerSshHost: remoteMarkerHost,
         pageRange
@@ -2257,6 +2426,12 @@ async function convertPdfToMarkdownWithMarker(pdfPath, options = {}) {
   }
 
   try {
+    await tracker?.update?.({
+      status: 'running',
+      activeParser: PDF_PARSER_MARKER,
+      currentStep: 'running local marker',
+      message: 'Running local Marker'
+    });
     process.stderr.write(`[marker:${basename}] Running local marker\n`);
     await runCommand(markerCommand, args, {
       onStdout: progress,
@@ -2318,7 +2493,8 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
   } = options;
 
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`docling:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`docling:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_DOCLING, basename, {
     markerDir,
@@ -2326,6 +2502,13 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
   });
 
   if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_DOCLING,
+      currentStep: 'reusing cached docling markdown',
+      message: 'Reusing cached Docling markdown',
+      parserCommand: doclingCommand
+    });
     return {
       markdownPath: cachedMarkdownPath,
       sourcePdfPath: pdfPath,
@@ -2344,6 +2527,12 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
 
   if (!options.skipDoclingWarmup) {
     try {
+      await tracker?.update?.({
+        status: 'running',
+        activeParser: PDF_PARSER_DOCLING,
+        currentStep: 'warming docling runtime',
+        message: 'Warming Docling runtime'
+      });
       await warmDoclingRuntime({
         ...options,
         doclingCommand,
@@ -2353,6 +2542,7 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
         doclingSshHost,
         pdfParserSshHost,
         pdfSshHost,
+        pdfParseTracker: null,
         skipDoclingWarmup: true
       });
     } catch (error) {
@@ -2369,6 +2559,12 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
 
   if (remoteDoclingHost) {
     try {
+      await tracker?.update?.({
+        status: 'running',
+        activeParser: PDF_PARSER_DOCLING,
+        currentStep: `delegating to remote docling host ${remoteDoclingHost}`,
+        message: `Delegating to remote Docling host ${remoteDoclingHost}`
+      });
       const remoteResult = await convertPdfToMarkdownViaRemoteDocling(pdfPath, {
         ...options,
         doclingCommand,
@@ -2422,8 +2618,14 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
       ...(doclingPdfBackend ? ['--pdf-backend', doclingPdfBackend] : [])
     ];
 
-    const lease = await acquirePdfParserLease(PDF_PARSER_DOCLING, options, `docling:${basename}:vlm`);
+    const lease = await acquirePdfParserLease(PDF_PARSER_DOCLING, options, `docling:${basename}:vlm`, tracker);
     try {
+      await tracker?.update?.({
+        status: 'running',
+        activeParser: PDF_PARSER_DOCLING,
+        currentStep: 'running docling VLM pipeline',
+        message: 'Running Docling VLM pipeline'
+      });
       process.stderr.write(`[docling:${basename}] Running docling VLM pipeline\n`);
       await runCommand(doclingPython, args, {
         env: {
@@ -2465,6 +2667,12 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
   }
 
   try {
+    await tracker?.update?.({
+      status: 'running',
+      activeParser: PDF_PARSER_DOCLING,
+      currentStep: 'running local docling',
+      message: 'Running local Docling'
+    });
     process.stderr.write(`[docling:${basename}] Running local docling\n`);
     await runLocalDoclingCli(pdfPath, runDir, {
       ...options,
@@ -2472,6 +2680,7 @@ async function convertPdfToMarkdownWithDocling(pdfPath, options = {}) {
       doclingOcrEngine,
       doclingPdfBackend
     }, {
+      tracker,
       onStdout: progress,
       onStderr: progress,
       timeoutMs,
@@ -2521,6 +2730,7 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   } = options;
 
   const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const tracker = options.pdfParseTracker || null;
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MINERU, basename, {
     markerDir,
@@ -2528,6 +2738,13 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   });
 
   if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_MINERU,
+      currentStep: 'reusing cached mineru markdown',
+      message: 'Reusing cached MinerU markdown',
+      parserCommand: mineruCommand
+    });
     return {
       markdownPath: cachedMarkdownPath,
       sourcePdfPath: pdfPath,
@@ -2549,6 +2766,12 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   const parserTimings = createMineruParserTimings();
 
   if (resolvedHttpUrl) {
+    await tracker?.update?.({
+      status: 'running',
+      activeParser: PDF_PARSER_MINERU,
+      currentStep: `probing mineru backend ${resolvedHttpUrl}`,
+      message: `Probing MinerU backend ${resolvedHttpUrl}`
+    });
     const reachability = await probeHttpEndpoint(resolvedHttpUrl, 6000, options);
     parserTimings.probeHttpMs = Number(reachability.durationMs || 0);
     if (!reachability.reachable) {
@@ -2571,6 +2794,12 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
     }
 
     try {
+      await tracker?.update?.({
+        status: 'running',
+        activeParser: PDF_PARSER_MINERU,
+        currentStep: `running mineru via ${resolvedHttpUrl}`,
+        message: `Running MinerU via remote backend ${resolvedHttpUrl}`
+      });
       const remoteResult = await convertPdfToMarkdownViaMineru(pdfPath, {
         mineruCommand,
         mineruHttpUrl: resolvedHttpUrl,
@@ -2605,6 +2834,12 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
   ];
 
   try {
+    await tracker?.update?.({
+      status: 'running',
+      activeParser: PDF_PARSER_MINERU,
+      currentStep: 'running local mineru',
+      message: 'Running local MinerU'
+    });
     await runCommand('mineru', args, {
       onStdout: quiet ? () => {} : undefined,
       onStderr: quiet ? () => {} : undefined,
@@ -2644,7 +2879,8 @@ async function convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options = {}) {
   const serverUrl = resolvePaddleOcrVlServerUrl(options);
   const layoutModel = resolvePaddleOcrVlLayoutModel(options);
   const basename = path.basename(pdfPath, path.extname(pdfPath));
-  const progress = createProgressReporter(`paddleocr-vl:${basename}`);
+  const tracker = options.pdfParseTracker || null;
+  const progress = createProgressReporter(`paddleocr-vl:${basename}`, tracker);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_PADDLEOCR_VL, basename, {
     markerDir,
@@ -2652,6 +2888,13 @@ async function convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options = {}) {
   });
 
   if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_PADDLEOCR_VL,
+      currentStep: 'reusing cached paddleocr-vl markdown',
+      message: 'Reusing cached PaddleOCR-VL markdown',
+      parserCommand: `${pythonCommand} ${PADDLEOCR_VL_WRAPPER_PATH}`
+    });
     return {
       markdownPath: cachedMarkdownPath,
       sourcePdfPath: pdfPath,
@@ -2681,6 +2924,12 @@ async function convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options = {}) {
   ];
 
   try {
+    await tracker?.update?.({
+      status: 'running',
+      activeParser: PDF_PARSER_PADDLEOCR_VL,
+      currentStep: `running paddleocr-vl via ${serverUrl}`,
+      message: `Running PaddleOCR-VL via remote server ${serverUrl}`
+    });
     process.stderr.write(`[paddleocr-vl:${basename}] Running PaddleOCR-VL via remote server ${serverUrl}\n`);
     await runCommand(pythonCommand, args, {
       onStdout: progress,
@@ -2744,10 +2993,24 @@ export async function warmMineruHttpEndpoint(url, options = {}) {
 
 export async function convertPdfToMarkdown(pdfPath, options = {}) {
   const parser = normalizePdfParser(options.pdfParser);
+  const selectedParser = options.pdfParseSelectedParser || parser;
+  const { tracker, owned } = await resolvePdfParseTracker(pdfPath, parser, {
+    ...options,
+    pdfParseSelectedParser: selectedParser
+  });
+  await tracker?.update?.({
+    selectedParser,
+    activeParser: parser,
+    status: 'starting',
+    currentStep: `starting ${parser} parser`,
+    message: `Starting ${parser} parser`
+  });
   const convertWithSelectedParser = async () => {
     if (parser === PDF_PARSER_MARKITDOWN) {
       return convertPdfToMarkdownWithMarkItDown(pdfPath, {
         ...options,
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser,
         markitdownPython: resolvePdfParserCommandOption(PDF_PARSER_MARKITDOWN, options)
       });
     }
@@ -2755,6 +3018,8 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
     if (parser === PDF_PARSER_MARKPDFDOWN) {
       return convertPdfToMarkdownWithMarkPdfDown(pdfPath, {
         ...options,
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser,
         markpdfdownPython: resolvePdfParserCommandOption(PDF_PARSER_MARKPDFDOWN, options)
       });
     }
@@ -2762,6 +3027,8 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
     if (parser === PDF_PARSER_OPENDATALOADER) {
       return convertPdfToMarkdownWithOpenDataLoader(pdfPath, {
         ...options,
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser,
         opendataloaderPdfPython: resolvePdfParserCommandOption(PDF_PARSER_OPENDATALOADER, options)
       });
     }
@@ -2769,6 +3036,8 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
     if (parser === PDF_PARSER_MARKER) {
       return convertPdfToMarkdownWithMarker(pdfPath, {
         ...options,
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser,
         markerCommand: resolvePdfParserCommandOption(PDF_PARSER_MARKER, options)
       });
     }
@@ -2776,44 +3045,96 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
     if (parser === PDF_PARSER_MINERU) {
       return convertPdfToMarkdownWithMineru(pdfPath, {
         ...options,
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser,
         mineruCommand: resolvePdfParserCommandOption(PDF_PARSER_MINERU, options)
       });
     }
 
     if (parser === PDF_PARSER_PADDLEOCR_VL) {
-      return convertPdfToMarkdownWithPaddleOcrVl(pdfPath, options);
+      return convertPdfToMarkdownWithPaddleOcrVl(pdfPath, {
+        ...options,
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser
+      });
     }
 
     return convertPdfToMarkdownWithDocling(pdfPath, {
       ...options,
+      pdfParseTracker: tracker,
+      pdfParseSelectedParser: selectedParser,
       doclingCommand: resolvePdfParserCommandOption(PDF_PARSER_DOCLING, options)
     });
   };
 
   try {
-    return await convertWithSelectedParser();
+    const result = await convertWithSelectedParser();
+    const withTracker = {
+      ...result,
+      pdfParseRunId: tracker?.runId || null,
+      pdfParseStatePath: tracker?.statePath || null,
+      pdfParseLogPath: tracker?.eventsPath || null
+    };
+    if (owned) {
+      await tracker?.finish?.('completed', result.generated === false ? 'Reused cached parser output' : `Completed ${withTracker.parser} parse`, {
+        activeParser: withTracker.parser,
+        parserCommand: withTracker.parserCommand || null,
+        fallbackFromParser: withTracker.fallbackFromParser || options.pdfParseFallbackFrom || null
+      });
+    }
+    return withTracker;
   } catch (error) {
     const fallbackParser = resolvePdfParserFallback(parser, options);
     if (!fallbackParser) {
+      if (owned) {
+        await tracker?.finish?.('failed', error.message, {
+          activeParser: parser
+        });
+      }
       throw error;
     }
 
     process.stderr.write(
       `[${parser}:${path.basename(pdfPath, path.extname(pdfPath))}] Primary parser failed; falling back to ${fallbackParser}\n`
     );
+    await tracker?.log?.('warn', `Primary parser ${parser} failed; falling back to ${fallbackParser}: ${error.message}`);
+    await tracker?.update?.({
+      status: 'fallback',
+      activeParser: fallbackParser,
+      fallbackFromParser: parser,
+      currentStep: `falling back from ${parser} to ${fallbackParser}`,
+      message: `Falling back from ${parser} to ${fallbackParser}`
+    });
 
     try {
       const fallbackResult = await convertPdfToMarkdown(pdfPath, {
         ...options,
         pdfParser: fallbackParser,
         pdfCommand: resolvePdfParserCommandOption(fallbackParser, options),
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser,
+        pdfParseFallbackFrom: parser,
         force: true
       });
-      return {
+      const withFallback = {
         ...fallbackResult,
         fallbackFromParser: parser
       };
+      if (owned) {
+        await tracker?.finish?.('completed', `Completed ${withFallback.parser} parse via fallback from ${parser}`, {
+          activeParser: withFallback.parser,
+          parserCommand: withFallback.parserCommand || null,
+          fallbackFromParser: parser
+        });
+      }
+      return withFallback;
     } catch (fallbackError) {
+      if (owned) {
+        await tracker?.finish?.('failed', `${error.message}\n${fallbackParser} fallback also failed for ${pdfPath}. ${fallbackError.message}`, {
+          activeParser: fallbackParser,
+          fallbackFromParser: parser
+        });
+      }
       throw new Error(`${error.message}\n${fallbackParser} fallback also failed for ${pdfPath}. ${fallbackError.message}`);
     }
   }
@@ -2827,6 +3148,8 @@ export const __pdfParserTestables = {
   resolveMarkItDownUseLlm,
   resolveMarkItDownEnablePlugins,
   resolveMarkItDownLlmPrompt,
+  hasExplicitMarkItDownUseLlmSetting,
+  hasExplicitMarkItDownEnablePluginsSetting,
   buildMarkItDownRuntime,
   resolveMarkPdfDownPython,
   resolveMarkerBlockBlacklist,

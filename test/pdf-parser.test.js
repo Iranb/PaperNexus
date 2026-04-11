@@ -73,6 +73,12 @@ test('shared pythonCommand is used by python-based parsers unless a parser-speci
   );
 });
 
+test('MarkItDown LLM defaults to on unless explicitly disabled', () => {
+  assert.equal(__markerTestables.resolveMarkItDownUseLlm({}), true);
+  assert.equal(__markerTestables.resolveMarkItDownUseLlm({ markitdownUseLlm: false }), false);
+  assert.equal(__markerTestables.resolveMarkItDownEnablePlugins({}), true);
+});
+
 test('getPdfParserProfile centralizes concurrency and lease behavior per parser', () => {
   const markitdownProfile = __markerTestables.getPdfParserProfile('markitdown', {});
   assert.equal(markitdownProfile.recommendedConcurrency, 2);
@@ -504,10 +510,13 @@ test('convertPdfToMarkdown can materialize markdown via the opendataloader wrapp
 
 test('convertPdfToMarkdown can materialize markdown via the markitdown wrapper', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markitdown-success-'));
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markitdown-state-home-'));
   const pdfPath = path.join(tempDir, 'paper.pdf');
   const fakePythonPath = path.join(tempDir, 'fake-python.sh');
+  const previousHome = process.env.PAPERNEXUS_HOME;
 
   try {
+    process.env.PAPERNEXUS_HOME = tempHome;
     await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
     await fs.writeFile(
       fakePythonPath,
@@ -540,10 +549,18 @@ test('convertPdfToMarkdown can materialize markdown via the markitdown wrapper',
 
     assert.equal(result.parser, 'markitdown');
     assert.match(result.markdownPath, /markitdown/);
+    assert.ok(result.pdfParseStatePath);
+    assert.ok(result.pdfParseLogPath);
     const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    const parseState = JSON.parse(await fs.readFile(result.pdfParseStatePath, 'utf8'));
     assert.match(markdown, /Structured markdown from markitdown/);
+    assert.equal(parseState.status, 'completed');
+    assert.equal(parseState.activeParser, 'markitdown');
   } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
     await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
 
@@ -575,7 +592,6 @@ test('convertPdfToMarkdown can reuse PaperNexus llm config for MarkItDown LLM mo
     const result = await convertPdfToMarkdown(pdfPath, {
       pdfParser: 'markitdown',
       markitdownPython: fakePythonPath,
-      markitdownUseLlm: true,
       markitdownLlmPrompt: 'Describe embedded images faithfully.',
       llmProvider: 'openai',
       llmModel: 'gpt-4o',
@@ -595,6 +611,34 @@ test('convertPdfToMarkdown can reuse PaperNexus llm config for MarkItDown LLM mo
     assert.match(markdown, /PROMPT=Describe embedded images faithfully\./);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('MarkItDown auto-disables LLM mode when project llm config is unavailable', async () => {
+  const previousModel = process.env.PAPERNEXUS_LLM_MODEL;
+  const previousBaseUrl = process.env.PAPERNEXUS_LLM_BASE_URL;
+  const previousApiKey = process.env.PAPERNEXUS_LLM_API_KEY;
+  const previousApiKeyEnv = process.env.PAPERNEXUS_LLM_API_KEY_ENV;
+
+  delete process.env.PAPERNEXUS_LLM_MODEL;
+  delete process.env.PAPERNEXUS_LLM_BASE_URL;
+  delete process.env.PAPERNEXUS_LLM_API_KEY;
+  delete process.env.PAPERNEXUS_LLM_API_KEY_ENV;
+
+  try {
+    const runtime = await __markerTestables.buildMarkItDownRuntime({});
+    assert.equal(runtime.useLlm, false);
+    assert.equal(runtime.enablePlugins, false);
+    assert.equal(runtime.env.PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS, '0');
+  } finally {
+    if (previousModel === undefined) delete process.env.PAPERNEXUS_LLM_MODEL;
+    else process.env.PAPERNEXUS_LLM_MODEL = previousModel;
+    if (previousBaseUrl === undefined) delete process.env.PAPERNEXUS_LLM_BASE_URL;
+    else process.env.PAPERNEXUS_LLM_BASE_URL = previousBaseUrl;
+    if (previousApiKey === undefined) delete process.env.PAPERNEXUS_LLM_API_KEY;
+    else process.env.PAPERNEXUS_LLM_API_KEY = previousApiKey;
+    if (previousApiKeyEnv === undefined) delete process.env.PAPERNEXUS_LLM_API_KEY_ENV;
+    else process.env.PAPERNEXUS_LLM_API_KEY_ENV = previousApiKeyEnv;
   }
 });
 

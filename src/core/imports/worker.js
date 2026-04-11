@@ -121,6 +121,9 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
     try {
       if (kind === 'pdf') {
         const prepared = await convertPdfToMarkdown(storedPath, {
+          rootPath,
+          importTaskId: task.id,
+          importStage: 'preparse',
           pdfParser: options.pdfParser,
           pdfCommand: options.pdfCommand,
           pythonCommand: options.pythonCommand,
@@ -305,7 +308,8 @@ async function processImportTask(rootPath, task, options = {}) {
     ...options,
     rootPath,
     quiet: true,
-    name: corpusMeta.name
+    name: corpusMeta.name,
+    importTaskId: task.id
   };
   const result = {
     ...(task.result || {})

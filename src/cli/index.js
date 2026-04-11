@@ -61,9 +61,9 @@ MarkItDown Options:
   --markitdown-python <python>
     Python executable used for the Microsoft MarkItDown wrapper.
   --markitdown-use-llm <true|false>
-    Reuse PaperNexus \`llm.*\` config for MarkItDown image descriptions / OCR-capable plugins. Default: false.
+    Reuse PaperNexus \`llm.*\` config for MarkItDown image descriptions / OCR-capable plugins. Default: auto-on when project LLM config is available.
   --markitdown-enable-plugins <true|false>
-    Enable MarkItDown plugins. Defaults to the same value as --markitdown-use-llm.
+    Enable MarkItDown plugins. Defaults to on when MarkItDown LLM auto-activation succeeds.
   --markitdown-llm-prompt <text>
     Optional custom prompt forwarded to MarkItDown's llm_prompt parameter.
 

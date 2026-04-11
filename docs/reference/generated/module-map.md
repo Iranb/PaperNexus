@@ -42,6 +42,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/storage/import-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/import-store.js) | Queued import task persistence, logs, progress, and queue snapshots. |
 | [`src/storage/kuzu-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/kuzu-store.js) | Kuzu Store implementation. |
 | [`src/storage/lite-view.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/lite-view.js) | Incremental lite-graph materialized view and token index maintenance. |
+| [`src/storage/pdf-parse-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/pdf-parse-store.js) | Pdf Parse Store implementation. |
 | [`src/storage/registry.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/registry.js) | Global registry of indexed corpora. |
 
 ## Core
