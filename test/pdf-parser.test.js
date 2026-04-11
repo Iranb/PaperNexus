@@ -547,6 +547,57 @@ test('convertPdfToMarkdown can materialize markdown via the markitdown wrapper',
   }
 });
 
+test('convertPdfToMarkdown can reuse PaperNexus llm config for MarkItDown LLM mode', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markitdown-llm-success-'));
+  const pdfPath = path.join(tempDir, 'paper.pdf');
+  const fakePythonPath = path.join(tempDir, 'fake-python.sh');
+
+  try {
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(
+      fakePythonPath,
+      [
+        '#!/bin/sh',
+        'shift',
+        'output=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) shift ;;',
+        '  esac',
+        'done',
+        'mkdir -p "$(dirname "$output")"',
+        'printf "# MarkItDown LLM\\n\\nUSE_LLM=%s\\nPLUGINS=%s\\nMODEL=%s\\nBASE_URL=%s\\nAPI_KEY=%s\\nPROMPT=%s\\n" "$PAPERNEXUS_MARKITDOWN_USE_LLM" "$PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS" "$PAPERNEXUS_MARKITDOWN_LLM_MODEL" "$PAPERNEXUS_MARKITDOWN_LLM_BASE_URL" "$PAPERNEXUS_MARKITDOWN_LLM_API_KEY" "$PAPERNEXUS_MARKITDOWN_LLM_PROMPT" > "$output"'
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+
+    const result = await convertPdfToMarkdown(pdfPath, {
+      pdfParser: 'markitdown',
+      markitdownPython: fakePythonPath,
+      markitdownUseLlm: true,
+      markitdownLlmPrompt: 'Describe embedded images faithfully.',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      markerDir: tempDir,
+      markdownDir: tempDir
+    });
+
+    assert.equal(result.parser, 'markitdown');
+    const markdown = await fs.readFile(result.markdownPath, 'utf8');
+    assert.match(markdown, /USE_LLM=1/);
+    assert.match(markdown, /PLUGINS=1/);
+    assert.match(markdown, /MODEL=gpt-4o/);
+    assert.match(markdown, /BASE_URL=https:\/\/api\.openai\.com\/v1/);
+    assert.match(markdown, /API_KEY=test-key/);
+    assert.match(markdown, /PROMPT=Describe embedded images faithfully\./);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('convertPdfToMarkdown can materialize markdown via the markpdfdown wrapper and reuse PaperNexus LLM config', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-markpdfdown-success-'));
   const pdfPath = path.join(tempDir, 'paper.pdf');

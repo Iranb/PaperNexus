@@ -14,6 +14,8 @@
     "pythonCommand": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
     "markitdownPython": "python3",
+    "markitdownUseLlm": false,
+    "markitdownEnablePlugins": false,
     "doclingCommand": "docling",
     "doclingDevice": "cuda",
     "doclingAutoGpu": true,

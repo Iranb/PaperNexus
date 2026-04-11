@@ -4087,6 +4087,9 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       pythonCommand: options.pythonCommand,
       force: Boolean(sourceState.markdownCacheNeedsRefresh),
       markitdownPython: options.markitdownPython,
+      markitdownUseLlm: options.markitdownUseLlm,
+      markitdownEnablePlugins: options.markitdownEnablePlugins,
+      markitdownLlmPrompt: options.markitdownLlmPrompt,
       markpdfdownPython: options.markpdfdownPython,
       opendataloaderPdfPython: options.opendataloaderPdfPython,
       doclingPython: options.doclingPython,
@@ -4484,6 +4487,9 @@ function buildScrubRecoveryOptions(manifest = {}, options = {}) {
       options.markitdownPython,
       parser === 'markitdown' ? manifestPdfCommand : undefined
     ),
+    markitdownUseLlm: firstDefinedValue(options.markitdownUseLlm, manifest.markitdownUseLlm),
+    markitdownEnablePlugins: firstDefinedValue(options.markitdownEnablePlugins, manifest.markitdownEnablePlugins),
+    markitdownLlmPrompt: firstDefinedValue(options.markitdownLlmPrompt, manifest.markitdownLlmPrompt),
     markpdfdownPython: firstDefinedValue(
       options.markpdfdownPython,
       parser === 'markpdfdown' ? manifestPdfCommand : undefined

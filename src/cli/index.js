@@ -60,6 +60,12 @@ Scope boundary:
 MarkItDown Options:
   --markitdown-python <python>
     Python executable used for the Microsoft MarkItDown wrapper.
+  --markitdown-use-llm <true|false>
+    Reuse PaperNexus \`llm.*\` config for MarkItDown image descriptions / OCR-capable plugins. Default: false.
+  --markitdown-enable-plugins <true|false>
+    Enable MarkItDown plugins. Defaults to the same value as --markitdown-use-llm.
+  --markitdown-llm-prompt <text>
+    Optional custom prompt forwarded to MarkItDown's llm_prompt parameter.
 
 Docling PDF Backend Options:
   --docling-pdf-backend <backend>
@@ -446,6 +452,9 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     pdfCommand: firstDefined(flags['pdf-cmd'], commandConfig.pdfCommand),
     pythonCommand: firstDefined(flags['python-command'], commandConfig.pythonCommand),
     markitdownPython: firstDefined(flags['markitdown-python'], commandConfig.markitdownPython, commandConfig.pythonCommand),
+    markitdownUseLlm: toBoolean(firstDefined(flags['markitdown-use-llm'], commandConfig.markitdownUseLlm), false),
+    markitdownEnablePlugins: toBoolean(firstDefined(flags['markitdown-enable-plugins'], commandConfig.markitdownEnablePlugins, firstDefined(flags['markitdown-use-llm'], commandConfig.markitdownUseLlm)), false),
+    markitdownLlmPrompt: firstDefined(flags['markitdown-llm-prompt'], commandConfig.markitdownLlmPrompt),
     markpdfdownPython: firstDefined(flags['markpdfdown-python'], commandConfig.markpdfdownPython, commandConfig.pythonCommand),
     pdfParserSshHost: firstDefined(flags['pdf-parser-ssh-host'], commandConfig.pdfParserSshHost),
     opendataloaderPdfPython: firstDefined(flags['opendataloader-pdf-python'], commandConfig.opendataloaderPdfPython, commandConfig.pythonCommand),

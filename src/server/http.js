@@ -278,6 +278,24 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       analyzeConfig.pythonCommand,
       watchConfig.pythonCommand
     ),
+    markitdownUseLlm: firstDefined(
+      options.markitdownUseLlm,
+      materializeConfig.markitdownUseLlm,
+      analyzeConfig.markitdownUseLlm,
+      watchConfig.markitdownUseLlm
+    ),
+    markitdownEnablePlugins: firstDefined(
+      options.markitdownEnablePlugins,
+      materializeConfig.markitdownEnablePlugins,
+      analyzeConfig.markitdownEnablePlugins,
+      watchConfig.markitdownEnablePlugins
+    ),
+    markitdownLlmPrompt: firstDefined(
+      options.markitdownLlmPrompt,
+      materializeConfig.markitdownLlmPrompt,
+      analyzeConfig.markitdownLlmPrompt,
+      watchConfig.markitdownLlmPrompt
+    ),
     markpdfdownPython: firstDefined(
       options.markpdfdownPython,
       materializeConfig.markpdfdownPython,

@@ -21,6 +21,8 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
     "pythonCommand": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
     "markitdownPython": "python3",
+    "markitdownUseLlm": false,
+    "markitdownEnablePlugins": false,
     "doclingCommand": "docling",
     "doclingDevice": "cuda",
     "doclingAutoGpu": true,
@@ -77,6 +79,8 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze.pythonCommand` | string | `python3` |
 | `analyze.mineruHttpUrl` | string | `http://127.0.0.1:30000` |
 | `analyze.markitdownPython` | string | `python3` |
+| `analyze.markitdownUseLlm` | boolean | `false` |
+| `analyze.markitdownEnablePlugins` | boolean | `false` |
 | `analyze.doclingCommand` | string | `docling` |
 | `analyze.doclingDevice` | string | `cuda` |
 | `analyze.doclingAutoGpu` | boolean | `true` |

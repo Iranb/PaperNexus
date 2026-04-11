@@ -273,6 +273,28 @@ function resolveMarkItDownPython(options = {}) {
   ).trim() || 'python3';
 }
 
+function resolveMarkItDownUseLlm(options = {}) {
+  return normalizeBooleanOption(
+    options.markitdownUseLlm ?? process.env.PAPERNEXUS_MARKITDOWN_USE_LLM,
+    false
+  );
+}
+
+function resolveMarkItDownEnablePlugins(options = {}) {
+  return normalizeBooleanOption(
+    options.markitdownEnablePlugins ?? process.env.PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS,
+    resolveMarkItDownUseLlm(options)
+  );
+}
+
+function resolveMarkItDownLlmPrompt(options = {}) {
+  return String(
+    options.markitdownLlmPrompt
+    || process.env.PAPERNEXUS_MARKITDOWN_LLM_PROMPT
+    || ''
+  ).trim();
+}
+
 function resolvePdfParserCommandOption(parserName, options = {}) {
   const parser = normalizePdfParser(parserName);
   if (parser === PDF_PARSER_MARKITDOWN) {
@@ -610,6 +632,64 @@ async function buildMarkPdfDownRuntime(options = {}) {
   }
 
   return {
+    llmConfig,
+    modelName,
+    env
+  };
+}
+
+async function buildMarkItDownRuntime(options = {}) {
+  const useLlm = resolveMarkItDownUseLlm(options);
+  const enablePlugins = resolveMarkItDownEnablePlugins(options);
+  const env = {
+    PAPERNEXUS_MARKITDOWN_ENABLE_PLUGINS: enablePlugins ? '1' : '0'
+  };
+
+  if (!useLlm) {
+    return {
+      useLlm: false,
+      enablePlugins,
+      env
+    };
+  }
+
+  const llmConfig = resolveLlmConfig(options);
+  const provider = String(llmConfig.provider || '').trim().toLowerCase();
+  if (provider === 'anthropic') {
+    throw new Error('MarkItDown LLM mode currently expects an OpenAI-compatible client. Use an openai/ollama-style PaperNexus profile instead of Anthropic.');
+  }
+
+  const modelName = String(llmConfig.model || '').trim();
+  if (!modelName) {
+    throw new Error('MarkItDown LLM mode requires a configured LLM model. Set `llm.model` in PaperNexus config or pass `--model` / `--ollama-model`.');
+  }
+
+  const baseUrl = String(llmConfig.baseUrl || '').trim();
+  if (!baseUrl) {
+    throw new Error('MarkItDown LLM mode requires an OpenAI-compatible base URL. Configure `llm.baseUrl` or use an ollama/openai PaperNexus profile.');
+  }
+
+  const apiKey = llmConfig.apiKey || await loadLlmApiKey(llmConfig);
+  if (provider !== 'ollama' && !apiKey) {
+    throw new Error(
+      `MarkItDown LLM mode requires an API key for provider \`${provider || 'openai-compatible'}\`. `
+      + `Configure \`llm.apiKey\`, \`llm.apiKeySource="keychain"\`, or ${llmConfig.apiKeyEnv || 'the provider API key env var'}.`
+    );
+  }
+
+  env.PAPERNEXUS_MARKITDOWN_USE_LLM = '1';
+  env.PAPERNEXUS_MARKITDOWN_LLM_MODEL = modelName;
+  env.PAPERNEXUS_MARKITDOWN_LLM_BASE_URL = baseUrl;
+  env.PAPERNEXUS_MARKITDOWN_LLM_API_KEY = apiKey || 'ollama';
+
+  const prompt = resolveMarkItDownLlmPrompt(options);
+  if (prompt) {
+    env.PAPERNEXUS_MARKITDOWN_LLM_PROMPT = prompt;
+  }
+
+  return {
+    useLlm: true,
+    enablePlugins,
     llmConfig,
     modelName,
     env
@@ -1482,6 +1562,7 @@ async function convertPdfToMarkdownWithMarkItDown(pdfPath, options = {}) {
   const basename = path.basename(pdfPath, path.extname(pdfPath));
   const progress = createProgressReporter(`markitdown:${basename}`);
   const timeoutMs = resolvePdfParseTimeoutMs(options);
+  const runtime = await buildMarkItDownRuntime(options);
   const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_MARKITDOWN, basename, {
     markerDir,
     markdownDir
@@ -1516,6 +1597,7 @@ async function convertPdfToMarkdownWithMarkItDown(pdfPath, options = {}) {
     ], {
       env: {
         ...buildPdfParserExecutionEnv(PDF_PARSER_MARKITDOWN, options),
+        ...runtime.env,
         ...(lease?.env || {})
       },
       onStdout: progress,
@@ -2742,6 +2824,10 @@ export const __pdfParserTestables = {
   normalizePdfParser,
   getPdfParserProfile,
   resolveMarkItDownPython,
+  resolveMarkItDownUseLlm,
+  resolveMarkItDownEnablePlugins,
+  resolveMarkItDownLlmPrompt,
+  buildMarkItDownRuntime,
   resolveMarkPdfDownPython,
   resolveMarkerBlockBlacklist,
   resolveOpenDataLoaderPdfPython,

@@ -54,6 +54,12 @@ Scope boundary:
 MarkItDown Options:
   --markitdown-python <python>
     Python executable used for the Microsoft MarkItDown wrapper.
+  --markitdown-use-llm <true|false>
+    Reuse PaperNexus `llm.*` config for MarkItDown image descriptions / OCR-capable plugins. Default: false.
+  --markitdown-enable-plugins <true|false>
+    Enable MarkItDown plugins. Defaults to the same value as --markitdown-use-llm.
+  --markitdown-llm-prompt <text>
+    Optional custom prompt forwarded to MarkItDown's llm_prompt parameter.
 
 Docling PDF Backend Options:
   --docling-pdf-backend <backend>
