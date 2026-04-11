@@ -36,7 +36,7 @@ papernexus imports log --corpus <name> --task-id <task-id>
 On a deployment where `node` is not on the login shell path, use the absolute node binary:
 
 ```bash
-/home/disk0/hyq/miniconda3/bin/node ./src/cli/index.js imports status --corpus GCD
+~/miniconda3/bin/node ./src/cli/index.js imports status --corpus demo-corpus
 ```
 
 ## State Model
@@ -160,7 +160,7 @@ Config/worker options can override this through:
 
 ## What Happened To The Historical 33 Failed Tasks
 
-The production GCD queue previously showed:
+One production-style queue incident showed:
 
 ```text
 117 completed
@@ -241,7 +241,7 @@ from happening again.
 
 ## Current Timing Shape
 
-Recent production measurements on the GCD queue after the latest import fixes showed roughly:
+Recent production-style measurements after the latest import fixes showed roughly:
 
 | Stage | Typical time per paper |
 | --- | ---: |

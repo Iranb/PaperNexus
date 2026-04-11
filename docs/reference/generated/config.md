@@ -15,7 +15,7 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
     "indexDir": "~/.papernexus/index-store"
   },
   "analyze": {
-    "name": "GCD",
+    "name": "demo-corpus",
     "semanticExtraction": "llm-primary",
     "pdfParser": "markitdown",
     "pythonCommand": "python3",
@@ -39,7 +39,7 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
     "doclingVlmPreset": "granite_docling"
   },
   "global": {
-    "corpus": "GCD"
+    "corpus": "demo-corpus"
   },
   "serve": {
     "host": "0.0.0.0",
@@ -54,10 +54,10 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
   },
   "llm": {
     "provider": "openai",
-    "model": "qwen3.5-plus",
-    "baseUrl": "https://coding.dashscope.aliyuncs.com/v1",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1",
     "relations": true,
-    "apiKeyEnv": "DASHSCOPE_API_KEY"
+    "apiKeyEnv": "OPENAI_API_KEY"
   }
 }
 ```
@@ -71,7 +71,7 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `storage` | object | section |
 | `storage.indexDir` | string | `~/.papernexus/index-store` |
 | `analyze` | object | section |
-| `analyze.name` | string | `GCD` |
+| `analyze.name` | string | `demo-corpus` |
 | `analyze.semanticExtraction` | string | `llm-primary` |
 | `analyze.pdfParser` | string | `markitdown` |
 | `analyze.pythonCommand` | string | `python3` |
@@ -94,7 +94,7 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze.doclingUseVlm` | boolean | `false` |
 | `analyze.doclingVlmPreset` | string | `granite_docling` |
 | `global` | object | section |
-| `global.corpus` | string | `GCD` |
+| `global.corpus` | string | `demo-corpus` |
 | `serve` | object | section |
 | `serve.host` | string | `0.0.0.0` |
 | `serve.port` | number | `4821` |
@@ -106,10 +106,10 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `serve.mcp.allowSseFallback` | boolean | `false` |
 | `llm` | object | section |
 | `llm.provider` | string | `openai` |
-| `llm.model` | string | `qwen3.5-plus` |
-| `llm.baseUrl` | string | `https://coding.dashscope.aliyuncs.com/v1` |
+| `llm.model` | string | `gpt-4o-mini` |
+| `llm.baseUrl` | string | `https://api.openai.com/v1` |
 | `llm.relations` | boolean | `true` |
-| `llm.apiKeyEnv` | string | `DASHSCOPE_API_KEY` |
+| `llm.apiKeyEnv` | string | `OPENAI_API_KEY` |
 
 ## Maintenance Notes
 

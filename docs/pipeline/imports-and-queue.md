@@ -286,9 +286,9 @@ This avoids the common failure mode where agents guess status from elapsed time 
 The native CLI can inspect import state directly from the corpus store:
 
 ```bash
-papernexus imports status --corpus GCD
-papernexus imports running --corpus GCD
-papernexus imports log --corpus GCD --task-id imp:...
+papernexus imports status --corpus demo-corpus
+papernexus imports running --corpus demo-corpus
+papernexus imports log --corpus demo-corpus --task-id imp:...
 ```
 
 Useful flags:
@@ -300,7 +300,7 @@ Useful flags:
 On deployments where `node` is not on the login shell path, use the absolute Node binary:
 
 ```bash
-/home/disk0/hyq/miniconda3/bin/node ./src/cli/index.js imports status --corpus GCD
+~/miniconda3/bin/node ./src/cli/index.js imports status --corpus demo-corpus
 ```
 
 ## Queue Observability

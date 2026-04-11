@@ -46,14 +46,14 @@ Important wrappers include:
 Recommended server-side inspection command:
 
 ```bash
-cd /home/disk0/hyq/AutoResearch/PaperNexus
-/home/disk0/hyq/miniconda3/bin/node ./src/cli/index.js imports status --corpus GCD
+cd ~/PaperNexus
+~/miniconda3/bin/node ./src/cli/index.js imports status --corpus demo-corpus
 ```
 
 For a single task:
 
 ```bash
-/home/disk0/hyq/miniconda3/bin/node ./src/cli/index.js imports log --corpus GCD --task-id imp:... --tail 40
+~/miniconda3/bin/node ./src/cli/index.js imports log --corpus demo-corpus --task-id imp:... --tail 40
 ```
 
 ## Typical Batch Flow
@@ -156,8 +156,8 @@ This focuses on import-related log lines instead of dumping all service output.
 The native import CLI is usually better when you know the corpus or task id:
 
 ```bash
-papernexus imports running --corpus GCD
-papernexus imports log --corpus GCD --task-id imp:... --tail 80
+papernexus imports running --corpus demo-corpus
+papernexus imports log --corpus demo-corpus --task-id imp:... --tail 80
 ```
 
 The PM2 `recent` command is best when you do not yet know which task id matters.

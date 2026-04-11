@@ -126,8 +126,8 @@ Examples:
   papernexus analyze ./papers --name ml-papers --pdf-parser docling --docling-pdf-backend pdfplumber
   papernexus analyze ./papers --name ml-papers --pdf-parser docling --docling-vlm --provider openai --model gpt-4o-mini
   papernexus analyze ./papers --name ml-papers --semantic-extraction auto --provider openai --model gpt-4o-mini
-  papernexus analyze ./papers --name ml-papers --pdf-parser marker --marker-cmd marker_single --pdf-ssh-host 211.71.76.29 --ollama-model qwen2.5:0.5b --ollama-relations --ollama-ssh-host 211.71.76.29
-  papernexus analyze ./papers --name ml-papers --pdf-parser mineru --mineru-http-url http://211.71.76.29:30000
+  papernexus analyze ./papers --name ml-papers --pdf-parser marker --marker-cmd marker_single --pdf-ssh-host user@example-gpu --ollama-model qwen2.5:0.5b --ollama-relations --ollama-ssh-host user@example-gpu
+  papernexus analyze ./papers --name ml-papers --pdf-parser mineru --mineru-http-url http://gpu.example.internal:30000
   papernexus analyze ./papers --name ml-papers --pdf-parser paddleocr-vl
   papernexus materialize ./papers --name ml-papers --continue
   papernexus llm-optimize ./papers --name ml-papers --continue --semantic-extraction llm-primary --batch-size 16
@@ -143,7 +143,7 @@ Examples:
   papernexus imports status --corpus ml-papers
   papernexus imports running --corpus ml-papers
   papernexus imports log --corpus ml-papers --task-id imp:1234567890abcdef
-  papernexus auth llm set --provider openai --base-url https://coding.dashscope.aliyuncs.com/v1
+  papernexus auth llm set --provider openai --base-url https://api.openai.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
   papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback" --mechanism "metacontrol policy" --corpus ml-papers
   papernexus catalyst-backfill ./papers --name ml-papers --semantic-extraction llm-assisted

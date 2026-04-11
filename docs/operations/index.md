@@ -69,8 +69,8 @@ For long-running server processes, the repository includes service wrappers and 
 The PM2 wrapper is designed to work on normal `$HOME` installs and on disk-mounted server installs such as:
 
 ```text
-/home/disk0/<user>/miniconda3/bin/node
-/home/disk0/<user>/miniconda3/bin/pm2
+/srv/papernexus/miniconda3/bin/node
+/srv/papernexus/miniconda3/bin/pm2
 ```
 
 When invoking PM2, the wrapper injects the resolved Node directory into `PATH`. This matters because `pm2` can be a shebang script that internally calls `/usr/bin/env node`.
@@ -215,16 +215,16 @@ This is much faster than trying to infer parser state only from import queue sum
 Use the native CLI before opening raw JSON files:
 
 ```bash
-papernexus imports status --corpus GCD
-papernexus imports running --corpus GCD
-papernexus imports log --corpus GCD --task-id imp:... --tail 40
+papernexus imports status --corpus demo-corpus
+papernexus imports running --corpus demo-corpus
+papernexus imports log --corpus demo-corpus --task-id imp:... --tail 40
 ```
 
 On the GPU server deployment, use the known Node binary:
 
 ```bash
-cd /home/disk0/hyq/AutoResearch/PaperNexus
-/home/disk0/hyq/miniconda3/bin/node ./src/cli/index.js imports status --corpus GCD
+cd ~/PaperNexus
+~/miniconda3/bin/node ./src/cli/index.js imports status --corpus demo-corpus
 ```
 
 Interpretation:

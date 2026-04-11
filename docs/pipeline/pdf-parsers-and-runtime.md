@@ -351,7 +351,7 @@ If a task is `completed` with `recovery.status = superseded`, it is also safe to
   "analyze": {
     "pdfParser": "markitdown",
     "doclingCommand": "docling",
-    "doclingSshHost": "hyq@10.126.56.30",
+    "doclingSshHost": "user@example-gpu",
     "doclingAutoGpu": true,
     "doclingGpuMinFreeMb": 18000,
     "doclingGpuWaitTimeoutMs": 1800000,
