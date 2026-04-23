@@ -287,7 +287,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'research_lookup',
-    description: 'Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, domain distance, takeaway extraction, and interdisciplinary potential.',
+    description: 'Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, and interdisciplinary potential.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -299,6 +299,7 @@ export const PAPERNEXUS_TOOLS = [
             'impact',
             'ideas',
             'brainstorm',
+            'paper_index',
             'domain_distance',
             'extract_takeaways',
             'interdisciplinary_potential'
@@ -311,6 +312,68 @@ export const PAPERNEXUS_TOOLS = [
         query: {
           type: 'string',
           description: 'Topic, node anchor, or challenge text used by the selected lookup operation.'
+        },
+        paperId: {
+          type: 'string',
+          description: 'Exact internal paper id used by the paper_index operation.'
+        },
+        canonicalId: {
+          type: 'string',
+          description: 'Exact canonical paper identity key such as arxiv:..., doi:..., pmid:..., pmcid:..., or title:...'
+        },
+        sourceId: {
+          type: 'string',
+          description: 'Exact source artifact identity key.'
+        },
+        sourceKey: {
+          type: 'string',
+          description: 'Exact manifest sourceKey used by the paper_index operation.'
+        },
+        source: {
+          type: 'string',
+          description: 'Exact source/input path used by the paper_index operation.'
+        },
+        paperTitle: {
+          type: 'string',
+          description: 'Exact normalized paper title used by the paper_index operation.'
+        },
+        identifier: {
+          type: 'string',
+          description: 'Generic identifier string used by the paper_index operation.'
+        },
+        identifierType: {
+          type: 'string',
+          enum: ['doi', 'arxivId', 'pmid', 'pmcid', 'isbn', 'issn'],
+          description: 'Optional explicit identifier type used with `identifier` for paper_index.'
+        },
+        doi: {
+          type: 'string',
+          description: 'Exact DOI used by the paper_index operation.'
+        },
+        arxivId: {
+          type: 'string',
+          description: 'Exact arXiv ID used by the paper_index operation.'
+        },
+        pmid: {
+          type: 'string',
+          description: 'Exact PMID used by the paper_index operation.'
+        },
+        pmcid: {
+          type: 'string',
+          description: 'Exact PMCID used by the paper_index operation.'
+        },
+        isbn: {
+          type: 'string',
+          description: 'Exact ISBN used by the paper_index operation.'
+        },
+        issn: {
+          type: 'string',
+          description: 'Exact ISSN used by the paper_index operation.'
+        },
+        identifiers: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Structured identifier block used by the paper_index operation.'
         },
         targetDomain: {
           type: 'string',
@@ -416,6 +479,39 @@ export const PAPERNEXUS_TOOLS = [
         serverFilePath: {
           type: 'string',
           description: 'Absolute file path on the PaperNexus server for submit.'
+        },
+        identifiers: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Per-paper identifier block for submit, containing one or more of DOI, arXiv ID, PMID, PMCID, ISBN, or ISSN.'
+        },
+        doi: {
+          type: 'string',
+          description: 'DOI for a single-paper submit request.'
+        },
+        arxivId: {
+          type: 'string',
+          description: 'arXiv ID for a single-paper submit request.'
+        },
+        pmid: {
+          type: 'string',
+          description: 'PMID for a single-paper submit request.'
+        },
+        pmcid: {
+          type: 'string',
+          description: 'PMCID for a single-paper submit request.'
+        },
+        isbn: {
+          type: 'string',
+          description: 'ISBN for a single-paper submit request.'
+        },
+        issn: {
+          type: 'string',
+          description: 'ISSN for a single-paper submit request.'
+        },
+        sourceProvider: {
+          type: 'string',
+          description: 'Optional source provider/origin label used to build sourceId.'
         },
         files: {
           type: 'array',

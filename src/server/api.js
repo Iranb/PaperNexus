@@ -6,6 +6,18 @@ import { getNodeLayer, NODE_TYPES } from '../core/graph/schema.js';
 import { resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
 import { collapseHomePath, isServerPathReference, resolveServerPathReference } from '../lib/server-paths.js';
 import { buildDefaultLlmKeychainAccount } from '../lib/keychain.js';
+import { unique } from '../lib/utils.js';
+import {
+  createPaperIdentifierKeys,
+  createPaperIdentity,
+  createSourceIdentity,
+  flattenPaperIdentifiers,
+  formatRequiredPaperIdentifierMessage,
+  hasAnyPaperIdentifiers,
+  normalizeExactPaperTitle,
+  normalizePaperIdentifierQuery,
+  normalizePaperIdentifiers
+} from '../lib/paper-identifiers.js';
 import { getCorpusPaths } from '../storage/corpus-store.js';
 import { getRegistryPath, loadRegistry } from '../storage/registry.js';
 import { getEnhancementPaths, getPaperEnhancementPath, loadPaperEnhancement, summarizeEnhancements } from '../storage/enhancement-store.js';
@@ -322,6 +334,157 @@ function normalizeGraphRequestBody(body = {}) {
   };
 }
 
+function normalizePaperIndexSource(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (isServerPathReference(raw)) {
+    return path.resolve(resolveServerPathReference(raw));
+  }
+  return path.resolve(raw);
+}
+
+function normalizePaperIndexRequest(body = {}) {
+  const paperId = String(body?.paperId || '').trim();
+  const canonicalId = String(body?.canonicalId || body?.canonical_id || '').trim();
+  const sourceId = String(body?.sourceId || body?.source_id || '').trim();
+  const sourceKey = String(body?.sourceKey || '').trim();
+  const source = normalizePaperIndexSource(body?.source || body?.inputPath || '');
+  const paperTitle = normalizeExactPaperTitle(body?.paperTitle || body?.title || '');
+  const identifiers = normalizePaperIdentifierQuery(body?.identifiers ? { ...body, ...body.identifiers } : body);
+
+  if (!paperId && !canonicalId && !sourceId && !sourceKey && !source && !paperTitle && !Object.keys(identifiers).length) {
+    throw new Error('Pass at least one exact paper selector: paperId, canonicalId, sourceId, sourceKey, source, paperTitle/title, DOI, arXiv ID, PMID, PMCID, ISBN, or ISSN.');
+  }
+
+  return {
+    paperId,
+    canonicalId,
+    sourceId,
+    sourceKey,
+    source,
+    paperTitle,
+    identifiers
+  };
+}
+
+function manifestEntryMatchesPaperIndex(entry = {}, request = {}) {
+  if (request.paperId && String(entry.paperId || '').trim() !== request.paperId) {
+    return false;
+  }
+
+  if (request.canonicalId && String(entry.canonicalId || '').trim() !== request.canonicalId) {
+    return false;
+  }
+
+  if (request.sourceId && String(entry.sourceId || '').trim() !== request.sourceId) {
+    return false;
+  }
+
+  if (request.sourceKey && String(entry.sourceKey || '').trim() !== request.sourceKey) {
+    return false;
+  }
+
+  if (request.paperTitle && normalizeExactPaperTitle(entry.paperTitle || '') !== request.paperTitle) {
+    return false;
+  }
+
+  if (request.source) {
+    const candidatePaths = [
+      entry.inputPath,
+      entry.sourcePath,
+      entry.sourceMarkdownPath,
+      entry.sourcePdfPath,
+      entry.markdownCachePath
+    ]
+      .filter(Boolean)
+      .map((value) => normalizePaperIndexSource(value));
+    if (!candidatePaths.includes(request.source)) {
+      return false;
+    }
+  }
+
+  const entryIdentifiers = normalizePaperIdentifiers(entry.identifiers || entry.paperMetadata || {});
+  for (const [field, value] of Object.entries(request.identifiers || {})) {
+    if (!value) continue;
+    if (entryIdentifiers[field] !== value) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function buildPaperIndexMatchedBy(request = {}) {
+  const matchedBy = [];
+  if (request.paperId) matchedBy.push('paperId');
+  if (request.canonicalId) matchedBy.push('canonicalId');
+  if (request.sourceId) matchedBy.push('sourceId');
+  if (request.sourceKey) matchedBy.push('sourceKey');
+  if (request.source) matchedBy.push('source');
+  if (request.paperTitle) matchedBy.push('paperTitle');
+  for (const field of Object.keys(request.identifiers || {})) {
+    matchedBy.push(field);
+  }
+  return matchedBy;
+}
+
+function summarizePaperIndexNode(node = null) {
+  if (!node) return null;
+  const paperIdentity = createPaperIdentity(node.properties || {});
+  return {
+    id: node.id,
+    type: node.type,
+    name: node.name,
+    properties: {
+      paperId: node.properties?.paperId || node.id,
+      paperTitle: node.properties?.paperTitle || node.name,
+      sourceKind: node.properties?.sourceKind || null,
+      canonicalId: paperIdentity.canonicalId || null,
+      canonicalIdSource: paperIdentity.canonicalIdSource || null,
+      identityConfidence: paperIdentity.identityConfidence || null,
+      identityAliases: paperIdentity.identityAliases,
+      normalizedTitle: paperIdentity.normalizedTitle || null,
+      titleSignature: paperIdentity.titleSignature || null,
+      identifiers: paperIdentity.identifiers,
+      identifierKeys: createPaperIdentifierKeys(paperIdentity.identifiers),
+      ...flattenPaperIdentifiers(paperIdentity.identifiers)
+    }
+  };
+}
+
+function normalizePaperIndexEntry(entry = {}) {
+  const paperIdentity = createPaperIdentity(entry);
+  const sourceIdentity = createSourceIdentity(entry);
+  return {
+    ...entry,
+    ...flattenPaperIdentifiers(paperIdentity.identifiers),
+    identifiers: paperIdentity.identifiers,
+    normalizedTitle: paperIdentity.normalizedTitle,
+    titleSignature: paperIdentity.titleSignature,
+    canonicalId: paperIdentity.canonicalId,
+    canonicalIdSource: paperIdentity.canonicalIdSource,
+    identityConfidence: paperIdentity.identityConfidence,
+    identityAliases: paperIdentity.identityAliases,
+    sourceKind: entry.kind || entry.sourceKind || sourceIdentity.sourceKind || null,
+    sourceProvider: entry.sourceProvider || sourceIdentity.sourceProvider || null,
+    contentSha256: entry.contentSha256 || sourceIdentity.contentSha256 || null,
+    normalizedTextSha256: entry.normalizedTextSha256 || sourceIdentity.normalizedTextSha256 || null,
+    sourceId: entry.sourceId || sourceIdentity.sourceId || null,
+    resolutionStatus: entry.resolutionStatus || sourceIdentity.resolutionStatus || null
+  };
+}
+
+function groupPaperIndexEntries(entries = []) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const key = String(entry.paperId || entry.canonicalSourceKey || entry.sourceKey || '').trim();
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  return groups;
+}
+
 function normalizeQueryOptions(options = {}) {
   return {
     limit: Number(options.limit || 5),
@@ -439,6 +602,109 @@ export async function brainstormGraphPayload(candidate, body = {}, options = {})
   return buildGraphSearchPayload(candidate, body, options, (graph, query, rawOptions) => (
     buildBrainstorm(graph, query, normalizeBrainstormOptions(rawOptions))
   ));
+}
+
+export async function paperIndexPayload(candidate, body = {}, options = {}) {
+  const request = normalizePaperIndexRequest(body);
+  const effectiveCandidate = typeof body?.name === 'string' && body.name.trim()
+    ? body.name.trim()
+    : candidate;
+  const rootPath = await resolveCorpusForApi(effectiveCandidate, options);
+  const manifest = await loadSourceManifest(rootPath);
+  const sources = Array.isArray(manifest?.sources) ? manifest.sources.map((entry) => normalizePaperIndexEntry(entry)) : [];
+  const matchedEntries = sources.filter((entry) => manifestEntryMatchesPaperIndex(entry, request));
+  const groupedEntries = groupPaperIndexEntries(matchedEntries);
+  const matchedBy = buildPaperIndexMatchedBy(request);
+
+  let graph = null;
+  if (groupedEntries.size) {
+    ({ graph } = await loadCorpusLiteForApi(rootPath, options));
+  }
+
+  const matches = [...groupedEntries.entries()]
+    .map(([groupKey, entries]) => {
+      const mergedIdentity = createPaperIdentity({
+        identifiers: Object.assign({}, ...entries.map((entry) => entry.identifiers || {})),
+        identityAliases: unique(entries.flatMap((entry) => entry.identityAliases || [])),
+        paperTitle: entries.find((entry) => entry.paperTitle)?.paperTitle || ''
+      });
+      const representative = entries.find((entry) => entry.activeInGraph !== false) || entries[0];
+      const paperNode = graph?.getNode(representative.paperId)
+        || graph?.nodes?.find((node) => node.type === NODE_TYPES.PAPER && node.properties?.paperId === representative.paperId)
+        || null;
+
+      return {
+        groupKey,
+        paperId: representative.paperId || null,
+        paperTitle: representative.paperTitle || null,
+        matchedBy,
+        exact: true,
+        canonicalId: representative.canonicalId || mergedIdentity.canonicalId || null,
+        canonicalIdSource: representative.canonicalIdSource || mergedIdentity.canonicalIdSource || null,
+        identityConfidence: representative.identityConfidence || mergedIdentity.identityConfidence || null,
+        identityAliases: unique(entries.flatMap((entry) => entry.identityAliases || [])).sort(),
+        identifiers: mergedIdentity.identifiers,
+        normalizedTitle: representative.normalizedTitle || mergedIdentity.normalizedTitle || null,
+        titleSignature: representative.titleSignature || mergedIdentity.titleSignature || null,
+        identifierKeys: createPaperIdentifierKeys(mergedIdentity.identifiers),
+        ...flattenPaperIdentifiers(mergedIdentity.identifiers),
+        sourceCount: entries.length,
+        activeSourceCount: entries.filter((entry) => entry.activeInGraph !== false).length,
+        canonicalSourceKey: representative.canonicalSourceKey || representative.sourceKey || null,
+        paperNode: summarizePaperIndexNode(paperNode),
+        sources: entries
+          .slice()
+          .sort((left, right) => String(left.sourceKey || '').localeCompare(String(right.sourceKey || '')))
+          .map((entry) => ({
+            sourceKey: entry.sourceKey || null,
+            inputPath: entry.inputPath || null,
+            sourcePath: entry.sourcePath || null,
+            kind: entry.kind || null,
+            sourceKind: entry.sourceKind || entry.kind || null,
+            sourceProvider: entry.sourceProvider || null,
+            paperId: entry.paperId || null,
+            paperTitle: entry.paperTitle || null,
+            canonicalId: entry.canonicalId || null,
+            canonicalIdSource: entry.canonicalIdSource || null,
+            identityConfidence: entry.identityConfidence || null,
+            identityAliases: entry.identityAliases || [],
+            sourceId: entry.sourceId || null,
+            contentSha256: entry.contentSha256 || null,
+            normalizedTextSha256: entry.normalizedTextSha256 || null,
+            resolutionStatus: entry.resolutionStatus || null,
+            activeInGraph: entry.activeInGraph !== false,
+            canonicalSourceKey: entry.canonicalSourceKey || null,
+            duplicateOfSourceKey: entry.duplicateOfSourceKey || null,
+            identifiers: entry.identifiers || {},
+            identifierKeys: createPaperIdentifierKeys(entry.identifiers || {})
+          }))
+      };
+    })
+    .sort((left, right) => (
+      (right.activeSourceCount - left.activeSourceCount)
+      || String(left.paperTitle || '').localeCompare(String(right.paperTitle || ''))
+      || String(left.paperId || '').localeCompare(String(right.paperId || ''))
+    ));
+
+  return presentPortablePayload({
+    rootPath,
+    result: {
+      contractVersion: 'paper-precise-index-v1',
+      query: {
+        paperId: request.paperId || null,
+        canonicalId: request.canonicalId || null,
+        sourceId: request.sourceId || null,
+        sourceKey: request.sourceKey || null,
+        source: request.source || null,
+        paperTitle: request.paperTitle || null,
+        identifiers: request.identifiers,
+        identifierKeys: createPaperIdentifierKeys(request.identifiers)
+      },
+      matchCount: matches.length,
+      matches
+    },
+    generatedAt: new Date().toISOString()
+  }, options);
 }
 
 export async function catalystGraphPayload(candidate, body = {}, options = {}) {
@@ -1211,12 +1477,34 @@ export async function backupCorpusPayload(candidate, options = {}) {
   }, options);
 }
 
-function normalizeImportFiles(files = []) {
+function normalizeImportPaperMetadata(input = {}) {
+  const paperIdentity = createPaperIdentity(input);
+  const explicitSourceProvider = String(
+    input?.sourceProvider
+    || input?.provider
+    || input?.paperMetadata?.sourceProvider
+    || ''
+  ).trim();
+  if (!Object.keys(paperIdentity.identifiers).length && !explicitSourceProvider) {
+    return null;
+  }
+  return {
+    ...(Object.keys(paperIdentity.identifiers).length ? { identifiers: paperIdentity.identifiers } : {}),
+    ...(explicitSourceProvider ? { sourceProvider: explicitSourceProvider } : {})
+  };
+}
+
+function normalizeImportFiles(files = [], defaultPaperMetadata = null) {
   const normalized = Array.isArray(files) ? files : [];
   return normalized.map((file) => ({
     name: String(file?.name || '').trim(),
     mimeType: String(file?.mimeType || '').trim(),
-    contentBase64: String(file?.contentBase64 || '').trim()
+    contentBase64: String(file?.contentBase64 || '').trim(),
+    paperMetadata: normalizeImportPaperMetadata({
+      ...(defaultPaperMetadata || {}),
+      ...(file || {}),
+      paperMetadata: file?.paperMetadata || defaultPaperMetadata || null
+    })
   })).filter((file) => file.name && file.contentBase64);
 }
 
@@ -1226,7 +1514,7 @@ function createApiRequestError(message, statusCode = 400) {
   return error;
 }
 
-async function normalizeServerImportFile(serverFilePath = '') {
+async function normalizeServerImportFile(serverFilePath = '', paperMetadata = null) {
   const normalizedPath = String(serverFilePath || '').trim();
   if (!normalizedPath) {
     return [];
@@ -1256,13 +1544,19 @@ async function normalizeServerImportFile(serverFilePath = '') {
     {
       name: path.basename(resolvedPath),
       mimeType: '',
-      content: await fs.readFile(resolvedPath)
+      content: await fs.readFile(resolvedPath),
+      paperMetadata
     }
   ];
 }
 
 async function normalizeImportRequest(body = {}) {
-  const uploadedFiles = normalizeImportFiles(body.files);
+  const topLevelPaperMetadata = normalizeImportPaperMetadata(body.paperMetadata || body || {});
+  const rawFiles = Array.isArray(body.files) ? body.files : [];
+  const uploadedFiles = normalizeImportFiles(
+    rawFiles,
+    rawFiles.length === 1 ? topLevelPaperMetadata : null
+  );
   const serverFilePath = String(body?.serverFilePath || '').trim();
 
   if (serverFilePath && uploadedFiles.length) {
@@ -1270,7 +1564,21 @@ async function normalizeImportRequest(body = {}) {
   }
 
   if (serverFilePath) {
-    return normalizeServerImportFile(serverFilePath);
+    const serverFiles = await normalizeServerImportFile(serverFilePath, topLevelPaperMetadata);
+    if (!hasAnyPaperIdentifiers(topLevelPaperMetadata || {})) {
+      throw createApiRequestError(formatRequiredPaperIdentifierMessage());
+    }
+    return serverFiles;
+  }
+
+  if (rawFiles.length > 1 && hasAnyPaperIdentifiers(topLevelPaperMetadata || {})) {
+    throw createApiRequestError('When uploading multiple files, attach per-file paper identity metadata instead of one top-level identifier block.');
+  }
+
+  for (const file of uploadedFiles) {
+    if (!hasAnyPaperIdentifiers(file.paperMetadata || {})) {
+      throw createApiRequestError(`Uploaded file "${file.name}" is missing a precise identifier. ${formatRequiredPaperIdentifierMessage()}`);
+    }
   }
 
   return uploadedFiles;
@@ -1305,10 +1613,28 @@ export async function createImportTaskPayload(candidate, body = {}, options = {}
     files
   });
 
+  let identifierSync = null;
+  if (task?.deduped && String(task?.status || '').trim().toLowerCase() === 'completed') {
+    const { backfillPaperIdentifiers } = await import('../core/ingestion/pipeline.js');
+    const syncResults = [];
+    for (const file of task.files || []) {
+      if (!hasAnyPaperIdentifiers(file.paperMetadata || {})) continue;
+      syncResults.push(await backfillPaperIdentifiers(rootPath, {
+        sourcePaths: [file.storedPath],
+        identifiers: file.paperMetadata.identifiers
+      }));
+    }
+    identifierSync = {
+      updated: syncResults.some((entry) => entry.updated),
+      results: syncResults
+    };
+  }
+
   return presentPortablePayload({
     rootPath,
     task,
     deduped: Boolean(task?.deduped),
+    identifierSync,
     generatedAt: new Date().toISOString()
   }, options);
 }

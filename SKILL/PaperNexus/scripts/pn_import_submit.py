@@ -26,6 +26,13 @@ def parse_args():
     add_connection_args(parser)
     parser.add_argument("--server-file-path", default="")
     parser.add_argument("--paper-id", default="")
+    parser.add_argument("--doi", default="")
+    parser.add_argument("--arxiv-id", default="")
+    parser.add_argument("--pmid", default="")
+    parser.add_argument("--pmcid", default="")
+    parser.add_argument("--isbn", default="")
+    parser.add_argument("--issn", default="")
+    parser.add_argument("--source-provider", default="")
     parser.add_argument("--source", default="")
     parser.add_argument("--source-kind", default="")
     parser.add_argument("--ssh-target", default=os.environ.get("PAPERNEXUS_SSH_TARGET", ""))
@@ -35,6 +42,25 @@ def parse_args():
     parser.add_argument("--rsync-bin", default=os.environ.get("PAPERNEXUS_RSYNC_BIN", "rsync"))
     parser.add_argument("--trigger", default="mcp")
     return parser.parse_args()
+
+
+def build_identifiers(args) -> dict:
+    identifiers = {}
+    if (args.doi or "").strip():
+        identifiers["doi"] = args.doi.strip()
+    if (args.arxiv_id or "").strip():
+        identifiers["arxivId"] = args.arxiv_id.strip()
+    if (args.pmid or "").strip():
+        identifiers["pmid"] = args.pmid.strip()
+    if (args.pmcid or "").strip():
+        identifiers["pmcid"] = args.pmcid.strip()
+    if (args.isbn or "").strip():
+        identifiers["isbn"] = args.isbn.strip()
+    if (args.issn or "").strip():
+        identifiers["issn"] = args.issn.strip()
+    if not identifiers:
+        raise RemoteScriptError("Each uploaded paper must include at least one of --doi, --arxiv-id, --pmid, --pmcid, --isbn, or --issn.")
+    return identifiers
 
 
 def infer_paper_id(explicit: str, source_value: str) -> str:
@@ -93,6 +119,7 @@ def main() -> int:
         server_file_path, staging_payload, source_value = resolve_submission_source(args, mcp_url)
         paper_id = infer_paper_id(args.paper_id, source_value or server_file_path)
         source_kind = infer_source_kind(source_value or server_file_path, args.source_kind)
+        identifiers = build_identifiers(args)
         payload = call_mcp_tool_json(
             mcp_url,
             token,
@@ -101,7 +128,9 @@ def main() -> int:
                 "operation": "submit",
                 "corpus": corpus,
                 "serverFilePath": server_file_path,
-                "trigger": args.trigger
+                "trigger": args.trigger,
+                "identifiers": identifiers,
+                **({"sourceProvider": args.source_provider.strip()} if (args.source_provider or "").strip() else {})
             },
             timeout=args.request_timeout
         )
@@ -120,6 +149,8 @@ def main() -> int:
             "source": source_value or args.source or args.server_file_path,
             "sourceKind": source_kind,
             "remoteFile": server_file_path,
+            "identifiers": identifiers,
+            **({"sourceProvider": args.source_provider.strip()} if (args.source_provider or "").strip() else {}),
             "submitted": True,
             "synced": str(task.get("status") or "").lower() == "completed" and str(task.get("stage") or "").lower() == "completed",
             "registry": {

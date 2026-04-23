@@ -33,7 +33,11 @@ For live graph status reads on already-staged files, `import_workflow` on `paper
     {
       "paperId": "iclr2025-oral-data-shapley",
       "source": "/absolute/local/path/to/paper.pdf",
-      "sourceKind": "pdf"
+      "sourceKind": "pdf",
+      "identifiers": {
+        "doi": "10.48550/arXiv.2401.12345"
+      },
+      "sourceProvider": "filesystem"
     }
   ]
 }
@@ -44,9 +48,13 @@ Rules:
 - `version` must be `1`
 - `papers` must be non-empty
 - each paper must include `source`
+- each paper must include at least one precise identifier through an `identifiers` object or equivalent per-paper fields
+- strong paper identity prefers `doi`, `arxivId`, `pmid`, or `pmcid`
+- `isbn` and `issn` are stored as metadata but are not preferred article identity keys
 - `paperId` is strongly recommended
 - only add manifest-scoped connection overrides when one batch truly needs different staging behavior from the default environment
 - optional per-paper overrides: `remoteDir`, `serverFilePath`, `taskId`
+- recommended per-paper metadata: `identifiers.doi`, `identifiers.arxivId`, `identifiers.pmid`, `identifiers.pmcid`, `identifiers.isbn`, `identifiers.issn`, `sourceProvider`
 - `source` is the local file path on the agent machine
 - `serverFilePath` is only for files that already exist on the remote PaperNexus server
 - if a server-home path is known, store it as `~/...`, not `/home/<user>/...`

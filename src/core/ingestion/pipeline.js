@@ -38,6 +38,21 @@ import {
   resolveOllamaConfig
 } from '../llm/ollama.js';
 import { collectFiles, fileExists, readJson, readText, withFileLock } from '../../lib/fs.js';
+import {
+  createContentSha256,
+  createPaperIdentifierKeys,
+  createPaperIdentity,
+  createSourceIdentity,
+  flattenPaperIdentifiers,
+  mergePaperIdentity,
+  mergePaperIdentifiers,
+  normalizeExactPaperTitle,
+  normalizePaperIdentifierQuery,
+  normalizePaperIdentifiers,
+  normalizeResolutionStatus,
+  paperIdentifiersConflict,
+  paperStrongIdentityOverlap
+} from '../../lib/paper-identifiers.js';
 import { jaccardSimilarity, normalizeText, slugify, stableHash, titleCase, tokenizeWithoutStopwords, truncate, unique } from '../../lib/utils.js';
 import { createWatchTmpLogger } from '../../lib/watch-log.js';
 import {
@@ -68,7 +83,11 @@ import {
   saveStagedCorpusBuild
 } from '../../storage/corpus-store.js';
 import { enqueuePaperEnhancements, pruneEnhancementsForManifest } from '../../storage/enhancement-store.js';
-import { getImportPaths, listActiveImportSourceDirs } from '../../storage/import-store.js';
+import {
+  getImportPaths,
+  listActiveImportSourceDirs,
+  loadImportTaskFileMetadata
+} from '../../storage/import-store.js';
 import { registerCorpus } from '../../storage/registry.js';
 import { buildLiteStateSnapshot, GLOBAL_SOURCE_KEY } from '../../storage/lite-view.js';
 import {
@@ -1189,6 +1208,12 @@ function buildSemanticPaperView(paper) {
   const assumptions = extractAssumptions(paper);
   const futureDirections = extractFutureDirections(paper);
   const researchGoals = extractResearchGoals(paper);
+  const paperIdentity = createPaperIdentity({
+    title: paper.title,
+    paperTitle: paper.title,
+    identifiers: paper.identifiers || {},
+    identityAliases: paper.identityAliases || paper.canonicalAliases || []
+  });
 
   return {
     paperId: paper.paperId,
@@ -1196,11 +1221,23 @@ function buildSemanticPaperView(paper) {
     titleValidation: paper.titleValidation || assessPaperTitleCandidate(paper.title, paper.sourcePath),
     authors: paper.authors || [],
     abstract: abstract?.text || '',
+    identifiers: paperIdentity.identifiers,
+    normalizedTitle: paperIdentity.normalizedTitle,
+    titleSignature: paperIdentity.titleSignature,
+    canonicalId: paperIdentity.canonicalId,
+    canonicalIdSource: paperIdentity.canonicalIdSource,
+    identityConfidence: paperIdentity.identityConfidence,
+    identityAliases: paperIdentity.identityAliases,
     sourcePath: paper.sourcePath,
     sourceMarkdownPath: paper.sourceMarkdownPath,
     sourcePdfPath: paper.sourcePdfPath,
     sourceKind: paper.sourceKind,
+    sourceProvider: paper.sourceProvider || 'filesystem',
     sourceFingerprint: paper.sourceFingerprint,
+    contentSha256: paper.contentSha256 || '',
+    normalizedTextSha256: paper.normalizedTextSha256 || '',
+    sourceId: paper.sourceId || '',
+    resolutionStatus: paper.resolutionStatus || '',
     sourceKey: paper.sourceKey,
     references: paper.references || [],
     problems: extractProblemCandidates(paper),
@@ -1260,6 +1297,109 @@ function buildSemanticPaperView(paper) {
     },
     llmRelations: []
   };
+}
+
+function normalizePaperMetadataPayload(input = {}) {
+  const identifiers = normalizePaperIdentifiers(input);
+  const sourceProvider = String(input?.sourceProvider || input?.provider || input?.paperMetadata?.sourceProvider || '').trim();
+  if (!Object.keys(identifiers).length && !sourceProvider) {
+    return null;
+  }
+  return {
+    ...(Object.keys(identifiers).length ? { identifiers } : {}),
+    ...(sourceProvider ? { sourceProvider } : {})
+  };
+}
+
+function mergeSemanticPaperIdentity(semanticPaper, ...inputs) {
+  if (!semanticPaper || typeof semanticPaper !== 'object') {
+    return semanticPaper;
+  }
+
+  const mergedIdentity = mergePaperIdentity(
+    semanticPaper,
+    ...inputs
+  );
+  semanticPaper.identifiers = mergedIdentity.identifiers;
+  semanticPaper.normalizedTitle = mergedIdentity.normalizedTitle;
+  semanticPaper.titleSignature = mergedIdentity.titleSignature;
+  semanticPaper.canonicalId = mergedIdentity.canonicalId;
+  semanticPaper.canonicalIdSource = mergedIdentity.canonicalIdSource;
+  semanticPaper.identityConfidence = mergedIdentity.identityConfidence;
+  semanticPaper.identityAliases = mergedIdentity.identityAliases;
+  return semanticPaper;
+}
+
+function buildPaperIdentityProperties(input = {}) {
+  const identity = createPaperIdentity(input);
+  return {
+    ...(Object.keys(identity.identifiers).length ? { identifiers: identity.identifiers } : {}),
+    ...(identity.identityAliases.length ? { identityAliases: identity.identityAliases } : {}),
+    ...(identity.normalizedTitle ? { normalizedTitle: identity.normalizedTitle } : {}),
+    ...(identity.titleSignature ? { titleSignature: identity.titleSignature } : {}),
+    ...(identity.canonicalId ? { canonicalId: identity.canonicalId } : {}),
+    ...(identity.canonicalIdSource ? { canonicalIdSource: identity.canonicalIdSource } : {}),
+    ...(identity.identityConfidence ? { identityConfidence: identity.identityConfidence } : {}),
+    ...(Object.keys(identity.identifiers).length ? { identifierKeys: createPaperIdentifierKeys(identity.identifiers) } : {}),
+    ...flattenPaperIdentifiers(identity.identifiers)
+  };
+}
+
+function applySourceIdentityEnvelope(target, sourceInput = {}, paperInput = {}) {
+  if (!target || typeof target !== 'object') return target;
+  const sourceIdentity = createSourceIdentity({
+    ...paperInput,
+    ...sourceInput
+  });
+  if (sourceIdentity.sourceProvider) target.sourceProvider = sourceIdentity.sourceProvider;
+  if (sourceIdentity.contentSha256) target.contentSha256 = sourceIdentity.contentSha256;
+  if (sourceIdentity.normalizedTextSha256) target.normalizedTextSha256 = sourceIdentity.normalizedTextSha256;
+  if (sourceIdentity.sourceId) target.sourceId = sourceIdentity.sourceId;
+  target.resolutionStatus = normalizeResolutionStatus(
+    sourceIdentity.resolutionStatus,
+    target.resolutionStatus || 'metadata_only'
+  );
+  return target;
+}
+
+function applyPaperIdentityEnvelope(target, ...inputs) {
+  if (!target || typeof target !== 'object') return target;
+  const mergedIdentity = mergePaperIdentity(target, ...inputs);
+  target.identifiers = mergedIdentity.identifiers;
+  target.normalizedTitle = mergedIdentity.normalizedTitle;
+  target.titleSignature = mergedIdentity.titleSignature;
+  target.canonicalId = mergedIdentity.canonicalId;
+  target.canonicalIdSource = mergedIdentity.canonicalIdSource;
+  target.identityConfidence = mergedIdentity.identityConfidence;
+  target.identityAliases = mergedIdentity.identityAliases;
+  Object.assign(target, flattenPaperIdentifiers(mergedIdentity.identifiers));
+  return target;
+}
+
+function upgradeSemanticPaperIdentityRecord(record = {}, options = {}) {
+  const nextRecord = { ...record };
+  applyPaperIdentityEnvelope(nextRecord, options.paperMetadata || {});
+  applySourceIdentityEnvelope(nextRecord, {
+    sourceKind: nextRecord.sourceKind,
+    sourceProvider: nextRecord.sourceProvider || options.sourceProvider || options.paperMetadata?.sourceProvider,
+    contentSha256: nextRecord.contentSha256 || options.contentSha256,
+    normalizedTextSha256: nextRecord.normalizedTextSha256 || options.normalizedTextSha256,
+    resolutionStatus: nextRecord.resolutionStatus || options.resolutionStatus
+  }, nextRecord);
+  return nextRecord;
+}
+
+function upgradeManifestEntryIdentityRecord(entry = {}, options = {}) {
+  const nextEntry = { ...entry };
+  applyPaperIdentityEnvelope(nextEntry, options.paperMetadata || {}, entry.paperMetadata || {});
+  applySourceIdentityEnvelope(nextEntry, {
+    sourceKind: nextEntry.kind || nextEntry.sourceKind,
+    sourceProvider: nextEntry.sourceProvider || options.sourceProvider || entry.paperMetadata?.sourceProvider,
+    contentSha256: nextEntry.contentSha256 || options.contentSha256,
+    normalizedTextSha256: nextEntry.normalizedTextSha256 || options.normalizedTextSha256,
+    resolutionStatus: nextEntry.resolutionStatus || options.resolutionStatus
+  }, nextEntry);
+  return nextEntry;
 }
 
 function mergeSemanticSlots(primary, secondary, limit = 8) {
@@ -1513,6 +1653,16 @@ function createSemanticPaperSnapshotStateSignature(semanticPaper = {}) {
     version: SNAPSHOT_STATE_SIGNATURE_VERSION,
     paperId: semanticPaper.paperId || '',
     sourceFingerprint: semanticPaper.sourceFingerprint || '',
+    canonicalId: semanticPaper.canonicalId || '',
+    sourceId: semanticPaper.sourceId || '',
+    identityAliases: semanticPaper.identityAliases || [],
+    identifiers: normalizePaperIdentifiers(semanticPaper.identifiers || {}),
+    normalizedTitle: semanticPaper.normalizedTitle || '',
+    titleSignature: semanticPaper.titleSignature || '',
+    sourceProvider: semanticPaper.sourceProvider || '',
+    contentSha256: semanticPaper.contentSha256 || '',
+    normalizedTextSha256: semanticPaper.normalizedTextSha256 || '',
+    resolutionStatus: semanticPaper.resolutionStatus || 'metadata_only',
     semanticConfigSignature: semanticPaper.llmSemanticObjects?.configSignature || semanticPaper.llm?.semanticConfigSignature || null,
     relationConfigSignature: semanticPaper.llm?.relationConfigSignature || null,
     semanticObjects: {
@@ -2772,6 +2922,7 @@ function buildPaperNode(paper) {
     paper.abstractMechanismObjects || paper.abstractMechanisms || paper.mechanismHints || []
   );
   const abstractMechanisms = normalizeAbstractMechanismNames(abstractMechanismObjects);
+  const identityProperties = buildPaperIdentityProperties(paper);
   return {
     id: paper.paperId,
     type: NODE_TYPES.PAPER,
@@ -2786,7 +2937,16 @@ function buildPaperNode(paper) {
       sourceMarkdownPath: paper.sourceMarkdownPath,
       sourcePdfPath: paper.sourcePdfPath,
       sourceKind: paper.sourceKind,
+      sourceProvider: paper.sourceProvider,
       sourceFingerprint: paper.sourceFingerprint,
+      sourceId: paper.sourceId,
+      resolutionStatus: paper.resolutionStatus || 'metadata_only',
+      contentSha256: paper.contentSha256,
+      normalizedTextSha256: paper.normalizedTextSha256,
+      sourceIds: Array.isArray(paper.sourceIds) ? paper.sourceIds : undefined,
+      availableSourceKinds: Array.isArray(paper.availableSourceKinds) ? paper.availableSourceKinds : undefined,
+      sourceVariants: Array.isArray(paper.sourceVariants) ? paper.sourceVariants : undefined,
+      ...identityProperties,
       fieldOfStudy,
       fieldCandidates,
       domainTags,
@@ -3034,6 +3194,21 @@ function createSourceFingerprint(stats) {
   return `${Math.round(Number(stats.mtimeMs || 0))}:${Number(stats.size || 0)}`;
 }
 
+async function computeSourceContentSha256(inputPath, previousEntry = null, currentFingerprint = '') {
+  const previousFingerprint = String(previousEntry?.fingerprint || previousEntry?.sourceFingerprint || '').trim();
+  const previousContentSha256 = String(previousEntry?.contentSha256 || '').trim();
+  if (previousContentSha256 && previousFingerprint && currentFingerprint && previousFingerprint === currentFingerprint) {
+    return previousContentSha256;
+  }
+
+  return createContentSha256(await fs.readFile(inputPath));
+}
+
+function computeNormalizedTextSha256(value = '') {
+  const normalized = normalizeText(String(value || '')).replace(/\s+/g, ' ').trim();
+  return normalized ? createContentSha256(normalized) : '';
+}
+
 function firstDefinedValue(...values) {
   for (const value of values) {
     if (value !== undefined && value !== null && value !== '') {
@@ -3124,6 +3299,11 @@ function createManifestCommitToken(manifest) {
       sourceKey: entry.sourceKey || '',
       fingerprint: entry.fingerprint || entry.sourceFingerprint || '',
       paperId: entry.paperId || null,
+      canonicalId: entry.canonicalId || null,
+      sourceId: entry.sourceId || null,
+      sourceProvider: entry.sourceProvider || null,
+      contentSha256: entry.contentSha256 || null,
+      identifierKeys: createPaperIdentifierKeys(entry.identifiers || entry.paperMetadata || {}),
       activeInGraph: entry.activeInGraph !== false,
       canonicalSourceKey: entry.canonicalSourceKey || null,
       duplicateOfSourceKey: entry.duplicateOfSourceKey || null,
@@ -3573,8 +3753,10 @@ async function loadSemanticPapersFromManifest(rootPath, manifest, metadataConcur
     manifestSources,
     metadataConcurrency,
     async (entry) => ({
-      entry,
-      snapshot: await loadSemanticPaperSnapshot(rootPath, entry.sourceKey)
+      entry: upgradeManifestEntryIdentityRecord(entry),
+      snapshot: upgradeSemanticPaperIdentityRecord(
+        await loadSemanticPaperSnapshot(rootPath, entry.sourceKey)
+      )
     })
   );
 
@@ -3772,7 +3954,7 @@ async function collectSourcesFromInput(absoluteInput) {
       return {
         inputPath: absoluteInput,
         inputStats,
-        sources: [{ kind: 'pdf', inputPath: absoluteInput, sourceKey: absoluteInput }]
+        sources: [{ kind: 'pdf', inputPath: absoluteInput, sourceKey: absoluteInput, sourceProvider: 'filesystem' }]
       };
     }
 
@@ -3780,7 +3962,7 @@ async function collectSourcesFromInput(absoluteInput) {
       return {
         inputPath: absoluteInput,
         inputStats,
-        sources: [{ kind: 'markdown', inputPath: absoluteInput, sourceKey: absoluteInput }]
+        sources: [{ kind: 'markdown', inputPath: absoluteInput, sourceKey: absoluteInput, sourceProvider: 'filesystem' }]
       };
     }
 
@@ -3795,12 +3977,14 @@ async function collectSourcesFromInput(absoluteInput) {
     ...pdfFiles.map((filePath) => ({
       kind: 'pdf',
       inputPath: filePath,
-      sourceKey: filePath
+      sourceKey: filePath,
+      sourceProvider: 'filesystem'
     })),
     ...markdownFiles.map((filePath) => ({
       kind: 'markdown',
       inputPath: filePath,
-      sourceKey: filePath
+      sourceKey: filePath,
+      sourceProvider: 'filesystem'
     }))
   ];
 
@@ -3844,7 +4028,8 @@ async function collectPersistentImportManifestSources(rootPath, manifest, existi
     persistentSources.push({
       kind,
       inputPath,
-      sourceKey: entry.sourceKey
+      sourceKey: entry.sourceKey,
+      sourceProvider: entry.sourceProvider || 'filesystem'
     });
   }
 
@@ -3951,19 +4136,35 @@ async function resolveCorpusInputContext(inputPath, options = {}) {
 }
 
 function buildManifestEntry(rootPath, sourceState, semanticPaper, markerCommand, extra = {}) {
-  return {
+  const paperMetadata = normalizePaperMetadataPayload(
+    sourceState.paperMetadata || semanticPaper.identifiers || semanticPaper || {}
+  );
+  return upgradeManifestEntryIdentityRecord({
     sourceKey: sourceState.sourceKey,
     inputPath: sourceState.inputPath,
     kind: sourceState.kind,
+    sourceKind: sourceState.kind,
+    sourceProvider: semanticPaper.sourceProvider || sourceState.sourceProvider || 'filesystem',
     fingerprint: sourceState.fingerprint,
     sourceFingerprint: sourceState.fingerprint,
     sourceMtimeMs: Number(sourceState.sourceMtimeMs || 0),
     sourceSizeBytes: Number(sourceState.sourceSizeBytes || 0),
     paperId: semanticPaper.paperId,
     paperTitle: semanticPaper.paperTitle,
+    identifiers: semanticPaper.identifiers || {},
     sourcePath: semanticPaper.sourcePath,
     sourceMarkdownPath: semanticPaper.sourceMarkdownPath,
     sourcePdfPath: semanticPaper.sourcePdfPath,
+    canonicalId: semanticPaper.canonicalId || '',
+    canonicalIdSource: semanticPaper.canonicalIdSource || '',
+    identityConfidence: semanticPaper.identityConfidence || 'provisional',
+    identityAliases: semanticPaper.identityAliases || [],
+    normalizedTitle: semanticPaper.normalizedTitle || '',
+    titleSignature: semanticPaper.titleSignature || '',
+    contentSha256: semanticPaper.contentSha256 || sourceState.contentSha256 || '',
+    normalizedTextSha256: semanticPaper.normalizedTextSha256 || '',
+    sourceId: semanticPaper.sourceId || '',
+    resolutionStatus: semanticPaper.resolutionStatus || '',
     markdownCachePath: semanticPaper.sourceMarkdownPath,
     markdownCacheFingerprint: sourceState.markdownCacheFingerprint || sourceState.fingerprint,
     markdownCacheExists: true,
@@ -3979,24 +4180,37 @@ function buildManifestEntry(rootPath, sourceState, semanticPaper, markerCommand,
     availableSourceKinds: Array.isArray(semanticPaper.availableSourceKinds) && semanticPaper.availableSourceKinds.length
       ? semanticPaper.availableSourceKinds
       : [semanticPaper.sourceKind || sourceState.kind],
+    sourceIds: Array.isArray(semanticPaper.sourceIds) ? semanticPaper.sourceIds : (semanticPaper.sourceId ? [semanticPaper.sourceId] : []),
+    paperMetadata,
     ...extra
-  };
+  }, {
+    paperMetadata,
+    contentSha256: semanticPaper.contentSha256 || sourceState.contentSha256 || '',
+    normalizedTextSha256: semanticPaper.normalizedTextSha256 || ''
+  });
 }
 
 function createSourceStateFromManifestEntry(entry) {
+  const normalizedEntry = upgradeManifestEntryIdentityRecord(entry);
   return {
-    sourceKey: entry.sourceKey,
-    inputPath: entry.inputPath,
-    kind: entry.kind,
-    fingerprint: entry.fingerprint || entry.sourceFingerprint,
-    sourceMtimeMs: Number(entry.sourceMtimeMs || 0),
-    sourceSizeBytes: Number(entry.sourceSizeBytes || 0),
-    previous: entry,
-    markdownCachePath: entry.markdownCachePath || entry.sourceMarkdownPath || null,
-    markdownCacheFingerprint: entry.markdownCacheFingerprint || entry.fingerprint || entry.sourceFingerprint || null,
+    sourceKey: normalizedEntry.sourceKey,
+    inputPath: normalizedEntry.inputPath,
+    kind: normalizedEntry.kind,
+    sourceKind: normalizedEntry.kind,
+    sourceProvider: normalizedEntry.sourceProvider || 'filesystem',
+    sourceId: normalizedEntry.sourceId || '',
+    contentSha256: normalizedEntry.contentSha256 || '',
+    resolutionStatus: normalizedEntry.resolutionStatus || 'metadata_only',
+    fingerprint: normalizedEntry.fingerprint || normalizedEntry.sourceFingerprint,
+    sourceMtimeMs: Number(normalizedEntry.sourceMtimeMs || 0),
+    sourceSizeBytes: Number(normalizedEntry.sourceSizeBytes || 0),
+    previous: normalizedEntry,
+    markdownCachePath: normalizedEntry.markdownCachePath || normalizedEntry.sourceMarkdownPath || null,
+    markdownCacheFingerprint: normalizedEntry.markdownCacheFingerprint || normalizedEntry.fingerprint || normalizedEntry.sourceFingerprint || null,
     markdownCacheExists: true,
     markdownCacheNeedsRefresh: false,
     cachedPaper: null,
+    paperMetadata: normalizePaperMetadataPayload(normalizedEntry.paperMetadata || normalizedEntry),
     llmRefreshState: {
       semanticRequired: false,
       relationRequired: false,
@@ -4044,7 +4258,9 @@ async function buildStage2RecordsFromManifest(rootPath, manifest, options = {}) 
   const metadataConcurrency = resolveMetadataConcurrency(options);
   const records = await mapWithConcurrency(manifest.sources || [], metadataConcurrency, async (entry) => {
     const sourceState = createSourceStateFromManifestEntry(entry);
-    let semanticPaper = await loadSemanticPaperSnapshot(rootPath, entry.sourceKey);
+    let semanticPaper = upgradeSemanticPaperIdentityRecord(
+      await loadSemanticPaperSnapshot(rootPath, entry.sourceKey)
+    );
     let parsedPaper = null;
 
     if (!semanticPaper) {
@@ -4053,6 +4269,13 @@ async function buildStage2RecordsFromManifest(rootPath, manifest, options = {}) 
         throw new Error(`No semantic snapshot or markdown cache was available for ${entry.sourceKey}. Run Stage 1 before Stage 2.`);
       }
       semanticPaper = buildSemanticPaperView(parsedPaper);
+      mergeSemanticPaperIdentity(semanticPaper, sourceState.paperMetadata || {});
+      applySourceIdentityEnvelope(semanticPaper, {
+        sourceKind: sourceState.kind,
+        sourceProvider: sourceState.sourceProvider,
+        contentSha256: sourceState.contentSha256,
+        normalizedTextSha256: parsedPaper.normalizedTextSha256
+      }, semanticPaper);
       await saveSemanticPaperSnapshot(rootPath, entry.sourceKey, semanticPaper);
     }
 
@@ -4191,7 +4414,14 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
     parsed.sourceMarkdownPath = targetMarkdownPath;
     parsed.sourcePdfPath = targetSourcePdfPath;
     parsed.sourceKind = sourceState.kind;
+    parsed.sourceProvider = sourceState.sourceProvider || 'filesystem';
     parsed.sourceFingerprint = sourceState.fingerprint;
+    parsed.identifiers = mergePaperIdentifiers(
+      sourceState.paperMetadata || {},
+      parsed.identifiers || {}
+    ).identifiers;
+    parsed.contentSha256 = sourceState.contentSha256 || '';
+    parsed.normalizedTextSha256 = computeNormalizedTextSha256(markdown);
     return parsed;
   }
 
@@ -4304,6 +4534,13 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
 
     const semanticSnapshotStartedAt = Date.now();
     const semanticPaper = buildSemanticPaperView(parsed);
+    mergeSemanticPaperIdentity(semanticPaper, sourceState.paperMetadata || {});
+    applySourceIdentityEnvelope(semanticPaper, {
+      sourceKind: sourceState.kind,
+      sourceProvider: sourceState.sourceProvider,
+      contentSha256: sourceState.contentSha256,
+      normalizedTextSha256: parsed.normalizedTextSha256
+    }, semanticPaper);
     timings.semanticSnapshotMs += Date.now() - semanticSnapshotStartedAt;
     timings.totalMs = Date.now() - materializeStartedAt;
 
@@ -4325,6 +4562,13 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
 
   const semanticSnapshotStartedAt = Date.now();
   const semanticPaper = buildSemanticPaperView(parsed);
+  mergeSemanticPaperIdentity(semanticPaper, sourceState.paperMetadata || {});
+  applySourceIdentityEnvelope(semanticPaper, {
+    sourceKind: sourceState.kind,
+    sourceProvider: sourceState.sourceProvider,
+    contentSha256: sourceState.contentSha256,
+    normalizedTextSha256: parsed.normalizedTextSha256
+  }, semanticPaper);
   timings.semanticSnapshotMs += Date.now() - semanticSnapshotStartedAt;
   timings.totalMs = Date.now() - materializeStartedAt;
 
@@ -4356,7 +4600,15 @@ async function loadParsedPaperFromMarkdownCache(sourceState, cachedPaper = null)
   parsed.sourceMarkdownPath = markdownPath;
   parsed.sourcePdfPath = sourceState.kind === 'pdf' ? sourceState.inputPath : null;
   parsed.sourceKind = sourceState.kind;
+  parsed.sourceProvider = sourceState.sourceProvider || cachedPaper?.sourceProvider || 'filesystem';
   parsed.sourceFingerprint = sourceState.fingerprint;
+  parsed.identifiers = mergePaperIdentifiers(
+    cachedPaper?.identifiers || {},
+    sourceState.paperMetadata || {},
+    parsed.identifiers || {}
+  ).identifiers;
+  parsed.contentSha256 = sourceState.contentSha256 || cachedPaper?.contentSha256 || '';
+  parsed.normalizedTextSha256 = computeNormalizedTextSha256(markdown);
   return parsed;
 }
 
@@ -4473,7 +4725,7 @@ function createPaperTitleKey(paper) {
   );
   if (titleValidation?.isValid === false) return '';
 
-  const title = normalizeText(paper?.paperTitle || paper?.title || '');
+  const title = normalizeExactPaperTitle(paper?.normalizedTitle || paper?.paperTitle || paper?.title || '');
   if (title) return title;
   const sourcePath = paper?.sourcePath || paper?.sourceKey || '';
   return normalizeText(path.basename(sourcePath, path.extname(sourcePath)));
@@ -4506,6 +4758,20 @@ function compareSemanticPaperPreference(leftRecord, rightRecord) {
 }
 
 function papersAreDuplicate(leftPaper, rightPaper) {
+  if (paperIdentifiersConflict(leftPaper?.identifiers || {}, rightPaper?.identifiers || {})) {
+    return false;
+  }
+
+  const leftCanonicalId = String(leftPaper?.canonicalId || '').trim();
+  const rightCanonicalId = String(rightPaper?.canonicalId || '').trim();
+  if (leftCanonicalId && rightCanonicalId && leftCanonicalId === rightCanonicalId) {
+    return true;
+  }
+
+  if (paperStrongIdentityOverlap(leftPaper || {}, rightPaper || {})) {
+    return true;
+  }
+
   const leftTitle = createPaperTitleKey(leftPaper);
   const rightTitle = createPaperTitleKey(rightPaper);
   if (!leftTitle || !rightTitle || leftTitle !== rightTitle) return false;
@@ -4537,8 +4803,16 @@ function chooseCanonicalPaperId(group, canonicalRecord) {
     .filter(Boolean);
   if (anyPrevious.length) return anyPrevious[0];
 
-  const titleKey = createPaperTitleKey(canonicalRecord?.semanticPaper);
-  return `paper:${stableHash(`canonical:${titleKey || canonicalRecord?.sourceState?.sourceKey || ''}`)}`;
+  const mergedIdentity = mergePaperIdentity(
+    ...group.map((record) => record.semanticPaper || {}),
+    ...group.map((record) => record.sourceState?.previous || {}),
+    ...group.map((record) => record.sourceState?.paperMetadata || {})
+  );
+  const identitySeed = mergedIdentity.canonicalId
+    || createPaperTitleKey(canonicalRecord?.semanticPaper)
+    || canonicalRecord?.sourceState?.sourceKey
+    || '';
+  return `paper:${stableHash(`canonical:${identitySeed}`)}`;
 }
 
 function canonicalizeMaterializedSources(materializedSources = []) {
@@ -4567,6 +4841,13 @@ function canonicalizeMaterializedSources(materializedSources = []) {
     const canonicalPaperId = chooseCanonicalPaperId(group, canonicalRecord);
     const sourceKinds = unique(group.map((record) => record.semanticPaper.sourceKind || record.sourceState.kind).filter(Boolean));
     const sourceKeys = unique(group.map((record) => record.sourceState.sourceKey).filter(Boolean));
+    const mergedIdentity = mergePaperIdentity(
+      ...group.map((record) => record.semanticPaper || {}),
+      ...group.map((record) => record.sourceState?.previous || {}),
+      ...group.map((record) => record.sourceState?.paperMetadata || {})
+    );
+    const sourceProviders = unique(group.map((record) => record.semanticPaper.sourceProvider || record.sourceState.sourceProvider || 'filesystem').filter(Boolean));
+    const sourceIds = unique(group.map((record) => record.semanticPaper.sourceId || '').filter(Boolean));
 
     for (const record of group) {
       const activeInGraph = record.sourceState.sourceKey === canonicalRecord.sourceState.sourceKey;
@@ -4578,8 +4859,27 @@ function canonicalizeMaterializedSources(materializedSources = []) {
         activeInGraph,
         duplicateSourceCount: group.length,
         availableSourceKinds: sourceKinds,
-        sourceVariants: sourceKeys
+        sourceVariants: sourceKeys,
+        sourceProviders,
+        sourceIds,
+        sourceProvider: record.semanticPaper.sourceProvider || record.sourceState.sourceProvider || sourceProviders[0] || 'filesystem',
+        identifiers: mergedIdentity.identifiers,
+        normalizedTitle: mergedIdentity.normalizedTitle,
+        titleSignature: mergedIdentity.titleSignature,
+        canonicalId: mergedIdentity.canonicalId,
+        canonicalIdSource: mergedIdentity.canonicalIdSource,
+        identityConfidence: mergedIdentity.identityConfidence,
+        identityAliases: mergedIdentity.identityAliases
       };
+      applySourceIdentityEnvelope(normalizedPaper, {
+        sourceKind: normalizedPaper.sourceKind || record.sourceState.kind,
+        sourceProvider: normalizedPaper.sourceProvider,
+        contentSha256: normalizedPaper.contentSha256,
+        normalizedTextSha256: normalizedPaper.normalizedTextSha256
+      }, normalizedPaper);
+      if (Array.isArray(normalizedPaper.sourceIds) && normalizedPaper.sourceId) {
+        normalizedPaper.sourceIds = unique([...normalizedPaper.sourceIds, normalizedPaper.sourceId]).sort();
+      }
 
       normalizedRecords.push({
         ...record,
@@ -4650,7 +4950,8 @@ async function recoverMissingSemanticSnapshot(rootPath, entry, manifest = {}, op
   const cachedPaper = {
     paperId: entry.paperId || `paper:${stableHash(sourceState.sourceKey)}`,
     sourceMarkdownPath: entry.sourceMarkdownPath || entry.markdownCachePath || null,
-    sourceFingerprint: entry.sourceFingerprint || entry.fingerprint || null
+    sourceFingerprint: entry.sourceFingerprint || entry.fingerprint || null,
+    identifiers: normalizePaperIdentifiers(entry.identifiers || entry.paperMetadata || {})
   };
 
   const parsedFromCache = await loadParsedPaperFromMarkdownCache(sourceState, cachedPaper);
@@ -4693,7 +4994,9 @@ async function recanonicalizeManifestEntries(rootPath, manifestEntries = [], man
   const materializedSources = [];
   const removedEntries = [];
   for (const entry of manifestEntries) {
-    let snapshot = await loadSemanticPaperSnapshot(rootPath, entry.sourceKey);
+    let snapshot = upgradeSemanticPaperIdentityRecord(
+      await loadSemanticPaperSnapshot(rootPath, entry.sourceKey)
+    );
     if (!snapshot) {
       const recovered = await recoverMissingSemanticSnapshot(rootPath, entry, manifest, options);
       snapshot = recovered.semanticPaper;
@@ -4860,6 +5163,8 @@ function formatPaperRefreshEntry(entry) {
     sourceKey: entry.sourceKey,
     paperId: entry.paperId || null,
     paperTitle: entry.paperTitle || null,
+    canonicalId: entry.canonicalId || null,
+    sourceId: entry.sourceId || null,
     inputPath: entry.inputPath || entry.sourcePath || null,
     activeInGraph: entry.activeInGraph !== false,
     canonicalSourceKey: entry.canonicalSourceKey || entry.sourceKey,
@@ -4874,6 +5179,177 @@ function summarizePaperRefreshChanges(totalSourceCount, refreshedCount, removedC
     removed: Number(removedCount || 0),
     reused: Math.max(0, Number(totalSourceCount || 0) - Number(refreshedCount || 0) - Number(removedCount || 0))
   };
+}
+
+function normalizeBackfillSourcePaths(sourcePaths = []) {
+  return new Set(
+    (Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .map((value) => path.resolve(value))
+  );
+}
+
+function manifestEntryMatchesBackfillSelectors(entry, sourcePathSet = new Set(), sourceKeySet = new Set()) {
+  if (sourceKeySet.has(String(entry.sourceKey || '').trim())) {
+    return true;
+  }
+
+  if (!sourcePathSet.size) {
+    return false;
+  }
+
+  const candidatePaths = unique([
+    entry.inputPath,
+    entry.sourcePath,
+    entry.sourceMarkdownPath,
+    entry.sourcePdfPath,
+    entry.markdownCachePath
+  ].filter(Boolean).map((value) => path.resolve(String(value))));
+
+  return candidatePaths.some((candidatePath) => sourcePathSet.has(candidatePath));
+}
+
+export async function backfillPaperIdentifiers(rootPath, options = {}) {
+  const identifiers = normalizePaperIdentifierQuery(options.identifiers || options);
+  if (!Object.keys(identifiers).length) {
+    return {
+      updated: false,
+      matchedSources: [],
+      updatedSources: [],
+      updatedPaperIds: []
+    };
+  }
+
+  const sourcePathSet = normalizeBackfillSourcePaths(options.sourcePaths || []);
+  const sourceKeySet = new Set(
+    (Array.isArray(options.sourceKeys) ? options.sourceKeys : [options.sourceKeys])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  );
+
+  return withFileLock(getCorpusLockPath(rootPath), async () => {
+    const manifest = await loadSourceManifest(rootPath);
+    if (!manifest?.sources?.length) {
+      return {
+        updated: false,
+        matchedSources: [],
+        updatedSources: [],
+        updatedPaperIds: []
+      };
+    }
+
+    const normalizedManifestSources = (manifest.sources || []).map((entry) => upgradeManifestEntryIdentityRecord(entry));
+    const matchedEntries = normalizedManifestSources.filter((entry) => (
+      manifestEntryMatchesBackfillSelectors(entry, sourcePathSet, sourceKeySet)
+    ));
+    if (!matchedEntries.length) {
+      return {
+        updated: false,
+        matchedSources: [],
+        updatedSources: [],
+        updatedPaperIds: []
+      };
+    }
+
+    const targetPaperIds = new Set(matchedEntries.map((entry) => String(entry.paperId || '').trim()).filter(Boolean));
+    const targetSourceKeys = new Set(
+      normalizedManifestSources
+        .filter((entry) => targetPaperIds.size
+          ? targetPaperIds.has(String(entry.paperId || '').trim())
+          : matchedEntries.includes(entry))
+        .map((entry) => String(entry.sourceKey || '').trim())
+        .filter(Boolean)
+    );
+
+    let updatedSources = [];
+    const nextSources = normalizedManifestSources.map((entry) => {
+      if (!targetSourceKeys.has(String(entry.sourceKey || '').trim())) {
+        return entry;
+      }
+
+      const nextEntry = upgradeManifestEntryIdentityRecord({
+        ...entry,
+        paperMetadata: normalizePaperMetadataPayload({
+          ...(entry.paperMetadata || {}),
+          identifiers: mergePaperIdentifiers(entry, identifiers).identifiers
+        })
+      }, {
+        paperMetadata: { identifiers }
+      });
+      if (JSON.stringify(entry) === JSON.stringify(nextEntry)) {
+        return entry;
+      }
+
+      updatedSources.push(entry.sourceKey);
+      return nextEntry;
+    });
+
+    if (!updatedSources.length) {
+      return {
+        updated: false,
+        matchedSources: matchedEntries.map((entry) => entry.sourceKey),
+        updatedSources: [],
+        updatedPaperIds: [...targetPaperIds].sort()
+      };
+    }
+
+    const activeSources = nextSources.filter((entry) => entry.activeInGraph !== false);
+    const updatedSourceKeySet = new Set(updatedSources);
+    await mapWithConcurrency(updatedSources, Math.min(resolveMetadataConcurrency(options), Math.max(updatedSources.length, 1)), async (sourceKey) => {
+      const snapshot = upgradeSemanticPaperIdentityRecord(
+        await loadSemanticPaperSnapshot(rootPath, sourceKey)
+      );
+      if (!snapshot) return;
+      const nextSnapshot = upgradeSemanticPaperIdentityRecord(snapshot, {
+        paperMetadata: { identifiers }
+      });
+      if (JSON.stringify(snapshot) === JSON.stringify(nextSnapshot)) {
+        return;
+      }
+      await saveSemanticPaperSnapshot(rootPath, sourceKey, nextSnapshot);
+    });
+
+    const { graph, meta } = await loadCorpus(rootPath);
+    const updatedPaperIds = new Set();
+    for (const entry of nextSources) {
+      const paperId = String(entry.paperId || '').trim();
+      if (!paperId || !updatedSourceKeySet.has(String(entry.sourceKey || '').trim())) continue;
+      const node = graph.getNode(paperId);
+      if (!node) continue;
+      const nextProperties = {
+        ...node.properties,
+        ...buildPaperIdentityProperties(entry)
+      };
+      if (JSON.stringify(node.properties || {}) !== JSON.stringify(nextProperties)) {
+        node.properties = nextProperties;
+      }
+      updatedPaperIds.add(paperId);
+    }
+
+    const nextManifest = {
+      ...manifest,
+      indexedAt: new Date().toISOString(),
+      sources: nextSources
+    };
+    const nextMeta = {
+      ...meta,
+      indexedAt: nextManifest.indexedAt
+    };
+
+    await saveCorpus(rootPath, graph, nextMeta, {
+      liteViewMode: 'incremental',
+      liteViewSources: activeSources
+    });
+    await saveSourceManifest(rootPath, nextManifest);
+
+    return {
+      updated: true,
+      matchedSources: matchedEntries.map((entry) => entry.sourceKey),
+      updatedSources: updatedSources.sort(),
+      updatedPaperIds: [...updatedPaperIds].sort()
+    };
+  }, options.lockOptions);
 }
 
 async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = {}) {
@@ -4892,6 +5368,7 @@ async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = 
 
   const stats = await fs.stat(inputPath);
   const fingerprint = createSourceFingerprint(stats);
+  const contentSha256 = await computeSourceContentSha256(inputPath, entry, fingerprint);
   const expectedMarkdownCachePath = resolveExpectedMarkdownCachePath(rootPath, {
     sourceKey: entry.sourceKey,
     inputPath,
@@ -4905,6 +5382,8 @@ async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = 
     sourceKey: entry.sourceKey,
     inputPath,
     kind: inputSpec.kind,
+    sourceProvider: entry.sourceProvider || 'filesystem',
+    contentSha256,
     fingerprint,
     sourceMtimeMs: Number(stats.mtimeMs || 0),
     sourceSizeBytes: Number(stats.size || 0),
@@ -5133,7 +5612,9 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
     );
 
     if (sourceState.changeType === 'unchanged' || sourceState.reuseCachedMaterialization) {
-        const cachedPaper = sourceState.cachedPaper || await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey);
+        const cachedPaper = sourceState.cachedPaper || upgradeSemanticPaperIdentityRecord(
+          await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey)
+        );
         if (cachedPaper) {
           const shouldPrepareParsedPaper = Boolean(
           options.enableLlmEnrichment !== false
@@ -5176,7 +5657,9 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
       });
 
       if (sourceState.previous) {
-        const cachedPaper = sourceState.cachedPaper || await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey);
+        const cachedPaper = sourceState.cachedPaper || upgradeSemanticPaperIdentityRecord(
+          await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey)
+        );
         if (cachedPaper) {
           // 增量重试次数，以便 snapshotNeedsLlmRefresh 在未来不再无限重试
           if (cachedPaper.llm) {
@@ -5340,13 +5823,18 @@ export async function analyzeCorpus(inputPath, options = {}) {
     const sourceStates = await mapWithConcurrency(discovery.sources, metadataConcurrency, async (source) => {
       const stats = await fs.stat(source.inputPath);
       const fingerprint = createSourceFingerprint(stats);
-      const previous = previousByKey.get(source.sourceKey) || null;
+      const previous = previousByKey.get(source.sourceKey)
+        ? upgradeManifestEntryIdentityRecord(previousByKey.get(source.sourceKey))
+        : null;
+      const importTaskFileMetadata = await loadImportTaskFileMetadata(rootPath, source.inputPath);
       const snapshotPath = getSemanticPaperSnapshotPath(rootPath, source.sourceKey);
       const snapshotExists = await fileExists(snapshotPath);
       let cachedPaper = null;
 
       if (snapshotExists) {
-        cachedPaper = await loadSemanticPaperSnapshot(rootPath, source.sourceKey);
+        cachedPaper = upgradeSemanticPaperIdentityRecord(
+          await loadSemanticPaperSnapshot(rootPath, source.sourceKey)
+        );
         if (cachedPaper?.sourceFingerprint !== fingerprint) {
           cachedPaper = null;
         }
@@ -5415,11 +5903,29 @@ export async function analyzeCorpus(inputPath, options = {}) {
         }
       }
 
+      const sourceProvider = importTaskFileMetadata?.file?.paperMetadata?.sourceProvider
+        || source.sourceProvider
+        || previous?.sourceProvider
+        || cachedPaper?.sourceProvider
+        || 'filesystem';
+      const contentSha256 = String(importTaskFileMetadata?.file?.contentSha256 || '').trim()
+        || await computeSourceContentSha256(source.inputPath, previous, fingerprint);
+      const paperMetadata = normalizePaperMetadataPayload(
+        source.paperMetadata
+        || importTaskFileMetadata?.file?.paperMetadata
+        || previous?.paperMetadata
+        || previous
+        || cachedPaper
+        || {}
+      );
+
       return {
         ...source,
         fingerprint,
         sourceMtimeMs: Number(stats.mtimeMs || 0),
         sourceSizeBytes: Number(stats.size || 0),
+        sourceProvider,
+        contentSha256,
         previous,
         changeType,
         markdownCachePath,
@@ -5427,6 +5933,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
         markdownCacheExists,
         markdownCacheNeedsRefresh,
         cachedPaper,
+        paperMetadata,
         llmRefreshState,
         reuseCachedMaterialization
       };
@@ -5497,13 +6004,45 @@ export async function analyzeCorpus(inputPath, options = {}) {
         ? 'markdown cache and heuristic semantic snapshots'
         : (optimizeOnly || llmOnly ? 'cache-first snapshot reuse before optimization' : 'cache-first materialization and snapshot reuse')
     );
-    const { semanticPapers, manifestSources: materializedManifestSources, failedSources, timings: materializeTimings } = await materializeSourceStates(rootPath, sourceStates, materializeOptions);
+    const materialized = await materializeSourceStates(rootPath, sourceStates, materializeOptions);
+    let {
+      semanticPapers,
+      manifestSources: materializedManifestSources,
+      failedSources,
+      timings: materializeTimings
+    } = materialized;
     let manifestSources = materializedManifestSources;
     if (mergeWithExistingManifestSources) {
       const materializedSourceKeys = new Set(materializedManifestSources.map((entry) => entry.sourceKey));
-      manifestSources = [
+      const mergedManifestSources = [
         ...(previousManifest?.sources || []).filter((entry) => !materializedSourceKeys.has(entry.sourceKey)),
         ...materializedManifestSources
+      ];
+      const recanonicalized = await recanonicalizeManifestEntries(
+        rootPath,
+        mergedManifestSources,
+        previousManifest || {},
+        analysisOptions
+      );
+      manifestSources = recanonicalized.sources;
+      if (recanonicalized.removedEntries.length) {
+        failedSources = [
+          ...failedSources,
+          ...recanonicalized.removedEntries.map((entry) => ({
+            sourceKey: entry.sourceKey,
+            inputPath: entry.inputPath,
+            message: 'Source was removed during manifest recanonicalization.'
+          }))
+        ];
+      }
+      const reloaded = await loadSemanticPapersFromManifest(rootPath, {
+        ...previousManifest,
+        sources: manifestSources
+      }, metadataConcurrency);
+      semanticPapers = reloaded.semanticPapers;
+      failedSources = [
+        ...failedSources,
+        ...reloaded.failedSources.filter((entry) => !failedSources.some((existing) => existing.sourceKey === entry.sourceKey))
       ];
     }
 

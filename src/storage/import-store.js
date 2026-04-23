@@ -11,6 +11,10 @@ import {
   withFileLock,
   writeJson
 } from '../lib/fs.js';
+import {
+  mergePaperIdentifiers,
+  normalizePaperIdentifiers
+} from '../lib/paper-identifiers.js';
 import { slugify, stableHash } from '../lib/utils.js';
 
 const IMPORT_SCHEMA_VERSION = 1;
@@ -260,6 +264,78 @@ function createImportFingerprint(rootPath, files = []) {
   })).digest('hex');
 }
 
+function createImportFileSignature(file = {}) {
+  const kind = String(file?.kind || '').trim().toLowerCase();
+  const size = Number(file?.sizeBytes || 0);
+  const contentFingerprint = String(file?.contentFingerprint || '').trim();
+  return `${kind}:${size}:${contentFingerprint}`;
+}
+
+function normalizeStoredPaperMetadata(input = {}) {
+  const identifiers = normalizePaperIdentifiers(input);
+  const sourceProvider = String(
+    input?.sourceProvider
+    || input?.provider
+    || input?.paperMetadata?.sourceProvider
+    || ''
+  ).trim();
+  if (!Object.keys(identifiers).length && !sourceProvider) {
+    return null;
+  }
+  return {
+    ...(Object.keys(identifiers).length ? { identifiers } : {}),
+    ...(sourceProvider ? { sourceProvider } : {})
+  };
+}
+
+function mergeStoredPaperMetadata(existingMetadata = null, incomingMetadata = null) {
+  const merged = mergePaperIdentifiers(existingMetadata || {}, incomingMetadata || {});
+  const sourceProvider = String(
+    incomingMetadata?.sourceProvider
+    || existingMetadata?.sourceProvider
+    || ''
+  ).trim();
+  if (!Object.keys(merged.identifiers).length && !sourceProvider) {
+    return null;
+  }
+  return {
+    ...(Object.keys(merged.identifiers).length ? { identifiers: merged.identifiers } : {}),
+    ...(sourceProvider ? { sourceProvider } : {})
+  };
+}
+
+function mergeTaskFileMetadata(existingTask = {}, incomingFiles = []) {
+  const queuedBySignature = new Map();
+  for (const file of incomingFiles) {
+    const signature = createImportFileSignature(file);
+    if (!queuedBySignature.has(signature)) {
+      queuedBySignature.set(signature, []);
+    }
+    queuedBySignature.get(signature).push(normalizeStoredPaperMetadata(file.paperMetadata));
+  }
+
+  let changed = false;
+  const files = (existingTask.files || []).map((file) => {
+    const signature = createImportFileSignature(file);
+    const queue = queuedBySignature.get(signature) || [];
+    const incomingMetadata = queue.length ? queue.shift() : null;
+    const currentMetadata = normalizeStoredPaperMetadata(file.paperMetadata);
+    const nextMetadata = mergeStoredPaperMetadata(currentMetadata, incomingMetadata);
+    if (JSON.stringify(currentMetadata) !== JSON.stringify(nextMetadata)) {
+      changed = true;
+    }
+    return {
+      ...file,
+      paperMetadata: nextMetadata
+    };
+  });
+
+  return {
+    changed,
+    files
+  };
+}
+
 function normalizeImportFileIdentityName(value = '') {
   return path.basename(String(value || '').trim(), path.extname(String(value || '').trim()))
     .toLowerCase()
@@ -330,6 +406,38 @@ export function getImportTaskPaths(rootPath, taskId) {
     taskPath: path.join(taskDir, 'task.json'),
     logPath: path.join(taskDir, 'events.log'),
     sourcesDir: path.join(taskDir, 'sources')
+  };
+}
+
+export async function loadImportTaskFileMetadata(rootPath, storedPath) {
+  const normalizedPath = path.resolve(String(storedPath || '').trim());
+  if (!normalizedPath) return null;
+
+  const { tasksDir } = getImportPaths(rootPath);
+  const relative = path.relative(tasksDir, normalizedPath);
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..') {
+    return null;
+  }
+
+  const segments = relative.split(path.sep);
+  if (segments.length < 3 || segments[1] !== 'sources') {
+    return null;
+  }
+
+  const taskPath = path.join(tasksDir, segments[0], 'task.json');
+  const task = await readJson(taskPath, null);
+  if (!task?.id) {
+    return null;
+  }
+
+  const file = (task.files || []).find((entry) => path.resolve(String(entry?.storedPath || '')) === normalizedPath) || null;
+  if (!file) {
+    return null;
+  }
+
+  return {
+    task,
+    file
   };
 }
 
@@ -801,7 +909,9 @@ export async function createImportTask(rootPath, options = {}) {
       content,
       sizeBytes: content.length,
       mimeType: String(file.mimeType || '').trim() || (kind === 'pdf' ? 'application/pdf' : 'text/markdown'),
-      contentFingerprint: createContentFingerprint(content)
+      contentFingerprint: createContentFingerprint(content),
+      contentSha256: `sha256:${createContentFingerprint(content)}`,
+      paperMetadata: normalizeStoredPaperMetadata(file.paperMetadata || file)
     };
   });
   const importFingerprint = createImportFingerprint(rootPath, normalizedFiles);
@@ -815,6 +925,23 @@ export async function createImportTask(rootPath, options = {}) {
     if (indexedTaskId) {
       const existingTask = await loadImportTask(rootPath, indexedTaskId);
       if (existingTask && ['pending', 'running', 'completed'].includes(existingTask.status)) {
+        const mergedMetadata = mergeTaskFileMetadata(existingTask, normalizedFiles);
+        if (mergedMetadata.changed) {
+          const nextTask = {
+            ...existingTask,
+            files: mergedMetadata.files,
+            updatedAt: new Date().toISOString()
+          };
+          await saveImportTask(rootPath, nextTask);
+          updateQueuedJob(queue, nextTask);
+          queue.updatedAt = nextTask.updatedAt;
+          await saveImportQueue(rootPath, queue);
+          return {
+            ...nextTask,
+            deduped: true,
+            metadataUpdated: true
+          };
+        }
         return {
           ...existingTask,
           deduped: true
@@ -856,7 +983,9 @@ export async function createImportTask(rootPath, options = {}) {
         sizeBytes: file.sizeBytes,
         mimeType: file.mimeType,
         kind,
-        contentFingerprint: file.contentFingerprint
+        contentFingerprint: file.contentFingerprint,
+        contentSha256: file.contentSha256,
+        paperMetadata: file.paperMetadata
       });
     }
 

@@ -46,8 +46,10 @@ test('PaperNexus skill scripts live under skill directories and skills do not po
     ['PaperNexus', 'scripts', 'pn_import_submit.py'],
     ['PaperNexus', 'scripts', 'pn_import_queue.py'],
     ['PaperNexus', 'scripts', 'pn_graph_query.py'],
+    ['PaperNexus', 'scripts', 'pn_paper_index.py'],
     ['PaperNexus', 'scripts', 'pn_research_chains.py'],
     ['PaperNexus', 'scripts', 'pn_batch_import.py'],
+    ['PaperNexusPrecisePaperIndex', 'scripts', 'pn_paper_index.py'],
   ];
   const localEntryPoints = [
     ['PaperNexusAgenticReasoning', 'scripts', 'pn_import_submit.py'],
@@ -73,6 +75,7 @@ test('PaperNexus skill scripts live under skill directories and skills do not po
     'PaperNexusMainGraphName/SKILL.md',
     'PaperNexusPaperRefresh/SKILL.md',
     'PaperNexus/SKILL.md',
+    'PaperNexusPrecisePaperIndex/SKILL.md',
     'PaperNexusAgenticReasoning/SKILL.md',
     'PaperNexusBatchImport/SKILL.md',
     'PaperNexusReflection/SKILL.md',
@@ -449,7 +452,8 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
-        '--server-file-path', fixture.markdownUploadPath
+        '--server-file-path', fixture.markdownUploadPath,
+        '--doi', '10.48550/papernexus.python-submit'
       ]);
       const submitted = JSON.parse(submit.stdout);
       assert.equal(submitted.task.status, 'pending');
@@ -511,7 +515,8 @@ test('pn_import_submit.py accepts tilde-style serverFilePath values and reports 
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--corpus', 'python-remote-test',
-        '--server-file-path', '~/uploads/server-side-upload.md'
+        '--server-file-path', '~/uploads/server-side-upload.md',
+        '--doi', '10.48550/papernexus.python-submit-tilde'
       ]);
       const submitted = JSON.parse(submit.stdout);
       assert.equal(submitted.rootPath, '~/index-store');
@@ -540,6 +545,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
         '--token', 'secret-token',
         '--paper-id', '2305.18909',
+        '--doi', '10.48550/papernexus.python-registry',
         '--source', fixture.markdownUploadPath,
         '--source-kind', 'markdown'
       ], {
@@ -645,6 +651,32 @@ test('pn_graph_query.py exposes query and brainstorm through remote HTTP MCP', a
   }
 });
 
+test('pn_paper_index.py resolves exact papers through remote HTTP MCP', async () => {
+  const fixture = await createImportFixture();
+  const port = 54700 + Math.floor(Math.random() * 500);
+
+  try {
+    const server = await startServer(fixture, port, { enableImports: false });
+    try {
+      const lookup = await runPython('pn_paper_index.py', [
+        '--json',
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
+        '--token', 'secret-token',
+        '--corpus', 'python-remote-test',
+        '--paper-title', 'Retrieval-Augmented Experiment Planning with Lab Notebooks'
+      ]);
+      const payload = JSON.parse(lookup.stdout);
+      assert.equal(payload.result.contractVersion, 'paper-precise-index-v1');
+      assert.equal(payload.result.matchCount, 1);
+      assert.equal(payload.result.matches[0].paperTitle, 'Retrieval-Augmented Experiment Planning with Lab Notebooks');
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
 test('pn_batch_import.py submits a JSON manifest and supports batch wait/status', async () => {
   const fixture = await createImportFixture();
   const port = 55600 + Math.floor(Math.random() * 500);
@@ -670,12 +702,18 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
           {
             paperId: 'batch-paper-1',
             source: fixture.markdownUploadPath,
-            sourceKind: 'markdown'
+            sourceKind: 'markdown',
+            identifiers: {
+              doi: '10.48550/papernexus.batch-paper-1'
+            }
           },
           {
             paperId: 'batch-paper-2',
             source: secondUploadPath,
-            sourceKind: 'markdown'
+            sourceKind: 'markdown',
+            identifiers: {
+              doi: '10.48550/papernexus.batch-paper-2'
+            }
           }
         ]
       }, null, 2),
@@ -760,6 +798,7 @@ test('pn_batch_import.py template emits the fixed manifest schema', async () => 
   assert.ok(Array.isArray(payload.papers));
   assert.equal(payload.papers.length, 1);
   assert.equal(typeof payload.papers[0].source, 'string');
+  assert.equal(typeof payload.papers[0].identifiers.doi, 'string');
 });
 
 test('pn_research_chains.py exposes evidence, reflection, and brief endpoints through remote HTTP MCP', async () => {

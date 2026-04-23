@@ -588,7 +588,10 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          serverFilePath: uploadPath
+          serverFilePath: uploadPath,
+          identifiers: {
+            doi: '10.48550/papernexus.http-server-upload'
+          }
         })
       });
       assert.equal(created.status, 202);
@@ -603,7 +606,10 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          serverFilePath: uploadPath
+          serverFilePath: uploadPath,
+          identifiers: {
+            doi: '10.48550/papernexus.http-server-upload'
+          }
         })
       });
       assert.equal(deduped.status, 202);

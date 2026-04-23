@@ -7,6 +7,7 @@ import {
   ideasGraphPayload,
   impactGraphPayload,
   loadCorpusLiteForApi,
+  paperIndexPayload,
   queryGraphPayload,
   resolveCorpusForApi
 } from '../server/api.js';
@@ -45,6 +46,24 @@ export async function executeResearchLookupTool(args = {}, options = {}) {
       return ideasGraphPayload(candidate, buildGraphRequestBody(args), options);
     case 'brainstorm':
       return brainstormGraphPayload(candidate, buildGraphRequestBody(args), options);
+    case 'paper_index':
+      return paperIndexPayload(candidate, {
+        paperId: args.paperId,
+        canonicalId: args.canonicalId,
+        sourceId: args.sourceId,
+        sourceKey: args.sourceKey,
+        source: args.source,
+        paperTitle: args.paperTitle || args.title,
+        identifier: args.identifier,
+        identifierType: args.identifierType,
+        doi: args.doi,
+        arxivId: args.arxivId,
+        pmid: args.pmid,
+        pmcid: args.pmcid,
+        isbn: args.isbn,
+        issn: args.issn,
+        identifiers: args.identifiers
+      }, options);
     case 'domain_distance': {
       const rootPath = await resolveCorpusForApi(candidate, options);
       const { graph, meta } = await loadCorpusLiteForApi(rootPath, options);

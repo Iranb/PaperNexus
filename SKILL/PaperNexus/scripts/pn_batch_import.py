@@ -81,6 +81,9 @@ def manifest_template() -> dict:
                 "paperId": "iclr2025-oral-data-shapley",
                 "source": "/absolute/local/path/to/paper.pdf",
                 "sourceKind": "pdf",
+                "identifiers": {
+                    "doi": "10.48550/arXiv.2401.12345"
+                },
             }
         ],
     }
@@ -128,10 +131,33 @@ def normalize_manifest_items(manifest: dict) -> list[dict]:
             raise RemoteScriptError(f"Batch manifest paper #{index} is missing `source`.")
         paper_id = infer_paper_id(str(entry.get("paperId") or ""), source)
         source_kind = infer_source_kind(source, str(entry.get("sourceKind") or ""))
+        identifiers = {}
+        identifier_block = entry.get("identifiers") or {}
+        for raw_key, normalized_key in [
+            ("doi", "doi"),
+            ("arxivId", "arxivId"),
+            ("arxiv_id", "arxivId"),
+            ("arxiv", "arxivId"),
+            ("pmid", "pmid"),
+            ("pubmedId", "pmid"),
+            ("pmcid", "pmcid"),
+            ("pubmedCentralId", "pmcid"),
+            ("isbn", "isbn"),
+            ("issn", "issn"),
+        ]:
+            value = str(entry.get(raw_key) or identifier_block.get(raw_key) or "").strip()
+            if value:
+                identifiers[normalized_key] = value
+        if not identifiers:
+            raise RemoteScriptError(
+                f"Batch manifest paper #{index} is missing a precise identifier. Add identifiers.doi / arxivId / isbn / issn."
+            )
         normalized.append({
             "paperId": paper_id,
             "source": source,
             "sourceKind": source_kind,
+            "identifiers": identifiers,
+            "sourceProvider": str(entry.get("sourceProvider") or entry.get("provider") or "").strip(),
             "taskId": str(entry.get("taskId") or "").strip(),
             "remoteDir": str(entry.get("remoteDir") or "").strip(),
             "serverFilePath": str(entry.get("serverFilePath") or "").strip(),
@@ -215,6 +241,8 @@ def submit_item(item: dict, args, mcp_url: str, token: str, corpus: str, default
             "corpus": corpus,
             "serverFilePath": server_file_path,
             "trigger": first_defined(args.trigger, defaults.get("trigger"), "mcp"),
+            "identifiers": item["identifiers"],
+            **({"sourceProvider": item["sourceProvider"]} if item.get("sourceProvider") else {}),
         },
         timeout=args.request_timeout,
     )
@@ -237,6 +265,8 @@ def submit_item(item: dict, args, mcp_url: str, token: str, corpus: str, default
         "submitted": True,
         "synced": str(task.get("status") or "").lower() == "completed" and str(task.get("stage") or "").lower() == "completed",
         "remoteFile": server_file_path,
+        "identifiers": item["identifiers"],
+        **({"sourceProvider": item["sourceProvider"]} if item.get("sourceProvider") else {}),
         "deduped": bool(payload.get("deduped")),
         "progress": task.get("progress") or {},
         "registry": {
@@ -316,6 +346,7 @@ def build_status_result(item: dict, task: typing.Optional[dict], record: typing.
             "stage": "",
             "submitted": False,
             "synced": False,
+            "identifiers": item["identifiers"],
             "progress": {},
             "registry": build_registry_summary(record, matched_by),
         }
@@ -331,6 +362,7 @@ def build_status_result(item: dict, task: typing.Optional[dict], record: typing.
         "stage": stage,
         "submitted": True,
         "synced": status.lower() == "completed" and stage.lower() == "completed",
+        "identifiers": item["identifiers"],
         "progress": task.get("progress") or {},
         "error": task.get("error"),
         "finishedAt": task.get("finishedAt"),
@@ -394,6 +426,7 @@ def wait_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry:
             "stage": "",
             "submitted": False,
             "synced": False,
+            "identifiers": item["identifiers"],
             "log": "",
             "registry": build_registry_summary(record, matched_by),
         }
@@ -417,6 +450,7 @@ def wait_item(item: dict, args, mcp_url: str, token: str, corpus: str, registry:
         "stage": str(task.get("stage") or "").strip(),
         "submitted": True,
         "synced": str(task.get("status") or "").lower() == "completed" and str(task.get("stage") or "").lower() == "completed",
+        "identifiers": item["identifiers"],
         "progress": task.get("progress") or {},
         "error": task.get("error"),
         "finishedAt": task.get("finishedAt"),

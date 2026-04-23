@@ -36,6 +36,7 @@ Shell fallback wrappers:
 
 - `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`
 - `python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py`
+- `python3 SKILL/PaperNexus/scripts/pn_paper_index.py`
 - `python3 SKILL/PaperNexus/scripts/pn_batch_import.py`
 - `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
 - `python3 SKILL/PaperNexus/scripts/pn_import_submit.py`
@@ -65,7 +66,7 @@ Rules:
 For OpenClaw-native use, call these tools on the configured `papernexus-remote` server directly:
 
 - `research_lookup`
-  Use for `query`, `context`, `impact`, `ideas`, and `brainstorm`
+  Use for `query`, `context`, `impact`, `ideas`, `brainstorm`, and `paper_index`
 - `research_briefing`
   Use for `path-trace`, `evidence-chain`, `reflection-chain`, `theory-brief`, `storyline-brief`, `research-brief`, `brainstorm-brief`, and `paper-enhancement`
 - `import_workflow`
@@ -86,8 +87,9 @@ For OpenClaw-native use, call these tools on the configured `papernexus-remote` 
    `import_workflow submit` sends `serverFilePath` to the remote PaperNexus server, so that path must exist on the server machine, not on the agent's local filesystem.
    If the path is under the server user's home directory, keep it in `~/...` form instead of copying the raw `/home/...` prefix.
 3. If the paper is already on the server machine, use `--server-file-path`.
+   Before submitting, prefer an exact `paper_index` lookup by DOI / arXiv ID / PMID / PMCID when the identifier is available.
 4. If the paper is local to the agent machine, do not call `import_workflow submit` with the local path directly. Stage it with:
-   `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file>`
+   `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --doi <doi>`
    The wrapper will:
    - detect that the source is local
    - `ssh`/`rsync` it to remote staging
@@ -108,6 +110,9 @@ Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging an
 
 ## Upload Rules
 
+- Every uploaded paper must include at least one precise identifier.
+- Strong paper identity prefers DOI, arXiv ID, PMID, or PMCID.
+- ISBN / ISSN are stored, but by themselves they do not replace article-level identity.
 - Never pass a local workstation path like `/Users/<user>/.../paper.pdf` as remote `serverFilePath`.
 - `serverFilePath` is only valid for files already present on the remote PaperNexus server.
 - If a remote metadata response shows `~/.papernexus/...`, keep that exact `~`-prefixed path when calling wrappers again.
@@ -124,7 +129,14 @@ Use shell examples only when local file staging or shell-only execution is requi
 python3 SKILL/PaperNexus/scripts/pn_import_submit.py \
   --corpus "<corpus>" \
   --paper-id "data-shapley-iclr-2025" \
+  --doi "10.48550/arXiv.2401.12345" \
+  --source-provider "filesystem" \
   --source "/absolute/path/paper.pdf"
+
+python3 SKILL/PaperNexus/scripts/pn_paper_index.py \
+  --corpus "<corpus>" \
+  --doi "10.48550/arXiv.2401.12345" \
+  --json
 
 python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
   --corpus "<corpus>" \

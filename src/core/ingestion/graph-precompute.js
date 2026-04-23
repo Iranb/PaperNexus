@@ -19,6 +19,11 @@ import {
   normalizeIdeaFragmentRecord,
   normalizeTakeawayRecord
 } from '../graph/takeaways.js';
+import {
+  createPaperIdentifierKeys,
+  createPaperIdentity,
+  flattenPaperIdentifiers
+} from '../../lib/paper-identifiers.js';
 import { jaccardSimilarity, normalizeText, slugify, stableHash, unique } from '../../lib/utils.js';
 
 const GENERIC_MECHANISM_TOKENS = new Set([
@@ -528,6 +533,7 @@ export function precomputePaperGraphFragment(paper) {
     paper.abstractMechanismObjects || paper.abstractMechanisms || paper.mechanismHints || []
   );
   const paperAbstractMechanisms = normalizeAbstractMechanismNames(paperAbstractMechanismObjects);
+  const paperIdentity = createPaperIdentity(paper);
   const paperNode = {
     id: paper.paperId,
     type: NODE_TYPES.PAPER,
@@ -542,7 +548,24 @@ export function precomputePaperGraphFragment(paper) {
       sourceMarkdownPath: paper.sourceMarkdownPath,
       sourcePdfPath: paper.sourcePdfPath,
       sourceKind: paper.sourceKind,
+      sourceProvider: paper.sourceProvider,
+      sourceId: paper.sourceId,
+      sourceIds: Array.isArray(paper.sourceIds) ? paper.sourceIds : undefined,
+      availableSourceKinds: Array.isArray(paper.availableSourceKinds) ? paper.availableSourceKinds : undefined,
+      sourceVariants: Array.isArray(paper.sourceVariants) ? paper.sourceVariants : undefined,
       sourceFingerprint: paper.sourceFingerprint,
+      contentSha256: paper.contentSha256,
+      normalizedTextSha256: paper.normalizedTextSha256,
+      resolutionStatus: paper.resolutionStatus,
+      canonicalId: paperIdentity.canonicalId,
+      canonicalIdSource: paperIdentity.canonicalIdSource,
+      identityConfidence: paperIdentity.identityConfidence,
+      identityAliases: paperIdentity.identityAliases,
+      normalizedTitle: paperIdentity.normalizedTitle,
+      titleSignature: paperIdentity.titleSignature,
+      identifiers: paperIdentity.identifiers,
+      identifierKeys: createPaperIdentifierKeys(paperIdentity.identifiers),
+      ...flattenPaperIdentifiers(paperIdentity.identifiers),
       fieldOfStudy: paperFieldOfStudy,
       fieldCandidates: paperFieldCandidates,
       domainTags: paperDomainTags,

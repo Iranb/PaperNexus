@@ -23,6 +23,7 @@ import {
   listImportTasksPayload,
   listCorporaPayload,
   llmConfigPayload,
+  paperIndexPayload,
   paperEnhancementPayload,
   pathTraceGraphPayload,
   queryGraphPayload,
@@ -835,6 +836,13 @@ export async function serveCommand(options = {}) {
         const payload = await createImportTaskPayload(name, body, apiOptions);
         importWorker?.pollNow();
         sendJson(response, 202, payload);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/paper-index') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await paperIndexPayload(name, body, apiOptions));
         return;
       }
 

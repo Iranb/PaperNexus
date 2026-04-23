@@ -84,7 +84,15 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       return createImportTaskPayload(candidate, {
         trigger: args.trigger || 'mcp',
         serverFilePath: args.serverFilePath || args.server_file_path,
-        files: Array.isArray(args.files) ? args.files : undefined
+        files: Array.isArray(args.files) ? args.files : undefined,
+        identifiers: args.identifiers,
+        doi: args.doi,
+        arxivId: args.arxivId || args.arxiv_id,
+        pmid: args.pmid,
+        pmcid: args.pmcid,
+        isbn: args.isbn,
+        issn: args.issn,
+        sourceProvider: args.sourceProvider || args.source_provider
       }, options);
     case 'list': {
       const payload = await listImportTasksPayload(candidate, options);

@@ -121,6 +121,52 @@ test('createImportTask ignores uploaded metadata files and keeps only real paper
   }
 });
 
+test('createImportTask stores per-file paper identifiers and merges them on deduped uploads', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-identifiers-'));
+
+  try {
+    const { createImportTask, loadImportTask } = await import('../src/storage/import-store.js');
+    const contentBase64 = Buffer.from('# Identifier Paper\n\n## Abstract\n\nIdentifier metadata test.\n', 'utf8').toString('base64');
+
+    const firstTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'identifier-paper.md',
+          contentBase64,
+          mimeType: 'text/markdown',
+          identifiers: {
+            doi: '10.48550/papernexus.identifier-paper'
+          }
+        }
+      ]
+    });
+    assert.equal(firstTask.files[0].paperMetadata.identifiers.doi, '10.48550/papernexus.identifier-paper');
+
+    const dedupedTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'identifier-paper-copy.md',
+          contentBase64,
+          mimeType: 'text/markdown',
+          identifiers: {
+            arxivId: '2401.12345'
+          }
+        }
+      ]
+    });
+    assert.equal(dedupedTask.id, firstTask.id);
+    assert.equal(dedupedTask.deduped, true);
+
+    const loaded = await loadImportTask(rootPath, firstTask.id);
+    assert.equal(loaded.files[0].paperMetadata.identifiers.doi, '10.48550/papernexus.identifier-paper');
+    assert.equal(loaded.files[0].paperMetadata.identifiers.arxivId, '2401.12345');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('createImportTask reuses an existing task for identical uploaded content', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-dedupe-'));
 

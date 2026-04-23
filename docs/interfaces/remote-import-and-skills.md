@@ -31,6 +31,7 @@ Important wrappers include:
 - `pn_import_submit.py`
 - `pn_import_queue.py`
 - `pn_batch_import.py`
+- `pn_paper_index.py`
 - `pn_graph_query.py`
 - `pn_research_chains.py`
 - `pn_idea_catalyst.py`
@@ -42,6 +43,22 @@ Important wrappers include:
 3. submit the remote import task
 4. query progress by `paperId`, `source`, or `taskId`
 5. only declare success when the task reports `completed` at the final stage
+
+Every uploaded paper now needs at least one precise identifier:
+
+- DOI
+- arXiv ID
+- PMID
+- PMCID
+- ISBN
+- ISSN
+
+Before importing, use the precise paper index when possible to avoid re-uploading an already-indexed paper and to backfill identifiers onto older entries.
+
+PaperNexus now distinguishes:
+
+- `canonicalId`: same paper identity
+- `sourceId`: same fulltext artifact identity
 
 Recommended server-side inspection command:
 

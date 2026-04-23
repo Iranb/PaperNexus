@@ -272,6 +272,19 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   assert.equal(parsedLookup.result.query, 'graph augmented literature mapping');
   assert.ok(parsedLookup.result.groups.length > 0);
 
+  const preciseLookup = await pending.request('tools/call', {
+    name: 'research_lookup',
+    arguments: {
+      operation: 'paper_index',
+      corpus: tempCorpusRoot,
+      paperTitle: 'Retrieval-Augmented Experiment Planning with Lab Notebooks'
+    }
+  });
+  const parsedPreciseLookup = JSON.parse(preciseLookup.content[0].text);
+  assert.equal(parsedPreciseLookup.result.contractVersion, 'paper-precise-index-v1');
+  assert.equal(parsedPreciseLookup.result.matchCount, 1);
+  assert.equal(parsedPreciseLookup.result.matches[0].paperTitle, 'Retrieval-Augmented Experiment Planning with Lab Notebooks');
+
   const aggregatedBriefing = await pending.request('tools/call', {
     name: 'research_briefing',
     arguments: {
@@ -357,7 +370,10 @@ test('import_workflow exposes task progress and queue progress over MCP', async 
         {
           name: 'mcp-progress-upload.md',
           mimeType: 'text/markdown',
-          contentBase64: Buffer.from('# MCP Progress Upload\n\n## Abstract\n\nTrack queue progress.\n', 'utf8').toString('base64')
+          contentBase64: Buffer.from('# MCP Progress Upload\n\n## Abstract\n\nTrack queue progress.\n', 'utf8').toString('base64'),
+          identifiers: {
+            doi: '10.48550/papernexus.mcp-progress-upload'
+          }
         }
       ]
     }

@@ -319,6 +319,20 @@ test('query API payload helpers expose query/context/impact/ideas/brainstorm ove
     assert.equal(brainstorm.result.mode, 'converge');
     assert.ok(Array.isArray(brainstorm.result.convergedDirections));
     assert.ok(brainstorm.result.convergedDirections.length > 0);
+
+    const paperIndex = await api.paperIndexPayload(fixture.indexRoot, {
+      paperTitle: 'Retrieval-Augmented Experiment Planning with Lab Notebooks'
+    });
+    assert.equal(paperIndex.rootPath, fixture.indexRoot);
+    assert.equal(paperIndex.result.contractVersion, 'paper-precise-index-v1');
+    assert.equal(paperIndex.result.matchCount, 1);
+    assert.equal(paperIndex.result.matches[0].paperTitle, 'Retrieval-Augmented Experiment Planning with Lab Notebooks');
+    assert.ok(paperIndex.result.matches[0].canonicalId);
+    assert.ok(Array.isArray(paperIndex.result.matches[0].identityAliases));
+    const sourceIdLookup = await api.paperIndexPayload(fixture.indexRoot, {
+      sourceId: paperIndex.result.matches[0].sources[0].sourceId
+    });
+    assert.equal(sourceIdLookup.result.matchCount, 1);
   } finally {
     await cleanupQueryApiFixture(fixture);
   }
@@ -418,6 +432,17 @@ test('serveCommand exposes authenticated POST query APIs for graph reasoning hel
       assert.equal(brainstorm.rootPath, fixture.indexRoot);
       assert.equal(brainstorm.result.mode, 'converge');
       assert.ok(brainstorm.result.convergedDirections.length > 0);
+
+      const paperIndex = await fetch(`http://127.0.0.1:${port}/api/paper-index`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          paperTitle: 'Retrieval-Augmented Experiment Planning with Lab Notebooks'
+        })
+      }).then((response) => response.json());
+      assert.equal(paperIndex.rootPath, fixture.indexRoot);
+      assert.equal(paperIndex.result.contractVersion, 'paper-precise-index-v1');
+      assert.equal(paperIndex.result.matchCount, 1);
     } finally {
       await serverHandle.stop();
     }

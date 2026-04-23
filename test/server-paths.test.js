@@ -69,7 +69,10 @@ test('API payload helpers expose portable home-relative corpus paths and accept 
     assert.equal(meta.meta.rootPath, '~/index-store');
 
     const created = await api.createImportTaskPayload(undefined, {
-      serverFilePath: '~/uploads/server-side-upload.md'
+      serverFilePath: '~/uploads/server-side-upload.md',
+      identifiers: {
+        doi: '10.48550/papernexus.portable-server-path'
+      }
     }, options);
     assert.equal(created.rootPath, '~/index-store');
     assert.match(created.task.sourcesDir, /^~\/index-store\/\.papernexus\/imports\/tasks\//);
