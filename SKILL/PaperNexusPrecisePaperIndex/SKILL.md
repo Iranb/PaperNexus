@@ -1,6 +1,6 @@
 ---
 name: papernexus-precise-paper-index
-description: Use when an agent needs exact PaperNexus paper lookup by DOI, arXiv ID, ISBN, ISSN, paperId, sourceKey, source path, or exact title before upload, dedupe checks, or identifier backfill.
+description: Use when an agent needs exact PaperNexus paper lookup by canonicalId, sourceId, DOI, arXiv ID, PMID, PMCID, ISBN, ISSN, paperId, sourceKey, source path, or exact title before upload, dedupe checks, or identifier backfill.
 ---
 
 # PaperNexus Precise Paper Index
@@ -29,7 +29,7 @@ Exact selectors supported:
 Use this before:
 
 - uploading a paper that might already exist in the corpus
-- checking whether an old paper is missing DOI / arXiv / ISBN / ISSN
+- checking whether an old paper is missing DOI / arXiv / PMID / PMCID metadata
 - deciding whether a new upload should backfill identifiers onto an existing canonical paper
 
 Shell fallback:
@@ -65,7 +65,9 @@ Response contract highlights:
 
 Rules:
 
-- prefer DOI / arXiv / ISBN / ISSN over exact title whenever available
+- prefer `canonicalId` and `sourceId` when you already have them
+- otherwise prefer DOI / arXiv / PMID / PMCID over exact title
+- treat ISBN / ISSN as auxiliary bibliographic metadata unless the object is actually a book or serial container record
 - paper-level identity is strongest with DOI / arXiv / PMID / PMCID
 - `canonicalId` answers “is this the same paper?”
 - `sourceId` answers “is this the same fulltext artifact?”

@@ -15,7 +15,7 @@ from pn_common import (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Query the remote PaperNexus precise paper index by DOI, arXiv ID, ISBN, ISSN, paperId, sourceKey, source path, or exact title."
+        description="Query the remote PaperNexus precise paper index by canonicalId, sourceId, DOI, arXiv ID, PMID, PMCID, ISBN, ISSN, paperId, sourceKey, source path, or exact title."
     )
     add_connection_args(parser)
     parser.add_argument("--paper-id", default="")
