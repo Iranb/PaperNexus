@@ -443,6 +443,9 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
   const commandConfig = commandName === 'watch'
     ? { ...analyzeConfig, ...getSection(config, 'watch') }
     : analyzeConfig;
+  const identifierResolutionConfig = (commandConfig.identifierResolution && typeof commandConfig.identifierResolution === 'object' && !Array.isArray(commandConfig.identifierResolution))
+    ? commandConfig.identifierResolution
+    : {};
   const llmOptions = buildLlmOptions(flags, config);
   const llmSshHost = llmOptions.llmSshHost;
 
@@ -503,6 +506,18 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     llmRelations: Boolean(llmOptions.llmRelations),
     ollamaSshHost: llmSshHost,
     ollamaRelations: Boolean(llmOptions.ollamaRelations),
+    watchMode: commandName === 'watch',
+    identifierResolution: {
+      enabled: firstDefined(identifierResolutionConfig.enabled, commandName === 'watch' ? false : true) !== false,
+      providers: Array.isArray(identifierResolutionConfig.providers) && identifierResolutionConfig.providers.length
+        ? identifierResolutionConfig.providers
+        : ['openalex'],
+      timeoutMs: toNumber(firstDefined(identifierResolutionConfig.timeoutMs), 2500),
+      maxCandidates: toNumber(firstDefined(identifierResolutionConfig.maxCandidates), 5),
+      missCacheTtlMs: toNumber(firstDefined(identifierResolutionConfig.missCacheTtlMs), 7 * 24 * 60 * 60 * 1000),
+      allowInWatch: firstDefined(identifierResolutionConfig.allowInWatch, false) === true,
+      mailto: firstDefined(identifierResolutionConfig.mailto, process.env.PAPERNEXUS_IDENTIFIER_RESOLUTION_MAILTO)
+    },
     debounceMs: toNumber(firstDefined(flags['debounce-ms'], commandConfig.debounceMs), 700),
     pollIntervalMs: toNumber(firstDefined(flags['poll-interval-ms'], commandConfig.pollIntervalMs), 3000)
   };

@@ -104,6 +104,10 @@ import {
   isPaperTitleDegenerate,
   parsePaperMarkdown
 } from './markdown.js';
+import {
+  resolvePaperIdentifiersExternally,
+  shouldAttemptIdentifierResolution
+} from './identifier-resolution.js';
 import { postIngestionRefinement, precomputePaperGraphFragments } from './graph-precompute.js';
 import { countGraphPostprocessTasks, precomputeGraphPostprocess } from './graph-postprocess.js';
 import { isServerPathReference, resolveServerPathReference } from '../../lib/server-paths.js';
@@ -4391,6 +4395,30 @@ function repairDegenerateParsedTitle(parsed = {}, sourcePath = '') {
   return parsed;
 }
 
+async function maybeEnrichParsedPaperIdentifiers(rootPath, sourceState, parsed, options = {}) {
+  if (!parsed || typeof parsed !== 'object') {
+    return parsed;
+  }
+
+  const resolution = await resolvePaperIdentifiersExternally(rootPath, parsed, sourceState, options);
+  if (!Object.keys(resolution?.identifiers || {}).length) {
+    return parsed;
+  }
+
+  const identifiers = mergePaperIdentifiers(
+    sourceState.paperMetadata || {},
+    parsed.identifiers || {},
+    resolution.identifiers || {}
+  ).identifiers;
+
+  parsed.identifiers = identifiers;
+  sourceState.paperMetadata = normalizePaperMetadataPayload({
+    ...(sourceState.paperMetadata || {}),
+    identifiers
+  });
+  return parsed;
+}
+
 async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
   const { markdownDir, markerDir } = getCorpusPaths(rootPath);
   let markdownPath = sourceState.inputPath;
@@ -4532,6 +4560,8 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       }
     }
 
+    await maybeEnrichParsedPaperIdentifiers(rootPath, sourceState, parsed, options);
+
     const semanticSnapshotStartedAt = Date.now();
     const semanticPaper = buildSemanticPaperView(parsed);
     mergeSemanticPaperIdentity(semanticPaper, sourceState.paperMetadata || {});
@@ -4559,6 +4589,7 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
   }
 
   const parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
+  await maybeEnrichParsedPaperIdentifiers(rootPath, sourceState, parsed, options);
 
   const semanticSnapshotStartedAt = Date.now();
   const semanticPaper = buildSemanticPaperView(parsed);
@@ -4609,6 +4640,7 @@ async function loadParsedPaperFromMarkdownCache(sourceState, cachedPaper = null)
   ).identifiers;
   parsed.contentSha256 = sourceState.contentSha256 || cachedPaper?.contentSha256 || '';
   parsed.normalizedTextSha256 = computeNormalizedTextSha256(markdown);
+  await maybeEnrichParsedPaperIdentifiers(sourceState.rootPath || '', sourceState, parsed, sourceState.analysisOptions || {});
   return parsed;
 }
 
@@ -5615,7 +5647,11 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
         const cachedPaper = sourceState.cachedPaper || upgradeSemanticPaperIdentityRecord(
           await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey)
         );
-        if (cachedPaper) {
+        const shouldRefreshIdentifiers = Boolean(
+          cachedPaper
+          && shouldAttemptIdentifierResolution(cachedPaper, sourceState, options)
+        );
+        if (cachedPaper && !shouldRefreshIdentifiers) {
           const shouldPrepareParsedPaper = Boolean(
           options.enableLlmEnrichment !== false
           && sourceState.reuseCachedMaterialization
@@ -5921,6 +5957,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
 
       return {
         ...source,
+        rootPath,
+        analysisOptions: options,
         fingerprint,
         sourceMtimeMs: Number(stats.mtimeMs || 0),
         sourceSizeBytes: Number(stats.size || 0),

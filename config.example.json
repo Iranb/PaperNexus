@@ -29,7 +29,16 @@
     "doclingEnrichPictureDescription": false,
     "doclingPreload": true,
     "doclingUseVlm": false,
-    "doclingVlmPreset": "granite_docling"
+    "doclingVlmPreset": "granite_docling",
+    "identifierResolution": {
+      "enabled": true,
+      "providers": ["openalex"],
+      "timeoutMs": 2500,
+      "maxCandidates": 5,
+      "missCacheTtlMs": 604800000,
+      "allowInWatch": false,
+      "mailto": "replace-with-contact@example.com"
+    }
   },
   "global": {
     "corpus": "demo-corpus"

@@ -56,6 +56,7 @@ export function getCorpusPaths(rootPath) {
     stagedStatePath: path.join(stagedDir, 'state.json'),
     llmStage2StatePath: path.join(llmJobsDir, 'stage2.json'),
     crossPaperJudgmentCachePath: path.join(llmJobsDir, 'cross-paper-judgments.json'),
+    identifierResolutionCachePath: path.join(corpusDir, 'identifier-resolution-cache.json'),
     authoritativeSyncQueuePath: path.join(authoritativeSyncDir, 'queue.json'),
     authoritativeSyncLockPath: path.join(authoritativeSyncDir, 'queue.lock'),
     authoritativeSyncWorkerLockPath: path.join(authoritativeSyncDir, 'worker.lock'),
