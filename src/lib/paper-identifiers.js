@@ -73,14 +73,45 @@ export function normalizeDoi(value = '') {
     .replace(/\s+/g, '');
 }
 
+function hasValidArxivMonth(value = '') {
+  const month = Number.parseInt(String(value || ''), 10);
+  return month >= 1 && month <= 12;
+}
+
+function isValidArxivId(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return false;
+
+  const modernMatch = normalized.match(/^(\d{2})(\d{2})\.(\d{4,5})(v\d+)?$/);
+  if (modernMatch) {
+    return hasValidArxivMonth(modernMatch[2]);
+  }
+
+  const legacyMatch = normalized.match(/^([a-z.-]+)\/(\d{2})(\d{2})(\d{3})(v\d+)?$/);
+  if (legacyMatch) {
+    return hasValidArxivMonth(legacyMatch[3]);
+  }
+
+  return false;
+}
+
+function hasArxivVersion(value = '') {
+  return /v\d+$/i.test(String(value || '').trim());
+}
+
+function stripArxivVersion(value = '') {
+  return String(value || '').trim().toLowerCase().replace(/v\d+$/i, '');
+}
+
 export function normalizeArxivId(value = '') {
-  return String(value || '')
+  const normalized = String(value || '')
     .trim()
     .toLowerCase()
     .replace(/^https?:\/\/arxiv\.org\/(?:abs|pdf)\//, '')
     .replace(/\.pdf$/i, '')
     .replace(/^arxiv:\s*/i, '')
     .replace(/\s+/g, '');
+  return isValidArxivId(normalized) ? normalized : '';
 }
 
 export function normalizePmid(value = '') {
@@ -161,6 +192,58 @@ function collectIdentifierInput(input = {}) {
   };
 }
 
+function extractArxivIdFromDoi(value = '') {
+  const normalizedDoi = normalizeDoi(value);
+  const prefix = '10.48550/arxiv.';
+  if (!normalizedDoi.startsWith(prefix)) return '';
+  return normalizeArxivId(normalizedDoi.slice(prefix.length));
+}
+
+function escapeRegExp(value = '') {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function doiContainsArxivFragment(doi = '', arxivId = '') {
+  const normalizedDoi = normalizeDoi(doi);
+  const normalizedArxivId = normalizeArxivId(arxivId);
+  if (!normalizedDoi || !normalizedArxivId) return false;
+  const candidates = unique([normalizedArxivId, stripArxivVersion(normalizedArxivId)]);
+  return candidates.some((candidate) => {
+    if (!candidate) return false;
+    const pattern = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(candidate)}(?:$|[^a-z0-9])`);
+    return pattern.test(normalizedDoi);
+  });
+}
+
+function reconcilePaperIdentifiers(identifiers = {}) {
+  const reconciled = { ...identifiers };
+  const doiArxivId = extractArxivIdFromDoi(reconciled.doi);
+
+  if (doiArxivId && reconciled.arxivId) {
+    const doiBase = stripArxivVersion(doiArxivId);
+    const arxivBase = stripArxivVersion(reconciled.arxivId);
+    if (doiBase !== arxivBase) {
+      reconciled.arxivId = doiArxivId;
+      return reconciled;
+    }
+    if (!hasArxivVersion(reconciled.arxivId) && hasArxivVersion(doiArxivId)) {
+      reconciled.arxivId = doiArxivId;
+    }
+    return reconciled;
+  }
+
+  if (
+    !doiArxivId
+    && reconciled.doi
+    && reconciled.arxivId
+    && doiContainsArxivFragment(reconciled.doi, reconciled.arxivId)
+  ) {
+    delete reconciled.arxivId;
+  }
+
+  return reconciled;
+}
+
 export function normalizePaperIdentifiers(input = {}) {
   const collected = collectIdentifierInput(input);
   const normalized = {};
@@ -172,7 +255,7 @@ export function normalizePaperIdentifiers(input = {}) {
     }
   }
 
-  return normalized;
+  return reconcilePaperIdentifiers(normalized);
 }
 
 export function flattenPaperIdentifiers(input = {}) {
@@ -333,7 +416,7 @@ export function mergePaperIdentifiers(...inputs) {
   }
 
   return {
-    identifiers: merged,
+    identifiers: normalizePaperIdentifiers(merged),
     conflicts
   };
 }
@@ -432,9 +515,11 @@ export function normalizePaperIdentifierQuery(input = {}) {
 
   const inferred = inferPaperIdentifierType(identifier);
   if (!inferred) return normalized;
+  const value = normalizeIdentifierValue(inferred, identifier);
+  if (!value) return normalized;
   return {
     ...normalized,
-    [inferred]: normalizeIdentifierValue(inferred, identifier)
+    [inferred]: value
   };
 }
 
@@ -442,19 +527,15 @@ export function inferPaperIdentifierType(value = '') {
   const raw = String(value || '').trim();
   if (!raw) return '';
   if (normalizeDoi(raw).startsWith('10.')) return 'doi';
-  if (
-    /^arxiv:/i.test(raw)
-    || /arxiv\.org\/(?:abs|pdf)\//i.test(raw)
-    || /^(?:\d{4}\.\d{4,5}|[a-z-]+\/\d{7})(?:v\d+)?$/i.test(raw)
-  ) {
+  if (normalizeArxivId(raw)) {
     return 'arxivId';
   }
-  if (normalizePmid(raw)) return 'pmid';
-  if (/^PMC/i.test(raw) && normalizePmcid(raw)) return 'pmcid';
+  if ((/^pmid:\s*/i.test(raw) || /^\d+$/.test(raw)) && normalizePmid(raw)) return 'pmid';
+  if ((/^pmcid:\s*/i.test(raw) || /^PMC\d+$/i.test(raw)) && normalizePmcid(raw)) return 'pmcid';
   const isbn = normalizeIsbn(raw);
-  if (isbn.length === 10 || isbn.length === 13) return 'isbn';
+  if (/^(?:isbn:\s*)?[0-9xX-]+$/.test(raw) && (isbn.length === 10 || isbn.length === 13)) return 'isbn';
   const issn = normalizeIssn(raw);
-  if (issn.length === 8) return 'issn';
+  if (/^(?:issn:\s*)?[0-9xX-]+$/.test(raw) && issn.length === 8) return 'issn';
   return '';
 }
 

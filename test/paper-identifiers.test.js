@@ -58,6 +58,68 @@ test('paper identifier helpers merge and infer generic queries', () => {
   assert.deepEqual(query, {
     doi: '10.48550/arxiv.2401.12345'
   });
+
+  assert.deepEqual(normalizePaperIdentifierQuery({
+    identifier: 'PMID: 12345678'
+  }), {
+    pmid: '12345678'
+  });
+
+  assert.deepEqual(normalizePaperIdentifierQuery({
+    identifier: '2049-3630'
+  }), {
+    issn: '20493630'
+  });
+});
+
+test('paper identifier helpers reject invalid or DOI-derived arxiv fragments', () => {
+  const invalidArxivFragment = normalizePaperIdentifiers({
+    doi: '10.1109/example.2023.00732',
+    arxivId: '2023.00732'
+  });
+  assert.deepEqual(invalidArxivFragment, {
+    doi: '10.1109/example.2023.00732'
+  });
+
+  const suspiciousMerged = mergePaperIdentifiers(
+    { doi: '10.1234/example.2010.10127' },
+    { arxivId: '2010.10127' }
+  );
+  assert.deepEqual(suspiciousMerged.identifiers, {
+    doi: '10.1234/example.2010.10127'
+  });
+
+  const suspiciousPaperIdentity = createPaperIdentity({
+    doi: '10.1234/example.2010.10127',
+    arxivId: '2010.10127'
+  });
+  assert.equal(suspiciousPaperIdentity.canonicalId, 'doi:10.1234/example.2010.10127');
+  assert.equal(suspiciousPaperIdentity.canonicalIdSource, 'doi');
+
+  const invalidQuery = normalizePaperIdentifierQuery({
+    identifier: '2023.00732'
+  });
+  assert.deepEqual(invalidQuery, {});
+});
+
+test('paper identifier helpers preserve legitimate arxiv identifiers alongside doi', () => {
+  const explicitPair = normalizePaperIdentifiers({
+    doi: '10.1038/s41586-020-2649-2',
+    arxivId: '2010.10127'
+  });
+  assert.deepEqual(explicitPair, {
+    doi: '10.1038/s41586-020-2649-2',
+    arxivId: '2010.10127'
+  });
+
+  const arxivDoiPair = normalizePaperIdentifiers({
+    doi: '10.48550/arXiv.2410.11206',
+    arxivId: 'arXiv:2410.11206v2'
+  });
+  assert.deepEqual(arxivDoiPair, {
+    doi: '10.48550/arxiv.2410.11206',
+    arxivId: '2410.11206v2'
+  });
 });
 
 test('paper identity helpers derive canonicalId and sourceId separately', () => {
