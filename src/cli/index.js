@@ -511,7 +511,7 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
       enabled: firstDefined(identifierResolutionConfig.enabled, commandName === 'watch' ? false : true) !== false,
       providers: Array.isArray(identifierResolutionConfig.providers) && identifierResolutionConfig.providers.length
         ? identifierResolutionConfig.providers
-        : ['openalex'],
+        : ['openalex', 'crossref', 'arxiv'],
       timeoutMs: toNumber(firstDefined(identifierResolutionConfig.timeoutMs), 2500),
       maxCandidates: toNumber(firstDefined(identifierResolutionConfig.maxCandidates), 5),
       missCacheTtlMs: toNumber(firstDefined(identifierResolutionConfig.missCacheTtlMs), 7 * 24 * 60 * 60 * 1000),

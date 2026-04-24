@@ -6,18 +6,64 @@ import path from 'node:path';
 
 const originalFetch = globalThis.fetch;
 
-function createOpenAlexResponse(results = []) {
+function createJsonResponse(payload) {
   return {
     ok: true,
     async json() {
-      return {
-        meta: {
-          count: results.length,
-          page: 1,
-          per_page: results.length
-        },
-        results
-      };
+      return payload;
+    }
+  };
+}
+
+function createTextResponse(payload = '') {
+  return {
+    ok: true,
+    async text() {
+      return payload;
+    }
+  };
+}
+
+function createOpenAlexResponse(results = []) {
+  return createJsonResponse({
+    meta: {
+      count: results.length,
+      page: 1,
+      per_page: results.length
+    },
+    results
+  });
+}
+
+function createCrossrefResponse(items = []) {
+  return createJsonResponse({
+    status: 'ok',
+    'message-type': 'work-list',
+    'message-version': '1.0.0',
+    message: {
+      items
+    }
+  });
+}
+
+function createArxivResponse(entries = '') {
+  return createTextResponse(
+    `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+${entries}
+</feed>`
+  );
+}
+
+function createTestPaper(title, authors = []) {
+  return {
+    paperTitle: title,
+    title,
+    authors,
+    titleValidation: {
+      rawTitle: title,
+      isValid: true,
+      usedFallbackTitle: false
     }
   };
 }
@@ -172,7 +218,7 @@ This paper title should miss every OpenAlex candidate in the test.
     assert.equal(fetchCount, 1);
 
     const cache = JSON.parse(await fs.readFile(getCorpusPaths(tempCorpusRoot).identifierResolutionCachePath, 'utf8'));
-    assert.equal(cache.version, 1);
+    assert.equal(cache.version, 2);
     assert.equal(Object.keys(cache.misses || {}).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -182,6 +228,228 @@ This paper title should miss every OpenAlex candidate in the test.
     else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
     await fs.rm(tempCorpusRoot, { recursive: true, force: true });
     await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('resolvePaperIdentifiersExternally falls back to Crossref when OpenAlex misses', async () => {
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-identifier-crossref-corpus-'));
+
+  try {
+    const requestedHosts = [];
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requestedHosts.push(url.hostname);
+      if (url.hostname === 'api.openalex.org') {
+        return createOpenAlexResponse([]);
+      }
+      if (url.hostname === 'api.crossref.org') {
+        assert.equal(url.searchParams.get('query.title'), 'Graph Transformers for Knowledge Base Completion');
+        return createCrossrefResponse([
+          {
+            DOI: '10.1145/1234567.1234568',
+            title: ['Graph Transformers for Knowledge Base Completion'],
+            author: [
+              { given: 'Jane', family: 'Doe' },
+              { given: 'John', family: 'Smith' }
+            ]
+          }
+        ]);
+      }
+      assert.fail(`unexpected host ${url.hostname}`);
+    };
+
+    const { resolvePaperIdentifiersExternally } = await import('../src/core/ingestion/identifier-resolution.js');
+    const resolution = await resolvePaperIdentifiersExternally(
+      tempCorpusRoot,
+      createTestPaper('Graph Transformers for Knowledge Base Completion', ['Jane Doe', 'John Smith']),
+      { fingerprint: 'crossref-fallback' },
+      {
+        identifierResolution: {
+          enabled: true,
+          providers: ['openalex', 'crossref'],
+          mailto: 'hyq@example.com'
+        }
+      }
+    );
+
+    assert.deepEqual(requestedHosts, ['api.openalex.org', 'api.crossref.org']);
+    assert.equal(resolution.provider, 'crossref');
+    assert.deepEqual(resolution.identifiers, {
+      doi: '10.1145/1234567.1234568'
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+  }
+});
+
+test('resolvePaperIdentifiersExternally falls back to arXiv direct when earlier providers miss', async () => {
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-identifier-arxiv-corpus-'));
+
+  try {
+    const requestedHosts = [];
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requestedHosts.push(url.hostname);
+      if (url.hostname === 'api.openalex.org') {
+        return createOpenAlexResponse([]);
+      }
+      if (url.hostname === 'api.crossref.org') {
+        return createCrossrefResponse([]);
+      }
+      if (url.hostname === 'export.arxiv.org') {
+        assert.match(url.searchParams.get('search_query') || '', /ti:arxiv/i);
+        return createArxivResponse(`
+  <entry>
+    <id>https://arxiv.org/abs/2410.11206v1</id>
+    <updated>2024-10-15T00:00:00Z</updated>
+    <published>2024-10-15T00:00:00Z</published>
+    <title>ArXiv Direct Identifier Resolution</title>
+    <author><name>Jane Doe</name></author>
+    <author><name>John Smith</name></author>
+    <arxiv:doi>10.48550/arXiv.2410.11206</arxiv:doi>
+  </entry>`);
+      }
+      assert.fail(`unexpected host ${url.hostname}`);
+    };
+
+    const { resolvePaperIdentifiersExternally } = await import('../src/core/ingestion/identifier-resolution.js');
+    const resolution = await resolvePaperIdentifiersExternally(
+      tempCorpusRoot,
+      createTestPaper('ArXiv Direct Identifier Resolution', ['Jane Doe', 'John Smith']),
+      { fingerprint: 'arxiv-fallback' },
+      {
+        identifierResolution: {
+          enabled: true,
+          providers: ['openalex', 'crossref', 'arxiv'],
+          mailto: 'hyq@example.com'
+        }
+      }
+    );
+
+    assert.deepEqual(requestedHosts, ['api.openalex.org', 'api.crossref.org', 'export.arxiv.org']);
+    assert.equal(resolution.provider, 'arxiv');
+    assert.deepEqual(resolution.identifiers, {
+      doi: '10.48550/arxiv.2410.11206',
+      arxivId: '2410.11206'
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+  }
+});
+
+test('resolvePaperIdentifiersExternally ignores legacy miss cache entries from older provider chains', async () => {
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-identifier-legacy-cache-'));
+
+  try {
+    const [{ resolvePaperIdentifiersExternally }, { getCorpusPaths }] = await Promise.all([
+      import('../src/core/ingestion/identifier-resolution.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    const cachePath = getCorpusPaths(tempCorpusRoot).identifierResolutionCachePath;
+    await fs.mkdir(path.dirname(cachePath), { recursive: true });
+    await fs.writeFile(cachePath, JSON.stringify({
+      version: 1,
+      misses: {
+        'fingerprint:legacy-cache': {
+          reason: 'no-match',
+          cachedAt: Date.now(),
+          expiresAt: Date.now() + 60000
+        }
+      }
+    }), 'utf8');
+
+    let fetchCount = 0;
+    globalThis.fetch = async (input) => {
+      fetchCount += 1;
+      const url = new URL(String(input));
+      if (url.hostname === 'api.openalex.org') {
+        return createOpenAlexResponse([]);
+      }
+      if (url.hostname === 'api.crossref.org') {
+        return createCrossrefResponse([
+          {
+            DOI: '10.1145/7654321.7654322',
+            title: ['Legacy Cache Recovery'],
+            author: [{ given: 'Jane', family: 'Doe' }]
+          }
+        ]);
+      }
+      assert.fail(`unexpected host ${url.hostname}`);
+    };
+
+    const resolution = await resolvePaperIdentifiersExternally(
+      tempCorpusRoot,
+      createTestPaper('Legacy Cache Recovery', ['Jane Doe']),
+      { fingerprint: 'legacy-cache' },
+      {
+        identifierResolution: {
+          enabled: true,
+          providers: ['openalex', 'crossref'],
+          mailto: 'hyq@example.com'
+        }
+      }
+    );
+
+    assert.equal(fetchCount, 2);
+    assert.equal(resolution.provider, 'crossref');
+    assert.deepEqual(resolution.identifiers, {
+      doi: '10.1145/7654321.7654322'
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+  }
+});
+
+test('resolvePaperIdentifiersExternally does not cache misses when any provider request fails', async () => {
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-identifier-failure-cache-'));
+
+  try {
+    const [{ resolvePaperIdentifiersExternally }, { getCorpusPaths }] = await Promise.all([
+      import('../src/core/ingestion/identifier-resolution.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    let fetchCount = 0;
+    globalThis.fetch = async (input) => {
+      fetchCount += 1;
+      const url = new URL(String(input));
+      if (url.hostname === 'api.openalex.org') {
+        throw new TypeError('socket hang up');
+      }
+      if (url.hostname === 'api.crossref.org') {
+        return createCrossrefResponse([]);
+      }
+      if (url.hostname === 'export.arxiv.org') {
+        return createArxivResponse('');
+      }
+      assert.fail(`unexpected host ${url.hostname}`);
+    };
+
+    const paper = createTestPaper('Transient Failure Should Not Cache', ['Jane Doe']);
+    const sourceState = { fingerprint: 'failure-no-cache' };
+    const options = {
+      identifierResolution: {
+        enabled: true,
+        providers: ['openalex', 'crossref', 'arxiv'],
+        mailto: 'hyq@example.com'
+      }
+    };
+
+    const first = await resolvePaperIdentifiersExternally(tempCorpusRoot, paper, sourceState, options);
+    const second = await resolvePaperIdentifiersExternally(tempCorpusRoot, paper, sourceState, options);
+
+    assert.equal(first.reason, 'request-failed');
+    assert.equal(second.reason, 'request-failed');
+    assert.equal(fetchCount, 6);
+
+    await assert.rejects(fs.readFile(getCorpusPaths(tempCorpusRoot).identifierResolutionCachePath, 'utf8'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
   }
 });
 

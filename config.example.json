@@ -32,7 +32,7 @@
     "doclingVlmPreset": "granite_docling",
     "identifierResolution": {
       "enabled": true,
-      "providers": ["openalex"],
+      "providers": ["openalex", "crossref", "arxiv"],
       "timeoutMs": 2500,
       "maxCandidates": 5,
       "missCacheTtlMs": 604800000,

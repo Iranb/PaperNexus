@@ -15,7 +15,11 @@ import {
 import { getCorpusPaths } from '../../storage/corpus-store.js';
 
 const OPENALEX_WORKS_URL = 'https://api.openalex.org/works';
-const MISS_CACHE_VERSION = 1;
+const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
+const ARXIV_QUERY_URL = 'https://export.arxiv.org/api/query';
+const KNOWN_PROVIDERS = new Set(['openalex', 'crossref', 'arxiv']);
+const DEFAULT_PROVIDERS = ['openalex', 'crossref', 'arxiv'];
+const MISS_CACHE_VERSION = 2;
 const DEFAULT_TIMEOUT_MS = 2500;
 const DEFAULT_MAX_CANDIDATES = 5;
 const DEFAULT_MISS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -53,8 +57,8 @@ function normalizeProviders(value) {
   const rawValues = Array.isArray(value) ? value : [value];
   const providers = rawValues
     .map((entry) => String(entry || '').trim().toLowerCase())
-    .filter(Boolean);
-  return providers.length ? unique(providers) : ['openalex'];
+    .filter((entry) => KNOWN_PROVIDERS.has(entry));
+  return providers.length ? unique(providers) : [...DEFAULT_PROVIDERS];
 }
 
 export function resolveIdentifierResolutionConfig(options = {}) {
@@ -97,9 +101,12 @@ function getMissCachePath(rootPath) {
 
 function normalizeMissCache(rawCache = {}) {
   const normalizedCache = asPlainObject(rawCache);
+  const sourceMisses = Number(normalizedCache.version || 0) === MISS_CACHE_VERSION
+    ? asPlainObject(normalizedCache.misses)
+    : {};
   const now = Date.now();
   const misses = {};
-  for (const [key, value] of Object.entries(asPlainObject(normalizedCache.misses))) {
+  for (const [key, value] of Object.entries(sourceMisses)) {
     const expiresAt = Number(value?.expiresAt || 0);
     if (expiresAt && expiresAt <= now) continue;
     misses[key] = {
@@ -161,6 +168,50 @@ function extractPaperAuthors(paper = {}) {
   return new Set((Array.isArray(paper?.authors) ? paper.authors : []).map(normalizeAuthorName).filter(Boolean));
 }
 
+function compactWhitespace(value = '') {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function createRequestHeaders(config = {}, accept = 'application/json') {
+  return {
+    accept,
+    'user-agent': config.mailto
+      ? `PaperNexus/0.1 (+${config.mailto})`
+      : 'PaperNexus/0.1'
+  };
+}
+
+async function fetchProviderResponse(url, config = {}, accept = 'application/json') {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs || DEFAULT_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      headers: createRequestHeaders(config, accept),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: `http-${response.status}`
+      };
+    }
+
+    return {
+      ok: true,
+      reason: '',
+      response
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error?.name === 'AbortError' ? 'timeout' : 'request-failed'
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function extractWorkAuthors(work = {}) {
   return new Set(
     (Array.isArray(work.authorships) ? work.authorships : [])
@@ -202,6 +253,83 @@ function extractIdentifiersFromOpenAlexWork(work = {}) {
   });
 }
 
+function extractCrossrefAuthors(item = {}) {
+  return (Array.isArray(item?.author) ? item.author : [])
+    .map((entry) => compactWhitespace(entry?.name || [entry?.given, entry?.family].filter(Boolean).join(' ')))
+    .filter(Boolean);
+}
+
+function extractIdentifiersFromCrossrefWork(item = {}) {
+  return normalizePaperIdentifiers({
+    doi: item?.DOI || item?.doi || ''
+  });
+}
+
+function decodeXmlEntities(value = '') {
+  return String(value || '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, decimal) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, '\'')
+    .replace(/&amp;/g, '&');
+}
+
+function stripXmlTags(value = '') {
+  return String(value || '').replace(/<[^>]+>/g, ' ');
+}
+
+function normalizeXmlText(value = '') {
+  return compactWhitespace(decodeXmlEntities(stripXmlTags(value)));
+}
+
+function stripArxivVersion(value = '') {
+  return String(value || '').trim().toLowerCase().replace(/v\d+$/i, '');
+}
+
+function escapeTagName(value = '') {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractXmlFirstValue(xml = '', tagName = '') {
+  if (!tagName) return '';
+  const match = String(xml || '').match(new RegExp(`<${escapeTagName(tagName)}\\b[^>]*>([\\s\\S]*?)<\\/${escapeTagName(tagName)}>`, 'i'));
+  return match ? match[1] : '';
+}
+
+function extractXmlBlocks(xml = '', tagName = '') {
+  if (!tagName) return [];
+  return Array.from(
+    String(xml || '').matchAll(new RegExp(`<${escapeTagName(tagName)}\\b[^>]*>([\\s\\S]*?)<\\/${escapeTagName(tagName)}>`, 'gi')),
+    (match) => match[1]
+  );
+}
+
+function extractIdentifiersFromArxivEntry(entryXml = '') {
+  const rawArxivId = normalizeArxivId(normalizeXmlText(extractXmlFirstValue(entryXml, 'id')));
+  return normalizePaperIdentifiers({
+    arxivId: stripArxivVersion(rawArxivId),
+    doi: normalizeXmlText(extractXmlFirstValue(entryXml, 'arxiv:doi')) || normalizeXmlText(extractXmlFirstValue(entryXml, 'doi'))
+  });
+}
+
+function parseArxivFeed(xml = '') {
+  const source = String(xml || '');
+  if (!/<feed\b/i.test(source)) {
+    return null;
+  }
+
+  return extractXmlBlocks(source, 'entry').map((entryXml) => ({
+    provider: 'arxiv',
+    title: normalizeXmlText(extractXmlFirstValue(entryXml, 'title')),
+    authors: extractXmlBlocks(entryXml, 'author')
+      .map((authorXml) => normalizeXmlText(extractXmlFirstValue(authorXml, 'name')))
+      .filter(Boolean),
+    identifiers: extractIdentifiersFromArxivEntry(entryXml)
+  }));
+}
+
 function computeAuthorOverlapRatio(queryAuthors = new Set(), candidateAuthors = new Set()) {
   if (!queryAuthors.size || !candidateAuthors.size) return 0;
   let matches = 0;
@@ -211,15 +339,15 @@ function computeAuthorOverlapRatio(queryAuthors = new Set(), candidateAuthors = 
   return matches / queryAuthors.size;
 }
 
-function evaluateOpenAlexCandidate(paper = {}, work = {}) {
+function evaluateResolvedCandidate(paper = {}, candidate = {}) {
   const sourceTitle = normalizeExactPaperTitle(paper?.paperTitle || paper?.title || '');
-  const candidateTitle = normalizeExactPaperTitle(work?.title || work?.display_name || '');
+  const candidateTitle = normalizeExactPaperTitle(candidate?.title || '');
   const exactTitle = Boolean(sourceTitle && candidateTitle && sourceTitle === candidateTitle);
   const titleSimilarity = exactTitle ? 1 : jaccardSimilarity(sourceTitle, candidateTitle);
   const queryAuthors = extractPaperAuthors(paper);
-  const candidateAuthors = extractWorkAuthors(work);
+  const candidateAuthors = new Set((Array.isArray(candidate?.authors) ? candidate.authors : []).map(normalizeAuthorName).filter(Boolean));
   const authorOverlap = computeAuthorOverlapRatio(queryAuthors, candidateAuthors);
-  const identifiers = extractIdentifiersFromOpenAlexWork(work);
+  const identifiers = normalizePaperIdentifiers(candidate?.identifiers || {});
   const hasStrongIdentifiers = hasStrongPaperIdentifiers(identifiers);
 
   const accepted = hasStrongIdentifiers && (
@@ -234,7 +362,8 @@ function evaluateOpenAlexCandidate(paper = {}, work = {}) {
     titleSimilarity,
     authorOverlap,
     identifiers,
-    matchedTitle: work?.title || work?.display_name || ''
+    matchedTitle: candidate?.title || '',
+    provider: String(candidate?.provider || '').trim()
   };
 }
 
@@ -251,43 +380,164 @@ function createOpenAlexUrl(paper = {}, config = {}) {
 }
 
 async function fetchOpenAlexCandidates(paper = {}, config = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const response = await fetchProviderResponse(createOpenAlexUrl(paper, config), config);
+  if (!response.ok) {
+    return {
+      ok: false,
+      reason: response.reason || 'request-failed',
+      candidates: []
+    };
+  }
 
   try {
-    const response = await fetch(createOpenAlexUrl(paper, config), {
-      headers: {
-        accept: 'application/json',
-        'user-agent': config.mailto
-          ? `PaperNexus/0.1 (+${config.mailto})`
-          : 'PaperNexus/0.1'
-      },
-      signal: controller.signal
-    });
-    if (!response.ok) {
+    const payload = await response.response.json();
+    if (!Array.isArray(payload?.results)) {
       return {
         ok: false,
-        reason: `http-${response.status}`,
-        works: []
+        reason: 'malformed-response',
+        candidates: []
       };
     }
 
-    const payload = await response.json();
     return {
       ok: true,
       reason: '',
-      works: Array.isArray(payload?.results) ? payload.results : []
+      candidates: payload.results.map((work) => ({
+        provider: 'openalex',
+        title: work?.title || work?.display_name || '',
+        authors: Array.from(extractWorkAuthors(work)),
+        identifiers: extractIdentifiersFromOpenAlexWork(work)
+      }))
     };
   } catch (error) {
     return {
       ok: false,
-      reason: error?.name === 'AbortError' ? 'timeout' : 'request-failed',
-      works: []
+      reason: 'malformed-response',
+      candidates: []
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
+
+function createCrossrefUrl(paper = {}, config = {}) {
+  const title = String(paper?.titleValidation?.rawTitle || paper?.paperTitle || paper?.title || '').trim();
+  const url = new URL(CROSSREF_WORKS_URL);
+  url.searchParams.set('query.title', title);
+  url.searchParams.set('rows', String(config.maxCandidates || DEFAULT_MAX_CANDIDATES));
+  if (config.mailto) {
+    url.searchParams.set('mailto', config.mailto);
+  }
+  return url;
+}
+
+async function fetchCrossrefCandidates(paper = {}, config = {}) {
+  const response = await fetchProviderResponse(createCrossrefUrl(paper, config), config);
+  if (!response.ok) {
+    return {
+      ok: false,
+      reason: response.reason || 'request-failed',
+      candidates: []
+    };
+  }
+
+  try {
+    const payload = await response.response.json();
+    if (!Array.isArray(payload?.message?.items)) {
+      return {
+        ok: false,
+        reason: 'malformed-response',
+        candidates: []
+      };
+    }
+
+    return {
+      ok: true,
+      reason: '',
+      candidates: payload.message.items.map((item) => ({
+        provider: 'crossref',
+        title: Array.isArray(item?.title) ? String(item.title[0] || '') : String(item?.title || ''),
+        authors: extractCrossrefAuthors(item),
+        identifiers: extractIdentifiersFromCrossrefWork(item)
+      }))
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'malformed-response',
+      candidates: []
+    };
+  }
+}
+
+function createArxivQuery(paper = {}) {
+  const title = String(paper?.titleValidation?.rawTitle || paper?.paperTitle || paper?.title || '').trim();
+  const titleTokens = unique(tokenizeWithoutStopwords(title)).slice(0, 8);
+  if (!titleTokens.length) return '';
+  return titleTokens.map((token) => `ti:${token}`).join(' AND ');
+}
+
+function createArxivUrl(paper = {}, config = {}) {
+  const query = createArxivQuery(paper);
+  if (!query) return null;
+  const url = new URL(ARXIV_QUERY_URL);
+  url.searchParams.set('search_query', query);
+  url.searchParams.set('start', '0');
+  url.searchParams.set('max_results', String(config.maxCandidates || DEFAULT_MAX_CANDIDATES));
+  return url;
+}
+
+async function fetchArxivCandidates(paper = {}, config = {}) {
+  const url = createArxivUrl(paper, config);
+  if (!url) {
+    return {
+      ok: false,
+      reason: 'invalid-query',
+      candidates: []
+    };
+  }
+
+  const response = await fetchProviderResponse(
+    url,
+    config,
+    'application/atom+xml, application/xml;q=0.9, text/xml;q=0.8'
+  );
+  if (!response.ok) {
+    return {
+      ok: false,
+      reason: response.reason || 'request-failed',
+      candidates: []
+    };
+  }
+
+  try {
+    const payload = await response.response.text();
+    const candidates = parseArxivFeed(payload);
+    if (!Array.isArray(candidates)) {
+      return {
+        ok: false,
+        reason: 'malformed-response',
+        candidates: []
+      };
+    }
+
+    return {
+      ok: true,
+      reason: '',
+      candidates
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'malformed-response',
+      candidates: []
+    };
+  }
+}
+
+const PROVIDER_FETCHERS = {
+  openalex: fetchOpenAlexCandidates,
+  crossref: fetchCrossrefCandidates,
+  arxiv: fetchArxivCandidates
+};
 
 export function shouldAttemptIdentifierResolution(paper = {}, sourceState = {}, options = {}) {
   const config = resolveIdentifierResolutionConfig(options);
@@ -343,7 +593,7 @@ export async function resolvePaperIdentifiersExternally(rootPath, paper = {}, so
     };
   }
 
-  if (!config.providers.includes('openalex')) {
+  if (!config.providers.length) {
     return {
       identifiers: {},
       provider: '',
@@ -360,34 +610,50 @@ export async function resolvePaperIdentifiersExternally(rootPath, paper = {}, so
     };
   }
 
-  const response = await fetchOpenAlexCandidates(paper, config);
-  if (!response.ok) {
+  let firstFailure = null;
+  let definitiveNoMatch = true;
+
+  for (const provider of config.providers) {
+    const fetchCandidates = PROVIDER_FETCHERS[provider];
+    if (!fetchCandidates) continue;
+
+    const response = await fetchCandidates(paper, config);
+    if (!response.ok) {
+      definitiveNoMatch = false;
+      if (!firstFailure) {
+        firstFailure = {
+          provider,
+          reason: response.reason || 'request-failed'
+        };
+      }
+      continue;
+    }
+
+    const matches = response.candidates
+      .map((candidate) => evaluateResolvedCandidate(paper, candidate))
+      .filter((candidate) => candidate.accepted)
+      .sort((left, right) => right.score - left.score || right.titleSimilarity - left.titleSimilarity || right.authorOverlap - left.authorOverlap);
+
+    if (!matches.length) {
+      continue;
+    }
+
     return {
-      identifiers: {},
-      provider: 'openalex',
-      reason: response.reason || 'request-failed'
+      identifiers: matches[0].identifiers,
+      provider: matches[0].provider || provider,
+      reason: 'resolved',
+      score: matches[0].score,
+      matchedTitle: matches[0].matchedTitle
     };
   }
 
-  const matches = response.works
-    .map((work) => evaluateOpenAlexCandidate(paper, work))
-    .filter((candidate) => candidate.accepted)
-    .sort((left, right) => right.score - left.score || right.titleSimilarity - left.titleSimilarity || right.authorOverlap - left.authorOverlap);
-
-  if (!matches.length) {
+  if (definitiveNoMatch) {
     await recordResolutionMiss(rootPath, cacheKey, config, 'no-match');
-    return {
-      identifiers: {},
-      provider: 'openalex',
-      reason: 'no-match'
-    };
   }
 
   return {
-    identifiers: matches[0].identifiers,
-    provider: 'openalex',
-    reason: 'resolved',
-    score: matches[0].score,
-    matchedTitle: matches[0].matchedTitle
+    identifiers: {},
+    provider: firstFailure?.provider || '',
+    reason: definitiveNoMatch ? 'no-match' : (firstFailure?.reason || 'request-failed')
   };
 }
