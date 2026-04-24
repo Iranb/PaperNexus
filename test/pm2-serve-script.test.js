@@ -211,3 +211,78 @@ test('pm2 wrapper can locate node from a common home-local install path for run 
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('pm2 wrapper prefers a common home-local node install over an older PATH node', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-precedence-'));
+  const homeDir = path.join(tempDir, 'home');
+  const fakeNodeDir = path.join(homeDir, 'miniconda3', 'bin');
+  const fakeHomeNodePath = path.join(fakeNodeDir, 'node');
+  const fakePathDir = path.join(tempDir, 'bin');
+  const fakePathNodePath = path.join(fakePathDir, 'node');
+  const logDir = path.join(tempDir, 'logs');
+
+  await fs.mkdir(fakeNodeDir, { recursive: true });
+  await fs.mkdir(fakePathDir, { recursive: true });
+  await fs.mkdir(logDir, { recursive: true });
+  await fs.writeFile(fakeHomeNodePath, '#!/bin/sh\necho "HOME_NODE:$@"\n', 'utf8');
+  await fs.writeFile(fakePathNodePath, '#!/bin/sh\necho "PATH_NODE:$@"\n', 'utf8');
+  await fs.chmod(fakeHomeNodePath, 0o755);
+  await fs.chmod(fakePathNodePath, 0o755);
+
+  try {
+    await assert.rejects(
+      execFileAsync(scriptPath, ['run'], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          PATH: `${fakePathDir}${path.delimiter}/usr/bin:/bin`,
+          PAPERNEXUS_LOG_DIR: logDir,
+          SLEEP_BIN: '/bin/false'
+        }
+      })
+    );
+
+    const latestLog = path.join(logDir, (await fs.readdir(logDir)).sort().at(-1));
+    const log = await fs.readFile(latestLog, 'utf8');
+    assert.match(log, new RegExp(`node=${fakeHomeNodePath.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}`));
+    assert.doesNotMatch(log, new RegExp(`node=${fakePathNodePath.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}`));
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('pm2 wrapper prefers a common home-local pm2 install over an older PATH pm2', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-pm2-precedence-'));
+  const homeDir = path.join(tempDir, 'home');
+  const fakePm2Dir = path.join(homeDir, 'miniconda3', 'bin');
+  const fakeHomePm2Path = path.join(fakePm2Dir, 'pm2');
+  const fakeHomeNodePath = path.join(fakePm2Dir, 'node');
+  const fakePathDir = path.join(tempDir, 'bin');
+  const fakePathPm2Path = path.join(fakePathDir, 'pm2');
+
+  await fs.mkdir(fakePm2Dir, { recursive: true });
+  await fs.mkdir(fakePathDir, { recursive: true });
+  await fs.writeFile(fakeHomePm2Path, '#!/bin/sh\necho "HOME_PM2:$@"\n', 'utf8');
+  await fs.writeFile(fakeHomeNodePath, '#!/bin/sh\necho "HOME_NODE:$@"\n', 'utf8');
+  await fs.writeFile(fakePathPm2Path, '#!/bin/sh\necho "PATH_PM2:$@"\n', 'utf8');
+  await fs.chmod(fakeHomePm2Path, 0o755);
+  await fs.chmod(fakeHomeNodePath, 0o755);
+  await fs.chmod(fakePathPm2Path, 0o755);
+
+  try {
+    const { stdout } = await execFileAsync(scriptPath, ['status'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HOME: homeDir,
+        PATH: `${fakePathDir}${path.delimiter}/usr/bin:/bin`,
+      }
+    });
+
+    assert.match(stdout, /HOME_PM2:status papernexus-serve/);
+    assert.doesNotMatch(stdout, /PATH_PM2:status papernexus-serve/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
