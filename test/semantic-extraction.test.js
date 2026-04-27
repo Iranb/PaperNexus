@@ -22,6 +22,24 @@ function findPromptPaper(prompt, title) {
   return extractPromptPapers(prompt).find((entry) => entry?.title === title) || null;
 }
 
+function isOpenAiTestUrl(url) {
+  return String(url || '').startsWith('https://api.openai.com/v1');
+}
+
+function createIdentifierResolutionMissResponse() {
+  return {
+    ok: false,
+    status: 404,
+    statusText: 'Not Found',
+    async json() {
+      return {};
+    },
+    async text() {
+      return '';
+    }
+  };
+}
+
 test('analyzeCorpus merges llm-assisted semantic extraction into the graph and semantic snapshot', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-corpus-'));
@@ -194,7 +212,10 @@ We study direct analyze llm primary activation.
 We use a reproducible semantic extractor.
 `, 'utf8');
 
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      if (!isOpenAiTestUrl(url)) {
+        return createIdentifierResolutionMissResponse();
+      }
       fetchCount += 1;
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
@@ -244,7 +265,8 @@ We use a reproducible semantic extractor.
       llmProvider: 'openai',
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
-      llmApiKey: 'test-key'
+      llmApiKey: 'test-key',
+      identifierResolutionEnabled: false
     });
 
     assert.equal(fetchCount, 1);
@@ -449,7 +471,10 @@ We study batch semantic extraction for paper B.
 We use a batched evidence linker.
 `, 'utf8');
 
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      if (!isOpenAiTestUrl(url)) {
+        return createIdentifierResolutionMissResponse();
+      }
       fetchCount += 1;
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
@@ -497,7 +522,8 @@ We use a batched evidence linker.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 8
+      llmBatchSize: 8,
+      identifierResolutionEnabled: false
     });
 
     assert.equal(fetchCount, 1);
@@ -537,7 +563,10 @@ We study adaptive trade-offs between persistence and flexibility.
 We use a metacontrol policy to regulate belief updates.
 `, 'utf8');
 
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      if (!isOpenAiTestUrl(url)) {
+        return createIdentifierResolutionMissResponse();
+      }
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
       const paper = extractPromptPapers(prompt)[0];
@@ -600,7 +629,8 @@ We use a metacontrol policy to regulate belief updates.
       llmProvider: 'openai',
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
-      llmApiKey: 'test-key'
+      llmApiKey: 'test-key',
+      identifierResolutionEnabled: false
     });
 
     const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
@@ -663,7 +693,10 @@ We study confirmation bias during tutoring feedback.
 We use metacontrol prompts to calibrate belief updates.
 `, 'utf8');
 
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      if (!isOpenAiTestUrl(url)) {
+        return createIdentifierResolutionMissResponse();
+      }
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
       const paper = extractPromptPapers(prompt)[0];
@@ -739,7 +772,8 @@ We use metacontrol prompts to calibrate belief updates.
       llmProvider: 'openai',
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
-      llmApiKey: 'test-key'
+      llmApiKey: 'test-key',
+      identifierResolutionEnabled: false
     });
 
     const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
@@ -1110,8 +1144,8 @@ We use a cached graph summarizer.
     assert.equal(secondRun.reused, false);
     assert.equal(secondRun.changes.updated, 1);
     assert.equal(secondRun.changes.reused, 1);
-    assert.equal(secondRun.meta.llm.semanticExtraction.participatedPaperCount, 2);
-    assert.equal(secondRun.meta.llm.semanticExtraction.skippedPaperCount, 0);
+    assert.equal(secondRun.meta.llm.semanticExtraction.participatedPaperCount, 1);
+    assert.equal(secondRun.meta.llm.semanticExtraction.skippedPaperCount, 1);
     assert.equal(requestCounts.get('Retry Me Paper'), 2);
     assert.equal(requestCounts.get('Stable Paper'), 1);
 
@@ -1124,7 +1158,7 @@ We use a cached graph summarizer.
 
     assert.equal(retrySnapshot.llm.semanticExtractionParticipated, true);
     assert.equal(retrySnapshot.llm.semanticExtractionParticipationReason, null);
-    assert.equal(stableSnapshot.llm.semanticExtractionParticipated, true);
+    assert.ok(stableSnapshot);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;

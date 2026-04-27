@@ -34,6 +34,20 @@ function createRateLimitResponse(message = 'rate limited') {
   };
 }
 
+function createIdentifierResolutionMissResponse() {
+  return {
+    ok: false,
+    status: 404,
+    statusText: 'Not Found',
+    async json() {
+      return {};
+    },
+    async text() {
+      return '';
+    }
+  };
+}
+
 test('materializeCorpus prepares markdown cache and optimizeCorpus batches LLM graph optimization', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
@@ -83,6 +97,7 @@ We use a batched llm optimizer.
     const materialized = await ingestion.materializeCorpus(tempCorpusRoot, {
       name: 'materialize-optimize-test',
       force: true,
+      identifierResolutionEnabled: false,
       semanticExtraction: 'llm-primary',
       llmProvider: 'openai',
       llmModel: 'gpt-4o-mini',
@@ -112,7 +127,10 @@ We use a batched llm optimizer.
       preservedSnapshot
     );
 
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
       fetchCount += 1;
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
@@ -158,7 +176,8 @@ We use a batched llm optimizer.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 8
+      llmBatchSize: 8,
+      identifierResolutionEnabled: false
     });
 
     assert.equal(fetchCount, 1);
@@ -315,10 +334,14 @@ The provider returns 429 while enriching this paper.
     await ingestion.materializeCorpus(tempCorpusRoot, {
       name: 'rate-limit-stage2-test',
       force: true,
+      identifierResolutionEnabled: false,
       semanticExtraction: 'llm-primary'
     });
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (url) => {
+      if (!String(url || '').startsWith('https://rate-limit.example/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
       fetchCount += 1;
       return createRateLimitResponse('quota exhausted');
     };
@@ -331,7 +354,8 @@ The provider returns 429 while enriching this paper.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://rate-limit.example/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 1
+      llmBatchSize: 1,
+      identifierResolutionEnabled: false
     });
 
     assert.equal(fetchCount, 1);
@@ -357,7 +381,8 @@ The provider returns 429 while enriching this paper.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://rate-limit.example/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 1
+      llmBatchSize: 1,
+      identifierResolutionEnabled: false
     });
 
     assert.equal(second.reused, true);
@@ -1091,7 +1116,10 @@ We study bias mitigation in tutoring feedback and reuse metacontrol ideas from p
 We propose a metacontrol policy transfer framework.
 `, 'utf8');
 
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
       semanticFetchCount += 1;
       const request = JSON.parse(options.body);
       const prompt = request.messages?.[0]?.content || '';
@@ -1150,7 +1178,8 @@ We propose a metacontrol policy transfer framework.
 
     await ingestion.materializeCorpus(tempCorpusRoot, {
       name: 'catalyst-backfill-test',
-      force: true
+      force: true,
+      identifierResolutionEnabled: false
     });
 
     await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
@@ -1159,7 +1188,8 @@ We propose a metacontrol policy transfer framework.
       llmProvider: 'openai',
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
-      llmApiKey: 'test-key'
+      llmApiKey: 'test-key',
+      identifierResolutionEnabled: false
     });
     assert.equal(semanticFetchCount, 1);
 
@@ -1199,7 +1229,8 @@ We propose a metacontrol policy transfer framework.
       llmProvider: 'openai',
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
-      llmApiKey: 'test-key'
+      llmApiKey: 'test-key',
+      identifierResolutionEnabled: false
     });
 
     assert.equal(result.stage, 'index-written');
