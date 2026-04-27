@@ -1494,6 +1494,7 @@ function summarizePaperSemanticExtraction(paper, fallbackRequestedMode = 'heuris
     participated,
     reason,
     error: llm.error || semanticObjects.error || null,
+    rateLimitCooldownUntil: llm.rateLimitCooldownUntil || semanticObjects.rateLimitCooldownUntil || null,
     semanticObjectCount: objectCount
   };
 }
@@ -1702,6 +1703,14 @@ function createSemanticPaperSnapshotStateSignature(semanticPaper = {}) {
   }), 20);
 }
 
+function getFutureIsoTimestamp(value) {
+  const timestamp = Date.parse(String(value || ''));
+  if (!Number.isFinite(timestamp) || timestamp <= Date.now()) {
+    return null;
+  }
+  return new Date(timestamp).toISOString();
+}
+
 function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
   if (!snapshot) {
     return {
@@ -1711,6 +1720,11 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
     };
   }
 
+  const rateLimitCooldownUntil = getFutureIsoTimestamp(
+    snapshot.llm?.rateLimitCooldownUntil
+    || snapshot.llmSemanticObjects?.rateLimitCooldownUntil
+  );
+  const rateLimitCooldownActive = Boolean(rateLimitCooldownUntil);
   const semanticRetryCount = snapshot.llm?.semanticRetryCount ?? snapshot.llm?.retryCount ?? 0;
   const relationRetryCount = snapshot.llm?.relationRetryCount ?? snapshot.llm?.retryCount ?? 0;
   const semanticPlan = resolveSemanticExtractionPlan(options);
@@ -1728,6 +1742,10 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
     && semanticRetryCount < maxRetries
     && !semanticSummary.participated
     && ['request-failed', 'llm-unconfigured'].includes(semanticSummary.reason);
+  const semanticRateLimitExpired = semanticConfiguredNow
+    && !rateLimitCooldownActive
+    && !semanticSummary.participated
+    && semanticSummary.reason === 'rate-limited';
 
   const relationConfiguredNow = canAttemptLlmRelations(options);
   const currentRelationSignature = createRelationConfigSignature(options);
@@ -1740,14 +1758,22 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
     && relationPreviouslyAttemptedForCurrentConfig
     && Boolean(snapshot.llm?.error)
     && Number(snapshot.llm?.relationCount || 0) === 0;
+  const relationRateLimitExpired = relationConfiguredNow
+    && !rateLimitCooldownActive
+    && relationPreviouslyAttemptedForCurrentConfig
+    && snapshot.llm?.relationParticipationReason === 'rate-limited';
 
-  const semanticRequired = semanticMissingForCurrentConfig || semanticMissingCatalystMetadata || semanticRetryableFailure;
-  const relationRequired = relationMissingForCurrentConfig || relationRetryableFailure;
+  const semanticRequired = !rateLimitCooldownActive
+    && (semanticMissingForCurrentConfig || semanticMissingCatalystMetadata || semanticRetryableFailure || semanticRateLimitExpired);
+  const relationRequired = !rateLimitCooldownActive
+    && (relationMissingForCurrentConfig || relationRetryableFailure || relationRateLimitExpired);
 
   return {
     semanticRequired,
     relationRequired,
-    anyRequired: semanticRequired || relationRequired
+    anyRequired: semanticRequired || relationRequired,
+    rateLimitCooldownActive,
+    rateLimitCooldownUntil
   };
 }
 
@@ -1806,17 +1832,20 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
     semanticPaper.researchGoals = mergeSemanticSlots(semanticPaper.researchGoals, inference.researchGoals, 4);
   }
 
+  const rateLimitCooldownUntil = semanticObjects.rateLimitCooldownUntil || inference.rateLimitCooldownUntil || null;
   semanticPaper.llm = {
     provider: inference.provider !== 'disabled' ? inference.provider : semanticObjects.provider,
     error: inference.error || semanticObjects.error,
     relationCount: inference.relations.length,
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    rateLimitCooldownUntil,
     semanticExtractionMode: semanticExtractionPlan.requestedMode,
     semanticExtractionModeEffective: semanticExtractionMode,
     semanticExtractionAttempted: semanticObjects.attempted,
     semanticExtractionParticipated: semanticObjects.participated,
     semanticExtractionParticipationReason: semanticObjects.reason,
+    relationParticipationReason: inference.reason || null,
     semanticObjectCount
   };
   semanticPaper.llmSemanticObjects = {
@@ -1828,6 +1857,7 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
     attempted: semanticObjects.attempted,
     participated: semanticObjects.participated,
     reason: semanticObjects.reason,
+    rateLimitCooldownUntil: semanticObjects.rateLimitCooldownUntil || null,
     error: semanticObjects.error,
     problems: semanticObjects.problems,
     methods: semanticObjects.methods,
@@ -1924,6 +1954,7 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
           ? previousLlm.provider
           : semanticObjects.provider,
         error: semanticObjects.error || null,
+        rateLimitCooldownUntil: semanticObjects.rateLimitCooldownUntil || null,
         semanticConfigSignature,
         semanticExtractionMode: semanticExtractionPlan.requestedMode,
         semanticExtractionModeEffective: semanticExtractionMode,
@@ -1975,8 +2006,10 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
         ...previousLlm,
         provider: inference.provider !== 'disabled' ? inference.provider : previousLlm.provider,
         error: inference.error || null,
+        rateLimitCooldownUntil: inference.rateLimitCooldownUntil || null,
         relationCount: inference.relations.length,
         relationConfigSignature,
+        relationParticipationReason: inference.reason || null,
         relationRetryCount: relationFailed ? Number(previousLlm.relationRetryCount || 0) + 1 : 0
       };
       record.semanticPaper.llmRelations = inference.relations;
@@ -2013,6 +2046,7 @@ function applySemanticBatchResultToRecord(record, semanticObjects, semanticExtra
       ? previousLlm.provider
       : semanticObjects.provider,
     error: semanticObjects.error || null,
+    rateLimitCooldownUntil: semanticObjects.rateLimitCooldownUntil || null,
     semanticConfigSignature: createSemanticConfigSignature(options),
     semanticExtractionMode: semanticExtractionPlan.requestedMode,
     semanticExtractionModeEffective: semanticExtractionMode,
@@ -2045,8 +2079,10 @@ function applyRelationBatchResultToRecord(record, inference, options = {}) {
     ...previousLlm,
     provider: inference.provider !== 'disabled' ? inference.provider : previousLlm.provider,
     error: inference.error || null,
+    rateLimitCooldownUntil: inference.rateLimitCooldownUntil || null,
     relationCount: inference.relations.length,
     relationConfigSignature: createRelationConfigSignature(options),
+    relationParticipationReason: inference.reason || null,
     relationRetryCount: relationFailed ? Number(previousLlm.relationRetryCount || 0) + 1 : 0
   };
   record.semanticPaper.llmRelations = inference.relations;
@@ -2095,6 +2131,11 @@ function createStage2ManifestFromRecords(rootPath, manifest, records, options = 
   });
   if (options.completed !== false) {
     nextManifest.llmOptimization = buildLlmOptimizationState(nextManifest, options);
+  } else {
+    const rateLimitCooldownUntil = getLlmRateLimitCooldownUntilFromPapers(records);
+    if (rateLimitCooldownUntil) {
+      nextManifest.llmOptimization = buildLlmOptimizationCooldownState(nextManifest, options, rateLimitCooldownUntil);
+    }
   }
   nextManifest.sources.sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
   return nextManifest;
@@ -2283,10 +2324,13 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   refreshStage2PhaseStatus(jobState, records, 'semantic');
   refreshStage2PhaseStatus(jobState, records, 'relation');
-  const scopedWorkCompleted = records.every((record) => (
-    record.sourceState.llmRefreshState?.scopedOut
-    || !summarizeLlmRefreshState(record.semanticPaper, options).anyRequired
-  ));
+  const scopedWorkCompleted = records.every((record) => {
+    if (record.sourceState.llmRefreshState?.scopedOut) {
+      return true;
+    }
+    const refresh = summarizeLlmRefreshState(record.semanticPaper, options);
+    return !refresh.anyRequired && !refresh.rateLimitCooldownActive;
+  });
   const manifestOptimizationCompleted = scopedWorkCompleted && !scopedToChangedSources;
   jobState.status = manifestOptimizationCompleted ? 'completed' : 'partial';
   jobState.completedAt = manifestOptimizationCompleted ? new Date().toISOString() : null;
@@ -3345,6 +3389,34 @@ function buildLlmOptimizationState(manifest, options = {}) {
   };
 }
 
+function getLlmRateLimitCooldownUntilFromPapers(items = []) {
+  let latest = 0;
+  for (const item of items || []) {
+    const paper = item?.semanticPaper || item;
+    const timestamp = Date.parse(String(
+      paper?.llm?.rateLimitCooldownUntil
+      || paper?.llmSemanticObjects?.rateLimitCooldownUntil
+      || ''
+    ));
+    if (Number.isFinite(timestamp) && timestamp > Date.now() && timestamp > latest) {
+      latest = timestamp;
+    }
+  }
+  return latest > 0 ? new Date(latest).toISOString() : null;
+}
+
+function buildLlmOptimizationCooldownState(manifest, options = {}, rateLimitCooldownUntil = null) {
+  return {
+    version: 1,
+    completedAt: null,
+    catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: createRelationConfigSignature(options),
+    token: null,
+    rateLimitCooldownUntil
+  };
+}
+
 function manifestHasReusableLlmOptimization(manifest, options = {}) {
   if (!manifest?.llmOptimization?.token) return false;
   if (manifest.llmOptimization.catalystMetadataContractVersion !== CATALYST_METADATA_CONTRACT_VERSION) {
@@ -3355,6 +3427,7 @@ function manifestHasReusableLlmOptimization(manifest, options = {}) {
 
 function manifestNeedsCatalystMetadataBackfill(manifest) {
   if (!manifest?.sources?.length) return false;
+  if (getFutureIsoTimestamp(manifest.llmOptimization?.rateLimitCooldownUntil)) return false;
   if (!manifest.llmOptimization?.token) return true;
   return manifest.llmOptimization.catalystMetadataContractVersion !== CATALYST_METADATA_CONTRACT_VERSION;
 }
@@ -6266,7 +6339,10 @@ export async function analyzeCorpus(inputPath, options = {}) {
         indexedAt,
         changes
       });
-      nextManifest.llmOptimization = buildLlmOptimizationState(nextManifest, analysisOptions);
+      const rateLimitCooldownUntil = getLlmRateLimitCooldownUntilFromPapers(semanticPapers);
+      nextManifest.llmOptimization = rateLimitCooldownUntil
+        ? buildLlmOptimizationCooldownState(nextManifest, analysisOptions, rateLimitCooldownUntil)
+        : buildLlmOptimizationState(nextManifest, analysisOptions);
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(inputPath, rootPath, sourceStates, previousManifest, metadataConcurrency);
         if (shouldBackupBeforePersist) {
@@ -6356,7 +6432,10 @@ export async function analyzeCorpus(inputPath, options = {}) {
       indexedAt: mergedMeta.indexedAt,
       changes
     });
-    nextManifest.llmOptimization = buildLlmOptimizationState(nextManifest, analysisOptions);
+    const rateLimitCooldownUntil = getLlmRateLimitCooldownUntilFromPapers(semanticPapers);
+    nextManifest.llmOptimization = rateLimitCooldownUntil
+      ? buildLlmOptimizationCooldownState(nextManifest, analysisOptions, rateLimitCooldownUntil)
+      : buildLlmOptimizationState(nextManifest, analysisOptions);
     const enhancement = await commitPreparedCorpusIndex({
       rootPath,
       graph: mergedGraphResult.graph,

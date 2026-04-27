@@ -18,6 +18,22 @@ function extractPromptPapers(prompt) {
   }
 }
 
+function createRateLimitResponse(message = 'rate limited') {
+  return {
+    ok: false,
+    status: 429,
+    statusText: 'Too Many Requests',
+    headers: {
+      get(name) {
+        return String(name || '').toLowerCase() === 'retry-after' ? '0' : '';
+      }
+    },
+    async text() {
+      return JSON.stringify({ error: { message } });
+    }
+  };
+}
+
 test('materializeCorpus prepares markdown cache and optimizeCorpus batches LLM graph optimization', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
@@ -262,6 +278,90 @@ Paper B is the only changed import source that should call the LLM.
 
     const nextManifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
     assert.equal(nextManifest.llmOptimization, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus records provider 429 cooldown without snapshot errors or repeated requests', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-rate-limit-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-rate-limit-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let fetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Rate Limited Stage Two Paper
+
+## Abstract
+
+The provider returns 429 while enriching this paper.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'rate-limit-stage2-test',
+      force: true,
+      semanticExtraction: 'llm-primary'
+    });
+
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return createRateLimitResponse('quota exhausted');
+    };
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'rate-limit-stage2-test',
+      force: true,
+      semanticExtraction: 'llm-primary',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://rate-limit.example/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 1
+    });
+
+    assert.equal(fetchCount, 1);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(manifest.llmOptimization?.token, null);
+    assert.match(manifest.llmOptimization?.rateLimitCooldownUntil || '', /^\d{4}-\d{2}-\d{2}T/);
+    const rateLimitStore = JSON.parse(await fs.readFile(path.join(tempHome, 'llm-rate-limits.json'), 'utf8'));
+    assert.equal(rateLimitStore.cooldowns.length, 1);
+    assert.equal(rateLimitStore.cooldowns[0].until, manifest.llmOptimization.rateLimitCooldownUntil);
+
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.error, null);
+    assert.equal(snapshot.llm.semanticExtractionParticipationReason, 'rate-limited');
+    assert.equal(snapshot.llmSemanticObjects.error, null);
+    assert.equal(snapshot.llmSemanticObjects.reason, 'rate-limited');
+    assert.equal(snapshot.llm.rateLimitCooldownUntil, manifest.llmOptimization.rateLimitCooldownUntil);
+
+    const second = await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'rate-limit-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://rate-limit.example/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 1
+    });
+
+    assert.equal(second.reused, true);
+    assert.equal(fetchCount, 1);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;

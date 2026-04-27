@@ -21,6 +21,11 @@ import {
   getKeychainSecret
 } from '../../lib/keychain.js';
 import { normalizeText, stableHash, truncate } from '../../lib/utils.js';
+import {
+  clearLlmRateLimitCooldownStore,
+  loadLlmRateLimitCooldowns,
+  saveLlmRateLimitCooldown
+} from '../../storage/llm-rate-limit-store.js';
 
 const require = createRequire(import.meta.url);
 let jsonrepair = null;
@@ -34,7 +39,13 @@ const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_TIMEOUT_MS = 45000;
 const DEFAULT_BATCH_SIZE = 8;
 const DEFAULT_MAX_TOKENS = 2048;
+const DEFAULT_RATE_LIMIT_RETRY_COUNT = 3;
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 1000;
+const DEFAULT_RATE_LIMIT_RETRY_MAX_DELAY_MS = 30000;
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 const ANTHROPIC_VERSION = '2023-06-01';
+const TRANSIENT_LLM_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const llmRateLimitCooldowns = new Map();
 
 function pickDefined(...values) {
   for (const value of values) {
@@ -672,6 +683,32 @@ export function resolveLlmConfig(options = {}) {
       process.env.PAPERNEXUS_LLM_MAX_TOKENS,
       DEFAULT_MAX_TOKENS
     )),
+    rateLimitRetryCount: Number(pickDefined(
+      options.llmRateLimitRetryCount,
+      process.env.PAPERNEXUS_LLM_RATE_LIMIT_RETRY_COUNT,
+      options.llmRetryCount,
+      process.env.PAPERNEXUS_LLM_RETRY_COUNT,
+      DEFAULT_RATE_LIMIT_RETRY_COUNT
+    )),
+    rateLimitRetryDelayMs: Number(pickDefined(
+      options.llmRateLimitRetryDelayMs,
+      process.env.PAPERNEXUS_LLM_RATE_LIMIT_RETRY_DELAY_MS,
+      options.llmRetryDelayMs,
+      process.env.PAPERNEXUS_LLM_RETRY_DELAY_MS,
+      DEFAULT_RATE_LIMIT_RETRY_DELAY_MS
+    )),
+    rateLimitRetryMaxDelayMs: Number(pickDefined(
+      options.llmRateLimitRetryMaxDelayMs,
+      process.env.PAPERNEXUS_LLM_RATE_LIMIT_RETRY_MAX_DELAY_MS,
+      options.llmRetryMaxDelayMs,
+      process.env.PAPERNEXUS_LLM_RETRY_MAX_DELAY_MS,
+      DEFAULT_RATE_LIMIT_RETRY_MAX_DELAY_MS
+    )),
+    rateLimitCooldownMs: Number(pickDefined(
+      options.llmRateLimitCooldownMs,
+      process.env.PAPERNEXUS_LLM_RATE_LIMIT_COOLDOWN_MS,
+      DEFAULT_RATE_LIMIT_COOLDOWN_MS
+    )),
     sshHost: pickDefined(
       options.llmSshHost,
       process.env.PAPERNEXUS_LLM_SSH_HOST,
@@ -814,7 +851,8 @@ function createSemanticObjectInferenceResult({
   researchQuestions = [],
   openChallenges = [],
   takeaways = [],
-  ideaFragments = []
+  ideaFragments = [],
+  rateLimitCooldownUntil = null
 } = {}) {
   return {
     provider,
@@ -844,7 +882,43 @@ function createSemanticObjectInferenceResult({
     openChallenges,
     takeaways,
     ideaFragments,
+    rateLimitCooldownUntil,
     error
+  };
+}
+
+function getRateLimitCooldownUntil(error) {
+  return error?.rateLimitCooldownUntil || null;
+}
+
+function createRateLimitedSemanticObjectInferenceResult({
+  provider,
+  requestedMode,
+  effectiveMode = 'heuristic-only',
+  error
+} = {}) {
+  return createSemanticObjectInferenceResult({
+    provider,
+    requestedMode,
+    effectiveMode,
+    attempted: true,
+    participated: false,
+    reason: 'rate-limited',
+    error: null,
+    rateLimitCooldownUntil: getRateLimitCooldownUntil(error)
+  });
+}
+
+function createRateLimitedResearchSemanticsResult(config = {}, error = {}) {
+  return {
+    provider: config.provider,
+    benchmarks: [],
+    findings: [],
+    researchGoals: [],
+    relations: [],
+    reason: 'rate-limited',
+    rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+    error: null
   };
 }
 
@@ -914,6 +988,257 @@ function runSshCommand(host, remoteArgs, stdinText, timeoutMs, providerLabel = '
   });
 }
 
+function getResponseHeader(response, name) {
+  const headers = response?.headers;
+  if (!headers) return '';
+  if (typeof headers.get === 'function') {
+    return headers.get(name) || headers.get(String(name).toLowerCase()) || '';
+  }
+  return headers[name] || headers[String(name).toLowerCase()] || '';
+}
+
+function parseRetryAfterMs(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, Math.ceil(seconds * 1000));
+  }
+
+  const retryAt = Date.parse(raw);
+  if (Number.isFinite(retryAt)) {
+    return Math.max(0, retryAt - Date.now());
+  }
+
+  return null;
+}
+
+async function safeReadResponseText(response) {
+  try {
+    if (typeof response?.text === 'function') {
+      return await response.text();
+    }
+    if (typeof response?.json === 'function') {
+      return JSON.stringify(await response.json());
+    }
+  } catch {}
+  return '';
+}
+
+function toNonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.floor(parsed));
+}
+
+function toNonNegativeNumber(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, parsed);
+}
+
+function resolveLlmRetryConfig(config = {}) {
+  const retryCount = toNonNegativeInteger(config.rateLimitRetryCount, DEFAULT_RATE_LIMIT_RETRY_COUNT);
+  const retryDelayMs = toNonNegativeNumber(config.rateLimitRetryDelayMs, DEFAULT_RATE_LIMIT_RETRY_DELAY_MS);
+  const retryMaxDelayMs = Math.max(
+    retryDelayMs,
+    toNonNegativeNumber(config.rateLimitRetryMaxDelayMs, DEFAULT_RATE_LIMIT_RETRY_MAX_DELAY_MS)
+  );
+
+  return {
+    retryCount,
+    retryDelayMs,
+    retryMaxDelayMs
+  };
+}
+
+function isRetryableStatusCode(status) {
+  return TRANSIENT_LLM_STATUS_CODES.has(Number(status || 0));
+}
+
+function createLlmRateLimitCooldownKey(config = {}, providerLabel = 'LLM') {
+  return [
+    String(config.provider || providerLabel || '').trim().toLowerCase(),
+    String(config.baseUrl || '').trim().replace(/\/+$/, '').toLowerCase()
+  ].join('|');
+}
+
+async function refreshPersistedLlmRateLimitCooldowns() {
+  const entries = await loadLlmRateLimitCooldowns();
+  for (const entry of entries) {
+    llmRateLimitCooldowns.set(entry.key, entry);
+  }
+
+  for (const [key, entry] of llmRateLimitCooldowns) {
+    if (Number(entry.untilMs || 0) <= Date.now()) {
+      llmRateLimitCooldowns.delete(key);
+    }
+  }
+}
+
+async function getActiveLlmRateLimitCooldown(config = {}, providerLabel = 'LLM') {
+  await refreshPersistedLlmRateLimitCooldowns();
+  const key = createLlmRateLimitCooldownKey(config, providerLabel);
+  const entry = llmRateLimitCooldowns.get(key);
+  if (!entry) return null;
+
+  if (Number(entry.untilMs || 0) > Date.now()) {
+    return entry;
+  }
+
+  llmRateLimitCooldowns.delete(key);
+  return null;
+}
+
+function createLlmRateLimitCooldownError(providerLabel, config = {}, entry = {}) {
+  const untilMs = Number(entry.untilMs || 0);
+  const until = untilMs > 0 ? new Date(untilMs).toISOString() : null;
+  const error = new Error(
+    `${providerLabel} request skipped during rate-limit cooldown${until ? ` until ${until}` : ''}`
+  );
+  error.provider = providerLabel;
+  error.statusCode = 429;
+  error.reason = 'rate-limited';
+  error.rateLimitCooldownUntil = until;
+  error.retryable = false;
+  error.cooldownActive = true;
+  error.cooldownKey = createLlmRateLimitCooldownKey(config, providerLabel);
+  return error;
+}
+
+async function recordLlmRateLimitCooldown(config = {}, providerLabel = 'LLM', error = {}) {
+  const cooldownMs = toNonNegativeNumber(config.rateLimitCooldownMs, DEFAULT_RATE_LIMIT_COOLDOWN_MS);
+  const retryAfterMs = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : 0;
+  const untilMs = Date.now() + Math.max(cooldownMs, retryAfterMs);
+  const key = createLlmRateLimitCooldownKey(config, providerLabel);
+  const entry = {
+    key,
+    provider: String(config.provider || providerLabel || '').trim().toLowerCase(),
+    baseUrl: String(config.baseUrl || '').trim().replace(/\/+$/, ''),
+    untilMs,
+    until: new Date(untilMs).toISOString(),
+    statusCode: 429,
+    message: String(error.message || '')
+  };
+
+  llmRateLimitCooldowns.set(key, entry);
+  try {
+    await saveLlmRateLimitCooldown(entry);
+    error.rateLimitCooldownPersisted = true;
+  } catch (persistError) {
+    error.rateLimitCooldownPersisted = false;
+    error.rateLimitCooldownPersistError = String(persistError?.message || persistError || '');
+  }
+  error.rateLimitCooldownUntil = entry.until;
+  error.retryable = false;
+  return entry;
+}
+
+export async function clearLlmRateLimitCooldowns(options = {}) {
+  llmRateLimitCooldowns.clear();
+  if (options.persisted !== false) {
+    await clearLlmRateLimitCooldownStore();
+  }
+}
+
+export function isLlmRateLimitError(error) {
+  return Number(error?.statusCode || 0) === 429
+    || /(?:\b429\b|rate limit|too many requests)/i.test(String(error?.message || ''));
+}
+
+function isRetryableLlmError(error) {
+  if (!error) return false;
+  if (error.name === 'AbortError') return false;
+  if (error.retryable === true) return true;
+  if (isRetryableStatusCode(error.statusCode)) return true;
+  return false;
+}
+
+async function createLlmHttpError(providerLabel, response) {
+  const statusCode = Number(response?.status || 0);
+  const retryAfterMs = parseRetryAfterMs(getResponseHeader(response, 'retry-after'));
+  const responseText = String(await safeReadResponseText(response) || '').replace(/\s+/g, ' ').trim();
+  const statusText = String(response?.statusText || '').trim();
+  const bodySuffix = responseText ? `: ${truncate(responseText, 240)}` : '';
+  const retrySuffix = statusCode === 429 && retryAfterMs !== null
+    ? ` (rate limited; retry after ${Math.ceil(retryAfterMs / 1000)}s)`
+    : '';
+  const error = new Error(
+    `${providerLabel} request failed with ${statusCode}${statusText ? ` ${statusText}` : ''}${bodySuffix}${retrySuffix}`
+  );
+  error.provider = providerLabel;
+  error.statusCode = statusCode;
+  error.retryAfterMs = retryAfterMs;
+  error.retryable = isRetryableStatusCode(statusCode);
+  return error;
+}
+
+function getLlmRetryDelayMs(error, retryIndex, retryConfig) {
+  if (Number.isFinite(error?.retryAfterMs)) {
+    return Math.min(error.retryAfterMs, retryConfig.retryMaxDelayMs);
+  }
+
+  if (retryConfig.retryDelayMs <= 0) {
+    return 0;
+  }
+
+  return Math.min(
+    retryConfig.retryMaxDelayMs,
+    retryConfig.retryDelayMs * (2 ** Math.max(0, retryIndex))
+  );
+}
+
+async function waitForLlmRetry(error, retryIndex, retryConfig) {
+  const delayMs = getLlmRetryDelayMs(error, retryIndex, retryConfig);
+  if (delayMs <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function fetchLlmJsonWithRetry(providerLabel, url, requestOptions, config = {}) {
+  const retryConfig = resolveLlmRetryConfig(config);
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= retryConfig.retryCount; attempt += 1) {
+    const activeCooldown = await getActiveLlmRateLimitCooldown(config, providerLabel);
+    if (activeCooldown) {
+      throw createLlmRateLimitCooldownError(providerLabel, config, activeCooldown);
+    }
+
+    const controller = new AbortController();
+    const timeoutMs = toNonNegativeNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS);
+    const timeoutHandle = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+    try {
+      const response = await fetch(url, {
+        ...requestOptions,
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw await createLlmHttpError(providerLabel, response);
+      }
+
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+      if (isLlmRateLimitError(error)) {
+        await recordLlmRateLimitCooldown(config, providerLabel, error);
+        throw error;
+      }
+      if (attempt >= retryConfig.retryCount || !isRetryableLlmError(error)) {
+        throw error;
+      }
+      clearTimeout(timeoutHandle);
+      await waitForLlmRetry(error, attempt, retryConfig);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+  }
+
+  throw lastError;
+}
+
 async function requestOllamaGenerate(config, prompt) {
   const payload = {
     model: config.model,
@@ -944,29 +1269,22 @@ async function requestOllamaGenerate(config, prompt) {
     return JSON.parse(output);
   }
 
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), config.timeoutMs);
-
-  try {
-    const response = await fetch(`${config.baseUrl}/api/generate`, {
+  const response = await fetchLlmJsonWithRetry(
+    'Ollama',
+    `${config.baseUrl}/api/generate`,
+    {
       method: 'POST',
       headers: {
         'content-type': 'application/json'
       },
-      signal: controller.signal,
       body: JSON.stringify(payload)
-    });
+    },
+    config
+  );
 
-    if (!response.ok) {
-      throw new Error(`Ollama request failed with ${response.status}`);
-    }
-
-    return {
-      text: (await response.json()).response || ''
-    };
-  } finally {
-    clearTimeout(timeoutHandle);
-  }
+  return {
+    text: response.response || ''
+  };
 }
 
 function extractOpenAiText(payload) {
@@ -1026,9 +1344,6 @@ async function requestOpenAiGenerate(config, prompt) {
     );
   }
 
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), config.timeoutMs);
-
   const requestBody = {
     model: config.model,
     messages: [
@@ -1048,27 +1363,23 @@ async function requestOpenAiGenerate(config, prompt) {
     requestBody.enable_thinking = false;
   }
 
-  try {
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const response = await fetchLlmJsonWithRetry(
+    'OpenAI',
+    `${config.baseUrl}/chat/completions`,
+    {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey}`,
         'content-type': 'application/json'
       },
-      signal: controller.signal,
       body: JSON.stringify(requestBody)
-    });
+    },
+    config
+  );
 
-    if (!response.ok) {
-      throw new Error(`OpenAI request failed with ${response.status}`);
-    }
-
-    return {
-      text: extractOpenAiText(await response.json())
-    };
-  } finally {
-    clearTimeout(timeoutHandle);
-  }
+  return {
+    text: extractOpenAiText(response)
+  };
 }
 
 function extractAnthropicText(payload) {
@@ -1089,18 +1400,16 @@ async function requestAnthropicGenerate(config, prompt) {
     );
   }
 
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), config.timeoutMs);
-
-  try {
-    const response = await fetch(`${config.baseUrl}/messages`, {
+  const response = await fetchLlmJsonWithRetry(
+    'Anthropic',
+    `${config.baseUrl}/messages`,
+    {
       method: 'POST',
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': ANTHROPIC_VERSION,
         'content-type': 'application/json'
       },
-      signal: controller.signal,
       body: JSON.stringify({
         model: config.model,
         max_tokens: config.maxTokens,
@@ -1112,18 +1421,13 @@ async function requestAnthropicGenerate(config, prompt) {
         ],
         temperature: 0.1
       })
-    });
+    },
+    config
+  );
 
-    if (!response.ok) {
-      throw new Error(`Anthropic request failed with ${response.status}`);
-    }
-
-    return {
-      text: extractAnthropicText(await response.json())
-    };
-  } finally {
-    clearTimeout(timeoutHandle);
-  }
+  return {
+    text: extractAnthropicText(response)
+  };
 }
 
 async function requestLlmGenerate(config, prompt) {
@@ -1335,6 +1639,14 @@ export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, opti
       error: null
     });
   } catch (error) {
+    if (isLlmRateLimitError(error)) {
+      return createRateLimitedSemanticObjectInferenceResult({
+        provider: plan.config.provider,
+        requestedMode: plan.requestedMode,
+        error
+      });
+    }
+
     return createSemanticObjectInferenceResult({
       provider: plan.config.provider,
       requestedMode: plan.requestedMode,
@@ -1366,6 +1678,8 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
   const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
 
   for (let start = 0; start < entries.length; start += batchSize) {
+    let completedAfterBatch = Math.min(start + batchSize, entries.length);
+    let stopAfterCurrentBatch = false;
     const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
       ...entry,
       id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${start + index + 1}`)
@@ -1454,15 +1768,39 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           error: error.message
         });
       }
+
+      if (isLlmRateLimitError(error)) {
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          results[start + offset] = createRateLimitedSemanticObjectInferenceResult({
+            provider: plan.config.provider,
+            requestedMode: plan.requestedMode,
+            error
+          });
+        }
+
+        for (let index = start + batch.length; index < entries.length; index += 1) {
+          results[index] = createRateLimitedSemanticObjectInferenceResult({
+            provider: plan.config.provider,
+            requestedMode: plan.requestedMode,
+            error
+          });
+        }
+        completedAfterBatch = entries.length;
+        stopAfterCurrentBatch = true;
+      }
     } finally {
       options.onBatchComplete?.({
         phase: 'semantic-extraction',
         batchNumber: Math.floor(start / batchSize) + 1,
         totalBatches,
-        completed: Math.min(start + batch.length, entries.length),
+        completed: completedAfterBatch,
         total: entries.length,
         batchSize: batch.length
       });
+    }
+
+    if (stopAfterCurrentBatch) {
+      break;
     }
   }
 
@@ -1518,6 +1856,10 @@ export async function inferPaperResearchSemantics(parsedPaper, semanticPaper, op
       error: null
     };
   } catch (error) {
+    if (isLlmRateLimitError(error)) {
+      return createRateLimitedResearchSemanticsResult(config, error);
+    }
+
     return {
       provider: config.provider,
       benchmarks: [],
@@ -1560,6 +1902,8 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
   const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
 
   for (let start = 0; start < entries.length; start += batchSize) {
+    let completedAfterBatch = Math.min(start + batchSize, entries.length);
+    let stopAfterCurrentBatch = false;
     const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
       ...entry,
       id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${start + index + 1}`)
@@ -1635,15 +1979,31 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
           error: error.message
         };
       }
+
+      if (isLlmRateLimitError(error)) {
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          results[start + offset] = createRateLimitedResearchSemanticsResult(config, error);
+        }
+
+        for (let index = start + batch.length; index < entries.length; index += 1) {
+          results[index] = createRateLimitedResearchSemanticsResult(config, error);
+        }
+        completedAfterBatch = entries.length;
+        stopAfterCurrentBatch = true;
+      }
     } finally {
       options.onBatchComplete?.({
         phase: 'relation-extraction',
         batchNumber: Math.floor(start / batchSize) + 1,
         totalBatches,
-        completed: Math.min(start + batch.length, entries.length),
+        completed: completedAfterBatch,
         total: entries.length,
         batchSize: batch.length
       });
+    }
+
+    if (stopAfterCurrentBatch) {
+      break;
     }
   }
 
@@ -1752,16 +2112,18 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
     } catch (error) {
       for (let offset = 0; offset < batch.length; offset += 1) {
         const batchEntry = batch[offset];
+        const rateLimited = isLlmRateLimitError(error);
         results[start + offset] = {
           id: batchEntry.id,
           verdict: 'keep',
           canonicalName: batchEntry.name,
           confidence: 0,
-          reason: 'request-failed',
+          reason: rateLimited ? 'rate-limited' : 'request-failed',
           provider: config.provider,
           attempted: true,
           participated: false,
-          error: error.message
+          rateLimitCooldownUntil: rateLimited ? getRateLimitCooldownUntil(error) : null,
+          error: rateLimited ? null : error.message
         };
       }
     } finally {

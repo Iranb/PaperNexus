@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   adjudicateCrossPaperCandidates,
+  clearLlmRateLimitCooldowns,
   inferPaperResearchSemanticsBatch,
   inferPaperSemanticObjects,
   inferPaperSemanticObjectsBatch,
@@ -18,10 +19,33 @@ import {
 } from '../src/storage/corpus-store.js';
 
 const originalFetch = globalThis.fetch;
+const originalRateLimitStatePath = process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH;
 
-afterEach(() => {
+afterEach(async () => {
   globalThis.fetch = originalFetch;
+  await clearLlmRateLimitCooldowns({ persisted: false });
+  if (originalRateLimitStatePath === undefined) {
+    delete process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH;
+  } else {
+    process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = originalRateLimitStatePath;
+  }
 });
+
+function createRateLimitResponse(message = 'rate limited') {
+  return {
+    ok: false,
+    status: 429,
+    statusText: 'Too Many Requests',
+    headers: {
+      get(name) {
+        return String(name || '').toLowerCase() === 'retry-after' ? '0' : '';
+      }
+    },
+    async text() {
+      return JSON.stringify({ error: { message } });
+    }
+  };
+}
 
 test('inferPaperSemanticObjects extracts structured semantic objects from OpenAI-style JSON', async () => {
   globalThis.fetch = async () => ({
@@ -187,6 +211,129 @@ test('inferPaperSemanticObjects disables thinking for DashScope Qwen3 JSON mode'
 
   assert.equal(requestBody.enable_thinking, false);
   assert.deepEqual(requestBody.response_format, { type: 'json_object' });
+});
+
+test('inferPaperSemanticObjects records a one-hour OpenAI-compatible 429 cooldown without surfacing an error', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-rate-limit-state-'));
+  const statePath = path.join(tempDir, 'llm-rate-limits.json');
+  process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = statePath;
+  let fetchCount = 0;
+
+  try {
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return createRateLimitResponse('temporary request quota exceeded');
+    };
+
+    const options = {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmRateLimitRetryCount: 2,
+      llmRateLimitRetryDelayMs: 0,
+      llmRateLimitRetryMaxDelayMs: 0
+    };
+    const result = await inferPaperSemanticObjects(
+      {
+        title: 'Rate Limit Recovery',
+        sections: [
+          { heading: 'Introduction', role: 'introduction', text: 'The extraction should recover after a temporary 429.' }
+        ]
+      },
+      {
+        abstract: 'A test paper.',
+        problems: [],
+        methods: [],
+        claims: []
+      },
+      options
+    );
+
+    assert.equal(fetchCount, 1);
+    assert.equal(result.participated, false);
+    assert.equal(result.reason, 'rate-limited');
+    assert.equal(result.error, null);
+    assert.match(result.rateLimitCooldownUntil, /^\d{4}-\d{2}-\d{2}T/);
+
+    const statePayload = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    assert.equal(statePayload.cooldowns.length, 1);
+    assert.equal(statePayload.cooldowns[0].until, result.rateLimitCooldownUntil);
+
+    await clearLlmRateLimitCooldowns({ persisted: false });
+
+    const second = await inferPaperSemanticObjects(
+      {
+        title: 'Rate Limit Recovery 2',
+        sections: [
+          { heading: 'Introduction', role: 'introduction', text: 'The cooldown should avoid another request.' }
+        ]
+      },
+      {
+        abstract: 'A test paper.',
+        problems: [],
+        methods: [],
+        claims: []
+      },
+      options
+    );
+
+    assert.equal(fetchCount, 1);
+    assert.equal(second.reason, 'rate-limited');
+    assert.equal(second.error, null);
+    assert.equal(second.rateLimitCooldownUntil, result.rateLimitCooldownUntil);
+  } finally {
+    await clearLlmRateLimitCooldowns();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('inferPaperSemanticObjectsBatch stops later LLM batches after provider rate limit', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-rate-limit-batch-'));
+  process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = path.join(tempDir, 'llm-rate-limits.json');
+  const batchEvents = [];
+  let fetchCount = 0;
+
+  try {
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return createRateLimitResponse('quota exhausted');
+    };
+
+    const results = await inferPaperSemanticObjectsBatch(
+      [
+        { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+        { id: 'paper-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} },
+        { id: 'paper-3', parsedPaper: { title: 'C', sections: [] }, semanticPaper: {} }
+      ],
+      {
+        semanticExtraction: 'llm-assisted',
+        llmProvider: 'openai',
+        llmModel: 'gpt-4o-mini',
+        llmBaseUrl: 'https://api.openai.com/v1',
+        llmApiKey: 'test-key',
+        llmBatchSize: 1,
+        llmRateLimitRetryCount: 0,
+        llmRateLimitRetryDelayMs: 0,
+        llmRateLimitRetryMaxDelayMs: 0,
+        onBatchComplete(event) {
+          batchEvents.push(event);
+        }
+      }
+    );
+
+    assert.equal(fetchCount, 1);
+    assert.equal(results.length, 3);
+    assert.equal(results.every((result) => result.reason === 'rate-limited'), true);
+    assert.equal(results.every((result) => result.error === null), true);
+    assert.match(results[1].rateLimitCooldownUntil, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(batchEvents.length, 1);
+    assert.equal(batchEvents[0].completed, 3);
+  } finally {
+    await clearLlmRateLimitCooldowns();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('inferPaperSemanticObjects tolerates lightly malformed JSON with repair fallback', async () => {
@@ -770,6 +917,22 @@ test('resolveLlmConfig fills default Keychain binding fields for keychain-backed
   assert.equal(config.apiKeySource, 'keychain');
   assert.equal(config.apiKeyService, 'papernexus.llm');
   assert.equal(config.apiKeyAccount, 'openai:https://coding.dashscope.aliyuncs.com/v1');
+});
+
+test('resolveLlmConfig exposes bounded LLM retry settings for rate-limited providers', () => {
+  const config = resolveLlmConfig({
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmRateLimitRetryCount: 5,
+    llmRateLimitRetryDelayMs: 250,
+    llmRateLimitRetryMaxDelayMs: 5000,
+    llmRateLimitCooldownMs: 3600000
+  });
+
+  assert.equal(config.rateLimitRetryCount, 5);
+  assert.equal(config.rateLimitRetryDelayMs, 250);
+  assert.equal(config.rateLimitRetryMaxDelayMs, 5000);
+  assert.equal(config.rateLimitCooldownMs, 3600000);
 });
 
 test('loadLlmApiKey reads keychain-backed secrets before env fallback', async () => {
