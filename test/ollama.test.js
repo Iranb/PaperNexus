@@ -289,6 +289,166 @@ test('inferPaperSemanticObjects records a one-hour OpenAI-compatible 429 cooldow
   }
 });
 
+test('inferPaperSemanticObjects falls back to Ollama after an OpenAI-compatible 429', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-fallback-'));
+  process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = path.join(tempDir, 'llm-rate-limits.json');
+  const requestedUrls = [];
+
+  try {
+    globalThis.fetch = async (url) => {
+      requestedUrls.push(String(url));
+      if (String(url).includes('/chat/completions')) {
+        return createRateLimitResponse('temporary quota exhausted');
+      }
+      return {
+        ok: true,
+        async json() {
+          return {
+            response: JSON.stringify({
+              problems: [
+                {
+                  name: 'fallback semantic extraction',
+                  type: 'Problem',
+                  evidenceText: 'The fallback model extracted this problem.',
+                  confidence: 0.82
+                }
+              ]
+            })
+          };
+        }
+      };
+    };
+
+    const result = await inferPaperSemanticObjects(
+      {
+        title: 'Fallback Recovery',
+        sections: [
+          { heading: 'Abstract', role: 'abstract', text: 'A fallback LLM should recover from a provider 429.' }
+        ]
+      },
+      {
+        abstract: 'A fallback test paper.',
+        problems: [],
+        methods: [],
+        claims: []
+      },
+      {
+        semanticExtraction: 'llm-assisted',
+        llmProvider: 'openai',
+        llmModel: 'gpt-4o-mini',
+        llmBaseUrl: 'https://api.openai.com/v1',
+        llmApiKey: 'test-key',
+        llmRateLimitRetryCount: 0,
+        llmRateLimitRetryDelayMs: 0,
+        llmRateLimitRetryMaxDelayMs: 0,
+        llmFallbackProvider: 'ollama',
+        llmFallbackModel: 'gemma3:4b',
+        llmFallbackBaseUrl: 'http://127.0.0.1:11434'
+      }
+    );
+
+    assert.equal(requestedUrls.length, 2);
+    assert.equal(requestedUrls[0], 'https://api.openai.com/v1/chat/completions');
+    assert.equal(requestedUrls[1], 'http://127.0.0.1:11434/api/generate');
+    assert.equal(result.provider, 'ollama');
+    assert.equal(result.participated, true);
+    assert.equal(result.reason, null);
+    assert.equal(result.problems[0].name, 'fallback semantic extraction');
+  } finally {
+    await clearLlmRateLimitCooldowns();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('inferPaperSemanticObjects auto-starts and pulls fallback Ollama models before parsing', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-fallback-bootstrap-'));
+  process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = path.join(tempDir, 'llm-rate-limits.json');
+  const shellCommands = [];
+  let tagsCalls = 0;
+
+  try {
+    globalThis.fetch = async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes('/chat/completions')) {
+        return createRateLimitResponse('temporary quota exhausted');
+      }
+      if (requestUrl.endsWith('/api/tags')) {
+        tagsCalls += 1;
+        if (tagsCalls === 1) {
+          throw new Error('Ollama is down');
+        }
+        return {
+          ok: true,
+          async json() {
+            return { models: [] };
+          }
+        };
+      }
+      return {
+        ok: true,
+        async json() {
+          return {
+            response: JSON.stringify({
+              problems: [
+                {
+                  name: 'docker bootstrapped fallback',
+                  type: 'Problem',
+                  evidenceText: 'The fallback model was available after bootstrap.'
+                }
+              ]
+            })
+          };
+        }
+      };
+    };
+
+    const result = await inferPaperSemanticObjects(
+      {
+        title: 'Fallback Bootstrap',
+        sections: [
+          { heading: 'Abstract', role: 'abstract', text: 'Ollama should be bootstrapped automatically.' }
+        ]
+      },
+      {
+        abstract: 'A fallback bootstrap paper.',
+        problems: [],
+        methods: [],
+        claims: []
+      },
+      {
+        semanticExtraction: 'llm-assisted',
+        llmProvider: 'openai',
+        llmModel: 'gpt-4o-mini',
+        llmBaseUrl: 'https://api.openai.com/v1',
+        llmApiKey: 'test-key',
+        llmRateLimitRetryCount: 0,
+        llmRateLimitRetryDelayMs: 0,
+        llmRateLimitRetryMaxDelayMs: 0,
+        llmFallbackProvider: 'ollama',
+        llmFallbackModel: 'gemma3:4b',
+        llmFallbackBaseUrl: 'http://127.0.0.1:11434',
+        llmFallbackAutoStart: true,
+        llmFallbackAutoPull: true,
+        llmFallbackOllamaBootstrap: 'docker',
+        llmFallbackStartupWaitMs: 1000,
+        llmFallbackExecFile: async (command, args) => {
+          shellCommands.push([command, ...args].join(' '));
+          return { stdout: '' };
+        }
+      }
+    );
+
+    assert.equal(result.provider, 'ollama');
+    assert.equal(result.participated, true);
+    assert.equal(shellCommands.length, 2);
+    assert.match(shellCommands[0], /docker.*run.*ollama\/ollama:latest/);
+    assert.match(shellCommands[1], /docker.*exec.*papernexus-ollama.*ollama pull 'gemma3:4b'/);
+  } finally {
+    await clearLlmRateLimitCooldowns();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('inferPaperSemanticObjectsBatch stops later LLM batches after provider rate limit', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-rate-limit-batch-'));
   process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = path.join(tempDir, 'llm-rate-limits.json');
@@ -933,6 +1093,29 @@ test('resolveLlmConfig exposes bounded LLM retry settings for rate-limited provi
   assert.equal(config.rateLimitRetryDelayMs, 250);
   assert.equal(config.rateLimitRetryMaxDelayMs, 5000);
   assert.equal(config.rateLimitCooldownMs, 3600000);
+});
+
+test('resolveLlmConfig exposes optional Ollama fallback bootstrap settings', () => {
+  const config = resolveLlmConfig({
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmFallbackProvider: 'ollama',
+    llmFallbackModel: 'gemma3:4b',
+    llmFallbackBaseUrl: 'http://127.0.0.1:11434',
+    llmFallbackSshHost: 'gpu.example',
+    llmFallbackAutoStart: true,
+    llmFallbackAutoPull: true,
+    llmFallbackOllamaBootstrap: 'docker',
+    llmFallbackOllamaDockerContainer: 'paper-ollama'
+  });
+
+  assert.equal(config.fallback.provider, 'ollama');
+  assert.equal(config.fallback.model, 'gemma3:4b');
+  assert.equal(config.fallback.sshHost, 'gpu.example');
+  assert.equal(config.fallback.autoStart, true);
+  assert.equal(config.fallback.autoPull, true);
+  assert.equal(config.fallback.ollamaBootstrap.mode, 'docker');
+  assert.equal(config.fallback.ollamaBootstrap.dockerContainer, 'paper-ollama');
 });
 
 test('loadLlmApiKey reads keychain-backed secrets before env fallback', async () => {

@@ -574,36 +574,36 @@ export function precomputePaperGraphFragment(paper) {
     }
   };
 
-  const problems = paper.problems
+  const problems = (paper.problems || [])
     .map((problem) => createGlobalContribution(NODE_TYPES.PROBLEM, paper, problem, EDGE_TYPES.SOLVES))
     .filter(Boolean);
-  const methods = paper.methods
+  const methods = (paper.methods || [])
     .map((method) => createGlobalContribution(NODE_TYPES.METHOD, paper, method, EDGE_TYPES.USES))
     .filter(Boolean);
-  const datasets = paper.datasets
+  const datasets = (paper.datasets || [])
     .map((dataset) => createGlobalContribution(NODE_TYPES.DATASET, paper, dataset, EDGE_TYPES.EVALUATES_ON))
     .filter(Boolean);
   const benchmarks = (paper.benchmarks || [])
     .map((benchmark) => createGlobalContribution(NODE_TYPES.BENCHMARK, paper, benchmark, EDGE_TYPES.BENCHMARKED_ON))
     .filter(Boolean);
-  const metrics = paper.metrics
+  const metrics = (paper.metrics || [])
     .map((metric) => createGlobalContribution(NODE_TYPES.METRIC, paper, metric, EDGE_TYPES.REPORTS, {
       higherIsBetter: metric.higherIsBetter
     }))
     .filter(Boolean);
-  const limitations = paper.limitations
+  const limitations = (paper.limitations || [])
     .map((limitation) => createGlobalContribution(NODE_TYPES.LIMITATION, paper, limitation, EDGE_TYPES.HAS_LIMITATION, {
       nodeType: limitation.type,
       relationshipOverrides: { limitationType: limitation.type }
     }))
     .filter(Boolean);
-  const assumptions = paper.assumptions
+  const assumptions = (paper.assumptions || [])
     .map((assumption) => createGlobalContribution(NODE_TYPES.ASSUMPTION, paper, assumption, EDGE_TYPES.ASSUMES, {
       nodeType: assumption.type,
       relationshipOverrides: { assumptionType: assumption.type }
     }))
     .filter(Boolean);
-  const futureDirections = paper.futureDirections
+  const futureDirections = (paper.futureDirections || [])
     .map((futureDirection) => createGlobalContribution(NODE_TYPES.FUTURE_DIRECTION, paper, futureDirection, EDGE_TYPES.SUGGESTS_FUTURE))
     .filter(Boolean);
   const researchGoals = (paper.researchGoals || [])
@@ -727,7 +727,7 @@ export function precomputePaperGraphFragment(paper) {
     .filter((entry) => entry.node.properties?.abstractionLevel === 'specific');
   const specificChallengeNodes = specificChallengeEntries.map((entry) => entry.node);
 
-  const claimEntries = paper.claims.map((claim, index) => {
+  const claimEntries = (paper.claims || []).map((claim, index) => {
     const node = buildPaperScopedNodePayload(
       NODE_TYPES.CLAIM,
       paper,
@@ -816,7 +816,7 @@ export function precomputePaperGraphFragment(paper) {
     return createScopedContribution(node, EDGE_TYPES.REPORTS_FINDING, finding, paper, [finding.name], extraRelationships);
   });
 
-  const evidenceEntries = paper.evidences.map((evidence, index) => {
+  const evidenceEntries = (paper.evidences || []).map((evidence, index) => {
     const node = buildPaperScopedNodePayload(
       NODE_TYPES.EVIDENCE,
       paper,
