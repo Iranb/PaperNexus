@@ -61,6 +61,22 @@ Scope boundary:
   - query, catalyst, and enhancement APIs operate on already-indexed graph state.
   - Discovery, external search, and orchestration live outside PaperNexus.
 
+LLM Fallback Options:
+  --fallback-provider <openai|anthropic|ollama>
+    Provider to use when the primary LLM is rate limited. Fallback is off unless a fallback model is configured.
+  --fallback-model <name>
+    Model identifier for the fallback provider.
+  --fallback-base-url <url>
+    Fallback API root. For Ollama this defaults to http://127.0.0.1:11434.
+  --fallback-ssh-host <host>
+    Run fallback Ollama HTTP calls and bootstrap commands through SSH on the remote host.
+  --fallback-auto-start <true|false>
+    Start fallback Ollama automatically when its HTTP endpoint is unavailable.
+  --fallback-auto-pull <true|false>
+    Pull the fallback Ollama model automatically when it is missing.
+  --fallback-ollama-bootstrap <native|docker>
+    Bootstrap Ollama with the local ollama binary or a Docker container.
+
 MarkItDown Options:
   --markitdown-python <python>
     Python executable used for the Microsoft MarkItDown wrapper.
@@ -414,6 +430,8 @@ function getDefaultInitLlmModel(provider) {
 function buildLlmOptions(flags, config) {
   const llmConfig = getSection(config, 'llm');
   const ollamaConfig = getSection(config, 'ollama');
+  const fallbackConfig = normalizeObject(llmConfig.fallback);
+  const fallbackOllamaConfig = normalizeObject(fallbackConfig.ollamaBootstrap || fallbackConfig.ollama);
 
   return {
     llmProvider: firstDefined(flags.provider, llmConfig.provider),
@@ -434,7 +452,31 @@ function buildLlmOptions(flags, config) {
     ollamaSshHost: firstDefined(flags['ollama-ssh-host'], ollamaConfig.sshHost),
     ollamaRelations: firstDefined(flags['ollama-relations'], ollamaConfig.relations),
     ollamaTimeoutMs: toNumber(firstDefined(flags['ollama-timeout-ms'], ollamaConfig.timeoutMs), undefined),
-    ollamaBatchSize: toNumber(firstDefined(flags['ollama-batch-size'], ollamaConfig.batchSize), undefined)
+    ollamaBatchSize: toNumber(firstDefined(flags['ollama-batch-size'], ollamaConfig.batchSize), undefined),
+    llmFallbackProvider: firstDefined(flags['fallback-provider'], fallbackConfig.provider),
+    llmFallbackModel: firstDefined(flags['fallback-model'], fallbackConfig.model),
+    llmFallbackBaseUrl: firstDefined(flags['fallback-base-url'], flags['fallback-url'], fallbackConfig.baseUrl, fallbackConfig.url),
+    llmFallbackApiKey: firstDefined(flags['fallback-api-key'], fallbackConfig.apiKey),
+    llmFallbackApiKeyEnv: firstDefined(flags['fallback-api-key-env'], fallbackConfig.apiKeyEnv),
+    llmFallbackApiKeySource: firstDefined(flags['fallback-api-key-source'], fallbackConfig.apiKeySource),
+    llmFallbackApiKeyService: firstDefined(flags['fallback-service'], fallbackConfig.apiKeyService),
+    llmFallbackApiKeyAccount: firstDefined(flags['fallback-account'], fallbackConfig.apiKeyAccount),
+    llmFallbackSshHost: firstDefined(flags['fallback-ssh-host'], fallbackConfig.sshHost),
+    llmFallbackTimeoutMs: toNumber(firstDefined(flags['fallback-timeout-ms'], fallbackConfig.timeoutMs), undefined),
+    llmFallbackBatchSize: toNumber(firstDefined(flags['fallback-batch-size'], fallbackConfig.batchSize), undefined),
+    llmFallbackMaxTokens: toNumber(firstDefined(flags['fallback-max-tokens'], fallbackConfig.maxTokens), undefined),
+    llmFallbackAutoStart: firstDefined(flags['fallback-auto-start'], fallbackConfig.autoStart),
+    llmFallbackAutoPull: firstDefined(flags['fallback-auto-pull'], fallbackConfig.autoPull),
+    llmFallbackStartupWaitMs: toNumber(firstDefined(flags['fallback-startup-wait-ms'], fallbackConfig.startupWaitMs), undefined),
+    llmFallbackOllamaBootstrap: firstDefined(flags['fallback-ollama-bootstrap'], fallbackOllamaConfig.mode),
+    llmFallbackOllamaCommand: firstDefined(flags['fallback-ollama-command'], fallbackOllamaConfig.command),
+    llmFallbackOllamaStartCommand: firstDefined(flags['fallback-start-command'], flags['fallback-ollama-start-command'], fallbackOllamaConfig.startCommand),
+    llmFallbackOllamaPullCommand: firstDefined(flags['fallback-pull-command'], flags['fallback-ollama-pull-command'], fallbackOllamaConfig.pullCommand),
+    llmFallbackOllamaDockerBin: firstDefined(flags['fallback-ollama-docker-bin'], fallbackOllamaConfig.dockerBin),
+    llmFallbackOllamaDockerContainer: firstDefined(flags['fallback-ollama-docker-container'], fallbackOllamaConfig.dockerContainer),
+    llmFallbackOllamaDockerImage: firstDefined(flags['fallback-ollama-docker-image'], fallbackOllamaConfig.dockerImage),
+    llmFallbackOllamaDockerVolume: firstDefined(flags['fallback-ollama-docker-volume'], fallbackOllamaConfig.dockerVolume),
+    llmFallbackOllamaDockerGpus: firstDefined(flags['fallback-ollama-docker-gpus'], fallbackOllamaConfig.dockerGpus)
   };
 }
 

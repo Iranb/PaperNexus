@@ -1381,6 +1381,7 @@ function applyPaperIdentityEnvelope(target, ...inputs) {
 }
 
 function upgradeSemanticPaperIdentityRecord(record = {}, options = {}) {
+  if (!record || typeof record !== 'object') return null;
   const nextRecord = { ...record };
   applyPaperIdentityEnvelope(nextRecord, options.paperMetadata || {});
   applySourceIdentityEnvelope(nextRecord, {
@@ -1524,7 +1525,18 @@ function createSemanticConfigSignature(options = {}) {
     effectiveMode: plan.effectiveMode,
     provider: plan.config?.provider || 'disabled',
     model: plan.config?.model || '',
-    baseUrl: plan.config?.baseUrl || ''
+    baseUrl: plan.config?.baseUrl || '',
+    fallback: plan.config?.fallback
+      ? {
+          provider: plan.config.fallback.provider || '',
+          model: plan.config.fallback.model || '',
+          baseUrl: plan.config.fallback.baseUrl || '',
+          sshHost: plan.config.fallback.sshHost || '',
+          autoStart: Boolean(plan.config.fallback.autoStart),
+          autoPull: Boolean(plan.config.fallback.autoPull),
+          ollamaBootstrap: plan.config.fallback.ollamaBootstrap?.mode || ''
+        }
+      : null
   });
 }
 
@@ -1550,7 +1562,18 @@ function createRelationConfigSignature(options = {}) {
     version: RELATION_LLM_SIGNATURE_VERSION,
     provider: config.provider || 'disabled',
     model: config.model || '',
-    baseUrl: config.baseUrl || ''
+    baseUrl: config.baseUrl || '',
+    fallback: config.fallback
+      ? {
+          provider: config.fallback.provider || '',
+          model: config.fallback.model || '',
+          baseUrl: config.fallback.baseUrl || '',
+          sshHost: config.fallback.sshHost || '',
+          autoStart: Boolean(config.fallback.autoStart),
+          autoPull: Boolean(config.fallback.autoPull),
+          ollamaBootstrap: config.fallback.ollamaBootstrap?.mode || ''
+        }
+      : null
   });
 }
 
@@ -4697,6 +4720,10 @@ async function loadParsedPaperFromMarkdownCache(sourceState, cachedPaper = null)
 
   const markdown = await readText(markdownPath);
   const parsed = parsePaperMarkdown(markdown, sourceState.inputPath || markdownPath);
+  const cachedTitle = String(cachedPaper?.paperTitle || sourceState.previous?.paperTitle || '').trim();
+  if (cachedTitle && paperHasDegenerateTitle(parsed, sourceState.inputPath || markdownPath)) {
+    parsed.title = cachedTitle;
+  }
   parsed.paperId = cachedPaper?.paperId || `paper:${stableHash(sourceState.sourceKey)}`;
   parsed.paperTitle = parsed.title;
   parsed.sourceKey = sourceState.sourceKey;
@@ -5054,6 +5081,7 @@ async function recoverMissingSemanticSnapshot(rootPath, entry, manifest = {}, op
   const sourceState = createSourceStateFromManifestEntry(entry);
   const cachedPaper = {
     paperId: entry.paperId || `paper:${stableHash(sourceState.sourceKey)}`,
+    paperTitle: entry.paperTitle || entry.title || null,
     sourceMarkdownPath: entry.sourceMarkdownPath || entry.markdownCachePath || null,
     sourceFingerprint: entry.sourceFingerprint || entry.fingerprint || null,
     identifiers: normalizePaperIdentifiers(entry.identifiers || entry.paperMetadata || {})

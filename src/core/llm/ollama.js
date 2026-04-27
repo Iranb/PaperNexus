@@ -1,5 +1,6 @@
-import { spawn } from 'node:child_process';
+import { execFile as nodeExecFile, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { promisify } from 'node:util';
 import { EDGE_TYPES, NODE_TYPES } from '../graph/schema.js';
 import {
   normalizeAbstractMechanismNames,
@@ -43,9 +44,13 @@ const DEFAULT_RATE_LIMIT_RETRY_COUNT = 3;
 const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 1000;
 const DEFAULT_RATE_LIMIT_RETRY_MAX_DELAY_MS = 30000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+const DEFAULT_OLLAMA_STARTUP_WAIT_MS = 30000;
+const DEFAULT_OLLAMA_DOCKER_CONTAINER = 'papernexus-ollama';
+const DEFAULT_OLLAMA_DOCKER_IMAGE = 'ollama/ollama:latest';
 const ANTHROPIC_VERSION = '2023-06-01';
 const TRANSIENT_LLM_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const llmRateLimitCooldowns = new Map();
+const execFileAsync = promisify(nodeExecFile);
 
 function pickDefined(...values) {
   for (const value of values) {
@@ -56,6 +61,17 @@ function pickDefined(...values) {
 
 function isEnabledFlag(value) {
   return value === true || value === '1' || value === 'true';
+}
+
+function isExplicitlyDisabledFlag(value) {
+  return value === false || value === '0' || value === 'false' || value === 'no';
+}
+
+function resolveBooleanSetting(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (isEnabledFlag(value)) return true;
+  if (isExplicitlyDisabledFlag(value)) return false;
+  return fallback;
 }
 
 function cleanText(value, maxLength = 320) {
@@ -606,6 +622,224 @@ function resolveDirectApiKey(provider, options = {}) {
   return '';
 }
 
+function resolveDirectFallbackApiKey(provider, options = {}) {
+  const configuredEnv = pickDefined(
+    options.llmFallbackApiKeyEnv,
+    process.env.PAPERNEXUS_LLM_FALLBACK_API_KEY_ENV
+  );
+  const configuredKey = pickDefined(
+    options.llmFallbackApiKey,
+    process.env.PAPERNEXUS_LLM_FALLBACK_API_KEY
+  );
+  if (configuredKey) return configuredKey;
+  if (configuredEnv && process.env[configuredEnv]) return process.env[configuredEnv];
+  const defaultEnv = getDefaultLlmApiKeyEnv(provider);
+  if (defaultEnv && process.env[defaultEnv]) return process.env[defaultEnv];
+  return '';
+}
+
+function hasConfiguredLlmFallback(options = {}) {
+  return Boolean(
+    options.llmFallbackProvider
+    || options.llmFallbackModel
+    || options.llmFallbackBaseUrl
+    || options.llmFallbackSshHost
+    || options.llmFallbackAutoStart !== undefined
+    || options.llmFallbackAutoPull !== undefined
+    || process.env.PAPERNEXUS_LLM_FALLBACK_PROVIDER
+    || process.env.PAPERNEXUS_LLM_FALLBACK_MODEL
+    || process.env.PAPERNEXUS_LLM_FALLBACK_BASE_URL
+    || process.env.PAPERNEXUS_LLM_FALLBACK_SSH_HOST
+    || process.env.PAPERNEXUS_LLM_FALLBACK_AUTO_START !== undefined
+    || process.env.PAPERNEXUS_LLM_FALLBACK_AUTO_PULL !== undefined
+  );
+}
+
+function resolveOllamaFallbackBootstrapConfig(options = {}) {
+  const mode = String(pickDefined(
+    options.llmFallbackOllamaBootstrap,
+    process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_BOOTSTRAP,
+    'native'
+  ) || 'native').trim().toLowerCase();
+  const containerName = String(pickDefined(
+    options.llmFallbackOllamaDockerContainer,
+    process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_DOCKER_CONTAINER,
+    DEFAULT_OLLAMA_DOCKER_CONTAINER
+  ) || DEFAULT_OLLAMA_DOCKER_CONTAINER).trim();
+
+  return {
+    mode,
+    command: String(pickDefined(
+      options.llmFallbackOllamaCommand,
+      process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_COMMAND,
+      'ollama'
+    ) || 'ollama').trim(),
+    startCommand: String(pickDefined(
+      options.llmFallbackOllamaStartCommand,
+      options.llmFallbackStartCommand,
+      process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_START_COMMAND,
+      process.env.PAPERNEXUS_LLM_FALLBACK_START_COMMAND,
+      ''
+    ) || '').trim(),
+    pullCommand: String(pickDefined(
+      options.llmFallbackOllamaPullCommand,
+      options.llmFallbackPullCommand,
+      process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_PULL_COMMAND,
+      process.env.PAPERNEXUS_LLM_FALLBACK_PULL_COMMAND,
+      ''
+    ) || '').trim(),
+    dockerBin: String(pickDefined(
+      options.llmFallbackOllamaDockerBin,
+      process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_DOCKER_BIN,
+      'docker'
+    ) || 'docker').trim(),
+    dockerContainer: containerName,
+    dockerImage: String(pickDefined(
+      options.llmFallbackOllamaDockerImage,
+      process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_DOCKER_IMAGE,
+      DEFAULT_OLLAMA_DOCKER_IMAGE
+    ) || DEFAULT_OLLAMA_DOCKER_IMAGE).trim(),
+    dockerVolume: String(pickDefined(
+      options.llmFallbackOllamaDockerVolume,
+      process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_DOCKER_VOLUME,
+      `${containerName}:/root/.ollama`
+    ) || '').trim(),
+    dockerGpus: String(pickDefined(
+      options.llmFallbackOllamaDockerGpus,
+      process.env.PAPERNEXUS_LLM_FALLBACK_OLLAMA_DOCKER_GPUS,
+      ''
+    ) || '').trim()
+  };
+}
+
+function resolveLlmFallbackConfig(options = {}, primaryConfig = {}) {
+  if (!hasConfiguredLlmFallback(options)) {
+    return null;
+  }
+
+  const provider = normalizeProviderName(
+    pickDefined(
+      options.llmFallbackProvider,
+      process.env.PAPERNEXUS_LLM_FALLBACK_PROVIDER,
+      'ollama'
+    )
+  ) || 'ollama';
+  const model = String(pickDefined(
+    options.llmFallbackModel,
+    process.env.PAPERNEXUS_LLM_FALLBACK_MODEL,
+    ''
+  ) || '').trim();
+  if (!model) {
+    return null;
+  }
+
+  const defaultBaseUrl = getDefaultLlmBaseUrl(provider);
+  const baseUrl = String(pickDefined(
+    options.llmFallbackBaseUrl,
+    options.llmFallbackUrl,
+    process.env.PAPERNEXUS_LLM_FALLBACK_BASE_URL,
+    process.env.PAPERNEXUS_LLM_FALLBACK_URL,
+    defaultBaseUrl
+  ) || defaultBaseUrl).replace(/\/+$/, '');
+  const apiKeySource = String(pickDefined(
+    options.llmFallbackApiKeySource,
+    process.env.PAPERNEXUS_LLM_FALLBACK_API_KEY_SOURCE,
+    ''
+  ) || '').trim().toLowerCase();
+  const apiKeyService = String(pickDefined(
+    options.llmFallbackApiKeyService,
+    process.env.PAPERNEXUS_LLM_FALLBACK_API_KEY_SERVICE,
+    apiKeySource === 'keychain' ? getDefaultLlmKeychainService() : ''
+  ) || '').trim();
+  const apiKeyAccount = String(pickDefined(
+    options.llmFallbackApiKeyAccount,
+    process.env.PAPERNEXUS_LLM_FALLBACK_API_KEY_ACCOUNT,
+    apiKeySource === 'keychain'
+      ? buildDefaultLlmKeychainAccount({ provider, baseUrl })
+      : ''
+  ) || '').trim();
+
+  return {
+    enabled: true,
+    provider,
+    model,
+    baseUrl,
+    timeoutMs: Number(pickDefined(
+      options.llmFallbackTimeoutMs,
+      process.env.PAPERNEXUS_LLM_FALLBACK_TIMEOUT_MS,
+      primaryConfig.timeoutMs,
+      DEFAULT_TIMEOUT_MS
+    )),
+    batchSize: Number(pickDefined(
+      options.llmFallbackBatchSize,
+      process.env.PAPERNEXUS_LLM_FALLBACK_BATCH_SIZE,
+      primaryConfig.batchSize,
+      DEFAULT_BATCH_SIZE
+    )),
+    maxTokens: Number(pickDefined(
+      options.llmFallbackMaxTokens,
+      process.env.PAPERNEXUS_LLM_FALLBACK_MAX_TOKENS,
+      primaryConfig.maxTokens,
+      DEFAULT_MAX_TOKENS
+    )),
+    rateLimitRetryCount: Number(pickDefined(
+      options.llmFallbackRateLimitRetryCount,
+      process.env.PAPERNEXUS_LLM_FALLBACK_RATE_LIMIT_RETRY_COUNT,
+      primaryConfig.rateLimitRetryCount,
+      DEFAULT_RATE_LIMIT_RETRY_COUNT
+    )),
+    rateLimitRetryDelayMs: Number(pickDefined(
+      options.llmFallbackRateLimitRetryDelayMs,
+      process.env.PAPERNEXUS_LLM_FALLBACK_RATE_LIMIT_RETRY_DELAY_MS,
+      primaryConfig.rateLimitRetryDelayMs,
+      DEFAULT_RATE_LIMIT_RETRY_DELAY_MS
+    )),
+    rateLimitRetryMaxDelayMs: Number(pickDefined(
+      options.llmFallbackRateLimitRetryMaxDelayMs,
+      process.env.PAPERNEXUS_LLM_FALLBACK_RATE_LIMIT_RETRY_MAX_DELAY_MS,
+      primaryConfig.rateLimitRetryMaxDelayMs,
+      DEFAULT_RATE_LIMIT_RETRY_MAX_DELAY_MS
+    )),
+    rateLimitCooldownMs: Number(pickDefined(
+      options.llmFallbackRateLimitCooldownMs,
+      process.env.PAPERNEXUS_LLM_FALLBACK_RATE_LIMIT_COOLDOWN_MS,
+      primaryConfig.rateLimitCooldownMs,
+      DEFAULT_RATE_LIMIT_COOLDOWN_MS
+    )),
+    sshHost: pickDefined(
+      options.llmFallbackSshHost,
+      process.env.PAPERNEXUS_LLM_FALLBACK_SSH_HOST,
+      ''
+    ),
+    apiKeyEnv: pickDefined(
+      options.llmFallbackApiKeyEnv,
+      process.env.PAPERNEXUS_LLM_FALLBACK_API_KEY_ENV,
+      getDefaultLlmApiKeyEnv(provider)
+    ),
+    apiKeySource,
+    apiKeyService,
+    apiKeyAccount,
+    apiKey: resolveDirectFallbackApiKey(provider, options),
+    fallback: null,
+    autoStart: resolveBooleanSetting(pickDefined(
+      options.llmFallbackAutoStart,
+      process.env.PAPERNEXUS_LLM_FALLBACK_AUTO_START
+    ), false),
+    autoPull: resolveBooleanSetting(pickDefined(
+      options.llmFallbackAutoPull,
+      process.env.PAPERNEXUS_LLM_FALLBACK_AUTO_PULL
+    ), false),
+    startupWaitMs: Number(pickDefined(
+      options.llmFallbackStartupWaitMs,
+      process.env.PAPERNEXUS_LLM_FALLBACK_STARTUP_WAIT_MS,
+      DEFAULT_OLLAMA_STARTUP_WAIT_MS
+    )),
+    ollamaBootstrap: resolveOllamaFallbackBootstrapConfig(options),
+    execFile: options.llmFallbackExecFile || null,
+    spawn: options.llmFallbackSpawn || null
+  };
+}
+
 export function resolveLlmConfig(options = {}) {
   const provider = normalizeProviderName(
     pickDefined(
@@ -659,7 +893,7 @@ export function resolveLlmConfig(options = {}) {
       : ''
   ) || '').trim();
 
-  return {
+  const config = {
     enabled,
     provider,
     model,
@@ -726,6 +960,8 @@ export function resolveLlmConfig(options = {}) {
     apiKeyAccount,
     apiKey: resolveDirectApiKey(provider, options)
   };
+  config.fallback = resolveLlmFallbackConfig(options, config);
+  return config;
 }
 
 export const resolveOllamaConfig = resolveLlmConfig;
@@ -750,6 +986,17 @@ function createCrossPaperJudgmentConfigSignature(options = {}) {
     batchSize: Number(config.batchSize || 0),
     timeoutMs: Number(config.timeoutMs || 0),
     maxTokens: Number(config.maxTokens || 0),
+    fallback: config.fallback
+      ? {
+          provider: config.fallback.provider || '',
+          model: config.fallback.model || '',
+          baseUrl: config.fallback.baseUrl || '',
+          sshHost: config.fallback.sshHost || '',
+          autoStart: Boolean(config.fallback.autoStart),
+          autoPull: Boolean(config.fallback.autoPull),
+          ollamaBootstrap: config.fallback.ollamaBootstrap?.mode || ''
+        }
+      : null,
     relationsEnabled: llmRelationsEnabled(options)
   }), 20);
 }
@@ -1239,7 +1486,178 @@ async function fetchLlmJsonWithRetry(providerLabel, url, requestOptions, config 
   throw lastError;
 }
 
+function quoteShellArg(value) {
+  return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
+}
+
+function interpolateOllamaBootstrapCommand(template, config = {}) {
+  return String(template || '')
+    .replaceAll('{model}', quoteShellArg(config.model || ''))
+    .replaceAll('{rawModel}', String(config.model || ''))
+    .replaceAll('{baseUrl}', quoteShellArg(config.baseUrl || DEFAULT_OLLAMA_BASE_URL))
+    .replaceAll('{rawBaseUrl}', String(config.baseUrl || DEFAULT_OLLAMA_BASE_URL));
+}
+
+async function runShellCommand(config = {}, command, providerLabel = 'Ollama fallback bootstrap') {
+  const timeoutMs = Math.max(1000, toNonNegativeNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS));
+  if (config.sshHost) {
+    return runSshCommand(
+      config.sshHost,
+      ['sh', '-lc', command],
+      '',
+      timeoutMs,
+      providerLabel
+    );
+  }
+
+  const runner = config.execFile || execFileAsync;
+  const result = await runner('sh', ['-lc', command], { timeout: timeoutMs });
+  return typeof result === 'string' ? result : result?.stdout || '';
+}
+
+async function fetchLocalJson(url, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutHandle = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+async function fetchOllamaTags(config = {}) {
+  const timeoutMs = Math.max(1000, Math.min(toNonNegativeNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS), 10000));
+  const url = `${config.baseUrl || DEFAULT_OLLAMA_BASE_URL}/api/tags`;
+
+  if (config.sshHost) {
+    try {
+      const output = await runSshCommand(
+        config.sshHost,
+        ['curl', '-fsS', '--max-time', String(Math.ceil(timeoutMs / 1000)), url],
+        '',
+        timeoutMs,
+        'Ollama tags'
+      );
+      return JSON.parse(output);
+    } catch {
+      return null;
+    }
+  }
+
+  return fetchLocalJson(url, timeoutMs);
+}
+
+function normalizeOllamaModelName(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.includes(':') ? text : `${text}:latest`;
+}
+
+function hasOllamaModel(tagsPayload, model) {
+  const requested = String(model || '').trim();
+  const normalizedRequested = normalizeOllamaModelName(requested);
+  return (tagsPayload?.models || []).some((entry) => {
+    const name = String(entry?.name || '').trim();
+    return name === requested || normalizeOllamaModelName(name) === normalizedRequested;
+  });
+}
+
+function buildDockerOllamaStartCommand(bootstrap = {}) {
+  const docker = quoteShellArg(bootstrap.dockerBin || 'docker');
+  const container = quoteShellArg(bootstrap.dockerContainer || DEFAULT_OLLAMA_DOCKER_CONTAINER);
+  const image = quoteShellArg(bootstrap.dockerImage || DEFAULT_OLLAMA_DOCKER_IMAGE);
+  const volume = String(bootstrap.dockerVolume || '').trim();
+  const gpus = String(bootstrap.dockerGpus || '').trim();
+  const dockerRunParts = [
+    docker,
+    'run',
+    '-d',
+    '--name',
+    container,
+    '-p',
+    quoteShellArg('127.0.0.1:11434:11434')
+  ];
+  if (volume) {
+    dockerRunParts.push('-v', quoteShellArg(volume));
+  }
+  if (gpus) {
+    dockerRunParts.push('--gpus', quoteShellArg(gpus));
+  }
+  dockerRunParts.push(image, '>/dev/null');
+
+  return [
+    `if ${docker} inspect ${container} >/dev/null 2>&1; then`,
+    `${docker} start ${container} >/dev/null;`,
+    'else',
+    `${dockerRunParts.join(' ')};`,
+    'fi'
+  ].join(' ');
+}
+
+function buildOllamaStartCommand(config = {}) {
+  const bootstrap = config.ollamaBootstrap || {};
+  if (bootstrap.startCommand) {
+    return interpolateOllamaBootstrapCommand(bootstrap.startCommand, config);
+  }
+  if (bootstrap.mode === 'docker') {
+    return buildDockerOllamaStartCommand(bootstrap);
+  }
+  const command = quoteShellArg(bootstrap.command || 'ollama');
+  return `nohup ${command} serve >/tmp/papernexus-ollama.log 2>&1 < /dev/null &`;
+}
+
+function buildOllamaPullCommand(config = {}) {
+  const bootstrap = config.ollamaBootstrap || {};
+  if (bootstrap.pullCommand) {
+    return interpolateOllamaBootstrapCommand(bootstrap.pullCommand, config);
+  }
+  if (bootstrap.mode === 'docker') {
+    const docker = quoteShellArg(bootstrap.dockerBin || 'docker');
+    const container = quoteShellArg(bootstrap.dockerContainer || DEFAULT_OLLAMA_DOCKER_CONTAINER);
+    return `${docker} exec ${container} ollama pull ${quoteShellArg(config.model || '')}`;
+  }
+  return `${quoteShellArg(bootstrap.command || 'ollama')} pull ${quoteShellArg(config.model || '')}`;
+}
+
+async function waitForOllamaReady(config = {}) {
+  const deadline = Date.now() + Math.max(1000, toNonNegativeNumber(config.startupWaitMs, DEFAULT_OLLAMA_STARTUP_WAIT_MS));
+  while (Date.now() <= deadline) {
+    const tags = await fetchOllamaTags(config);
+    if (tags) return tags;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return null;
+}
+
+async function prepareOllamaRuntime(config = {}) {
+  if (config.provider !== 'ollama') return;
+  if (!config.autoStart && !config.autoPull) return;
+
+  let tags = await fetchOllamaTags(config);
+  if (!tags && config.autoStart) {
+    await runShellCommand(config, buildOllamaStartCommand(config), 'Ollama fallback start');
+    tags = await waitForOllamaReady(config);
+    if (!tags) {
+      throw new Error(`Ollama fallback service did not become ready at ${config.baseUrl || DEFAULT_OLLAMA_BASE_URL}`);
+    }
+  }
+
+  if (!config.autoPull) return;
+  if (!tags) {
+    throw new Error(`Ollama fallback service is not reachable at ${config.baseUrl || DEFAULT_OLLAMA_BASE_URL}; cannot pull ${config.model}`);
+  }
+  if (hasOllamaModel(tags, config.model)) return;
+
+  await runShellCommand(config, buildOllamaPullCommand(config), 'Ollama fallback pull');
+}
+
 async function requestOllamaGenerate(config, prompt) {
+  await prepareOllamaRuntime(config);
+
   const payload = {
     model: config.model,
     stream: false,
@@ -1266,7 +1684,10 @@ async function requestOllamaGenerate(config, prompt) {
       config.timeoutMs,
       'Ollama'
     );
-    return JSON.parse(output);
+    const response = JSON.parse(output);
+    return {
+      text: response.response || ''
+    };
   }
 
   const response = await fetchLlmJsonWithRetry(
@@ -1430,7 +1851,7 @@ async function requestAnthropicGenerate(config, prompt) {
   };
 }
 
-async function requestLlmGenerate(config, prompt) {
+async function requestLlmGenerateDirect(config, prompt) {
   if (config.provider === 'openai') {
     return requestOpenAiGenerate(config, prompt);
   }
@@ -1440,6 +1861,55 @@ async function requestLlmGenerate(config, prompt) {
   }
 
   return requestOllamaGenerate(config, prompt);
+}
+
+function hasUsableLlmFallback(config = {}) {
+  return Boolean(config?.fallback?.enabled && config.fallback.provider && config.fallback.model);
+}
+
+function withLlmGenerationMetadata(payload = {}, config = {}, extra = {}) {
+  return {
+    ...payload,
+    provider: config.provider,
+    model: config.model,
+    ...extra
+  };
+}
+
+async function requestLlmGenerate(config, prompt) {
+  try {
+    return withLlmGenerationMetadata(
+      await requestLlmGenerateDirect(config, prompt),
+      config
+    );
+  } catch (error) {
+    if (!isLlmRateLimitError(error) || !hasUsableLlmFallback(config)) {
+      throw error;
+    }
+
+    const fallbackConfig = {
+      ...config.fallback,
+      fallback: null
+    };
+    try {
+      return withLlmGenerationMetadata(
+        await requestLlmGenerateDirect(fallbackConfig, prompt),
+        fallbackConfig,
+        {
+          fallback: true,
+          fallbackFromProvider: config.provider,
+          fallbackFromModel: config.model,
+          primaryRateLimitCooldownUntil: error.rateLimitCooldownUntil || null
+        }
+      );
+    } catch (fallbackError) {
+      fallbackError.fallbackFromRateLimit = true;
+      fallbackError.primaryRateLimitProvider = config.provider;
+      fallbackError.primaryRateLimitModel = config.model;
+      fallbackError.primaryRateLimitCooldownUntil = error.rateLimitCooldownUntil || null;
+      throw fallbackError;
+    }
+  }
 }
 
 function parseJsonText(text) {
@@ -1613,7 +2083,7 @@ export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, opti
     const raw = parseJsonText(payload.text);
 
     return createSemanticObjectInferenceResult({
-      provider: plan.config.provider,
+      provider: payload.provider || plan.config.provider,
       requestedMode: plan.requestedMode,
       effectiveMode: plan.effectiveMode,
       attempted: true,
@@ -1648,7 +2118,9 @@ export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, opti
     }
 
     return createSemanticObjectInferenceResult({
-      provider: plan.config.provider,
+      provider: error.fallbackFromRateLimit && plan.config.fallback?.provider
+        ? plan.config.fallback.provider
+        : plan.config.provider,
       requestedMode: plan.requestedMode,
       effectiveMode: 'heuristic-only',
       attempted: true,
@@ -1688,6 +2160,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
     try {
       const payload = await requestLlmGenerate(plan.config, buildSemanticExtractionBatchPrompt(batch));
       const raw = parseJsonText(payload.text);
+      const resultProvider = payload.provider || plan.config.provider;
       const paperErrors = new Map(
         (raw?.errors || [])
           .filter((entry) => entry?.id)
@@ -1705,7 +2178,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         const rawError = paperErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
         if (rawError) {
           results[start + offset] = createSemanticObjectInferenceResult({
-            provider: plan.config.provider,
+            provider: resultProvider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
             attempted: true,
@@ -1718,7 +2191,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
 
         if (!rawPaper) {
           results[start + offset] = createSemanticObjectInferenceResult({
-            provider: plan.config.provider,
+            provider: resultProvider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
             attempted: true,
@@ -1730,7 +2203,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         }
 
         results[start + offset] = createSemanticObjectInferenceResult({
-          provider: plan.config.provider,
+          provider: resultProvider,
           requestedMode: plan.requestedMode,
           effectiveMode: plan.effectiveMode,
           attempted: true,
@@ -1757,9 +2230,12 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         });
       }
     } catch (error) {
+      const failedProvider = error.fallbackFromRateLimit && plan.config.fallback?.provider
+        ? plan.config.fallback.provider
+        : plan.config.provider;
       for (let offset = 0; offset < batch.length; offset += 1) {
         results[start + offset] = createSemanticObjectInferenceResult({
-          provider: plan.config.provider,
+          provider: failedProvider,
           requestedMode: plan.requestedMode,
           effectiveMode: 'heuristic-only',
           attempted: true,
@@ -1772,7 +2248,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
       if (isLlmRateLimitError(error)) {
         for (let offset = 0; offset < batch.length; offset += 1) {
           results[start + offset] = createRateLimitedSemanticObjectInferenceResult({
-            provider: plan.config.provider,
+            provider: failedProvider,
             requestedMode: plan.requestedMode,
             error
           });
@@ -1780,7 +2256,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
 
         for (let index = start + batch.length; index < entries.length; index += 1) {
           results[index] = createRateLimitedSemanticObjectInferenceResult({
-            provider: plan.config.provider,
+            provider: failedProvider,
             requestedMode: plan.requestedMode,
             error
           });
@@ -1848,7 +2324,7 @@ export async function inferPaperResearchSemantics(parsedPaper, semanticPaper, op
       .filter(Boolean);
 
     return {
-      provider: config.provider,
+      provider: payload.provider || config.provider,
       benchmarks,
       findings,
       researchGoals,
@@ -1857,11 +2333,12 @@ export async function inferPaperResearchSemantics(parsedPaper, semanticPaper, op
     };
   } catch (error) {
     if (isLlmRateLimitError(error)) {
-      return createRateLimitedResearchSemanticsResult(config, error);
+      const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
+      return createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
     }
 
     return {
-      provider: config.provider,
+      provider: error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider,
       benchmarks: [],
       findings: [],
       researchGoals: [],
@@ -1912,6 +2389,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
     try {
       const payload = await requestLlmGenerate(config, buildResearchSemanticsBatchPrompt(batch));
       const raw = parseJsonText(payload.text);
+      const resultProvider = payload.provider || config.provider;
       const paperErrors = new Map(
         (raw?.errors || [])
           .filter((entry) => entry?.id)
@@ -1929,7 +2407,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         const rawError = paperErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
         if (rawError) {
           results[start + offset] = {
-            provider: config.provider,
+            provider: resultProvider,
             benchmarks: [],
             findings: [],
             researchGoals: [],
@@ -1941,7 +2419,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
 
         if (!rawPaper) {
           results[start + offset] = {
-            provider: config.provider,
+            provider: resultProvider,
             benchmarks: [],
             findings: [],
             researchGoals: [],
@@ -1952,7 +2430,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         }
 
         results[start + offset] = {
-          provider: config.provider,
+          provider: resultProvider,
           benchmarks: (rawPaper.benchmarks || [])
             .map((record) => sanitizeEntityRecord(record, NODE_TYPES.BENCHMARK))
             .filter(Boolean),
@@ -1969,9 +2447,10 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         };
       }
     } catch (error) {
+      const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
       for (let offset = 0; offset < batch.length; offset += 1) {
         results[start + offset] = {
-          provider: config.provider,
+          provider: failedProvider,
           benchmarks: [],
           findings: [],
           researchGoals: [],
@@ -1982,11 +2461,11 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
 
       if (isLlmRateLimitError(error)) {
         for (let offset = 0; offset < batch.length; offset += 1) {
-          results[start + offset] = createRateLimitedResearchSemanticsResult(config, error);
+          results[start + offset] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
         }
 
         for (let index = start + batch.length; index < entries.length; index += 1) {
-          results[index] = createRateLimitedResearchSemanticsResult(config, error);
+          results[index] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
         }
         completedAfterBatch = entries.length;
         stopAfterCurrentBatch = true;
@@ -2055,6 +2534,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
     try {
       const payload = await requestLlmGenerate(config, buildNodeCheckBatchPrompt(batch));
       const raw = parseJsonText(payload.text);
+      const resultProvider = payload.provider || config.provider;
       const nodeErrors = new Map(
         (raw?.errors || [])
           .filter((entry) => entry?.id)
@@ -2078,7 +2558,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
             canonicalName: batchEntry.name,
             confidence: 0,
             reason: 'request-failed',
-            provider: config.provider,
+            provider: resultProvider,
             attempted: true,
             participated: false,
             error: rawError
@@ -2093,7 +2573,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
             canonicalName: batchEntry.name,
             confidence: 0,
             reason: 'request-failed',
-            provider: config.provider,
+            provider: resultProvider,
             attempted: true,
             participated: false,
             error: `Missing node check result for ${batchEntry.id}`
@@ -2103,13 +2583,14 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
 
         results[start + offset] = {
           ...rawNode,
-          provider: config.provider,
+          provider: resultProvider,
           attempted: true,
           participated: true,
           error: null
         };
       }
     } catch (error) {
+      const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
       for (let offset = 0; offset < batch.length; offset += 1) {
         const batchEntry = batch[offset];
         const rateLimited = isLlmRateLimitError(error);
@@ -2119,7 +2600,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
           canonicalName: batchEntry.name,
           confidence: 0,
           reason: rateLimited ? 'rate-limited' : 'request-failed',
-          provider: config.provider,
+          provider: failedProvider,
           attempted: true,
           participated: false,
           rateLimitCooldownUntil: rateLimited ? getRateLimitCooldownUntil(error) : null,
