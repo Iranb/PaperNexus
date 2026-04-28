@@ -1,6 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { backupCorpus, loadCorpus, loadCorpusLite, loadCorpusMeta, loadSourceManifest, resolveCorpus } from '../storage/corpus-store.js';
+import {
+  backupCorpus,
+  hasCorpusGraphStore,
+  loadCorpus,
+  loadCorpusLite,
+  loadCorpusMeta,
+  loadSourceManifest,
+  resolveCorpus
+} from '../storage/corpus-store.js';
 import { resolveLlmConfig, getDefaultLlmApiKeyEnv, getDefaultLlmBaseUrl } from '../core/llm/ollama.js';
 import { getNodeLayer, NODE_TYPES } from '../core/graph/schema.js';
 import { resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
@@ -137,7 +145,9 @@ export async function getConfiguredRootPath(options = {}) {
   }
   const rootPath = resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd());
   const { metaPath } = getCorpusPaths(rootPath);
-  return (await fileExists(metaPath)) ? rootPath : null;
+  return (await fileExists(metaPath)) && (await hasCorpusGraphStore(rootPath))
+    ? rootPath
+    : null;
 }
 
 async function loadConfiguredCorpusEntry(options = {}) {
