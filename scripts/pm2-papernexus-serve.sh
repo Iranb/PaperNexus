@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_NAME="${PAPERNEXUS_PM2_APP_NAME:-papernexus-serve}"
 LOG_DIR="${PAPERNEXUS_LOG_DIR:-$HOME/.papernexus/log}"
-PM2_BIN="${PM2_BIN:-pm2}"
-NODE_BIN="${NODE_BIN:-node}"
+PM2_BIN="${PM2_BIN:-}"
+NODE_BIN="${NODE_BIN:-}"
 SLEEP_BIN="${SLEEP_BIN:-sleep}"
 DISK0_ROOT="${PAPERNEXUS_DISK0_ROOT:-/home/disk0}"
 
@@ -37,7 +37,6 @@ resolve_node_bin() {
 
   if resolve_first_executable \
     "${NODE_BIN}" \
-    node \
     "${HOME}/miniconda3/bin/node" \
     "${HOME}/mambaforge/bin/node" \
     "${DISK0_ROOT}/${USER:-}/miniconda3/bin/node" \
@@ -45,6 +44,7 @@ resolve_node_bin() {
     "${HOME}/.npm-global/bin/node" \
     /opt/homebrew/bin/node \
     /usr/local/bin/node \
+    node \
     /usr/bin/node; then
     if [[ -n "${previous_nullglob_state}" ]]; then
       eval "${previous_nullglob_state}"
@@ -81,7 +81,6 @@ resolve_pm2_bin() {
 
   if resolve_first_executable \
     "${PM2_BIN}" \
-    pm2 \
     "${HOME}/miniconda3/bin/pm2" \
     "${HOME}/mambaforge/bin/pm2" \
     "${DISK0_ROOT}/${USER:-}/miniconda3/bin/pm2" \
@@ -89,6 +88,7 @@ resolve_pm2_bin() {
     "${HOME}/.npm-global/bin/pm2" \
     /opt/homebrew/bin/pm2 \
     /usr/local/bin/pm2 \
+    pm2 \
     /usr/bin/pm2; then
     if [[ -n "${previous_nullglob_state}" ]]; then
       eval "${previous_nullglob_state}"

@@ -23,6 +23,13 @@ Shell fallback wrappers:
 - `python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py`
 - `python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py`
 
+Shell fallback auth:
+
+- do not call `security find-generic-password`, `printenv PAPERNEXUS_API_TOKEN`, or any token lookup command yourself
+- if the configured token source is OS keychain, set only non-secret metadata:
+  `PAPERNEXUS_API_TOKEN_SOURCE=os_keychain PAPERNEXUS_API_TOKEN_SERVICE=papernexus-api-token PAPERNEXUS_API_TOKEN_ACCOUNT=default`
+- let the wrapper resolve the secret internally; never echo, log, or persist the token value
+
 Underlying MCP tools:
 
 - `research_lookup`
@@ -56,10 +63,10 @@ Assume OpenClaw already exposes PaperNexus as MCP server `papernexus-remote`.
 ## Minimal Shell Fallback Examples
 
 ```bash
-python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py --corpus "<corpus>" query "<topic>" --limit 8
-python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" evidence-chain "<topic>" --limit 5
-python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" reflection-chain "<topic>" --limit 5
-python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" research-brief "<topic>" --limit 5
+PAPERNEXUS_API_TOKEN_SOURCE=os_keychain PAPERNEXUS_API_TOKEN_SERVICE=papernexus-api-token PAPERNEXUS_API_TOKEN_ACCOUNT=default python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py --corpus "<corpus>" query "<topic>" --limit 8
+PAPERNEXUS_API_TOKEN_SOURCE=os_keychain PAPERNEXUS_API_TOKEN_SERVICE=papernexus-api-token PAPERNEXUS_API_TOKEN_ACCOUNT=default python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" evidence-chain "<topic>" --limit 5
+PAPERNEXUS_API_TOKEN_SOURCE=os_keychain PAPERNEXUS_API_TOKEN_SERVICE=papernexus-api-token PAPERNEXUS_API_TOKEN_ACCOUNT=default python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" reflection-chain "<topic>" --limit 5
+PAPERNEXUS_API_TOKEN_SOURCE=os_keychain PAPERNEXUS_API_TOKEN_SERVICE=papernexus-api-token PAPERNEXUS_API_TOKEN_ACCOUNT=default python3 SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py --corpus "<corpus>" research-brief "<topic>" --limit 5
 ```
 
 ## Output Discipline
