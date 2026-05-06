@@ -5682,6 +5682,35 @@ export async function refreshPaperGraphContent(target, options = {}) {
   };
 }
 
+async function refreshCachedPaperIdentifiers(rootPath, sourceState, cachedPaper, options = {}) {
+  const resolution = await resolvePaperIdentifiersExternally(rootPath, cachedPaper, sourceState, options);
+  const resolvedIdentifiers = normalizePaperIdentifiers(resolution.identifiers || {});
+  if (!Object.keys(resolvedIdentifiers).length) {
+    return cachedPaper;
+  }
+
+  const identifiers = mergePaperIdentifiers(
+    sourceState.paperMetadata || {},
+    cachedPaper.identifiers || {},
+    resolvedIdentifiers
+  ).identifiers;
+
+  cachedPaper.identifiers = identifiers;
+  sourceState.paperMetadata = normalizePaperMetadataPayload({
+    ...(sourceState.paperMetadata || {}),
+    identifiers
+  });
+  mergeSemanticPaperIdentity(cachedPaper, sourceState.paperMetadata || {});
+  applySourceIdentityEnvelope(cachedPaper, {
+    sourceKind: sourceState.kind,
+    sourceProvider: sourceState.sourceProvider,
+    contentSha256: sourceState.contentSha256,
+    normalizedTextSha256: cachedPaper.normalizedTextSha256,
+    resolutionStatus: cachedPaper.resolutionStatus
+  }, cachedPaper);
+  return cachedPaper;
+}
+
 async function materializeSourceStates(rootPath, sourceStates, options = {}) {
   const materializedSources = [];
   const failedSources = [];
@@ -5745,15 +5774,18 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
     );
 
     if (sourceState.changeType === 'unchanged' || sourceState.reuseCachedMaterialization) {
-        const cachedPaper = sourceState.cachedPaper || upgradeSemanticPaperIdentityRecord(
-          await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey)
-        );
-        const shouldRefreshIdentifiers = Boolean(
-          cachedPaper
-          && shouldAttemptIdentifierResolution(cachedPaper, sourceState, options)
-        );
-        if (cachedPaper && !shouldRefreshIdentifiers) {
-          const shouldPrepareParsedPaper = Boolean(
+      const cachedPaper = sourceState.cachedPaper || upgradeSemanticPaperIdentityRecord(
+        await loadSemanticPaperSnapshot(rootPath, sourceState.sourceKey)
+      );
+      const shouldRefreshIdentifiers = Boolean(
+        cachedPaper
+        && shouldAttemptIdentifierResolution(cachedPaper, sourceState, options)
+      );
+      if (cachedPaper && (!shouldRefreshIdentifiers || sourceState.reuseCachedMaterialization)) {
+        if (shouldRefreshIdentifiers) {
+          await refreshCachedPaperIdentifiers(rootPath, sourceState, cachedPaper, options);
+        }
+        const shouldPrepareParsedPaper = Boolean(
           options.enableLlmEnrichment !== false
           && sourceState.reuseCachedMaterialization
           && sourceState.llmRefreshState?.anyRequired
