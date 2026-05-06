@@ -272,6 +272,33 @@ Reflective prompts create a pause that improves uncertainty-aware belief revisio
       entry.sourceDomain === 'Psychology'
       && entry.interdisciplinaryPotential > 0
     )));
+    assert.ok(payload.packetBundle.bridge_retrieval.candidate_bridge_paths.some((entry) => (
+      entry.source_domain === 'Psychology'
+      && entry.path_trace.length > 0
+      && entry.evidence_chain_refs.length > 0
+      && entry.source_spans.length > 0
+    )));
+    assert.ok(payload.packetBundle.structural_analogy.alignments.length > 0);
+    assert.ok(payload.packetBundle.interdisciplinary_potential_ranking.ranked_candidates.some((entry) => (
+      entry.source_domain === 'Psychology'
+      && entry.interdisciplinary_potential > 0
+    )));
+    assert.equal(payload.packetBundle.domain_distance_policy.version, 'idea-catalyst-domain-distance-v1');
+    assert.ok(payload.packetBundle.source_domain_analyses.some((analysis) => (
+      analysis.source_domain === 'Psychology'
+      && analysis.bridge_path_ids.length > 0
+      && analysis.path_completeness >= 0.5
+      && analysis.evidence_density > 0
+      && analysis.ranking_backend === 'graph-analogy-fusion-v1'
+    )));
+    assert.ok(payload.packetBundle.idea_fragments.some((fragment) => (
+      fragment.source_domain === 'Psychology'
+      && fragment.bridge_path_ids.length > 0
+      && fragment.path_trace.length > 0
+      && fragment.evidence_chain_refs.length > 0
+      && fragment.source_spans.length > 0
+      && ['strong', 'moderate'].includes(fragment.evidence_tier)
+    )));
 
     const rendered = render.renderCatalystResult(payload.result);
     assert.match(rendered, /Bridge retrieval:/);

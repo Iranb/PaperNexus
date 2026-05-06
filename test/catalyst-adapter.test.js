@@ -422,4 +422,22 @@ test('buildCatalystQuery adds bridge retrieval, structural analogy, and interdis
   assert.equal(result.packetBundle.contractVersion, 'idea-catalyst-packet-bundle-v1');
   assert.equal(result.packetBundle.decomposition.fine_grained_domain, 'Intelligent Tutoring Systems');
   assert.ok(result.packetBundle.cross_domain_queries.length > 0);
+  assert.ok(result.packetBundle.bridge_retrieval.candidate_bridge_paths.length > 0);
+  assert.ok(result.packetBundle.bridge_retrieval.candidate_bridge_paths.some((entry) => entry.path_trace.length > 0));
+  assert.ok(result.packetBundle.structural_analogy.alignments.length > 0);
+  assert.ok(result.packetBundle.interdisciplinary_potential_ranking.ranked_candidates.length > 0);
+  assert.equal(result.packetBundle.interdisciplinary_potential_ranking.ranking_backend, 'graph-analogy-fusion-v1');
+  assert.equal(result.packetBundle.domain_distance_policy.scoring_basis, 'graph-connectivity-and-mechanism-coverage');
+  assert.ok(result.packetBundle.source_domain_analyses.some((analysis) => (
+    analysis.bridge_path_ids.length > 0
+    && analysis.path_trace.length > 0
+    && analysis.evidence_chain_refs.length > 0
+    && analysis.source_spans.length > 0
+  )));
+  assert.ok(result.packetBundle.idea_fragments.some((fragment) => (
+    fragment.bridge_path_ids.length > 0
+    && fragment.evidence_chain_refs.length > 0
+    && fragment.source_spans.length > 0
+    && ['strong', 'moderate'].includes(fragment.evidence_tier)
+  )));
 });

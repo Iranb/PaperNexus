@@ -7,7 +7,7 @@ import { enrichGraphWithDomainAndMechanismNodes } from '../src/core/graph/domain
 import { buildCatalystQuery } from '../src/core/graph/catalyst-adapter.js';
 import { buildIdeaCatalystPacketBundle } from '../src/core/graph/idea-catalyst-packets.js';
 
-function createPacketFixtureGraph() {
+function createPacketFixtureGraph({ includeSnippet = true } = {}) {
   const graph = createKnowledgeGraph();
 
   graph.addNode({
@@ -110,19 +110,21 @@ function createPacketFixtureGraph() {
       addressesChallenges: ['adaptive belief calibration under asymmetric feedback']
     }
   });
-  graph.addNode({
-    id: 'snippet:psych-reflective',
-    type: NODE_TYPES.EVIDENCE_SNIPPET,
-    name: 'Reflective prompts improve uncertainty-aware belief revision.',
-    properties: {
-      paperId: 'paper:psych-1',
-      paperTitle: 'Belief Updating Under Uncertainty',
-      text: 'Reflective prompts improve uncertainty-aware belief revision.',
-      evidenceText: 'Reflective prompts improve uncertainty-aware belief revision.',
-      sectionHeading: 'Discussion',
-      sectionRole: 'discussion'
-    }
-  });
+  if (includeSnippet) {
+    graph.addNode({
+      id: 'snippet:psych-reflective',
+      type: NODE_TYPES.EVIDENCE_SNIPPET,
+      name: 'Reflective prompts improve uncertainty-aware belief revision.',
+      properties: {
+        paperId: 'paper:psych-1',
+        paperTitle: 'Belief Updating Under Uncertainty',
+        text: 'Reflective prompts improve uncertainty-aware belief revision.',
+        evidenceText: 'Reflective prompts improve uncertainty-aware belief revision.',
+        sectionHeading: 'Discussion',
+        sectionRole: 'discussion'
+      }
+    });
+  }
 
   graph.addRelationship({
     id: 'rel:question-challenge-1',
@@ -152,13 +154,15 @@ function createPacketFixtureGraph() {
     type: EDGE_TYPES.RECONTEXTUALIZES_TO,
     properties: {}
   });
-  graph.addRelationship({
-    id: 'rel:takeaway-snippet',
-    sourceId: 'takeaway:psych-reflective',
-    targetId: 'snippet:psych-reflective',
-    type: EDGE_TYPES.SUPPORTED_BY_SNIPPET,
-    properties: {}
-  });
+  if (includeSnippet) {
+    graph.addRelationship({
+      id: 'rel:takeaway-snippet',
+      sourceId: 'takeaway:psych-reflective',
+      targetId: 'snippet:psych-reflective',
+      type: EDGE_TYPES.SUPPORTED_BY_SNIPPET,
+      properties: {}
+    });
+  }
   graph.addRelationship({
     id: 'rel:idea-addresses',
     sourceId: 'idea:edu-scaffold',
@@ -202,6 +206,65 @@ test('buildIdeaCatalystPacketBundle returns the staged public-repo packet struct
   assert.equal(bundle.cross_domain_analysis.length, bundle.source_domain_analyses.length);
   assert.ok(bundle.idea_fragments.length >= 1 || bundle.requisition_report);
   assert.ok(bundle.interdisciplinary_ranking);
+  assert.equal(bundle.bridge_retrieval.contract_version, 'idea-catalyst-bridge-retrieval-v1');
+  assert.ok(bundle.bridge_retrieval.candidate_bridge_paths.length > 0);
+  assert.ok(bundle.bridge_retrieval.candidate_bridge_paths.some((entry) => entry.path_id));
+  assert.ok(bundle.bridge_retrieval.candidate_bridge_paths.some((entry) => entry.source_spans.length > 0));
+  assert.equal(bundle.structural_analogy.contract_version, 'idea-catalyst-analogy-v1');
+  assert.ok(bundle.structural_analogy.alignments.length > 0);
+  assert.equal(bundle.interdisciplinary_potential_ranking.contract_version, 'idea-catalyst-interdisciplinary-ranking-v1');
+  assert.ok(bundle.interdisciplinary_potential_ranking.ranked_candidates.length > 0);
+  assert.equal(bundle.domain_distance_policy.version, 'idea-catalyst-domain-distance-v1');
+  assert.equal(bundle.domain_distance_policy.scoring_basis, 'graph-connectivity-and-mechanism-coverage');
   assert.equal(bundle.source_domain_analyses[0].takeaways[0].supporting_papers[0], 'Belief Updating Under Uncertainty');
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.bridge_path_ids.length > 0));
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.path_trace.length > 0));
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.evidence_chain_refs.length > 0));
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.source_spans.length > 0));
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.path_completeness >= 0.5));
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.evidence_density > 0));
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.ranking_backend === 'graph-analogy-fusion-v1'));
   assert.equal(bundle.idea_fragments[0].idea_fragment.title, bundle.idea_fragments[0].title);
+  assert.ok(bundle.idea_fragments[0].bridge_path_ids.length > 0);
+  assert.ok(bundle.idea_fragments[0].path_trace.length > 0);
+  assert.ok(bundle.idea_fragments[0].evidence_chain_refs.length > 0);
+  assert.ok(bundle.idea_fragments[0].source_spans.length > 0);
+  assert.ok(['strong', 'moderate'].includes(bundle.idea_fragments[0].evidence_tier));
+  assert.ok(bundle.idea_fragments[0].source_spans.some((span) => (
+    span.source_type === 'evidence_snippet'
+    && span.snippet_node_id === 'snippet:psych-reflective'
+    && span.source_span_available === false
+  )));
+  assert.deepEqual(bundle.idea_fragments[0].idea_fragment.bridge_path_ids, bundle.idea_fragments[0].bridge_path_ids);
+});
+
+test('buildIdeaCatalystPacketBundle reports DATA_STARVATION instead of usable fragments when source evidence is missing', () => {
+  const graph = createPacketFixtureGraph({ includeSnippet: false });
+  const catalyst = buildCatalystQuery(graph, {
+    targetDomain: 'Education',
+    fineGrainedDomain: 'Intelligent Tutoring Systems',
+    abstractChallenge: 'reduce confirmation bias during tutoring feedback',
+    mechanisms: ['metacontrol policy'],
+    limit: 5
+  });
+
+  const bundle = buildIdeaCatalystPacketBundle(graph, catalyst, {
+    targetDomain: 'Education',
+    fineGrainedDomain: 'Intelligent Tutoring Systems',
+    abstractChallenge: 'reduce confirmation bias during tutoring feedback',
+    numSourceDomains: 3,
+    relevanceThreshold: 1,
+    limit: 5
+  });
+
+  assert.equal(bundle.requisition_report.status, 'DATA_STARVATION');
+  assert.deepEqual(bundle.idea_fragments, []);
+  assert.ok(bundle.bridge_retrieval.candidate_bridge_paths.length > 0);
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.bridge_path_ids.length > 0));
+  assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.evidence_chain_refs.length > 0));
+  assert.ok(bundle.source_domain_analyses.every((analysis) => analysis.source_spans.length === 0));
+  assert.ok(bundle.source_domain_analyses.every((analysis) => analysis.evidence_tier === 'weak'));
+  assert.ok(bundle.requisition_report.missing_evidence_types.includes('source_span_or_evidence_snippet'));
+  assert.ok(bundle.requisition_report.missing_evidence_types.includes('evidence_density'));
+  assert.ok(bundle.requisition_report.missing_evidence_types.includes('usable_idea_fragment'));
 });
