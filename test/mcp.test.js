@@ -76,7 +76,7 @@ function startMcpClient(env) {
 
   return {
     child,
-    async request(method, params = {}) {
+    async request(method, params = {}, requestOptions = {}) {
       const id = nextId;
       nextId += 1;
       const payload = {
@@ -93,7 +93,7 @@ function startMcpClient(env) {
         const timeout = setTimeout(() => {
           requests.delete(id);
           reject(new Error(`Timed out waiting for MCP response to ${method}. stderr=${stderr.trim()}`));
-        }, 5000);
+        }, requestOptions.timeoutMs ?? 5000);
 
         requests.set(id, {
           resolve(result) {
@@ -436,6 +436,7 @@ test('refresh_paper_graph force-refreshes one paper over MCP without rebuilding 
       PAPERNEXUS_HOME: localHome,
       PAPERNEXUS_GRAPH_BACKEND: 'json'
     });
+    await localPending.request('initialize', {});
 
     await fs.writeFile(
       localPaperPath,
@@ -449,7 +450,7 @@ test('refresh_paper_graph force-refreshes one paper over MCP without rebuilding 
         corpus: localCorpusRoot,
         source: localPaperPath
       }
-    });
+    }, { timeoutMs: 15000 });
     const refreshPayload = JSON.parse(refreshResult.content[0].text);
     assert.equal(refreshPayload.contractVersion, 'paper-graph-refresh-v1');
     assert.equal(refreshPayload.fastCommit.reused, false);

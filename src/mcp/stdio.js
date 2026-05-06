@@ -6,6 +6,19 @@ function sendMessage(payload) {
   process.stdout.write(body);
 }
 
+async function withToolStdoutRedirected(task) {
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = function redirectedStdoutWrite(chunk, encoding, callback) {
+    return process.stderr.write(chunk, encoding, callback);
+  };
+
+  try {
+    return await task();
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+}
+
 export function startMcpServer() {
   let buffer = Buffer.alloc(0);
 
@@ -42,7 +55,7 @@ export function startMcpServer() {
       }
 
       try {
-        const result = await handleMessage(message, {});
+        const result = await withToolStdoutRedirected(() => handleMessage(message, {}));
         sendMessage(createJsonRpcSuccess(message.id, result));
       } catch (error) {
         sendMessage(createJsonRpcError(message.id, -32603, error.message));
