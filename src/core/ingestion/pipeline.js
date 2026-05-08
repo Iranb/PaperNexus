@@ -105,6 +105,13 @@ import {
   parsePaperMarkdown
 } from './markdown.js';
 import {
+  applyMethodEvolutionOverlayToGraph,
+  buildMethodEvolutionOverlay,
+  compactMethodEvolutionOverlayForPersistence,
+  extractCitationContextsFromPaper,
+  summarizeMethodEvolutionOverlay
+} from './method-evolution-overlay.js';
+import {
   resolvePaperIdentifiersExternally,
   shouldAttemptIdentifierResolution
 } from './identifier-resolution.js';
@@ -1212,6 +1219,7 @@ function buildSemanticPaperView(paper) {
   const assumptions = extractAssumptions(paper);
   const futureDirections = extractFutureDirections(paper);
   const researchGoals = extractResearchGoals(paper);
+  const citationContextExtraction = extractCitationContextsFromPaper(paper);
   const paperIdentity = createPaperIdentity({
     title: paper.title,
     paperTitle: paper.title,
@@ -1244,6 +1252,8 @@ function buildSemanticPaperView(paper) {
     resolutionStatus: paper.resolutionStatus || '',
     sourceKey: paper.sourceKey,
     references: paper.references || [],
+    citationContexts: citationContextExtraction.contexts,
+    citationContextExtraction: citationContextExtraction.diagnostics,
     problems: extractProblemCandidates(paper),
     methods: extractMethods(paper),
     datasets,
@@ -1676,6 +1686,23 @@ function serializeSnapshotRelations(relations = []) {
     ));
 }
 
+function serializeSnapshotCitationContexts(entries = []) {
+  return (entries || [])
+    .map((entry) => ({
+      id: String(entry?.id || '').trim(),
+      referenceId: String(entry?.referenceId || '').trim(),
+      citationRaw: String(entry?.citationRaw || '').trim(),
+      referenceRaw: String(entry?.referenceRaw || '').trim(),
+      referenceTitleGuess: String(entry?.referenceTitleGuess || '').trim(),
+      referenceYear: Number.isFinite(Number(entry?.referenceYear)) ? Number(entry.referenceYear) : null,
+      exactQuote: String(entry?.exactQuote || '').trim(),
+      sectionHeading: String(entry?.sectionHeading || '').trim(),
+      sectionRole: String(entry?.sectionRole || '').trim()
+    }))
+    .filter((entry) => entry.exactQuote || entry.referenceRaw || entry.citationRaw)
+    .sort((left, right) => `${left.referenceId}:${left.citationRaw}:${left.exactQuote}`.localeCompare(`${right.referenceId}:${right.citationRaw}:${right.exactQuote}`));
+}
+
 function createSemanticPaperSnapshotStateSignature(semanticPaper = {}) {
   return stableHash(JSON.stringify({
     version: SNAPSHOT_STATE_SIGNATURE_VERSION,
@@ -1712,6 +1739,7 @@ function createSemanticPaperSnapshotStateSignature(semanticPaper = {}) {
       metrics: serializeSnapshotSlotEntries(semanticPaper.metrics)
     },
     relations: serializeSnapshotRelations(semanticPaper.llmRelations),
+    citationContexts: serializeSnapshotCitationContexts(semanticPaper.citationContexts),
     llm: {
       provider: semanticPaper.llm?.provider || 'disabled',
       relationCount: Number(semanticPaper.llm?.relationCount || 0),
@@ -3030,6 +3058,17 @@ function buildPaperNode(paper) {
 async function buildGraphFromSemanticPapers({ corpusName, rootPath, semanticPapers, options = {} }) {
   const graph = createKnowledgeGraph();
   const corpusId = `corpus:${slugify(corpusName)}:${stableHash(rootPath)}`;
+  const methodEvolutionOverlay = buildMethodEvolutionOverlay(semanticPapers, {
+    generatedAt: options.indexedAt || new Date().toISOString()
+  });
+  const persistedMethodEvolutionOverlay = compactMethodEvolutionOverlayForPersistence(methodEvolutionOverlay, {
+    maxMethods: options.methodEvolutionOverlayMaxMethods,
+    maxAliases: options.methodEvolutionOverlayMaxAliases,
+    maxCandidates: options.methodEvolutionOverlayMaxCandidates,
+    maxValidated: options.methodEvolutionOverlayMaxValidated,
+    maxAuthoritative: options.methodEvolutionOverlayMaxAuthoritative
+  });
+  const methodEvolutionOverlaySummary = summarizeMethodEvolutionOverlay(methodEvolutionOverlay);
   const nodesByType = new Map();
   const nodeRegistry = createNodeRegistry();
   const paperNodes = new Map();
@@ -3070,7 +3109,9 @@ async function buildGraphFromSemanticPapers({ corpusName, rootPath, semanticPape
     name: corpusName,
     properties: {
       layer: getNodeLayer(NODE_TYPES.CORPUS),
-      rootPath
+      rootPath,
+      methodEvolutionOverlay: persistedMethodEvolutionOverlay,
+      methodEvolutionOverlaySummary
     }
   });
 
@@ -3126,6 +3167,22 @@ async function buildGraphFromSemanticPapers({ corpusName, rootPath, semanticPape
 
     addOllamaRelations(graph, [localNodeRegistry, nodeRegistry], paper, paper.llmRelations);
     progress.tick();
+  }
+
+  const methodEvolutionProjection = applyMethodEvolutionOverlayToGraph(graph, methodEvolutionOverlay);
+  const corpusNode = graph.getNode(corpusId);
+  if (corpusNode) {
+    graph.updateNode({
+      ...corpusNode,
+      properties: {
+        ...(corpusNode.properties || {}),
+        methodEvolutionOverlaySummary: summarizeMethodEvolutionOverlay(methodEvolutionOverlay, {
+          projectedRelationshipCount: methodEvolutionProjection.relationshipCount,
+          projectionSkippedCount: methodEvolutionProjection.skipped.length
+        }),
+        methodEvolutionOverlayProjection: methodEvolutionProjection
+      }
+    });
   }
 
   postIngestionRefinement(graph);
