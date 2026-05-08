@@ -1,5 +1,10 @@
 import { deriveDomainTaxonomyFromGraph, normalizeFieldOfStudy } from '../core/graph/domain-taxonomy.js';
 import { buildInterdisciplinaryPotentialReport } from '../core/graph/interdisciplinary-potential.js';
+import {
+  buildCrossDomainMechanismEvidence,
+  buildMethodEvolutionGapAnalysis,
+  buildResearchIntelligenceAnswer
+} from '../core/graph/research-intelligence.js';
 import { extractTakeawaysFromBridgeNodes } from '../core/graph/takeaway-extraction.js';
 import {
   brainstormGraphPayload,
@@ -111,6 +116,58 @@ export async function executeResearchLookupTool(args = {}, options = {}) {
           query: args.query,
           agnosticChallenges: args.agnosticChallenges,
           excludeProximalDomains: args.excludeProximalDomains,
+          limit: args.limit
+        }),
+        generatedAt: new Date().toISOString()
+      };
+    }
+    case 'cross_domain_evidence': {
+      const rootPath = await resolveCorpusForApi(candidate, options);
+      const { graph } = await loadCorpusLiteForApi(rootPath, options);
+      return {
+        rootPath,
+        result: buildCrossDomainMechanismEvidence(graph, {
+          query: args.query,
+          targetDomain: args.targetDomain,
+          mechanisms: args.mechanisms,
+          limit: args.limit,
+          numSourceDomains: args.numSourceDomains,
+          relevanceThreshold: args.relevanceThreshold,
+          includePacketBundle: args.includePacketBundle === true
+        }),
+        generatedAt: new Date().toISOString()
+      };
+    }
+    case 'method_lineage': {
+      const rootPath = await resolveCorpusForApi(candidate, options);
+      const { graph } = await loadCorpusLiteForApi(rootPath, options);
+      return {
+        rootPath,
+        result: buildMethodEvolutionGapAnalysis(graph, {
+          query: args.query,
+          method: args.method,
+          methodName: args.methodName,
+          direction: args.direction,
+          maxDepth: args.maxDepth,
+          limit: args.limit
+        }),
+        generatedAt: new Date().toISOString()
+      };
+    }
+    case 'research_answer': {
+      const rootPath = await resolveCorpusForApi(candidate, options);
+      const { graph } = await loadCorpusLiteForApi(rootPath, options);
+      return {
+        rootPath,
+        result: buildResearchIntelligenceAnswer(graph, {
+          query: args.query,
+          targetDomain: args.targetDomain,
+          mechanisms: args.mechanisms,
+          method: args.method,
+          methodName: args.methodName,
+          mode: args.mode,
+          direction: args.direction,
+          maxDepth: args.maxDepth,
           limit: args.limit
         }),
         generatedAt: new Date().toISOString()

@@ -40,6 +40,7 @@ Commands:
   papernexus clean [--corpus <name>]
   papernexus scrub-degenerate-papers [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
+  papernexus answer <query> [--mode <cross_domain_evidence|method_lineage|both>] [--target-domain <domain>] [--method <name>] [--direction <backward|forward|both>] [--max-depth <n>] [--limit <n>] [--corpus <name>]
   papernexus catalyst-backfill [<path>] [--name <corpus>] [--semantic-extraction <llm-assisted|llm-primary>] [--force]
   papernexus imports [status] [<corpus>] [--limit <n>] [--json]
   papernexus imports running [<corpus>] [--limit <n>] [--json]
@@ -169,6 +170,8 @@ Examples:
   papernexus auth llm set --provider openai --base-url https://api.openai.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
   papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback" --mechanism "metacontrol policy" --corpus ml-papers
+  papernexus answer "reduce confirmation bias during tutoring feedback" --mode cross_domain_evidence --target-domain Education --mechanism "metacontrol policy" --corpus ml-papers
+  papernexus answer --method Transformer --mode method_lineage --direction backward --corpus ml-papers
   papernexus catalyst-backfill ./papers --name ml-papers --semantic-extraction llm-assisted
   papernexus impact "semi-supervised learning" --corpus ml-papers --layers ProblemLayer,MethodLayer --layer-mode cross
   papernexus context "knowledge graph" --corpus ml-papers
@@ -713,6 +716,7 @@ async function loadRuntimeModules() {
     ingestion,
     search,
     catalyst,
+    researchIntelligence,
     render,
     mcpServer,
     httpServer,
@@ -726,6 +730,7 @@ async function loadRuntimeModules() {
     import('../core/ingestion/pipeline.js'),
     import('../core/search/search.js'),
     import('../core/graph/catalyst-adapter.js'),
+    import('../core/graph/research-intelligence.js'),
     import('../lib/render.js'),
     import('../mcp/server.js'),
     import('../server/http.js'),
@@ -741,6 +746,7 @@ async function loadRuntimeModules() {
     ...ingestion,
     ...search,
     ...catalyst,
+    ...researchIntelligence,
     ...render,
     ...mcpServer,
     ...httpServer,
@@ -2279,6 +2285,28 @@ async function main() {
       mechanisms: catalystOptions.mechanisms,
       limit: catalystOptions.limit
     })));
+    return;
+  }
+
+  if (command === 'answer') {
+    const query = positionals.join(' ').trim();
+    const method = String(firstDefined(flags.method, flags['method-name'], '') || '').trim();
+    if (!query && !method) {
+      throw new Error('Missing answer query or `--method <name>`.');
+    }
+
+    const { graph } = await loadSelectedCorpusLite(runtime, resolveConfiguredCorpus(flags, config, undefined, configBaseDir));
+    const answer = runtime.buildResearchIntelligenceAnswer(graph, {
+      query,
+      targetDomain: firstDefined(flags['target-domain'], flags.domain),
+      mechanisms: parseCommaSeparatedList(firstDefined(flags.mechanisms, flags.mechanism)),
+      method,
+      mode: flags.mode,
+      direction: flags.direction,
+      maxDepth: toNumber(firstDefined(flags['max-depth'], flags.depth), 3),
+      limit: toNumber(flags.limit, 5)
+    });
+    console.log(JSON.stringify(answer, null, 2));
     return;
   }
 

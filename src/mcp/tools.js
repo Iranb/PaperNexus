@@ -302,7 +302,10 @@ export const PAPERNEXUS_TOOLS = [
             'paper_index',
             'domain_distance',
             'extract_takeaways',
-            'interdisciplinary_potential'
+            'interdisciplinary_potential',
+            'cross_domain_evidence',
+            'method_lineage',
+            'research_answer'
           ]
         },
         corpus: {
@@ -378,6 +381,55 @@ export const PAPERNEXUS_TOOLS = [
         targetDomain: {
           type: 'string',
           description: 'Target domain used by domain-distance and interdisciplinary operations.'
+        },
+        mechanisms: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Optional mechanism filters for cross_domain_evidence and research_answer.'
+        },
+        method: {
+          type: 'string',
+          description: 'Method name, alias, or Method node id used by method_lineage and research_answer.'
+        },
+        methodName: {
+          type: 'string',
+          description: 'Alternative method selector used by method_lineage and research_answer.'
+        },
+        mode: {
+          type: 'string',
+          enum: ['cross_domain_evidence', 'method_lineage', 'both'],
+          description: 'Answer mode used by research_answer.'
+        },
+        direction: {
+          type: 'string',
+          enum: ['backward', 'forward', 'both'],
+          description: 'Lineage traversal direction for method_lineage.',
+          default: 'backward'
+        },
+        maxDepth: {
+          type: 'number',
+          description: 'Maximum method lineage traversal depth.',
+          default: 3
+        },
+        numSourceDomains: {
+          type: 'number',
+          description: 'Maximum source domains considered by cross_domain_evidence.',
+          default: 3
+        },
+        relevanceThreshold: {
+          type: 'number',
+          description: 'Evidence threshold used by cross_domain_evidence.',
+          default: 3
+        },
+        includePacketBundle: {
+          type: 'boolean',
+          description: 'Include the raw catalyst packet bundle in cross_domain_evidence output.',
+          default: false
         },
         agnosticChallenges: {
           type: 'array',
