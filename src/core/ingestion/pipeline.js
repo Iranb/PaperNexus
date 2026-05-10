@@ -37,6 +37,16 @@ import {
   resolveSemanticExtractionPlan,
   resolveOllamaConfig
 } from '../llm/ollama.js';
+import {
+  PROMPT_VERSION as SEMANTIC_OBJECTS_PROMPT_VERSION,
+  createConfigSignature as createSemanticPromptConfigSignature,
+  createDisabledConfigSignature as createDisabledSemanticPromptConfigSignature
+} from '../llm/prompts/semantic-objects-v2.js';
+import {
+  PROMPT_VERSION as RESEARCH_RELATIONS_PROMPT_VERSION,
+  createConfigSignature as createResearchRelationsPromptConfigSignature,
+  createDisabledConfigSignature as createDisabledResearchRelationsPromptConfigSignature
+} from '../llm/prompts/research-relations-v1.js';
 import { collectFiles, fileExists, readJson, readText, withFileLock } from '../../lib/fs.js';
 import {
   createContentSha256,
@@ -170,6 +180,13 @@ const SEMANTIC_LLM_SIGNATURE_VERSION = 2;
 const RELATION_LLM_SIGNATURE_VERSION = 1;
 const STAGE2_JOB_STATE_VERSION = 1;
 const CATALYST_METADATA_CONTRACT_VERSION = 1;
+
+function createLlmPromptVersions() {
+  return {
+    semanticObjects: SEMANTIC_OBJECTS_PROMPT_VERSION,
+    researchRelations: RESEARCH_RELATIONS_PROMPT_VERSION
+  };
+}
 
 const PROBLEM_SENTENCE_PATTERNS = [
   /\b(?:we|this paper|this work)\s+(?:study|address(?:es)?|tackle(?:s|d)?|focus(?:es)? on|investigate(?:s|d)?)\s+(.+?)(?:\.|,|;| while | by | with )/i,
@@ -1524,29 +1541,19 @@ function canAttemptLlmRelations(options = {}) {
 function createSemanticConfigSignature(options = {}) {
   const plan = resolveSemanticExtractionPlan(options);
   if (!plan.shouldAttempt || plan.requestedMode === 'heuristic-only') {
-    return `semantic:${SEMANTIC_LLM_SIGNATURE_VERSION}:disabled:${plan.requestedMode}:catalyst:${CATALYST_METADATA_CONTRACT_VERSION}`;
+    return createDisabledSemanticPromptConfigSignature({
+      signatureVersion: SEMANTIC_LLM_SIGNATURE_VERSION,
+      requestedMode: plan.requestedMode,
+      catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION
+    });
   }
 
-  return JSON.stringify({
-    kind: 'semantic',
-    version: SEMANTIC_LLM_SIGNATURE_VERSION,
+  return createSemanticPromptConfigSignature({
+    signatureVersion: SEMANTIC_LLM_SIGNATURE_VERSION,
     catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
     requestedMode: plan.requestedMode,
     effectiveMode: plan.effectiveMode,
-    provider: plan.config?.provider || 'disabled',
-    model: plan.config?.model || '',
-    baseUrl: plan.config?.baseUrl || '',
-    fallback: plan.config?.fallback
-      ? {
-          provider: plan.config.fallback.provider || '',
-          model: plan.config.fallback.model || '',
-          baseUrl: plan.config.fallback.baseUrl || '',
-          sshHost: plan.config.fallback.sshHost || '',
-          autoStart: Boolean(plan.config.fallback.autoStart),
-          autoPull: Boolean(plan.config.fallback.autoPull),
-          ollamaBootstrap: plan.config.fallback.ollamaBootstrap?.mode || ''
-        }
-      : null
+    config: plan.config
   });
 }
 
@@ -1563,27 +1570,15 @@ function hasCatalystMetadataContract(snapshot = null) {
 
 function createRelationConfigSignature(options = {}) {
   if (!canAttemptLlmRelations(options)) {
-    return `relations:${RELATION_LLM_SIGNATURE_VERSION}:disabled`;
+    return createDisabledResearchRelationsPromptConfigSignature({
+      signatureVersion: RELATION_LLM_SIGNATURE_VERSION
+    });
   }
 
   const config = resolveOllamaConfig(options);
-  return JSON.stringify({
-    kind: 'relations',
-    version: RELATION_LLM_SIGNATURE_VERSION,
-    provider: config.provider || 'disabled',
-    model: config.model || '',
-    baseUrl: config.baseUrl || '',
-    fallback: config.fallback
-      ? {
-          provider: config.fallback.provider || '',
-          model: config.fallback.model || '',
-          baseUrl: config.fallback.baseUrl || '',
-          sshHost: config.fallback.sshHost || '',
-          autoStart: Boolean(config.fallback.autoStart),
-          autoPull: Boolean(config.fallback.autoPull),
-          ollamaBootstrap: config.fallback.ollamaBootstrap?.mode || ''
-        }
-      : null
+  return createResearchRelationsPromptConfigSignature({
+    signatureVersion: RELATION_LLM_SIGNATURE_VERSION,
+    config
   });
 }
 
@@ -1890,6 +1885,8 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
     relationCount: inference.relations.length,
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    semanticPromptVersion: SEMANTIC_OBJECTS_PROMPT_VERSION,
+    relationPromptVersion: RESEARCH_RELATIONS_PROMPT_VERSION,
     rateLimitCooldownUntil,
     semanticExtractionMode: semanticExtractionPlan.requestedMode,
     semanticExtractionModeEffective: semanticExtractionMode,
@@ -1905,6 +1902,7 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
     requestedMode: semanticExtractionPlan.requestedMode,
     effectiveMode: semanticExtractionMode,
     configSignature: createSemanticConfigSignature(options),
+    promptVersion: SEMANTIC_OBJECTS_PROMPT_VERSION,
     attempted: semanticObjects.attempted,
     participated: semanticObjects.participated,
     reason: semanticObjects.reason,
@@ -2007,6 +2005,7 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
         error: semanticObjects.error || null,
         rateLimitCooldownUntil: semanticObjects.rateLimitCooldownUntil || null,
         semanticConfigSignature,
+        semanticPromptVersion: SEMANTIC_OBJECTS_PROMPT_VERSION,
         semanticExtractionMode: semanticExtractionPlan.requestedMode,
         semanticExtractionModeEffective: semanticExtractionMode,
         semanticExtractionAttempted: semanticObjects.attempted,
@@ -2017,7 +2016,8 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
       };
       record.semanticPaper.llmSemanticObjects = {
         ...semanticObjects,
-        configSignature: semanticConfigSignature
+        configSignature: semanticConfigSignature,
+        promptVersion: SEMANTIC_OBJECTS_PROMPT_VERSION
       };
     }
     semanticProgress.done();
@@ -2060,6 +2060,7 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
         rateLimitCooldownUntil: inference.rateLimitCooldownUntil || null,
         relationCount: inference.relations.length,
         relationConfigSignature,
+        relationPromptVersion: RESEARCH_RELATIONS_PROMPT_VERSION,
         relationParticipationReason: inference.reason || null,
         relationRetryCount: relationFailed ? Number(previousLlm.relationRetryCount || 0) + 1 : 0
       };
@@ -2099,6 +2100,7 @@ function applySemanticBatchResultToRecord(record, semanticObjects, semanticExtra
     error: semanticObjects.error || null,
     rateLimitCooldownUntil: semanticObjects.rateLimitCooldownUntil || null,
     semanticConfigSignature: createSemanticConfigSignature(options),
+    semanticPromptVersion: SEMANTIC_OBJECTS_PROMPT_VERSION,
     semanticExtractionMode: semanticExtractionPlan.requestedMode,
     semanticExtractionModeEffective: semanticExtractionMode,
     semanticExtractionAttempted: semanticObjects.attempted,
@@ -2109,7 +2111,8 @@ function applySemanticBatchResultToRecord(record, semanticObjects, semanticExtra
   };
   record.semanticPaper.llmSemanticObjects = {
     ...semanticObjects,
-    configSignature: createSemanticConfigSignature(options)
+    configSignature: createSemanticConfigSignature(options),
+    promptVersion: SEMANTIC_OBJECTS_PROMPT_VERSION
   };
   applySemanticAdmissionPolicy(record.semanticPaper);
   return {
@@ -2133,6 +2136,7 @@ function applyRelationBatchResultToRecord(record, inference, options = {}) {
     rateLimitCooldownUntil: inference.rateLimitCooldownUntil || null,
     relationCount: inference.relations.length,
     relationConfigSignature: createRelationConfigSignature(options),
+    relationPromptVersion: RESEARCH_RELATIONS_PROMPT_VERSION,
     relationParticipationReason: inference.reason || null,
     relationRetryCount: relationFailed ? Number(previousLlm.relationRetryCount || 0) + 1 : 0
   };
@@ -3454,7 +3458,8 @@ function createLlmOptimizationToken(manifest, options = {}) {
     version: 1,
     manifestToken: createManifestCommitToken(manifest),
     semanticConfigSignature: createSemanticConfigSignature(options),
-    relationConfigSignature: createRelationConfigSignature(options)
+    relationConfigSignature: createRelationConfigSignature(options),
+    promptVersions: createLlmPromptVersions()
   }), 20);
 }
 
@@ -3465,6 +3470,7 @@ function buildLlmOptimizationState(manifest, options = {}) {
     catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    promptVersions: createLlmPromptVersions(),
     token: createLlmOptimizationToken(manifest, options)
   };
 }
@@ -3492,6 +3498,7 @@ function buildLlmOptimizationCooldownState(manifest, options = {}, rateLimitCool
     catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    promptVersions: createLlmPromptVersions(),
     token: null,
     rateLimitCooldownUntil
   };
@@ -3545,6 +3552,7 @@ function createStage2JobState(manifest, options = {}) {
     manifestToken: createManifestCommitToken(manifest),
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    promptVersions: createLlmPromptVersions(),
     status: 'running',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

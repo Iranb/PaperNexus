@@ -94,16 +94,16 @@ PaperNexus deliberately does **not** cover the entire automated research stack.
 
 The major codebase slices map closely to the runtime model:
 
-- [`src/core/ingestion`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pipeline.js): staged source-to-snapshot and snapshot-to-graph pipeline
-- [`src/core/graph`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/schema.js): graph schema, domain and mechanism layers, catalyst-related reasoning, and delta logic
-- [`src/core/search`](https://github.com/Iranb/PaperNexus/blob/main/src/core/search/search.js): search, context, impact, ideas, and brainstorming retrieval
-- [`src/core/imports`](https://github.com/Iranb/PaperNexus/blob/main/src/core/imports/worker.js): asynchronous import worker and queue processing
-- [`src/core/enhancements`](https://github.com/Iranb/PaperNexus/blob/main/src/core/enhancements/worker.js): background enhancement overlays and metadata backfill
-- [`src/core/authoritative-sync`](https://github.com/Iranb/PaperNexus/blob/main/src/core/authoritative-sync/worker.js): authoritative graph sync
-- [`src/storage`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/corpus-store.js): persistent graph, manifests, lite view, and queue stores
-- [`src/server`](https://github.com/Iranb/PaperNexus/blob/main/src/server/http.js): browser UI host, HTTP server, and API surface
-- [`src/mcp`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tools.js): stdio and remote HTTP MCP tools
-- [`web`](https://github.com/Iranb/PaperNexus/blob/main/web/app.js): browser dashboard
+- [`src/core/ingestion`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/pipeline.js): staged source-to-snapshot and snapshot-to-graph pipeline
+- [`src/core/graph`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/schema.js): graph schema, domain and mechanism layers, catalyst-related reasoning, and delta logic
+- [`src/core/search`](https://github.com/papernexus/PaperNexus/blob/main/src/core/search/search.js): search, context, impact, ideas, and brainstorming retrieval
+- [`src/core/imports`](https://github.com/papernexus/PaperNexus/blob/main/src/core/imports/worker.js): asynchronous import worker and queue processing
+- [`src/core/enhancements`](https://github.com/papernexus/PaperNexus/blob/main/src/core/enhancements/worker.js): background enhancement overlays and metadata backfill
+- [`src/core/authoritative-sync`](https://github.com/papernexus/PaperNexus/blob/main/src/core/authoritative-sync/worker.js): authoritative graph sync
+- [`src/storage`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/corpus-store.js): persistent graph, manifests, lite view, and queue stores
+- [`src/server`](https://github.com/papernexus/PaperNexus/blob/main/src/server/http.js): browser UI host, HTTP server, and API surface
+- [`src/mcp`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tools.js): stdio and remote HTTP MCP tools
+- [`web`](https://github.com/papernexus/PaperNexus/blob/main/web/app.js): browser dashboard
 
 ## Read Next
 

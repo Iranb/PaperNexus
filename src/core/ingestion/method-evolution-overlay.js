@@ -7,13 +7,41 @@ import {
   truncate,
   unique
 } from '../../lib/utils.js';
+import {
+  applyStrongEdgeConflictValidation,
+  isContextMethodCitationType,
+  isStrongMethodEvolutionType,
+  validateMethodEvolutionCandidate
+} from './method-evolution-validator.js';
 
 export const CITATION_CONTEXTS_CONTRACT_VERSION = 'papernexus-citation-contexts-v1';
 export const METHOD_EVOLUTION_OVERLAY_CONTRACT_VERSION = 'papernexus-method-evolution-overlay-v1';
 
 const METHOD_EVOLUTION_RELATION_SOURCE = 'citation-context-method-evolution-overlay-v1';
-const MIN_SEMANTIC_CONFIDENCE = 0.55;
-const AUTHORITATIVE_SEMANTIC_CONFIDENCE = 0.78;
+
+const METHOD_DAG_EDGE_TYPE_BY_CITATION_TYPE = new Map([
+  [EDGE_TYPES.EXTENDS_METHOD, EDGE_TYPES.VARIANT_OF],
+  [EDGE_TYPES.IMPROVES_METHOD, EDGE_TYPES.VARIANT_OF],
+  [EDGE_TYPES.ADAPTS_METHOD, EDGE_TYPES.SPECIALIZES],
+  [EDGE_TYPES.REPLACES_METHOD, EDGE_TYPES.SPECIALIZES],
+  [EDGE_TYPES.USES_COMPONENT_METHOD, EDGE_TYPES.COMPONENT_OF]
+]);
+
+const GENERIC_METHOD_SURFACE_KEYS = new Set([
+  'approach',
+  'architecture',
+  'baseline',
+  'framework',
+  'method',
+  'model',
+  'module',
+  'network',
+  'our approach',
+  'our method',
+  'proposed approach',
+  'proposed method',
+  'system'
+]);
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -81,6 +109,34 @@ function normalizedIncludesPhrase(text, phrase) {
     return normalizedText.split(' ').includes(normalizedPhrase);
   }
   return normalizedText.includes(normalizedPhrase);
+}
+
+function projectMethodDagEdge(edgeType, sourceMethod, targetMethod) {
+  const dagEdgeType = METHOD_DAG_EDGE_TYPE_BY_CITATION_TYPE.get(edgeType);
+  if (!dagEdgeType || !sourceMethod?.methodId || !targetMethod?.methodId) {
+    return {
+      dagEdgeType: null,
+      dagSourceMethodId: null,
+      dagTargetMethodId: null,
+      dagDirection: null
+    };
+  }
+
+  if (edgeType === EDGE_TYPES.USES_COMPONENT_METHOD) {
+    return {
+      dagEdgeType,
+      dagSourceMethodId: targetMethod.methodId,
+      dagTargetMethodId: sourceMethod.methodId,
+      dagDirection: 'cited-component-to-citing-method'
+    };
+  }
+
+  return {
+    dagEdgeType,
+    dagSourceMethodId: sourceMethod.methodId,
+    dagTargetMethodId: targetMethod.methodId,
+    dagDirection: 'citing-method-to-cited-method'
+  };
 }
 
 function citationSentenceWindow(text, citationRaw = '') {
@@ -221,11 +277,50 @@ function methodAliases(method = {}) {
   ].map((value) => String(value || '').trim()).filter(Boolean));
 }
 
+function methodNegativeSurfaces(method = {}) {
+  return unique([
+    ...(asArray(method.negativeSurfaces)),
+    ...(asArray(method.negative_surfaces)),
+    ...(asArray(method.blockedSurfaces)),
+    ...(asArray(method.blocked_surfaces))
+  ].map((value) => String(value || '').trim()).filter(Boolean));
+}
+
+function shouldBlockAliasSurface(alias) {
+  const key = normalizedKey(alias);
+  return !key || GENERIC_METHOD_SURFACE_KEYS.has(key);
+}
+
 function addAlias(aliasMap, alias, method) {
   const key = normalizedKey(alias);
   if (!key) return;
   if (!aliasMap.has(key)) aliasMap.set(key, []);
   aliasMap.get(key).push(method);
+}
+
+function buildAliasRecords(aliasMap) {
+  return [...aliasMap.entries()].map(([alias, entries]) => ({
+    alias,
+    methodIds: unique(entries.map((entry) => entry.methodId))
+  }));
+}
+
+function findAmbiguousAliasRecords(aliasRecords = []) {
+  return aliasRecords.filter((entry) => entry.methodIds.length > 1);
+}
+
+function createAliasDiagnostics(aliasRecords = [], blockedAliases = []) {
+  const ambiguousAliases = findAmbiguousAliasRecords(aliasRecords);
+  return {
+    aliasCount: aliasRecords.length,
+    ambiguousSurfaceCount: ambiguousAliases.length,
+    blockedSurfaceCount: blockedAliases.length,
+    ambiguousSurfaces: ambiguousAliases.slice(0, 100).map((entry) => ({
+      alias: entry.alias,
+      methodIds: entry.methodIds
+    })),
+    blockedSurfaces: blockedAliases.slice(0, 100)
+  };
 }
 
 function createPaperTitleKeys(paper = {}) {
@@ -249,6 +344,7 @@ function createTitleScore(left, right) {
 export function buildMethodRegistry(papers = []) {
   const methods = [];
   const aliases = new Map();
+  const blockedAliases = [];
   const methodsByPaperId = new Map();
   const methodById = new Map();
   const paperTitleRecords = [];
@@ -261,12 +357,15 @@ export function buildMethodRegistry(papers = []) {
       const methodName = String(method?.name || method?.text || '').trim();
       if (!methodName) continue;
       const aliasesForMethod = methodAliases(method);
+      const negativeSurfaces = methodNegativeSurfaces(method);
       const record = {
         methodId: methodNodeId(methodName),
         methodName,
         normalizedName: normalizedKey(methodName),
         aliases: aliasesForMethod,
         aliasKeys: aliasesForMethod.map(normalizedKey).filter(Boolean),
+        negativeSurfaces,
+        negativeSurfaceKeys: negativeSurfaces.map(normalizedKey).filter(Boolean),
         paperId: paper.paperId || null,
         paperTitle: paper.paperTitle || paper.title || '',
         sourceKey: paper.sourceKey || null,
@@ -277,7 +376,17 @@ export function buildMethodRegistry(papers = []) {
       methods.push(record);
       paperMethods.push(record);
       methodById.set(record.methodId, record);
-      for (const alias of aliasesForMethod) addAlias(aliases, alias, record);
+      for (const alias of aliasesForMethod) {
+        if (shouldBlockAliasSurface(alias)) {
+          blockedAliases.push({
+            alias: normalizedKey(alias),
+            methodId: record.methodId,
+            reason: 'generic_surface'
+          });
+          continue;
+        }
+        addAlias(aliases, alias, record);
+      }
     }
 
     if (paper.paperId) methodsByPaperId.set(paper.paperId, paperMethods);
@@ -291,17 +400,34 @@ export function buildMethodRegistry(papers = []) {
     }
   }
 
+  const aliasRecords = buildAliasRecords(aliases);
+  const aliasDiagnostics = createAliasDiagnostics(aliasRecords, blockedAliases);
+  const ambiguousAliasKeys = new Set(
+    findAmbiguousAliasRecords(aliasRecords).map((entry) => entry.alias)
+  );
+  const blockedAliasKeys = new Set(
+    blockedAliases.map((entry) => entry.alias)
+  );
+
   const registry = {
     contractVersion: METHOD_EVOLUTION_OVERLAY_CONTRACT_VERSION,
     methods,
-    aliases: [...aliases.entries()].map(([alias, entries]) => ({
-      alias,
-      methodIds: unique(entries.map((entry) => entry.methodId))
-    })),
-    stubs: []
+    aliases: aliasRecords,
+    stubs: [],
+    diagnostics: {
+      entryCount: methods.length,
+      aliasCount: aliasDiagnostics.aliasCount,
+      stubCount: 0,
+      ambiguousSurfaceCount: aliasDiagnostics.ambiguousSurfaceCount,
+      blockedSurfaceCount: aliasDiagnostics.blockedSurfaceCount,
+      ambiguousSurfaces: aliasDiagnostics.ambiguousSurfaces,
+      blockedSurfaces: aliasDiagnostics.blockedSurfaces
+    }
   };
   Object.defineProperties(registry, {
     aliasMap: { value: aliases, enumerable: false },
+    ambiguousAliasKeys: { value: ambiguousAliasKeys, enumerable: false },
+    blockedAliasKeys: { value: blockedAliasKeys, enumerable: false },
     methodsByPaperId: { value: methodsByPaperId, enumerable: false },
     methodById: { value: methodById, enumerable: false },
     paperTitleRecords: { value: paperTitleRecords, enumerable: false },
@@ -333,15 +459,30 @@ function registerStub(registry, context = {}) {
     };
     registry.stubById.set(stubId, stub);
     registry.stubs.push(stub);
+    if (registry.diagnostics) registry.diagnostics.stubCount = registry.stubs.length;
   }
   return registry.stubById.get(stubId);
 }
 
-function findMentionedMethods(text, methods = []) {
+function aliasAllowedForMatch(alias, method = {}, registry = null) {
+  const key = normalizedKey(alias);
+  if (!key || key.length < 3) return false;
+  if (registry?.blockedAliasKeys?.has(key)) return false;
+  if (registry?.ambiguousAliasKeys?.has(key)) return false;
+  if (method.negativeSurfaceKeys?.some((surface) => normalizedIncludesPhrase(alias, surface))) return false;
+  return true;
+}
+
+function methodBlockedByNegativeSurface(text, method = {}) {
+  return asArray(method.negativeSurfaceKeys).some((surface) => normalizedIncludesPhrase(text, surface));
+}
+
+function findMentionedMethods(text, methods = [], registry = null) {
   const matches = [];
   for (const method of methods) {
+    if (methodBlockedByNegativeSurface(text, method)) continue;
     const aliasHit = method.aliasKeys
-      .filter((alias) => alias.length >= 3)
+      .filter((alias) => aliasAllowedForMatch(alias, method, registry))
       .sort((left, right) => right.length - left.length)
       .find((alias) => normalizedIncludesPhrase(text, alias));
     if (aliasHit) {
@@ -406,7 +547,7 @@ function resolveCitedPaper(context = {}, registry) {
 function resolveSourceMethods(paper, context, registry) {
   const methods = registry.methodsByPaperId.get(paper.paperId) || [];
   if (!methods.length) return [];
-  const mentioned = findMentionedMethods(context.citationContext || context.exactQuote, methods);
+  const mentioned = findMentionedMethods(context.citationContext || context.exactQuote, methods, registry);
   return (mentioned.length ? mentioned : methods).slice(0, mentioned.length ? 2 : 1);
 }
 
@@ -415,7 +556,7 @@ function resolveTargetMethods(paper, context, registry) {
   if (citedPaper.paper?.paperId && citedPaper.paper.paperId !== paper.paperId) {
     const citedMethods = registry.methodsByPaperId.get(citedPaper.paper.paperId) || [];
     if (citedMethods.length) {
-      const mentioned = findMentionedMethods(context.citationContext || context.exactQuote, citedMethods);
+      const mentioned = findMentionedMethods(context.citationContext || context.exactQuote, citedMethods, registry);
       return {
         methods: (mentioned.length ? mentioned : citedMethods).slice(0, mentioned.length ? 2 : 1),
         stub: null,
@@ -431,7 +572,8 @@ function resolveTargetMethods(paper, context, registry) {
 
   const mentioned = findMentionedMethods(
     context.citationContext || context.exactQuote,
-    registry.methods.filter((method) => method.paperId !== paper.paperId)
+    registry.methods.filter((method) => method.paperId !== paper.paperId),
+    registry
   ).slice(0, 2);
   if (mentioned.length) {
     return {
@@ -497,6 +639,22 @@ const SEMANTIC_RULES = [
     confidence: 0.68,
     patterns: [
       /\b(extends?|extended|builds? on|based on|derived from|follows?|generalizes?|inherits?|leverages?)\b/i
+    ]
+  },
+  {
+    edgeType: EDGE_TYPES.COMPARES_METHOD,
+    label: 'compares',
+    confidence: 0.62,
+    patterns: [
+      /\b(compares?|compared|comparison|baseline|benchmarks?|evaluates? against|versus|vs\.?|against)\b/i
+    ]
+  },
+  {
+    edgeType: EDGE_TYPES.BACKGROUND_METHOD,
+    label: 'background',
+    confidence: 0.58,
+    patterns: [
+      /\b(background|related work|prior work|previous work|seminal|foundational|introduced|proposed)\b/i
     ]
   }
 ];
@@ -612,47 +770,23 @@ function temporalDirection(sourceYear, targetYear) {
   return 'source-after-target';
 }
 
-function validateMethodEvolutionCandidate(candidate = {}) {
-  const reasons = [];
-  if (!candidate.sourceMethodId) reasons.push('missing_source_method');
-  if (!candidate.targetMethodId) reasons.push('missing_target_method');
-  if (candidate.targetStubId) reasons.push('target_method_stub');
-  if (!candidate.edgeType) reasons.push('missing_method_evolution_type');
-  if (!candidate.exactQuote) reasons.push('missing_exact_quote');
-  if (!candidate.citationContext) reasons.push('missing_citation_context');
-  if (candidate.exactQuote && candidate.citationContext && !candidate.citationContext.includes(candidate.exactQuote)) {
-    reasons.push('quote_not_exact_match');
-  }
-  if (Number(candidate.semanticConfidence || 0) < MIN_SEMANTIC_CONFIDENCE) {
-    reasons.push('low_semantic_confidence');
-  }
-  if (candidate.temporalDirection === 'unknown') reasons.push('missing_temporal_year');
-  if (candidate.temporalDirection === 'reverse') reasons.push('reverse_temporal_direction');
-
-  if (reasons.length) {
-    return {
-      validationStatus: 'candidate',
-      validationReasons: reasons
-    };
-  }
-
-  const authoritative = candidate.resolutionStatus === 'resolved-paper-method'
-    && Number(candidate.semanticConfidence || 0) >= AUTHORITATIVE_SEMANTIC_CONFIDENCE;
-  return {
-    validationStatus: authoritative ? 'authoritative' : 'validated',
-    validationReasons: []
-  };
-}
-
 function buildCandidate({ paper, context, sourceMethod, targetMethod, targetStub, classification, resolution }) {
-  const quote = cleanText(context.exactQuote || context.citationContext, 720);
+  const quoteValidationContext = cleanText(context.citationContext || context.exactQuote, 1800);
+  const citationContext = cleanText(quoteValidationContext, 720);
+  const exactQuote = cleanText(context.exactQuote, 720);
+  const evidenceText = exactQuote || citationContext;
   const targetYear = targetMethod?.year || targetStub?.year || context.referenceYear || null;
   const sourceYear = sourceMethod?.year || inferPaperYear(paper);
+  const edgeStrength = isStrongMethodEvolutionType(classification.edgeType) ? 'strong' : 'context';
+  const dagProjection = projectMethodDagEdge(classification.edgeType, sourceMethod, targetMethod);
   const candidate = {
-    id: `method-evolution-candidate:${stableHash(`${paper.paperId}:${sourceMethod?.methodId || ''}:${targetMethod?.methodId || targetStub?.stubId || ''}:${classification.edgeType || ''}:${quote}`)}`,
+    id: `method-evolution-candidate:${stableHash(`${paper.paperId}:${sourceMethod?.methodId || ''}:${targetMethod?.methodId || targetStub?.stubId || ''}:${classification.edgeType || ''}:${exactQuote || citationContext}`)}`,
     contractVersion: METHOD_EVOLUTION_OVERLAY_CONTRACT_VERSION,
     edgeType: classification.edgeType,
     methodEvolutionType: classification.edgeType,
+    methodCitationType: classification.edgeType,
+    edgeStrength,
+    ...dagProjection,
     sourceMethodId: sourceMethod?.methodId || null,
     sourceMethodName: sourceMethod?.methodName || '',
     targetMethodId: targetMethod?.methodId || null,
@@ -665,9 +799,10 @@ function buildCandidate({ paper, context, sourceMethod, targetMethod, targetStub
     sourceYear,
     targetYear,
     temporalDirection: temporalDirection(sourceYear, targetYear),
-    citationContext: quote,
-    exactQuote: quote,
-    exactMatch: Boolean(quote),
+    citationContext,
+    exactQuote,
+    quoteValidationContext,
+    exactMatch: Boolean(exactQuote && quoteValidationContext && quoteValidationContext.includes(exactQuote)),
     citationRaw: context.citationRaw || '',
     citationStyle: context.citationStyle || '',
     citationContextId: context.id || null,
@@ -688,9 +823,9 @@ function buildCandidate({ paper, context, sourceMethod, targetMethod, targetStub
     confidence: Number(Math.min(0.99, classification.confidence + (resolution?.status === 'resolved-paper-method' ? 0.08 : 0)).toFixed(3)),
     resolutionStatus: resolution?.status || 'unresolved',
     resolutionScore: resolution?.titleScore || 0,
-    bottleneck: inferBottleneck(quote),
-    mechanism: inferMechanism(classification, quote),
-    tradeoff: inferTradeoff(quote)
+    bottleneck: inferBottleneck(evidenceText),
+    mechanism: inferMechanism(classification, evidenceText),
+    tradeoff: inferTradeoff(evidenceText)
   };
   return {
     ...candidate,
@@ -699,15 +834,29 @@ function buildCandidate({ paper, context, sourceMethod, targetMethod, targetStub
 }
 
 function candidateToRelationship(candidate) {
+  const isStrongEdge = isStrongMethodEvolutionType(candidate.edgeType);
+  const isContextEdge = isContextMethodCitationType(candidate.edgeType);
   return {
     id: `rel:${stableHash(`${candidate.sourceMethodId}:${candidate.edgeType}:${candidate.targetMethodId}:${candidate.id}:${candidate.validationStatus}`)}`,
     sourceId: candidate.sourceMethodId,
     targetId: candidate.targetMethodId,
     type: candidate.edgeType,
     properties: {
-      methodEvolution: true,
-      methodEvolutionType: candidate.methodEvolutionType,
+      methodEvolution: isStrongEdge,
+      methodEvolutionContext: isContextEdge,
+      methodEvolutionType: isStrongEdge ? candidate.methodEvolutionType : undefined,
+      methodCitationType: candidate.methodCitationType || candidate.edgeType,
+      edgeStrength: candidate.edgeStrength || (isStrongEdge ? 'strong' : 'context'),
+      paperEdgeType: candidate.edgeType,
+      dagEdgeType: isStrongEdge ? candidate.dagEdgeType : null,
+      dagSourceMethodId: isStrongEdge ? candidate.dagSourceMethodId : null,
+      dagTargetMethodId: isStrongEdge ? candidate.dagTargetMethodId : null,
+      dagDirection: isStrongEdge ? candidate.dagDirection : null,
       validationStatus: candidate.validationStatus,
+      validatorStatus: candidate.validatorStatus,
+      validatorReasons: candidate.validatorReasons,
+      evidenceCompletenessStatus: candidate.evidenceCompleteness?.status || '',
+      evidenceMissingFields: candidate.evidenceCompleteness?.missingFields || [],
       overlayLayer: 'method-evolution',
       relationSource: METHOD_EVOLUTION_RELATION_SOURCE,
       candidateId: candidate.id,
@@ -750,6 +899,38 @@ function candidateToRelationship(candidate) {
   };
 }
 
+function candidateToDagRelationship(candidate) {
+  if (!isStrongMethodEvolutionType(candidate.edgeType)) return null;
+  if (!candidate.dagEdgeType || !candidate.dagSourceMethodId || !candidate.dagTargetMethodId) return null;
+
+  const citationRelationship = candidateToRelationship(candidate);
+  const dagSourceMethodName = candidate.dagSourceMethodId === candidate.sourceMethodId
+    ? candidate.sourceMethodName
+    : candidate.targetMethodName;
+  const dagTargetMethodName = candidate.dagTargetMethodId === candidate.sourceMethodId
+    ? candidate.sourceMethodName
+    : candidate.targetMethodName;
+
+  return {
+    ...citationRelationship,
+    id: `rel:${stableHash(`${candidate.dagSourceMethodId}:${candidate.dagEdgeType}:${candidate.dagTargetMethodId}:${candidate.id}:${candidate.validationStatus}:method-dag`)}`,
+    sourceId: candidate.dagSourceMethodId,
+    targetId: candidate.dagTargetMethodId,
+    type: candidate.dagEdgeType,
+    properties: {
+      ...citationRelationship.properties,
+      methodEvolutionProjection: true,
+      methodEvolutionContext: false,
+      relationshipRole: 'method-dag',
+      citationRelationshipId: citationRelationship.id,
+      sourceMethodId: candidate.dagSourceMethodId,
+      targetMethodId: candidate.dagTargetMethodId,
+      dagSourceMethodName,
+      dagTargetMethodName
+    }
+  };
+}
+
 export function buildMethodEvolutionOverlay(papers = [], options = {}) {
   const diagnostics = {
     errors: [],
@@ -763,7 +944,9 @@ export function buildMethodEvolutionOverlay(papers = [], options = {}) {
       candidateCount: 0,
       validatedCount: 0,
       authoritativeCount: 0,
-      stubCount: 0
+      stubCount: 0,
+      evidenceCompleteCount: 0,
+      evidenceIncompleteCount: 0
     }
   };
 
@@ -773,6 +956,7 @@ export function buildMethodEvolutionOverlay(papers = [], options = {}) {
     const candidates = [];
     const validated = [];
     const authoritative = [];
+    const records = [];
 
     for (const paper of asArray(papers)) {
       const extracted = Array.isArray(paper?.citationContexts)
@@ -810,24 +994,7 @@ export function buildMethodEvolutionOverlay(papers = [], options = {}) {
               });
 
               diagnostics.citationFunnel.candidateCount += 1;
-              if (candidate.validationStatus === 'authoritative') {
-                authoritative.push(candidate);
-                diagnostics.citationFunnel.authoritativeCount += 1;
-              } else if (candidate.validationStatus === 'validated') {
-                validated.push(candidate);
-                diagnostics.citationFunnel.validatedCount += 1;
-              } else {
-                candidates.push(candidate);
-                diagnostics.candidateDiagnostics.push({
-                  candidateId: candidate.id,
-                  sourcePaperId: candidate.sourcePaperId,
-                  sourceMethodName: candidate.sourceMethodName,
-                  targetMethodName: candidate.targetMethodName,
-                  targetStubId: candidate.targetStubId,
-                  edgeType: candidate.edgeType,
-                  validationReasons: candidate.validationReasons
-                });
-              }
+              records.push(candidate);
             }
           }
         } catch (error) {
@@ -838,6 +1005,36 @@ export function buildMethodEvolutionOverlay(papers = [], options = {}) {
             message: error instanceof Error ? error.message : String(error)
           });
         }
+      }
+    }
+
+    const validatedRecords = applyStrongEdgeConflictValidation(records);
+    for (const candidate of validatedRecords) {
+      if (candidate.evidenceCompleteness?.status === 'complete') {
+        diagnostics.citationFunnel.evidenceCompleteCount += 1;
+      } else if (candidate.evidenceCompleteness?.status === 'incomplete') {
+        diagnostics.citationFunnel.evidenceIncompleteCount += 1;
+      }
+      if (candidate.validationStatus === 'authoritative') {
+        authoritative.push(candidate);
+        diagnostics.citationFunnel.authoritativeCount += 1;
+      } else if (candidate.validationStatus === 'validated') {
+        validated.push(candidate);
+        diagnostics.citationFunnel.validatedCount += 1;
+      } else {
+        candidates.push(candidate);
+        diagnostics.candidateDiagnostics.push({
+          candidateId: candidate.id,
+          sourcePaperId: candidate.sourcePaperId,
+          sourceMethodName: candidate.sourceMethodName,
+          targetMethodName: candidate.targetMethodName,
+          targetStubId: candidate.targetStubId,
+          edgeType: candidate.edgeType,
+          validationReasons: candidate.validationReasons,
+          validatorStatus: candidate.validatorStatus,
+          validatorReasons: candidate.validatorReasons,
+          evidenceCompleteness: candidate.evidenceCompleteness
+        });
       }
     }
 
@@ -871,7 +1068,42 @@ export function buildMethodEvolutionOverlay(papers = [], options = {}) {
   }
 }
 
+function rate(numerator, denominator) {
+  return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : 0;
+}
+
+function summarizeBottleneckDimensions(records = [], limit = 8) {
+  const counts = new Map();
+  for (const record of records) {
+    const dimension = String(record?.bottleneck?.dimension || '').trim();
+    if (!dimension) continue;
+    counts.set(dimension, (counts.get(dimension) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([dimension, count]) => ({ dimension, count }))
+    .sort((left, right) => right.count - left.count || left.dimension.localeCompare(right.dimension))
+    .slice(0, limit);
+}
+
 export function summarizeMethodEvolutionOverlay(overlay = {}, extra = {}) {
+  const acceptedRecords = [
+    ...asArray(overlay.validated),
+    ...asArray(overlay.authoritative)
+  ];
+  const acceptedStrongRecords = acceptedRecords.filter((record) => isStrongMethodEvolutionType(record.edgeType));
+  const acceptedContextRecords = acceptedRecords.filter((record) => isContextMethodCitationType(record.edgeType));
+  const quoteValidationRecords = acceptedRecords.filter((record) => (
+    isStrongMethodEvolutionType(record.edgeType)
+    || record.exactQuote
+    || record.exactMatch === false
+  ));
+  const quoteValidatedCount = quoteValidationRecords.filter((record) => (
+    record.exactQuote && record.exactMatch !== false
+  )).length;
+  const evidenceCompleteCount = acceptedStrongRecords.filter((record) => (
+    record.evidenceCompleteness?.status === 'complete'
+  )).length;
+
   return {
     contractVersion: METHOD_EVOLUTION_OVERLAY_CONTRACT_VERSION,
     source: overlay.source || METHOD_EVOLUTION_RELATION_SOURCE,
@@ -881,8 +1113,20 @@ export function summarizeMethodEvolutionOverlay(overlay = {}, extra = {}) {
     candidateCount: overlay.candidates?.length || 0,
     validatedCount: overlay.validated?.length || 0,
     authoritativeCount: overlay.authoritative?.length || 0,
+    acceptedEdgeCount: acceptedRecords.length,
+    acceptedStrongEdgeCount: acceptedStrongRecords.length,
+    acceptedContextEdgeCount: acceptedContextRecords.length,
+    quoteValidationRequiredCount: quoteValidationRecords.length,
+    quoteValidatedCount,
+    quoteValidationPassRate: rate(quoteValidatedCount, quoteValidationRecords.length),
+    evidenceCompleteCount,
+    evidenceCompletenessRate: rate(evidenceCompleteCount, acceptedStrongRecords.length),
+    topBottleneckDimensions: summarizeBottleneckDimensions(acceptedStrongRecords),
+    ambiguousAliasSurfaceCount: overlay.registry?.diagnostics?.ambiguousSurfaceCount || 0,
+    blockedAliasSurfaceCount: overlay.registry?.diagnostics?.blockedSurfaceCount || 0,
     diagnosticsErrorCount: overlay.diagnostics?.errors?.length || 0,
     citationFunnel: overlay.diagnostics?.citationFunnel || {},
+    registryDiagnostics: overlay.registry?.diagnostics || {},
     ...extra
   };
 }
@@ -907,7 +1151,8 @@ export function compactMethodEvolutionOverlayForPersistence(overlay = {}, option
       contractVersion: METHOD_EVOLUTION_OVERLAY_CONTRACT_VERSION,
       methods: trimRecords(overlay.registry?.methods, maxMethods),
       aliases: trimRecords(overlay.registry?.aliases, maxAliases),
-      stubs: trimRecords(overlay.registry?.stubs, maxMethods)
+      stubs: trimRecords(overlay.registry?.stubs, maxMethods),
+      diagnostics: overlay.registry?.diagnostics || {}
     },
     candidates: trimRecords(overlay.candidates, maxCandidates),
     validated: trimRecords(overlay.validated, maxValidated),
@@ -927,7 +1172,9 @@ export function compactMethodEvolutionOverlayForPersistence(overlay = {}, option
 
 export function createMethodEvolutionRelationships(overlay = {}) {
   const diagnostics = {
-    skipped: []
+    skipped: [],
+    paperRelationshipCount: 0,
+    dagRelationshipCount: 0
   };
   const records = [
     ...asArray(overlay.validated),
@@ -945,6 +1192,14 @@ export function createMethodEvolutionRelationships(overlay = {}) {
       continue;
     }
     relationships.push(candidateToRelationship(candidate));
+    diagnostics.paperRelationshipCount += 1;
+
+    const dagRelationship = candidateToDagRelationship(candidate);
+    if (dagRelationship) {
+      relationships.push(dagRelationship);
+      diagnostics.dagRelationshipCount += 1;
+    }
+
     for (const [nodeId, year] of [
       [candidate.sourceMethodId, candidate.sourceYear],
       [candidate.targetMethodId, candidate.targetYear]
@@ -1003,7 +1258,8 @@ export function applyMethodEvolutionOverlayToGraph(graph, overlay = {}) {
   return {
     relationshipCount,
     nodeYearUpdateCount,
-    skipped
+    skipped,
+    diagnostics: projection.diagnostics
   };
 }
 

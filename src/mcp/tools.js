@@ -24,7 +24,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'corpus_sources',
-    description: 'Return the current source manifest entries for a corpus so remote clients can reconcile which papers are already materialized in the graph.',
+    description: 'Return source manifest entries plus per-paper graph-index and source-span provenance so remote clients can reconcile which papers are materialized in the graph.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -287,7 +287,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'research_lookup',
-    description: 'Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, and interdisciplinary potential.',
+    description: 'Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -305,6 +305,8 @@ export const PAPERNEXUS_TOOLS = [
             'interdisciplinary_potential',
             'cross_domain_evidence',
             'method_lineage',
+            'method_evidence',
+            'method_registry',
             'research_answer'
           ]
         },
@@ -394,11 +396,45 @@ export const PAPERNEXUS_TOOLS = [
         },
         method: {
           type: 'string',
-          description: 'Method name, alias, or Method node id used by method_lineage and research_answer.'
+          description: 'Method name, alias, or Method node id used by method_lineage, method_evidence, and research_answer.'
         },
         methodName: {
           type: 'string',
-          description: 'Alternative method selector used by method_lineage and research_answer.'
+          description: 'Alternative method selector used by method_lineage, method_evidence, and research_answer.'
+        },
+        sourceMethod: {
+          type: 'string',
+          description: 'Source/newer method selector used by method_evidence pair lookup.'
+        },
+        targetMethod: {
+          type: 'string',
+          description: 'Target/predecessor or paired method selector used by method_evidence pair lookup.'
+        },
+        edgeId: {
+          type: 'string',
+          description: 'Exact method evolution relationship id used by method_evidence.'
+        },
+        relationshipId: {
+          type: 'string',
+          description: 'Alternative relationship id used by method_evidence.'
+        },
+        citationRelationshipId: {
+          type: 'string',
+          description: 'Citation relationship id used to resolve a projected method DAG edge in method_evidence.'
+        },
+        candidateId: {
+          type: 'string',
+          description: 'Method evolution candidate id used by method_evidence.'
+        },
+        includeCandidates: {
+          type: 'boolean',
+          description: 'Include candidate or rejected method evidence edges in method_evidence output.',
+          default: false
+        },
+        strictDirection: {
+          type: 'boolean',
+          description: 'Require sourceMethod -> targetMethod ordering for method_evidence pair lookup.',
+          default: false
         },
         mode: {
           type: 'string',
@@ -595,6 +631,307 @@ export const PAPERNEXUS_TOOLS = [
           type: 'number',
           description: 'Polling interval in seconds when operation is wait.',
           default: 2
+        }
+      },
+      required: ['operation']
+    }
+  },
+  {
+    name: 'literature_discovery',
+    description: 'Discover papers from a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit resolved files into the import queue.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: {
+          type: 'string',
+          enum: ['plan', 'search', 'resolve', 'run', 'import', 'status', 'report', 'list'],
+          default: 'run'
+        },
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Required except for plan.'
+        },
+        topic: {
+          type: 'string',
+          description: 'Research topic, question, related-work paragraph, seed concept, or paper title.'
+        },
+        query: {
+          type: 'string',
+          description: 'Alias for topic.'
+        },
+        seedPapers: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              canonicalId: { type: 'string' },
+              doi: { type: 'string' },
+              arxivId: { type: 'string' },
+              pmid: { type: 'string' },
+              pmcid: { type: 'string' },
+              year: { type: 'number' },
+              venue: { type: 'string' },
+              pdfUrl: { type: 'string' },
+              bestOaUrl: { type: 'string' },
+              sourceHints: {
+                type: 'array',
+                items: { type: 'string' }
+              }
+            }
+          },
+          description: 'Client-supplied seed papers. PaperNexus treats these as remote discovery/source-resolution inputs and may query by seed title or identifiers before import.'
+        },
+        entitySeeds: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              kind: { type: 'string' },
+              context: { type: 'string' },
+              sourceTitle: { type: 'string' }
+            }
+          },
+          description: 'Client-supplied research entities extracted from seed papers, such as datasets, benchmarks, metrics, tasks, or methods. They are used as additional discovery queries, not imported as papers.'
+        },
+        datasetSeeds: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              context: { type: 'string' },
+              sourceTitle: { type: 'string' }
+            }
+          },
+          description: 'Alias for dataset-oriented entity seeds discovered in seed PDFs or source indexes.'
+        },
+        benchmarkSeeds: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              context: { type: 'string' },
+              sourceTitle: { type: 'string' }
+            }
+          },
+          description: 'Alias for benchmark-oriented entity seeds discovered in seed PDFs or source indexes.'
+        },
+        seedTexts: {
+          type: 'array',
+          items: {
+            oneOf: [
+              { type: 'string' },
+              {
+                type: 'object',
+                properties: {
+                  text: { type: 'string' },
+                  sourceTitle: { type: 'string' }
+                }
+              }
+            ]
+          },
+          description: 'Plain text or markdown extracted from seed papers. PaperNexus extracts dataset, benchmark, metric, task, and similar research entities and uses them as additional discovery queries.'
+        },
+        maxSeedPapers: {
+          type: 'number',
+          description: 'Maximum client-supplied seed papers accepted into the discovery candidate set.',
+          default: 100
+        },
+        maxSeedQueries: {
+          type: 'number',
+          description: 'Maximum seed-title/identifier queries added to the provider plan.',
+          default: 40
+        },
+        maxSeedEntities: {
+          type: 'number',
+          description: 'Maximum client-supplied research entities accepted into the discovery query set.',
+          default: 80
+        },
+        maxExtractedEntities: {
+          type: 'number',
+          description: 'Maximum research entities extracted from supplied seed text or source index text.',
+          default: 80
+        },
+        maxEntityQueries: {
+          type: 'number',
+          description: 'Maximum dataset/benchmark/entity queries added to the provider plan.',
+          default: 40
+        },
+        depth: {
+          type: 'string',
+          enum: ['quick', 'default', 'deep'],
+          default: 'default'
+        },
+        discipline: {
+          type: 'string',
+          description: 'Optional discipline hint such as computer-science, biomedicine, physics-math, chemistry-materials, economics-social-science, humanities-law, or chinese-scholarship.'
+        },
+        providers: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Provider allow-list. Implemented providers include openalex, semantic_scholar, crossref, arxiv, europe_pmc, pubmed, dblp, and core; unpaywall is used during source resolution.'
+        },
+        maxQueries: {
+          type: 'number',
+          description: 'Maximum query families to execute after LLM planning and deterministic fallback expansion.'
+        },
+        llmQueryPlanner: {
+          type: 'boolean',
+          description: 'Use the configured LLM to split the topic into orthogonal literature-search queries before deterministic query expansion. Defaults to true; missing or failing LLM config falls back to deterministic planning.',
+          default: true
+        },
+        maxLlmQueries: {
+          type: 'number',
+          description: 'Maximum LLM-planned orthogonal queries inserted before deterministic expansion. Defaults by depth: quick=3, default=4, deep=8.',
+          default: 4
+        },
+        llmProvider: {
+          type: 'string',
+          description: 'Optional LLM provider override for query planning, such as openai, anthropic, or ollama. Defaults to PaperNexus llm config.'
+        },
+        llmModel: {
+          type: 'string',
+          description: 'Optional LLM model override for query planning. Defaults to PaperNexus llm config.'
+        },
+        llmBaseUrl: {
+          type: 'string',
+          description: 'Optional LLM API base URL override for query planning. Defaults to PaperNexus llm config.'
+        },
+        maxResultsPerQuery: {
+          type: 'number',
+          description: 'Maximum provider results per query.',
+          default: 20
+        },
+        maxCandidates: {
+          type: 'number',
+          description: 'Maximum merged candidates retained in the run. Defaults by depth: quick=80, default=240, deep=3000.'
+        },
+        providerConcurrency: {
+          type: 'number',
+          description: 'Maximum concurrent literature search providers. Capped at 4.',
+          default: 4
+        },
+        maxDownloads: {
+          type: 'number',
+          description: 'Maximum legal open PDF downloads attempted during resolution.',
+          default: 12
+        },
+        downloadConcurrency: {
+          type: 'number',
+          description: 'Maximum concurrent legal PDF/source-resolution downloads. Capped at 4.',
+          default: 4
+        },
+        allowDownloads: {
+          type: 'boolean',
+          description: 'When false, keep PDF URLs and institutional access hints but do not download files.',
+          default: true
+        },
+        citationExpansion: {
+          type: 'boolean',
+          description: 'Expand top seed papers through Semantic Scholar references/citations. Defaults to true only for depth=deep.',
+          default: false
+        },
+        maxCitationSeeds: {
+          type: 'number',
+          description: 'Maximum seed papers used for citation expansion.',
+          default: 3
+        },
+        maxCitationsPerSeed: {
+          type: 'number',
+          description: 'Maximum references and citations retained per seed during citation expansion.',
+          default: 5
+        },
+        openAlexRelatedExpansion: {
+          type: 'boolean',
+          description: 'Expand top seed papers through OpenAlex related_works during citation expansion.',
+          default: true
+        },
+        maxRelatedPerSeed: {
+          type: 'number',
+          description: 'Maximum OpenAlex related_works retained per seed during citation expansion.',
+          default: 5
+        },
+        importResolved: {
+          type: 'boolean',
+          description: 'Submit resolved local full-text sources to import_workflow after discovery.',
+          default: false
+        },
+        maxImported: {
+          type: 'number',
+          description: 'Maximum resolved sources to submit when importResolved is true.',
+          default: 20
+        },
+        mailto: {
+          type: 'string',
+          description: 'Contact email used for polite API calls and Unpaywall.'
+        },
+        openAlexApiKey: {
+          type: 'string',
+          description: 'Optional OpenAlex API key. If omitted, openAlexApiKeyFile, OPENALEX_API_KEY, or ~/.papernexus/openalex_api_key is used when available.'
+        },
+        openAlexApiKeyFile: {
+          type: 'string',
+          description: 'Optional local file containing the OpenAlex API key. Supports ~/ paths. Useful when the key should not be configured in the shell.'
+        },
+        coreApiKey: {
+          type: 'string',
+          description: 'Optional CORE API key. If omitted, CORE can also be enabled with CORE_API_KEY in the environment.'
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Per-request timeout in milliseconds.',
+          default: 8000
+        },
+        retryCount: {
+          type: 'number',
+          description: 'Retry count for transient provider failures such as HTTP 429 and 5xx responses.',
+          default: 1
+        },
+        retryBackoffMs: {
+          type: 'number',
+          description: 'Base retry backoff in milliseconds for transient provider failures.',
+          default: 250
+        },
+        providerRequestDelayMs: {
+          type: 'number',
+          description: 'Minimum delay between consecutive queries sent to the same provider. Set to 0 for fast local tests; keep nonzero for public APIs to reduce HTTP 429s.',
+          default: 250
+        },
+        maxRetryAfterMs: {
+          type: 'number',
+          description: 'Maximum Retry-After delay respected before a provider request fails fast.',
+          default: 10000
+        },
+        institutionalResolverBaseUrl: {
+          type: 'string',
+          description: 'Optional campus library/OpenURL resolver URL. PaperNexus records resolver hints; it does not bypass authentication or paywalls.'
+        },
+        institutionalAccessMode: {
+          type: 'string',
+          enum: ['hints-only'],
+          description: 'Authorized institutional access handling mode. Current implementation records hints only.',
+          default: 'hints-only'
+        },
+        runId: {
+          type: 'string',
+          description: 'Discovery run id for status/report.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum runs returned by list.'
+        },
+        persist: {
+          type: 'boolean',
+          description: 'Persist discovery artifacts under the corpus .papernexus directory.',
+          default: true
         }
       },
       required: ['operation']

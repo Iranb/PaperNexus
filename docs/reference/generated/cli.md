@@ -13,6 +13,7 @@ PaperNexus does not discover external literature or orchestrate multi-agent rese
 Global options:
   --config <path>     Use an explicit config JSON file
   --no-config         Ignore the default config search paths
+  --no-secure-env     Do not load ~/.papernexus/secure-env.enc.json
   --quiet             Show minimal output with progress bar only
 
 Commands:
@@ -33,10 +34,12 @@ Commands:
   papernexus clean [--corpus <name>]
   papernexus scrub-degenerate-papers [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
+  papernexus answer <query> [--mode <cross_domain_evidence|method_lineage|both>] [--target-domain <domain>] [--method <name>] [--direction <backward|forward|both>] [--max-depth <n>] [--limit <n>] [--corpus <name>]
   papernexus catalyst-backfill [<path>] [--name <corpus>] [--semantic-extraction <llm-assisted|llm-primary>] [--force]
   papernexus imports [status] [<corpus>] [--limit <n>] [--json]
   papernexus imports running [<corpus>] [--limit <n>] [--json]
   papernexus imports log [<task-id>] [<corpus>] [--task-id <id>] [--tail <n>] [--json]
+  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -45,6 +48,7 @@ Commands:
   papernexus test-pdf-to-markdown <pdf-path> [--json] [--verify-docling-fallback]
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus apikey [--provider <name>] [--base-url <url>]  Set LLM API key securely
+  papernexus secure-env set|delete|list|path [NAME] [--stdin]
   papernexus setup
   papernexus serve [--host 127.0.0.1] [--port 4821] [--api-token <token>]
   papernexus mcp
@@ -53,6 +57,22 @@ Scope boundary:
   - analyze, materialize, and import process papers, corpora, or manifests you already provide.
   - query, catalyst, and enhancement APIs operate on already-indexed graph state.
   - Discovery, external search, and orchestration live outside PaperNexus.
+
+LLM Fallback Options:
+  --fallback-provider <openai|anthropic|ollama>
+    Provider to use when the primary LLM is rate limited. Fallback is off unless a fallback model is configured.
+  --fallback-model <name>
+    Model identifier for the fallback provider.
+  --fallback-base-url <url>
+    Fallback API root. For Ollama this defaults to http://127.0.0.1:11434.
+  --fallback-ssh-host <host>
+    Run fallback Ollama HTTP calls and bootstrap commands through SSH on the remote host.
+  --fallback-auto-start <true|false>
+    Start fallback Ollama automatically when its HTTP endpoint is unavailable.
+  --fallback-auto-pull <true|false>
+    Pull the fallback Ollama model automatically when it is missing.
+  --fallback-ollama-bootstrap <native|docker>
+    Bootstrap Ollama with the local ollama binary or a Docker container.
 
 MarkItDown Options:
   --markitdown-python <python>
@@ -143,9 +163,12 @@ Examples:
   papernexus imports status --corpus ml-papers
   papernexus imports running --corpus ml-papers
   papernexus imports log --corpus ml-papers --task-id imp:1234567890abcdef
+  papernexus benchmark-retrieval ./benchmarks/scholarqa --format scholarqa --task-evaluation llm --generate-task-answers true --model gpt-4o-mini
   papernexus auth llm set --provider openai --base-url https://api.openai.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
   papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback" --mechanism "metacontrol policy" --corpus ml-papers
+  papernexus answer "reduce confirmation bias during tutoring feedback" --mode cross_domain_evidence --target-domain Education --mechanism "metacontrol policy" --corpus ml-papers
+  papernexus answer --method Transformer --mode method_lineage --direction backward --corpus ml-papers
   papernexus catalyst-backfill ./papers --name ml-papers --semantic-extraction llm-assisted
   papernexus impact "semi-supervised learning" --corpus ml-papers --layers ProblemLayer,MethodLayer --layer-mode cross
   papernexus context "knowledge graph" --corpus ml-papers
@@ -191,11 +214,14 @@ Examples:
 | Command | Purpose | Synopsis |
 | --- | --- | --- |
 | `scrub-degenerate-papers` | See synopsis and in-command help. | `papernexus scrub-degenerate-papers [--corpus &lt;name&gt;]` |
+| `answer` | See synopsis and in-command help. | `papernexus answer &lt;query&gt; [--mode &lt;cross_domain_evidence\|method_lineage\|both&gt;] [--target-domain &lt;domain&gt;] [--method &lt;name&gt;] [--direction &lt;backward\|forward\|both&gt;] [--max-depth &lt;n&gt;] [--limit &lt;n&gt;] [--corpus &lt;name&gt;]` |
 | `imports` | See synopsis and in-command help. | `papernexus imports [status] [&lt;corpus&gt;] [--limit &lt;n&gt;] [--json]` |
 | `imports` | See synopsis and in-command help. | `papernexus imports running [&lt;corpus&gt;] [--limit &lt;n&gt;] [--json]` |
 | `imports` | See synopsis and in-command help. | `papernexus imports log [&lt;task-id&gt;] [&lt;corpus&gt;] [--task-id &lt;id&gt;] [--tail &lt;n&gt;] [--json]` |
+| `benchmark-retrieval` | See synopsis and in-command help. | `papernexus benchmark-retrieval &lt;benchmark-path&gt; [--format &lt;auto\|custom\|beir\|litsearch\|bioasq\|trec\|sage\|scholarqa\|paperask\|sparbench\|scinetbench\|csfcube&gt;] [--evaluation-mode &lt;live\|fixed-corpus&gt;] [--task-evaluation &lt;off\|rules\|llm&gt;] [--generate-task-answers &lt;true\|false&gt;] [--max-task-context &lt;n&gt;] [--corpus &lt;name\|path&gt;] [--providers &lt;name[,name...]&gt;] [--depth &lt;quick\|default\|deep&gt;] [--benchmark-limit &lt;n&gt;] [--max-queries &lt;n&gt;] [--max-results-per-query &lt;n&gt;] [--max-candidates &lt;n&gt;] [--k &lt;1,5,10,20&gt;] [--output &lt;dir&gt;] [--json]` |
 | `test-pdf-config` | See synopsis and in-command help. | `papernexus test-pdf-config &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
 | `test-pdf-to-markdown` | See synopsis and in-command help. | `papernexus test-pdf-to-markdown &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
+| `secure-env` | See synopsis and in-command help. | `papernexus secure-env set\|delete\|list\|path [NAME] [--stdin]` |
 
 ## Idea Catalyst
 

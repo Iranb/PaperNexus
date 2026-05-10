@@ -1,6 +1,6 @@
 # Graph Schema Reference
 
-This page is generated from [`src/core/graph/schema.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/schema.js) and [`src/core/graph/rules.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/rules.js). It reflects the actual node, layer, edge, and compatibility definitions used by the graph engine.
+This page is generated from [`src/core/graph/schema.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/schema.js) and [`src/core/graph/rules.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/rules.js). It reflects the actual node, layer, edge, and compatibility definitions used by the graph engine.
 
 ## Graph Layers
 
@@ -93,6 +93,16 @@ This page is generated from [`src/core/graph/schema.js`](https://github.com/Iran
 | `MAY_BE_ADDRESSED_BY` |
 | `CONTRADICTS` |
 | `CITES` |
+| `EXTENDS_METHOD` |
+| `IMPROVES_METHOD` |
+| `REPLACES_METHOD` |
+| `ADAPTS_METHOD` |
+| `USES_COMPONENT_METHOD` |
+| `COMPARES_METHOD` |
+| `BACKGROUND_METHOD` |
+| `VARIANT_OF` |
+| `SPECIALIZES` |
+| `COMPONENT_OF` |
 | `LEADS_TO` |
 | `BLOCKED_BY` |
 | `FALSIFIED_BY` |
@@ -128,6 +138,16 @@ This page is generated from [`src/core/graph/schema.js`](https://github.com/Iran
 | `SIMILAR_TO` | `Method`, `Problem`, `Benchmark` | `Method`, `Problem`, `Benchmark` |
 | `COMPATIBLE_WITH` | `Method` | `Method` |
 | `COMBINES_WITH` | `Method` | `Method` |
+| `EXTENDS_METHOD` | `Method` | `Method` |
+| `IMPROVES_METHOD` | `Method` | `Method` |
+| `REPLACES_METHOD` | `Method` | `Method` |
+| `ADAPTS_METHOD` | `Method` | `Method` |
+| `USES_COMPONENT_METHOD` | `Method` | `Method` |
+| `COMPARES_METHOD` | `Method` | `Method` |
+| `BACKGROUND_METHOD` | `Method` | `Method` |
+| `VARIANT_OF` | `Method` | `Method` |
+| `SPECIALIZES` | `Method` | `Method` |
+| `COMPONENT_OF` | `Method` | `Method` |
 | `MAY_BE_ADDRESSED_BY` | `Limitation` | `Method` |
 | `CONTRADICTS` | `Claim` | `Claim` |
 | `CITES` | `Paper` | `Paper` |

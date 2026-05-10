@@ -11,10 +11,10 @@ const examplesRoot = path.join(__dirname, '..', 'examples');
 test('server path helpers collapse absolute home paths and resolve tilde references', async () => {
   const { collapseHomePath, isServerPathReference, resolveServerPathReference } = await import('../src/lib/server-paths.js');
 
-  assert.equal(collapseHomePath('/home/disk0/hyq/.papernexus/GCD/index/.papernexus', { homeDir: '/home/disk0/hyq' }), '~/.papernexus/GCD/index/.papernexus');
-  assert.equal(collapseHomePath('/tmp/papernexus-import-staging/demo', { homeDir: '/home/disk0/hyq' }), '/tmp/papernexus-import-staging/demo');
-  assert.equal(resolveServerPathReference('~/.papernexus/GCD/index/.papernexus', { homeDir: '/home/disk0/hyq' }), '/home/disk0/hyq/.papernexus/GCD/index/.papernexus');
-  assert.equal(resolveServerPathReference('/tmp/papernexus-import-staging/demo', { homeDir: '/home/disk0/hyq' }), '/tmp/papernexus-import-staging/demo');
+  assert.equal(collapseHomePath('/home/researcher/.papernexus/GCD/index/.papernexus', { homeDir: '/home/researcher' }), '~/.papernexus/GCD/index/.papernexus');
+  assert.equal(collapseHomePath('/tmp/papernexus-import-staging/demo', { homeDir: '/home/researcher' }), '/tmp/papernexus-import-staging/demo');
+  assert.equal(resolveServerPathReference('~/.papernexus/GCD/index/.papernexus', { homeDir: '/home/researcher' }), '/home/researcher/.papernexus/GCD/index/.papernexus');
+  assert.equal(resolveServerPathReference('/tmp/papernexus-import-staging/demo', { homeDir: '/home/researcher' }), '/tmp/papernexus-import-staging/demo');
   assert.equal(isServerPathReference('~/.papernexus/GCD/index/.papernexus'), true);
   assert.equal(isServerPathReference('/tmp/papernexus-import-staging/demo'), true);
   assert.equal(isServerPathReference('relative/path'), false);

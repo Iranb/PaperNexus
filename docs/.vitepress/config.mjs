@@ -139,7 +139,7 @@ export default {
       '/reference/': sidebarReference()
     },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/Iranb/PaperNexus' }
+      { icon: 'github', link: 'https://github.com/papernexus/PaperNexus' }
     ],
     search: {
       provider: 'local'
@@ -149,7 +149,7 @@ export default {
     },
     footer: {
       message: 'PaperNexus docs are generated and maintained from the repository source.',
-      copyright: 'MIT'
+      copyright: 'MIT-based with attribution'
     }
   },
   head: [

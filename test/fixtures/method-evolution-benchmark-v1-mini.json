@@ -1,0 +1,58 @@
+{
+  "benchmarkVersion": "method-evolution-benchmark-v1",
+  "field": "vision-language models",
+  "source": {
+    "type": "survey",
+    "title": "Mini VLM method lineage fixture",
+    "url": "local-fixture"
+  },
+  "nodes": [
+    {
+      "goldId": "g:clip",
+      "canonicalName": "CLIP",
+      "aliases": ["Contrastive Language-Image Pre-training"],
+      "year": 2021
+    },
+    {
+      "goldId": "g:align",
+      "canonicalName": "ALIGN",
+      "aliases": ["A Large-scale ImaGe and Noisy-text embedding"],
+      "year": 2021
+    },
+    {
+      "goldId": "g:flamingo",
+      "canonicalName": "Flamingo",
+      "aliases": ["few-shot visual language model"],
+      "year": 2022
+    },
+    {
+      "goldId": "g:unmatched",
+      "canonicalName": "Unreleased VLM Baseline",
+      "aliases": [],
+      "year": 2023
+    }
+  ],
+  "edges": [
+    {
+      "sourceGoldId": "g:align",
+      "targetGoldId": "g:clip",
+      "edgeType": "IMPROVES_METHOD",
+      "acceptedAlternativeTypes": ["EXTENDS_METHOD"],
+      "requiredBottleneckDimension": "data-efficiency"
+    },
+    {
+      "sourceGoldId": "g:flamingo",
+      "targetGoldId": "g:clip",
+      "edgeType": "ADAPTS_METHOD",
+      "acceptedAlternativeTypes": ["EXTENDS_METHOD"],
+      "requiredBottleneckDimension": "scalability"
+    }
+  ],
+  "chains": [
+    {
+      "chainId": "chain:flamingo-align-clip",
+      "goldNodeIds": ["g:flamingo", "g:align", "g:clip"],
+      "semanticDescription": "Flamingo adapts large-scale vision-language pretraining after ALIGN and CLIP-style contrastive pretraining."
+    }
+  ]
+}

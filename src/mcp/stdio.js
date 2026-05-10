@@ -19,7 +19,7 @@ async function withToolStdoutRedirected(task) {
   }
 }
 
-export function startMcpServer() {
+export function startMcpServer(options = {}) {
   let buffer = Buffer.alloc(0);
 
   process.stdin.on('data', async (chunk) => {
@@ -55,7 +55,7 @@ export function startMcpServer() {
       }
 
       try {
-        const result = await withToolStdoutRedirected(() => handleMessage(message, {}));
+        const result = await withToolStdoutRedirected(() => handleMessage(message, options));
         sendMessage(createJsonRpcSuccess(message.id, result));
       } catch (error) {
         sendMessage(createJsonRpcError(message.id, -32603, error.message));

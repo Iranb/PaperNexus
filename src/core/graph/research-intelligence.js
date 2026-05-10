@@ -6,6 +6,7 @@ import { EDGE_TYPES, NODE_TYPES } from './schema.js';
 
 export const CROSS_DOMAIN_MECHANISM_EVIDENCE_CONTRACT_VERSION = 'papernexus-cross-domain-mechanism-evidence-v1';
 export const METHOD_EVOLUTION_LINEAGE_CONTRACT_VERSION = 'papernexus-method-evolution-lineage-v1';
+export const METHOD_EVOLUTION_EVIDENCE_CONTRACT_VERSION = 'papernexus-method-evidence-v1';
 export const RESEARCH_INTELLIGENCE_CONTRACT_VERSION = 'papernexus-research-intelligence-v1';
 
 const METHOD_EVOLUTION_EDGE_TYPES = new Set([
@@ -77,6 +78,7 @@ function collectNodeDomains(node) {
 function summarizeSourceSpan(span = {}) {
   return {
     spanId: span.span_id || span.spanId || null,
+    sourceType: span.source_type || span.sourceType || 'source_span',
     snippetNodeId: span.snippet_node_id || span.snippetNodeId || null,
     paperId: span.paper_id || span.paperId || null,
     paperTitle: span.paper_title || span.paperTitle || null,
@@ -88,22 +90,120 @@ function summarizeSourceSpan(span = {}) {
   };
 }
 
+function summarizeEvidenceRef(ref = {}) {
+  return {
+    refId: ref.ref_id || ref.refId || ref.node_id || ref.nodeId || null,
+    refType: ref.ref_type || ref.refType || ref.role || 'graph-node',
+    nodeId: ref.node_id || ref.nodeId || null,
+    nodeType: ref.node_type || ref.nodeType || null,
+    nodeName: ref.node_name || ref.nodeName || '',
+    role: ref.role || ref.ref_type || ref.refType || 'graph-node',
+    source: ref.source || 'paper_nexus_graph',
+    evidenceText: ref.evidence_text || ref.evidenceText || ''
+  };
+}
+
+function summarizeBridgePathForCertificate(path = {}) {
+  const evidenceRefs = asArray(path.evidence_chain_refs || path.evidenceChainRefs)
+    .map((ref) => summarizeEvidenceRef(ref))
+    .filter((ref) => ref.refId || ref.nodeId);
+  const sourceSpans = asArray(path.source_spans || path.sourceSpans)
+    .map((span) => summarizeSourceSpan(span))
+    .filter((span) => span.spanId || span.snippetNodeId || span.quote);
+
+  return {
+    pathId: path.path_id || path.pathId || null,
+    sourceDomain: path.source_domain || path.sourceDomain || '',
+    targetDomain: path.target_domain || path.targetDomain || '',
+    matchedMechanisms: asArray(path.matched_mechanisms || path.matchedMechanisms),
+    matchedChallenges: asArray(path.matched_challenges || path.matchedChallenges),
+    evidenceRefIds: unique(evidenceRefs.map((ref) => ref.refId).filter(Boolean)),
+    sourceSpanIds: unique(sourceSpans.map((span) => span.spanId || span.snippetNodeId).filter(Boolean)),
+    evidenceDensity: normalizeScore(path.evidence_density ?? path.evidenceDensity),
+    pathCompleteness: normalizeScore(path.path_completeness ?? path.pathCompleteness),
+    retrievalBackend: path.retrieval_backend || path.retrievalBackend || null
+  };
+}
+
+function buildCertificateValidation({ bridgePaths = [], evidenceRefs = [], sourceSpans = [], missingEvidence = [], strongestEvidenceTier = 'weak' } = {}) {
+  const gates = [
+    {
+      name: 'bridge_path',
+      passed: bridgePaths.length > 0,
+      count: bridgePaths.length
+    },
+    {
+      name: 'evidence_ref',
+      passed: evidenceRefs.length > 0,
+      count: evidenceRefs.length
+    },
+    {
+      name: 'source_span_or_snippet',
+      passed: sourceSpans.length > 0,
+      count: sourceSpans.length
+    },
+    {
+      name: 'evidence_tier',
+      passed: strongestEvidenceTier === 'strong' || strongestEvidenceTier === 'moderate',
+      strongestEvidenceTier
+    },
+    {
+      name: 'missing_evidence',
+      passed: missingEvidence.length === 0,
+      missing: missingEvidence
+    }
+  ];
+  const hardEvidencePresent = gates.find((gate) => gate.name === 'evidence_ref')?.passed
+    && gates.find((gate) => gate.name === 'source_span_or_snippet')?.passed;
+  const status = hardEvidencePresent && missingEvidence.length === 0
+    ? 'supported'
+    : (hardEvidencePresent ? 'partial' : 'data_starved');
+
+  return {
+    status,
+    gates,
+    noLlmQueryInvariant: true
+  };
+}
+
 function buildEvidenceCertificate({ paths = [], sourceSpans = [], analyses = [], requisitionReport = null } = {}) {
   const bridgePathIds = unique(paths.map((path) => path.path_id || path.pathId).filter(Boolean));
   const evidenceRefs = uniqueBy(
-    paths.flatMap((path) => asArray(path.evidence_chain_refs || path.evidenceChainRefs)),
-    (ref) => ref.ref_id || ref.refId || ref.node_id || ref.nodeId
+    [
+      ...paths.flatMap((path) => asArray(path.evidence_chain_refs || path.evidenceChainRefs)),
+      ...analyses.flatMap((analysis) => asArray(analysis.evidence_chain_refs || analysis.evidenceChainRefs))
+    ].map((ref) => summarizeEvidenceRef(ref)).filter((ref) => ref.refId || ref.nodeId),
+    (ref) => ref.refId || ref.nodeId
   );
-  const spans = uniqueBy(sourceSpans.map((span) => summarizeSourceSpan(span)), (span) => span.spanId || `${span.snippetNodeId}:${span.quote}`);
+  const supportingBridgePaths = paths.map((path) => summarizeBridgePathForCertificate(path));
+  const spans = uniqueBy(
+    [
+      ...sourceSpans,
+      ...paths.flatMap((path) => asArray(path.source_spans || path.sourceSpans)),
+      ...analyses.flatMap((analysis) => asArray(analysis.source_spans || analysis.sourceSpans))
+    ].map((span) => summarizeSourceSpan(span)).filter((span) => span.spanId || span.snippetNodeId || span.quote),
+    (span) => span.spanId || `${span.snippetNodeId}:${span.quote}`
+  );
   const tiers = analyses.map((analysis) => analysis.evidence_tier || analysis.evidenceTier).filter(Boolean);
   const missingEvidence = asArray(requisitionReport?.missing_evidence_types || requisitionReport?.missingEvidenceTypes);
+  const strongestEvidenceTier = tiers.includes('strong') ? 'strong' : (tiers.includes('moderate') ? 'moderate' : 'weak');
 
   return {
     bridgePathIds,
     evidenceRefCount: evidenceRefs.length,
     sourceSpanCount: spans.length,
-    strongestEvidenceTier: tiers.includes('strong') ? 'strong' : (tiers.includes('moderate') ? 'moderate' : 'weak'),
-    missingEvidence
+    strongestEvidenceTier,
+    missingEvidence,
+    supportingBridgePaths,
+    supportingEvidenceRefs: evidenceRefs,
+    supportingSourceSpans: spans,
+    validation: buildCertificateValidation({
+      bridgePaths: supportingBridgePaths,
+      evidenceRefs,
+      sourceSpans: spans,
+      missingEvidence,
+      strongestEvidenceTier
+    })
   };
 }
 
@@ -526,6 +626,7 @@ function buildMethodEdgeRecord(graph, relationship, direction) {
   return {
     edgeId: relationship.id,
     edgeType: relationship.type,
+    paperEdgeType: props.paperEdgeType || (METHOD_EVOLUTION_EDGE_TYPES.has(relationship.type) ? relationship.type : null),
     dagEdgeType: props.dagEdgeType || (METHOD_DAG_EDGE_TYPES.has(relationship.type) ? relationship.type : null),
     direction,
     confidence: normalizeScore(props.confidence ?? (validation.accepted ? 0.8 : 0.45)),
@@ -539,40 +640,79 @@ function buildMethodEdgeRecord(graph, relationship, direction) {
   };
 }
 
-function sortLineageEdges(graph, relationships, direction) {
+function relationshipLineagePriority(relationship) {
+  return METHOD_DAG_EDGE_TYPES.has(relationship.type) || relationship.properties?.methodEvolutionProjection === true
+    ? 1
+    : 0;
+}
+
+function lineageNextNodeId(relationship, currentMethodId, direction) {
+  if (!relationship || !currentMethodId) return null;
+  if (relationship.type === EDGE_TYPES.COMPONENT_OF) {
+    if (direction === 'backward' && relationship.targetId === currentMethodId) return relationship.sourceId;
+    if (direction === 'forward' && relationship.sourceId === currentMethodId) return relationship.targetId;
+    return null;
+  }
+  if (direction === 'forward' && relationship.targetId === currentMethodId) return relationship.sourceId;
+  if (direction === 'backward' && relationship.sourceId === currentMethodId) return relationship.targetId;
+  return null;
+}
+
+function sortLineageEdges(graph, relationships, direction, options = {}) {
+  const currentMethodId = options.currentMethodId || null;
+  const seenLineageKeys = new Set();
   return relationships
     .map((relationship) => ({
       relationship,
-      validation: validateMethodEvolutionEdge(graph, relationship)
+      validation: validateMethodEvolutionEdge(graph, relationship),
+      nextNode: currentMethodId
+        ? graph.getNode(lineageNextNodeId(relationship, currentMethodId, direction))
+        : null
     }))
     .filter((entry) => entry.validation.accepted)
     .sort((left, right) => {
-      const leftNext = direction === 'backward' ? left.validation.target : left.validation.source;
-      const rightNext = direction === 'backward' ? right.validation.target : right.validation.source;
-      return Number(right.relationship.properties?.confidence || 0) - Number(left.relationship.properties?.confidence || 0)
+      const leftNext = left.nextNode || (direction === 'backward' ? left.validation.target : left.validation.source);
+      const rightNext = right.nextNode || (direction === 'backward' ? right.validation.target : right.validation.source);
+      return relationshipLineagePriority(right.relationship) - relationshipLineagePriority(left.relationship)
+        || Number(right.relationship.properties?.confidence || 0) - Number(left.relationship.properties?.confidence || 0)
         || (methodYear(leftNext) || 9999) - (methodYear(rightNext) || 9999)
         || leftNext.name.localeCompare(rightNext.name);
+    })
+    .filter((entry) => {
+      const key = entry.relationship.properties?.candidateId || entry.relationship.id;
+      if (seenLineageKeys.has(key)) return false;
+      seenLineageKeys.add(key);
+      return true;
     })
     .map((entry) => entry.relationship);
 }
 
 function collectNextLineageEdges(graph, methodNode, direction, options = {}) {
-  const raw = direction === 'forward'
-    ? graph.getIncoming(methodNode.id)
-    : graph.getOutgoing(methodNode.id);
+  const raw = [
+    ...graph.getIncoming(methodNode.id),
+    ...graph.getOutgoing(methodNode.id)
+  ];
   return sortLineageEdges(
     graph,
-    raw.filter((relationship) => isMethodEvolutionRelationship(relationship)),
-    direction
+    raw.filter((relationship) => (
+      isMethodEvolutionRelationship(relationship)
+      && lineageNextNodeId(relationship, methodNode.id, direction)
+    )),
+    direction,
+    { currentMethodId: methodNode.id }
   ).slice(0, Math.max(1, Number(options.branchLimit || 3)));
 }
 
 function collectRejectedEdgeDiagnostics(graph, methodNode, direction) {
-  const raw = direction === 'forward'
-    ? graph.getIncoming(methodNode.id)
-    : graph.getOutgoing(methodNode.id);
+  const raw = [
+    ...graph.getIncoming(methodNode.id),
+    ...graph.getOutgoing(methodNode.id)
+  ];
   const rejected = raw
-    .filter((relationship) => isMethodEvolutionRelationship(relationship))
+    .filter((relationship) => (
+      isMethodEvolutionRelationship(relationship)
+      && lineageNextNodeId(relationship, methodNode.id, direction)
+    ))
     .map((relationship) => ({
       relationship,
       validation: validateMethodEvolutionEdge(graph, relationship)
@@ -601,9 +741,7 @@ function traverseLineages(graph, rootMethod, direction, options = {}) {
 
     const nextEdges = collectNextLineageEdges(graph, methodNode, direction, options)
       .filter((relationship) => {
-        const nextNode = direction === 'forward'
-          ? graph.getNode(relationship.sourceId)
-          : graph.getNode(relationship.targetId);
+        const nextNode = graph.getNode(lineageNextNodeId(relationship, methodNode.id, direction));
         return nextNode && !visited.has(nextNode.id);
       });
 
@@ -613,9 +751,7 @@ function traverseLineages(graph, rootMethod, direction, options = {}) {
     }
 
     for (const relationship of nextEdges) {
-      const nextNode = direction === 'forward'
-        ? graph.getNode(relationship.sourceId)
-        : graph.getNode(relationship.targetId);
+      const nextNode = graph.getNode(lineageNextNodeId(relationship, methodNode.id, direction));
       const nextSteps = steps.map((step) => ({ ...step }));
       nextSteps[nextSteps.length - 1] = {
         ...nextSteps[nextSteps.length - 1],
@@ -783,6 +919,338 @@ export function buildMethodEvolutionGapAnalysis(graph, params = {}) {
       acceptedEdgeCount: lineageEdges.length,
       rejectedEdges,
       lineageCacheKey: `method-lineage:${stableHash(`${matchedNode.id}:${direction}:${maxDepth}:${graph.relationshipCount}`)}`
+    }
+  };
+}
+
+function normalizeMethodPair(params = {}) {
+  const pair = asArray(params.methodPair || params.methods);
+  const sourceMethod = normalizeLabel(firstDefined(
+    params.sourceMethod,
+    params.fromMethod,
+    params.source,
+    params.from,
+    params.methodA,
+    pair[0],
+    params.targetMethod || params.toMethod || params.target || params.to || params.methodB || pair[1]
+      ? params.method
+      : undefined
+  ));
+  const targetMethod = normalizeLabel(firstDefined(
+    params.targetMethod,
+    params.toMethod,
+    params.target,
+    params.to,
+    params.methodB,
+    pair[1]
+  ));
+  const singleMethod = normalizeLabel(firstDefined(
+    params.method,
+    params.methodName,
+    params.query,
+    sourceMethod
+  ));
+
+  return {
+    sourceMethod: sourceMethod || (targetMethod ? singleMethod : ''),
+    targetMethod,
+    singleMethod: targetMethod ? '' : singleMethod
+  };
+}
+
+function resolvedMethodNode(graph, resolution) {
+  if (resolution?.ambiguity !== 'resolved') return null;
+  return graph.getNode(resolution.candidates[0]?.methodId);
+}
+
+function relationshipMethodEndpointIds(relationship) {
+  const props = relationship.properties || {};
+  return unique([
+    relationship.sourceId,
+    relationship.targetId,
+    props.sourceMethodId,
+    props.targetMethodId,
+    props.dagSourceMethodId,
+    props.dagTargetMethodId
+  ].filter(Boolean));
+}
+
+function relationshipMatchesMethodPair(relationship, sourceMethodId, targetMethodId, strictDirection = false) {
+  const props = relationship.properties || {};
+  const pairs = [
+    [relationship.sourceId, relationship.targetId],
+    [props.sourceMethodId, props.targetMethodId],
+    [props.dagSourceMethodId, props.dagTargetMethodId]
+  ].filter(([sourceId, targetId]) => sourceId && targetId);
+
+  return pairs.some(([sourceId, targetId]) => {
+    if (sourceId === sourceMethodId && targetId === targetMethodId) return true;
+    return !strictDirection && sourceId === targetMethodId && targetId === sourceMethodId;
+  });
+}
+
+function relationshipMatchesEvidenceId(relationship, edgeId) {
+  const props = relationship.properties || {};
+  return relationship.id === edgeId
+    || props.citationRelationshipId === edgeId
+    || props.candidateId === edgeId
+    || props.citationContextId === edgeId
+    || props.referenceId === edgeId;
+}
+
+function collectMethodEvidenceRelationships(graph, { edgeId, sourceNode, targetNode, singleNode, strictDirection = false } = {}) {
+  if (edgeId) {
+    const exact = graph.getRelationship(edgeId);
+    if (exact) return isMethodEvolutionRelationship(exact) ? [exact] : [];
+  }
+
+  const relationships = [];
+  graph.forEachRelationship((relationship) => {
+    if (!isMethodEvolutionRelationship(relationship)) return;
+    if (edgeId) {
+      if (relationshipMatchesEvidenceId(relationship, edgeId)) relationships.push(relationship);
+      return;
+    }
+    if (sourceNode && targetNode) {
+      if (relationshipMatchesMethodPair(relationship, sourceNode.id, targetNode.id, strictDirection)) {
+        relationships.push(relationship);
+      }
+      return;
+    }
+    if (singleNode && relationshipMethodEndpointIds(relationship).includes(singleNode.id)) {
+      relationships.push(relationship);
+    }
+  });
+  return relationships;
+}
+
+function inferEvidenceCompleteness(relationship, record) {
+  const props = relationship.properties || {};
+  const status = normalizeLabel(props.evidenceCompletenessStatus);
+  const missingFields = Array.isArray(props.evidenceMissingFields) ? props.evidenceMissingFields : [];
+  if (status) {
+    return {
+      status,
+      missingFields
+    };
+  }
+
+  const inferredMissing = [];
+  if (!record.evidence?.quote) inferredMissing.push('exactQuote');
+  if (!record.bottleneck?.description) inferredMissing.push('bottleneck.description');
+  if (!record.mechanism?.description) inferredMissing.push('mechanism.description');
+  return {
+    status: inferredMissing.length ? 'incomplete' : 'complete',
+    missingFields: inferredMissing
+  };
+}
+
+function evidenceCompletenessRank(completeness = {}) {
+  if (completeness.status === 'complete') return 1;
+  if (completeness.status === 'not_required') return 0.6;
+  return completeness.missingFields?.length ? 0.25 : 0;
+}
+
+function temporalProximityRank(record) {
+  const sourceYear = Number(record.sourceMethod?.year);
+  const targetYear = Number(record.targetMethod?.year);
+  if (!Number.isFinite(sourceYear) || !Number.isFinite(targetYear)) return 0;
+  const gap = Math.abs(sourceYear - targetYear);
+  return Number(Math.max(0, 1 - Math.min(gap, 50) / 50).toFixed(4));
+}
+
+function methodEvidenceRank(record) {
+  return {
+    accepted: record.validation.accepted ? 1 : 0,
+    confidence: Number(record.confidence || 0),
+    temporalProximity: temporalProximityRank(record),
+    evidenceCompleteness: evidenceCompletenessRank(record.evidenceCompleteness),
+    dagPriority: record.relationshipRole === 'method-dag' ? 1 : 0
+  };
+}
+
+function sortMethodEvidenceRecords(left, right) {
+  const leftRank = methodEvidenceRank(left);
+  const rightRank = methodEvidenceRank(right);
+  return rightRank.accepted - leftRank.accepted
+    || rightRank.confidence - leftRank.confidence
+    || rightRank.temporalProximity - leftRank.temporalProximity
+    || rightRank.evidenceCompleteness - leftRank.evidenceCompleteness
+    || rightRank.dagPriority - leftRank.dagPriority
+    || left.edgeId.localeCompare(right.edgeId);
+}
+
+function methodEvidenceDedupKey(record) {
+  return record.candidateId || record.citationRelationshipId || record.edgeId;
+}
+
+function buildMethodEvidenceRecord(graph, relationship) {
+  const validation = validateMethodEvolutionEdge(graph, relationship);
+  const includeCandidateValidation = validateMethodEvolutionEdge(graph, relationship, { includeCandidate: true });
+  const base = buildMethodEdgeRecord(graph, relationship, relationship.properties?.dagDirection || 'evidence');
+  const props = relationship.properties || {};
+  const completeness = inferEvidenceCompleteness(relationship, base);
+  const sourceYear = base.sourceMethod?.year || props.sourceYear || null;
+  const targetYear = base.targetMethod?.year || props.targetYear || null;
+  const yearGap = sourceYear && targetYear ? Math.abs(sourceYear - targetYear) : null;
+
+  return {
+    edgeId: relationship.id,
+    edgeType: relationship.type,
+    paperEdgeType: base.paperEdgeType,
+    dagEdgeType: base.dagEdgeType,
+    methodCitationType: props.methodCitationType || props.methodEvolutionType || base.paperEdgeType || relationship.type,
+    relationshipRole: props.relationshipRole || (props.methodEvolutionProjection === true ? 'method-dag' : 'paper-citation'),
+    citationRelationshipId: props.citationRelationshipId || null,
+    candidateId: props.candidateId || null,
+    confidence: base.confidence,
+    validationStatus: includeCandidateValidation.status,
+    validation: {
+      accepted: validation.accepted,
+      reasons: validation.reasons
+    },
+    evidenceCompleteness: completeness,
+    temporal: {
+      direction: props.temporalDirection || '',
+      sourceYear,
+      targetYear,
+      yearGap
+    },
+    sourceMethod: base.sourceMethod,
+    targetMethod: base.targetMethod,
+    bottleneck: base.bottleneck,
+    mechanism: base.mechanism,
+    tradeoff: base.tradeoff,
+    evidence: {
+      ...base.evidence,
+      exactQuote: base.evidence.quote,
+      citationContext: props.citationContext || '',
+      exactMatch: props.exactMatch !== false
+    },
+    sourcePaper: {
+      paperId: props.sourcePaperId || props.paperId || null,
+      paperTitle: props.sourcePaperTitle || props.paperTitle || null
+    },
+    targetPaper: {
+      paperId: props.targetPaperId || null,
+      paperTitle: props.targetPaperTitle || null
+    },
+    reference: {
+      referenceId: props.referenceId || null,
+      referenceTitleGuess: props.referenceTitleGuess || '',
+      referenceYear: props.referenceYear || null
+    },
+    section: {
+      heading: props.sectionHeading || '',
+      role: props.sectionRole || ''
+    },
+    graphRelationship: {
+      sourceId: relationship.sourceId,
+      targetId: relationship.targetId,
+      type: relationship.type
+    }
+  };
+}
+
+function deduplicateMethodEvidenceRecords(records = []) {
+  const seen = new Set();
+  const output = [];
+  for (const record of records.sort(sortMethodEvidenceRecords)) {
+    const key = methodEvidenceDedupKey(record);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(record);
+  }
+  return output;
+}
+
+function buildMethodEvidenceStarvation({ edgeId, sourceResolution, targetResolution, singleResolution, allRecords, returnedRecords }) {
+  const missing = [];
+  if (!edgeId && !sourceResolution && !singleResolution) missing.push('edge id or method selector');
+  if (sourceResolution && sourceResolution.ambiguity !== 'resolved') missing.push('resolved source method');
+  if (targetResolution && targetResolution.ambiguity !== 'resolved') missing.push('resolved target method');
+  if (singleResolution && singleResolution.ambiguity !== 'resolved') missing.push('resolved method');
+  if (!allRecords.length) missing.push('method evolution evidence edge');
+  if (allRecords.length && !returnedRecords.length) missing.push('accepted method evolution evidence edge');
+
+  return {
+    status: missing.length ? (allRecords.length ? 'partial' : 'starved') : 'ok',
+    missing: unique(missing)
+  };
+}
+
+export function buildMethodEvolutionEvidenceLookup(graph, params = {}) {
+  const edgeId = normalizeLabel(params.edgeId || params.relationshipId || params.citationRelationshipId || params.candidateId);
+  const limit = Math.max(1, Number(params.limit || 10));
+  const includeCandidates = params.includeCandidates === true || params.includeCandidate === true || Boolean(edgeId);
+  const strictDirection = params.strictDirection === true || params.ordered === true;
+  const pair = normalizeMethodPair(params);
+  const sourceResolution = !edgeId && pair.sourceMethod
+    ? resolveMethodCandidates(graph, pair.sourceMethod, { limit: 5 })
+    : null;
+  const targetResolution = !edgeId && pair.targetMethod
+    ? resolveMethodCandidates(graph, pair.targetMethod, { limit: 5 })
+    : null;
+  const singleResolution = !edgeId && !targetResolution && pair.singleMethod
+    ? resolveMethodCandidates(graph, pair.singleMethod, { limit: 5 })
+    : null;
+  const sourceNode = resolvedMethodNode(graph, sourceResolution);
+  const targetNode = resolvedMethodNode(graph, targetResolution);
+  const singleNode = resolvedMethodNode(graph, singleResolution);
+  const unresolved = [sourceResolution, targetResolution, singleResolution]
+    .filter(Boolean)
+    .some((resolution) => resolution.ambiguity !== 'resolved');
+
+  const candidateRelationships = unresolved
+    ? []
+    : collectMethodEvidenceRelationships(graph, {
+      edgeId,
+      sourceNode,
+      targetNode,
+      singleNode,
+      strictDirection
+    });
+  const allRecords = candidateRelationships.map((relationship) => buildMethodEvidenceRecord(graph, relationship));
+  const returnedRecords = deduplicateMethodEvidenceRecords(
+    allRecords.filter((record) => includeCandidates || record.validation.accepted)
+  ).slice(0, limit);
+
+  return {
+    contractVersion: METHOD_EVOLUTION_EVIDENCE_CONTRACT_VERSION,
+    path: 'method_evidence',
+    query: {
+      edgeId: edgeId || null,
+      sourceMethod: pair.sourceMethod || null,
+      targetMethod: pair.targetMethod || null,
+      method: pair.singleMethod || null,
+      strictDirection
+    },
+    matchedMethods: {
+      source: sourceResolution ? (sourceNode ? methodSummary(sourceNode) : null) : null,
+      target: targetResolution ? (targetNode ? methodSummary(targetNode) : null) : null,
+      method: singleResolution ? (singleNode ? methodSummary(singleNode) : null) : null
+    },
+    candidates: {
+      source: sourceResolution?.candidates || [],
+      target: targetResolution?.candidates || [],
+      method: singleResolution?.candidates || []
+    },
+    matches: returnedRecords,
+    dataStarvation: buildMethodEvidenceStarvation({
+      edgeId,
+      sourceResolution,
+      targetResolution,
+      singleResolution,
+      allRecords,
+      returnedRecords
+    }),
+    diagnostics: {
+      queryTimeLlmCalls: 0,
+      source: 'graph-only',
+      includeCandidates,
+      candidateEdgeCount: candidateRelationships.length,
+      returnedEdgeCount: returnedRecords.length,
+      deduplicatedEdgeCount: Math.max(0, allRecords.length - deduplicateMethodEvidenceRecords(allRecords).length)
     }
   };
 }

@@ -23,6 +23,9 @@ import {
   listImportTasksPayload,
   listCorporaPayload,
   llmConfigPayload,
+  methodEvidencePayload,
+  methodLineagePayload,
+  methodRegistryPayload,
   paperIndexPayload,
   paperEnhancementPayload,
   pathTraceGraphPayload,
@@ -754,7 +757,11 @@ export async function serveCommand(options = {}) {
         cache: apiCache,
         config: options.config || {},
         configBaseDir: options.configBaseDir || process.cwd(),
-        portablePaths: true
+        portablePaths: true,
+        logger: workerLogger,
+        onImportTaskCreated() {
+          importWorker?.pollNow?.();
+        }
       };
 
       if (url.pathname === mcpConfig.path) {
@@ -771,7 +778,11 @@ export async function serveCommand(options = {}) {
         const result = await handleMcpHttpRequest(request, response, {
           config: options.config || {},
           configBaseDir: options.configBaseDir || process.cwd(),
-          portablePaths: true
+          portablePaths: true,
+          logger: workerLogger,
+          onImportTaskCreated() {
+            importWorker?.pollNow?.();
+          }
         });
         logMcpHttpRequest(
           workerLogger,
@@ -818,6 +829,12 @@ export async function serveCommand(options = {}) {
         return;
       }
 
+      if (request.method === 'GET' && url.pathname === '/api/method-registry') {
+        const name = url.searchParams.get('name') || undefined;
+        sendJson(response, 200, await methodRegistryPayload(name, apiOptions));
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/api/enhancements') {
         const name = url.searchParams.get('name') || undefined;
         sendJson(response, 200, await enhancementSummaryPayload(name, apiOptions));
@@ -834,7 +851,6 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request);
         const payload = await createImportTaskPayload(name, body, apiOptions);
-        importWorker?.pollNow();
         sendJson(response, 202, payload);
         return;
       }
@@ -899,6 +915,20 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request);
         sendJson(response, 200, await evidenceChainPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/method-lineage') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await methodLineagePayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/method-evidence') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request);
+        sendJson(response, 200, await methodEvidencePayload(name, body, apiOptions));
         return;
       }
 

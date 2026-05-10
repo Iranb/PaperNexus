@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This page is generated from [`config.example.json`](https://github.com/Iranb/PaperNexus/blob/main/config.example.json). The example file is the maintained default source of truth for shipped runtime settings.
+This page is generated from [`config.example.json`](https://github.com/papernexus/PaperNexus/blob/main/config.example.json). The example file is the maintained default source of truth for shipped runtime settings.
 
 ## Example Config
 
@@ -36,7 +36,20 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
     "doclingEnrichPictureDescription": false,
     "doclingPreload": true,
     "doclingUseVlm": false,
-    "doclingVlmPreset": "granite_docling"
+    "doclingVlmPreset": "granite_docling",
+    "identifierResolution": {
+      "enabled": true,
+      "providers": [
+        "openalex",
+        "crossref",
+        "arxiv"
+      ],
+      "timeoutMs": 2500,
+      "maxCandidates": 5,
+      "missCacheTtlMs": 604800000,
+      "allowInWatch": false,
+      "mailto": "replace-with-contact@example.com"
+    }
   },
   "global": {
     "corpus": "demo-corpus"
@@ -93,6 +106,14 @@ This page is generated from [`config.example.json`](https://github.com/Iranb/Pap
 | `analyze.doclingPreload` | boolean | `true` |
 | `analyze.doclingUseVlm` | boolean | `false` |
 | `analyze.doclingVlmPreset` | string | `granite_docling` |
+| `analyze.identifierResolution` | object | section |
+| `analyze.identifierResolution.enabled` | boolean | `true` |
+| `analyze.identifierResolution.providers` | array | `["openalex","crossref","arxiv"]` |
+| `analyze.identifierResolution.timeoutMs` | number | `2500` |
+| `analyze.identifierResolution.maxCandidates` | number | `5` |
+| `analyze.identifierResolution.missCacheTtlMs` | number | `604800000` |
+| `analyze.identifierResolution.allowInWatch` | boolean | `false` |
+| `analyze.identifierResolution.mailto` | string | `replace-with-contact@example.com` |
 | `global` | object | section |
 | `global.corpus` | string | `demo-corpus` |
 | `serve` | object | section |

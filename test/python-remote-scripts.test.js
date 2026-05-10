@@ -97,7 +97,7 @@ test('pn_main_graph_name.py resolves the current live corpus name over remote HT
       const result = await runPythonPath(scriptPath, [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
       ]);
       const payload = JSON.parse(result.stdout);
       assert.equal(payload.primaryGraphName, 'python-remote-test');
@@ -130,7 +130,7 @@ test('pn_paper_refresh.py force-refreshes one paper over remote HTTP MCP', async
       const result = await runPythonPath(scriptPath, [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         '--source', sourcePath
       ]);
@@ -289,7 +289,7 @@ async function startServer(fixture, port, options = {}) {
   return serveCommand({
     host: '127.0.0.1',
     port,
-    apiToken: 'secret-token',
+    apiToken: 'test',
     enableEnhancements: false,
     enableImports: options.enableImports ?? true,
     importIntervalMs: 200,
@@ -298,7 +298,7 @@ async function startServer(fixture, port, options = {}) {
         indexDir: fixture.indexRoot
       },
       serve: {
-        apiToken: 'secret-token',
+        apiToken: 'test',
         mcp: {
           enabled: true
         }
@@ -331,7 +331,7 @@ exit 0
   try {
     const result = await runPython('pn_stage_sync.py', [
       '--json',
-      '--ssh-target', 'hyq@example.com',
+      '--ssh-target', 'user@example.org',
       '--remote-dir', '/tmp/papernexus-import-staging/demo',
       localDir
     ], {
@@ -348,7 +348,7 @@ exit 0
     const rsyncArgs = await fs.readFile(path.join(callsDir, 'rsync.txt'), 'utf8');
     assert.match(sshArgs, /mkdir -p/);
     assert.match(rsyncArgs, /--partial/);
-    assert.match(rsyncArgs, /hyq@example\.com:\/tmp\/papernexus-import-staging\/demo/);
+    assert.match(rsyncArgs, /user@example\.org:\/tmp\/papernexus-import-staging\/demo/);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -377,7 +377,7 @@ exit 0
   try {
     const result = await runPython('pn_stage_sync.py', [
       '--json',
-      '--ssh-target', 'hyq@example.com',
+      '--ssh-target', 'user@example.org',
       '--corpus-root', localDir,
       '--mode', 'incremental'
     ], {
@@ -419,7 +419,7 @@ exit 0
   try {
     const result = await runPython('pn_stage_sync.py', [
       '--json',
-      '--ssh-target', 'hyq@example.com',
+      '--ssh-target', 'user@example.org',
       '--remote-dir', '~/papernexus-import-staging/demo',
       localDir
     ], {
@@ -434,7 +434,7 @@ exit 0
     const sshArgs = await fs.readFile(path.join(callsDir, 'ssh.txt'), 'utf8');
     const rsyncArgs = await fs.readFile(path.join(callsDir, 'rsync.txt'), 'utf8');
     assert.match(sshArgs, /mkdir -p ~\/papernexus-import-staging\/demo/);
-    assert.match(rsyncArgs, /hyq@example\.com:~\/papernexus-import-staging\/demo\//);
+    assert.match(rsyncArgs, /user@example\.org:~\/papernexus-import-staging\/demo\//);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -450,7 +450,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
       const submit = await runPython('pn_import_submit.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         '--server-file-path', fixture.markdownUploadPath,
         '--doi', '10.48550/papernexus.python-submit'
@@ -462,7 +462,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
       const wait = await runPython('pn_import_queue.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'wait',
         submitted.task.id,
@@ -477,7 +477,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
       const status = await runPython('pn_import_queue.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'status',
         submitted.task.id
@@ -488,7 +488,7 @@ test('pn_import_submit.py and pn_import_queue.py submit a server-side file and w
       const log = await runPython('pn_import_queue.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'log',
         submitted.task.id
@@ -513,7 +513,7 @@ test('pn_import_submit.py accepts tilde-style serverFilePath values and reports 
       const submit = await runPython('pn_import_submit.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         '--server-file-path', '~/uploads/server-side-upload.md',
         '--doi', '10.48550/papernexus.python-submit-tilde'
@@ -543,7 +543,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
       const submit = await runPython('pn_import_submit.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--paper-id', '2305.18909',
         '--doi', '10.48550/papernexus.python-registry',
         '--source', fixture.markdownUploadPath,
@@ -567,7 +567,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
       const status = await runPython('pn_import_queue.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--paper-id', '2305.18909',
         '--status'
       ], {
@@ -583,7 +583,7 @@ test('pn_import_submit.py records task ids in a temp registry and pn_import_queu
       const wait = await runPython('pn_import_queue.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         'wait',
         '--paper-id', '2305.18909',
         '--timeout', '30',
@@ -619,7 +619,7 @@ test('pn_graph_query.py exposes query and brainstorm through remote HTTP MCP', a
       const query = await runPython('pn_graph_query.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'query',
         'experiment planning',
@@ -632,7 +632,7 @@ test('pn_graph_query.py exposes query and brainstorm through remote HTTP MCP', a
       const brainstorm = await runPython('pn_graph_query.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'brainstorm',
         'experiment planning',
@@ -661,7 +661,7 @@ test('pn_paper_index.py resolves exact papers through remote HTTP MCP', async ()
       const lookup = await runPython('pn_paper_index.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         '--paper-title', 'Retrieval-Augmented Experiment Planning with Lab Notebooks'
       ]);
@@ -725,7 +725,7 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
       const submit = await runPython('pn_batch_import.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--manifest', manifestPath,
         'submit'
       ], {
@@ -744,7 +744,7 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
       const status = await runPython('pn_batch_import.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--manifest', manifestPath,
         'status'
       ], {
@@ -763,7 +763,7 @@ test('pn_batch_import.py submits a JSON manifest and supports batch wait/status'
       const wait = await runPython('pn_batch_import.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--manifest', manifestPath,
         'wait',
         '--timeout', '30',
@@ -811,7 +811,7 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
       const evidence = await runPython('pn_research_chains.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'evidence-chain',
         'experiment planning',
@@ -823,7 +823,7 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
       const reflection = await runPython('pn_research_chains.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'reflection-chain',
         'experiment planning',
@@ -835,7 +835,7 @@ test('pn_research_chains.py exposes evidence, reflection, and brief endpoints th
       const researchBrief = await runPython('pn_research_chains.py', [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         'research-brief',
         'experiment planning',
@@ -862,7 +862,7 @@ test('pn_idea_catalyst.py forwards fine-grained domain and bundle mode through r
       const result = await runPythonPath(scriptPath, [
         '--json',
         '--mcp-url', `http://127.0.0.1:${port}/mcp`,
-        '--token', 'secret-token',
+        '--token', 'test',
         '--corpus', 'python-remote-test',
         '--problem', 'experiment planning under retrieval constraints',
         '--target-domain', 'Computer Science',

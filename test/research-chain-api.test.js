@@ -98,6 +98,30 @@ test('second-layer research API helpers return structured chain and brief payloa
     assert.ok(evidenceChain.result.chains.length > 0);
     assert.ok(evidenceChain.result.chains[0].paper.paperId);
 
+    const methodEvidence = await api.methodEvidencePayload(fixture.indexRoot, {
+      method: 'experiment planning',
+      limit: 3
+    });
+    assert.equal(methodEvidence.rootPath, fixture.indexRoot);
+    assert.equal(methodEvidence.result.contractVersion, 'papernexus-method-evidence-v1');
+    assert.equal(methodEvidence.result.diagnostics.queryTimeLlmCalls, 0);
+
+    const methodLineage = await api.methodLineagePayload(fixture.indexRoot, {
+      method: 'experiment planning',
+      direction: 'backward',
+      maxDepth: 2,
+      limit: 3
+    });
+    assert.equal(methodLineage.rootPath, fixture.indexRoot);
+    assert.equal(methodLineage.result.contractVersion, 'papernexus-method-evolution-lineage-v1');
+    assert.equal(methodLineage.result.diagnostics.queryTimeLlmCalls, 0);
+
+    const methodRegistry = await api.methodRegistryPayload(fixture.indexRoot);
+    assert.equal(methodRegistry.rootPath, fixture.indexRoot);
+    assert.equal(methodRegistry.result.contractVersion, 'papernexus-method-registry-v1');
+    assert.ok(Array.isArray(methodRegistry.result.registry.methods));
+    assert.equal(methodRegistry.result.diagnostics.queryTimeLlmCalls, 0);
+
     const reflectionChain = await api.reflectionChainPayload(fixture.indexRoot, {
       query: 'experiment planning',
       options: {
@@ -164,7 +188,7 @@ test('serveCommand exposes authenticated second-layer research APIs', async () =
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableImports: false,
       config: {
@@ -172,7 +196,7 @@ test('serveCommand exposes authenticated second-layer research APIs', async () =
           indexDir: fixture.indexRoot
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       configBaseDir: fixture.workspaceRoot
@@ -180,7 +204,7 @@ test('serveCommand exposes authenticated second-layer research APIs', async () =
 
     try {
       const headers = {
-        Authorization: 'Bearer secret-token',
+        Authorization: 'Bearer test',
         'Content-Type': 'application/json'
       };
 
@@ -207,6 +231,37 @@ test('serveCommand exposes authenticated second-layer research APIs', async () =
         })
       }).then((response) => response.json());
       assert.ok(evidenceChain.result.chains.length > 0);
+
+      const methodEvidence = await fetch(`http://127.0.0.1:${port}/api/method-evidence`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          method: 'experiment planning',
+          limit: 3
+        })
+      }).then((response) => response.json());
+      assert.equal(methodEvidence.result.contractVersion, 'papernexus-method-evidence-v1');
+      assert.equal(methodEvidence.result.diagnostics.queryTimeLlmCalls, 0);
+
+      const methodLineage = await fetch(`http://127.0.0.1:${port}/api/method-lineage`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          method: 'experiment planning',
+          direction: 'backward',
+          maxDepth: 2,
+          limit: 3
+        })
+      }).then((response) => response.json());
+      assert.equal(methodLineage.result.contractVersion, 'papernexus-method-evolution-lineage-v1');
+      assert.equal(methodLineage.result.diagnostics.queryTimeLlmCalls, 0);
+
+      const methodRegistry = await fetch(`http://127.0.0.1:${port}/api/method-registry`, {
+        headers
+      }).then((response) => response.json());
+      assert.equal(methodRegistry.result.contractVersion, 'papernexus-method-registry-v1');
+      assert.ok(Array.isArray(methodRegistry.result.registry.methods));
+      assert.equal(methodRegistry.result.diagnostics.queryTimeLlmCalls, 0);
 
       const reflectionChain = await fetch(`http://127.0.0.1:${port}/api/reflection-chain`, {
         method: 'POST',

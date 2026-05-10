@@ -876,11 +876,12 @@ process.exit(0);
 
     const authRun = await spawnCli(['auth', 'llm', 'set', '--stdin'], {
       cwd: workspaceRoot,
-      env: {
-        ...process.env,
-        PATH: `${binDir}:${process.env.PATH}`,
-        FAKE_SECURITY_STORE: storePath
-      },
+	      env: {
+	        ...process.env,
+	        PATH: `${binDir}:${process.env.PATH}`,
+	        FAKE_SECURITY_STORE: storePath,
+	        PAPERNEXUS_HOME: workspaceRoot
+	      },
       stdin: 'dashscope-test-key\n'
     });
 

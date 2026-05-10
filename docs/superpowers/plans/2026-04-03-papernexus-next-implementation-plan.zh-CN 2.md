@@ -5,9 +5,9 @@
 **范围：** 仅针对 `PaperNexus` 仓库本身的下一阶段改动，不包含 `openclaw-research` 的 workflow 接线。
 **关联文档：**
 
-- `/Users/iranb/Library/Mobile Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/IDEA_CATALYST_MultiAgent_Blueprint.md`
-- `/Users/iranb/Library/Mobile Documents/com~apple~CloudDocs/OpenClawThings/openclaw-research/docs/superpowers/plans/2026-04-03-openclaw-research-system-status-summary.zh-CN.md`
-- `/Users/iranb/Library/Mobile Documents/com~apple~CloudDocs/OpenClawThings/openclaw-research/docs/superpowers/plans/2026-04-03-idea-catalyst-kg-subpipeline.md`
+- `<repo-root>/IDEA_CATALYST_MultiAgent_Blueprint.md`
+- `<projects-root>/openclaw-research/docs/superpowers/plans/2026-04-03-openclaw-research-system-status-summary.zh-CN.md`
+- `<projects-root>/openclaw-research/docs/superpowers/plans/2026-04-03-idea-catalyst-kg-subpipeline.md`
 
 ---
 

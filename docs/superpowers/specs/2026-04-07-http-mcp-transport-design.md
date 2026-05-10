@@ -16,8 +16,8 @@ The recommended shape is:
 
 PaperNexus already has two useful pieces:
 
-- a hand-rolled stdio MCP server in [src/mcp/server.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/mcp/server.js)
-- an authenticated HTTP server in [src/server/http.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/server/http.js)
+- a hand-rolled stdio MCP server in [src/mcp/server.js](../../../src/mcp/server.js)
+- an authenticated HTTP server in [src/server/http.js](../../../src/server/http.js)
 
 Today these paths are disconnected:
 
@@ -50,7 +50,7 @@ Build a transport-agnostic MCP core, then mount it behind both stdio and HTTP ad
 
 ### 1. Extract A Shared MCP Core
 
-Refactor [src/mcp/server.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/mcp/server.js) into two layers:
+Refactor [src/mcp/server.js](../../../src/mcp/server.js) into two layers:
 
 - `src/mcp/core.js`
 - `src/mcp/stdio.js`
@@ -127,7 +127,7 @@ Do not create a second standalone web server for MCP unless there is a hard prot
 
 Instead:
 
-- extend [src/server/http.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/server/http.js)
+- extend [src/server/http.js](../../../src/server/http.js)
 - route requests matching the configured MCP path into `src/mcp/http.js`
 - protect that route with the same bearer-token logic already used for `/api/*`
 - reuse the same host, port, startup, shutdown, and worker lifecycle as `papernexus serve`
@@ -315,7 +315,7 @@ Test coverage should include:
 - invalid JSON returns a protocol-safe error
 - batch request array returns a clear invalid-request error
 
-Keep the current [test/mcp.test.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/test/mcp.test.js) as the regression suite for stdio mode.
+Keep the current [test/mcp.test.js](../../../test/mcp.test.js) as the regression suite for stdio mode.
 
 ## Rollout Plan
 

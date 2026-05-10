@@ -10,6 +10,15 @@ import { applyProcessConfig, getDefaultRuntimeConfigPath, getDefaultRuntimeConfi
 import { collapseHomePath } from '../lib/server-paths.js';
 import { toNumber } from '../lib/utils.js';
 import { getWatchTmpLogPath } from '../lib/watch-log.js';
+import {
+  deleteSecureEnvValue,
+  getDefaultSecureEnvPath,
+  listSecureEnvKeys,
+  loadSecureEnv,
+  resolveSecureEnvPath,
+  setSecureEnvValue
+} from '../lib/secure-env.js';
+import { promptSecret, readSecretFromStdin } from '../lib/prompt.js';
 
 const HELP_TEXT = `
 PaperNexus
@@ -20,6 +29,7 @@ PaperNexus does not discover external literature or orchestrate multi-agent rese
 Global options:
   --config <path>     Use an explicit config JSON file
   --no-config         Ignore the default config search paths
+  --no-secure-env     Do not load ~/.papernexus/secure-env.enc.json
   --quiet             Show minimal output with progress bar only
 
 Commands:
@@ -45,6 +55,7 @@ Commands:
   papernexus imports [status] [<corpus>] [--limit <n>] [--json]
   papernexus imports running [<corpus>] [--limit <n>] [--json]
   papernexus imports log [<task-id>] [<corpus>] [--task-id <id>] [--tail <n>] [--json]
+  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -53,6 +64,7 @@ Commands:
   papernexus test-pdf-to-markdown <pdf-path> [--json] [--verify-docling-fallback]
   papernexus update [--force]                          Update PaperNexus to latest version from GitHub
   papernexus apikey [--provider <name>] [--base-url <url>]  Set LLM API key securely
+  papernexus secure-env set|delete|list|path [NAME] [--stdin]
   papernexus setup
   papernexus serve [--host 127.0.0.1] [--port 4821] [--api-token <token>]
   papernexus mcp
@@ -167,6 +179,7 @@ Examples:
   papernexus imports status --corpus ml-papers
   papernexus imports running --corpus ml-papers
   papernexus imports log --corpus ml-papers --task-id imp:1234567890abcdef
+  papernexus benchmark-retrieval ./benchmarks/scholarqa --format scholarqa --task-evaluation llm --generate-task-answers true --model gpt-4o-mini
   papernexus auth llm set --provider openai --base-url https://api.openai.com/v1
   papernexus query "retrieval augmented experiment planning" --corpus ml-papers
   papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback" --mechanism "metacontrol policy" --corpus ml-papers
@@ -683,9 +696,54 @@ function buildEnhanceOptions(flags, config) {
   };
 }
 
+function buildRetrievalBenchmarkOptions(flags, config) {
+  const commandConfig = getSection(config, 'benchmarkRetrieval');
+  const providerList = parseCommaSeparatedList(firstDefined(flags.providers, commandConfig.providers));
+  return {
+    ...buildLlmOptions(flags, config),
+    format: firstDefined(flags.format, flags['benchmark-format'], commandConfig.format, 'auto'),
+    qrelsPath: firstDefined(flags.qrels, flags['qrels-path'], commandConfig.qrelsPath),
+    corpusPath: firstDefined(flags['benchmark-corpus'], flags['benchmark-corpus-path'], commandConfig.corpusPath),
+    queriesPath: firstDefined(flags['benchmark-queries'], flags['benchmark-queries-path'], commandConfig.queriesPath),
+    evaluationMode: firstDefined(flags['evaluation-mode'], flags['benchmark-mode'], commandConfig.evaluationMode, 'live'),
+    taskEvaluation: firstDefined(flags['task-evaluation'], flags['task-evaluator'], commandConfig.taskEvaluation, 'rules'),
+    generateTaskAnswers: toBoolean(firstDefined(flags['generate-task-answers'], commandConfig.generateTaskAnswers), false),
+    maxTaskContext: toNumber(firstDefined(flags['max-task-context'], commandConfig.maxTaskContext), undefined),
+    providers: providerList.length ? providerList : firstDefined(commandConfig.providers, undefined),
+    depth: firstDefined(flags.depth, commandConfig.depth, 'quick'),
+    benchmarkLimit: toNumber(firstDefined(flags['benchmark-limit'], flags.sample, commandConfig.benchmarkLimit), undefined),
+    offset: toNumber(firstDefined(flags.offset, commandConfig.offset), 0),
+    maxDiscoveryQueries: toNumber(firstDefined(flags['max-queries'], commandConfig.maxDiscoveryQueries), undefined),
+    maxResultsPerQuery: toNumber(firstDefined(flags['max-results-per-query'], commandConfig.maxResultsPerQuery), 10),
+    maxCandidates: toNumber(firstDefined(flags['max-candidates'], commandConfig.maxCandidates), 50),
+    fixedCorpusLimit: toNumber(firstDefined(flags['fixed-corpus-limit'], flags['max-fixed-corpus-results'], commandConfig.fixedCorpusLimit), undefined),
+    providerConcurrency: toNumber(firstDefined(flags['provider-concurrency'], commandConfig.providerConcurrency), undefined),
+    benchmarkConcurrency: toNumber(firstDefined(flags['benchmark-concurrency'], commandConfig.benchmarkConcurrency), 1),
+    timeoutMs: toNumber(firstDefined(flags['timeout-ms'], commandConfig.timeoutMs), undefined),
+    retryCount: toNumber(firstDefined(flags['retry-count'], commandConfig.retryCount), undefined),
+    retryBackoffMs: toNumber(firstDefined(flags['retry-backoff-ms'], commandConfig.retryBackoffMs), undefined),
+    mailto: firstDefined(flags.mailto, commandConfig.mailto),
+    coreApiKey: firstDefined(flags['core-api-key'], commandConfig.coreApiKey),
+    cutoffs: firstDefined(flags.k, flags.cutoffs, commandConfig.cutoffs),
+    titleMatchThreshold: toNumber(firstDefined(flags['title-threshold'], commandConfig.titleMatchThreshold), undefined),
+    resolveSources: toBoolean(firstDefined(flags['resolve-sources'], commandConfig.resolveSources), false),
+    allowDownloads: toBoolean(firstDefined(flags['allow-downloads'], commandConfig.allowDownloads), false),
+    citationExpansion: toBoolean(firstDefined(flags['citation-expansion'], commandConfig.citationExpansion), false),
+    persistDiscoveryRuns: toBoolean(firstDefined(flags['persist-discovery-runs'], commandConfig.persistDiscoveryRuns), false),
+    outputDir: firstDefined(flags.output, flags['output-dir'], commandConfig.outputDir)
+  };
+}
+
 function resolveConfiguredCorpus(flags, config, positionalFallback, baseDir = process.cwd()) {
   const globalConfig = getGlobalConfig(config);
   return firstDefined(flags.corpus, positionalFallback, globalConfig.corpus, resolveStorageRoot(config, baseDir));
+}
+
+async function resolveRetrievalBenchmarkRootPath(flags, config, configBaseDir, runtime) {
+  if (flags.corpus) {
+    return runtime.resolveCorpus(flags.corpus);
+  }
+  return resolveStorageRoot(config, configBaseDir) || process.cwd();
 }
 
 function resolveAnalyzeInput(config, baseDir, positionalInput) {
@@ -1396,6 +1454,53 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
   console.log(`Updated ${saved.path} to stop using llm.apiKeySource="keychain".`);
 }
 
+async function handleSecureEnvCommand(flags, positionals) {
+  const [action = 'list', name = ''] = positionals;
+  if (flags.file === true || flags.path === true) {
+    throw new Error('Missing value for secure env file path.');
+  }
+  const filePath = flags.file || flags.path
+    ? resolveSecureEnvPath(flags.file || flags.path)
+    : getDefaultSecureEnvPath();
+
+  if (action === 'path') {
+    console.log(filePath);
+    return;
+  }
+
+  if (action === 'list') {
+    const result = await listSecureEnvKeys({ path: filePath });
+    if (!result.keys.length) {
+      console.log(`No encrypted env vars stored at ${result.path}.`);
+      return;
+    }
+    console.log(`Encrypted env vars stored at ${result.path}:`);
+    for (const key of result.keys) {
+      console.log(`  ${key}`);
+    }
+    return;
+  }
+
+  if (action === 'set') {
+    if (!name) throw new Error('Usage: `papernexus secure-env set <ENV_NAME> [--stdin]`.');
+    const value = flags.stdin
+      ? await readSecretFromStdin()
+      : await promptSecret(`Enter value for ${name}: `);
+    const result = await setSecureEnvValue(name, value, { path: filePath });
+    console.log(`Stored ${result.name} in encrypted env file: ${result.path}`);
+    return;
+  }
+
+  if (action === 'delete' || action === 'remove' || action === 'rm') {
+    if (!name) throw new Error('Usage: `papernexus secure-env delete <ENV_NAME>`.');
+    const result = await deleteSecureEnvValue(name, { path: filePath });
+    console.log(`Deleted ${result.name} from encrypted env file: ${result.path}`);
+    return;
+  }
+
+  throw new Error('Usage: `papernexus secure-env set|delete|list|path [NAME] [--stdin]`.');
+}
+
 function logErrorAndExit(error) {
   console.error(error.message);
   process.exitCode = 1;
@@ -1748,11 +1853,11 @@ async function handleUpdateCommand(flags) {
     // Check if PaperNexus source is a git repository
     await execFile('git', ['rev-parse', '--git-dir'], { cwd: papernexusDir });
   } catch (error) {
-    throw new Error(
-      'Not a git repository. PaperNexus must be cloned from GitHub to use update.\n'
-      + 'Clone with: git clone https://github.com/Iranb/PaperNexus.git'
-    );
-  }
+		throw new Error(
+			'Not a git repository. PaperNexus must be cloned from GitHub to use update.\n'
+			+ 'Clone with: git clone https://github.com/papernexus/PaperNexus.git'
+		);
+	}
   
   try {
     // Fetch latest changes
@@ -1863,6 +1968,15 @@ async function main() {
   });
   const configBaseDir = configPath ? path.dirname(configPath) : process.cwd();
   applyProcessConfig(config, configBaseDir);
+
+  if (command === 'secure-env') {
+    await handleSecureEnvCommand(flags, positionals);
+    return;
+  }
+
+  await loadSecureEnv({
+    disabled: Boolean(flags['no-secure-env'])
+  });
 
   if (command === 'init') {
     await handleInitCommand(flags, config, configBaseDir, configPath);
@@ -2256,6 +2370,38 @@ async function main() {
     return;
   }
 
+  if (command === 'benchmark-retrieval' || command === 'bench-retrieval') {
+    const benchmarkPath = positionals[0];
+    if (!benchmarkPath) {
+      throw new Error('Missing benchmark path. Example: `papernexus benchmark-retrieval ./benchmarks/scifact --format beir`.');
+    }
+
+    const benchmark = await import('../core/benchmarks/retrieval.js');
+    const rootPath = await resolveRetrievalBenchmarkRootPath(flags, config, configBaseDir, runtime);
+    const benchmarkOptions = buildRetrievalBenchmarkOptions(flags, config);
+    const report = await benchmark.runRetrievalBenchmark({
+      ...benchmarkOptions,
+      datasetPath: resolvePathWithHome(benchmarkPath, process.cwd()),
+      rootPath,
+      onProgress(update) {
+        if (flags.json || flags.quiet || update.phase !== 'completed') return;
+        const hit = update.firstRelevantRank ? `first hit @${update.firstRelevantRank}` : 'no hit';
+        console.error(`[${update.completed}/${update.total}] ${update.queryId}: ${hit}`);
+      }
+    });
+
+    if (flags.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(benchmark.renderRetrievalBenchmarkReport(report));
+      if (report.artifacts?.runDir) {
+        console.log('');
+        console.log(`Artifacts: ${report.artifacts.runDir}`);
+      }
+    }
+    return;
+  }
+
   if (command === 'query') {
     const query = positionals.join(' ').trim();
     if (!query) {
@@ -2467,7 +2613,11 @@ async function main() {
   }
 
   if (command === 'mcp') {
-    runtime.startMcpServer();
+    runtime.startMcpServer({
+      config,
+      configBaseDir,
+      configPath
+    });
     return;
   }
 

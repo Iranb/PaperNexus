@@ -347,7 +347,7 @@ test('serveCommand exposes authenticated POST query APIs for graph reasoning hel
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableImports: false,
       config: {
@@ -355,7 +355,7 @@ test('serveCommand exposes authenticated POST query APIs for graph reasoning hel
           indexDir: fixture.indexRoot
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       configBaseDir: fixture.workspaceRoot
@@ -363,7 +363,7 @@ test('serveCommand exposes authenticated POST query APIs for graph reasoning hel
 
     try {
       const headers = {
-        Authorization: 'Bearer secret-token',
+        Authorization: 'Bearer test',
         'Content-Type': 'application/json'
       };
 
@@ -485,7 +485,7 @@ test('catalyst API payload helper and HTTP route expose a stable scout-oriented 
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableImports: false,
       config: {
@@ -493,7 +493,7 @@ test('catalyst API payload helper and HTTP route expose a stable scout-oriented 
           indexDir: fixture.rootPath
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       configBaseDir: fixture.workspaceRoot
@@ -503,7 +503,7 @@ test('catalyst API payload helper and HTTP route expose a stable scout-oriented 
       const response = await fetch(`http://127.0.0.1:${port}/api/catalyst`, {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer secret-token',
+          Authorization: 'Bearer test',
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({

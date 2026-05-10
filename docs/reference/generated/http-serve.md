@@ -1,6 +1,6 @@
 # HTTP Serve Reference
 
-This page is generated from route declarations in [`src/server/http.js`](https://github.com/Iranb/PaperNexus/blob/main/src/server/http.js). It focuses on the authenticated HTTP server rather than the preferred remote MCP control plane.
+This page is generated from route declarations in [`src/server/http.js`](https://github.com/papernexus/PaperNexus/blob/main/src/server/http.js). It focuses on the authenticated HTTP server rather than the preferred remote MCP control plane.
 
 ## Routes
 
@@ -11,9 +11,11 @@ This page is generated from route declarations in [`src/server/http.js`](https:/
 | `GET` | `/api/corpus` |
 | `GET` | `/api/corpus-meta` |
 | `GET` | `/api/corpus-sources` |
+| `GET` | `/api/method-registry` |
 | `GET` | `/api/enhancements` |
 | `GET` | `/api/imports` |
 | `POST` | `/api/imports` |
+| `POST` | `/api/paper-index` |
 | `POST` | `/api/query` |
 | `POST` | `/api/context` |
 | `POST` | `/api/impact` |
@@ -22,6 +24,8 @@ This page is generated from route declarations in [`src/server/http.js`](https:/
 | `POST` | `/api/catalyst` |
 | `POST` | `/api/path-trace` |
 | `POST` | `/api/evidence-chain` |
+| `POST` | `/api/method-lineage` |
+| `POST` | `/api/method-evidence` |
 | `POST` | `/api/reflection-chain` |
 | `POST` | `/api/theory-brief` |
 | `POST` | `/api/storyline-brief` |

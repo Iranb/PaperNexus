@@ -10,6 +10,7 @@ import { listResources, readResourcePayload } from './resources.js';
 import { corpusSourcesPayload } from '../server/api.js';
 import { executeIdeaCatalystTool } from './tool-idea-catalyst.js';
 import { executeImportWorkflowTool } from './tool-import-workflow.js';
+import { executeLiteratureDiscoveryTool } from './tool-literature-discovery.js';
 import { executeResearchBriefingTool } from './tool-research-briefing.js';
 import { executeResearchLookupTool } from './tool-research-lookup.js';
 import { PAPERNEXUS_TOOLS } from './tools.js';
@@ -217,6 +218,10 @@ export async function executeTool(name, args, options = {}) {
 
   if (name === 'import_workflow') {
     return executeImportWorkflowTool(args, options);
+  }
+
+  if (name === 'literature_discovery') {
+    return executeLiteratureDiscoveryTool(args, options);
   }
 
   if (name === 'idea_catalyst') {

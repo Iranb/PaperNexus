@@ -1,4 +1,5 @@
 import { ensureDir, readJson, writeJson } from '../../lib/fs.js';
+import { resolveOpenAlexApiKey } from '../../lib/api-keys.js';
 import {
   hasStrongPaperIdentifiers,
   normalizeArxivId,
@@ -87,6 +88,18 @@ export function resolveIdentifierResolutionConfig(options = {}) {
       ?? process.env.PAPERNEXUS_IDENTIFIER_RESOLUTION_MAILTO
       ?? ''
     ).trim(),
+    openAlexApiKey: resolveOpenAlexApiKey({
+      openAlexApiKey: nested.openAlexApiKey
+        ?? options.identifierResolutionOpenAlexApiKey
+        ?? options.openAlexApiKey,
+      openAlexApiKeyFile: nested.openAlexApiKeyFile
+        ?? nested.openAlexApiKeyPath
+        ?? options.identifierResolutionOpenAlexApiKeyFile
+        ?? options.identifierResolutionOpenAlexApiKeyPath
+        ?? options.openAlexApiKeyFile
+        ?? options.openAlexApiKeyPath,
+      env: options.env
+    }),
     allowInWatch: toBoolean(
       nested.allowInWatch ?? options.identifierResolutionAllowInWatch,
       false
@@ -375,6 +388,9 @@ function createOpenAlexUrl(paper = {}, config = {}) {
   url.searchParams.set('select', 'id,doi,title,display_name,publication_year,authorships,ids,primary_location,locations');
   if (config.mailto) {
     url.searchParams.set('mailto', config.mailto);
+  }
+  if (config.openAlexApiKey) {
+    url.searchParams.set('api_key', config.openAlexApiKey);
   }
   return url;
 }

@@ -101,7 +101,7 @@ This site is designed around **automatic regeneration where possible**.
 
 - Narrative guides and architecture explanations are curated Markdown pages.
 - CLI, MCP, graph schema, config, HTTP route, module map, and script references are generated with `npm run docs:generate`.
-- GitHub Pages deployment is driven by the repository workflow at [docs.yml](https://github.com/Iranb/PaperNexus/blob/main/.github/workflows/docs.yml).
+- GitHub Pages deployment is driven by the repository workflow at [docs.yml](https://github.com/papernexus/PaperNexus/blob/main/.github/workflows/docs.yml).
 
 If you change runtime behavior, the expected maintenance path is:
 

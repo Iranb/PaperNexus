@@ -219,6 +219,11 @@ function reconcilePaperIdentifiers(identifiers = {}) {
   const reconciled = { ...identifiers };
   const doiArxivId = extractArxivIdFromDoi(reconciled.doi);
 
+  if (doiArxivId && !reconciled.arxivId) {
+    reconciled.arxivId = doiArxivId;
+    return reconciled;
+  }
+
   if (doiArxivId && reconciled.arxivId) {
     const doiBase = stripArxivVersion(doiArxivId);
     const arxivBase = stripArxivVersion(reconciled.arxivId);
@@ -510,17 +515,17 @@ export function normalizePaperIdentifierQuery(input = {}) {
   const identifierType = normalizeIdentifierFieldName(input.identifierType || input.type || '');
   if (identifierType) {
     const value = normalizeIdentifierValue(identifierType, identifier);
-    return value ? { ...normalized, [identifierType]: value } : normalized;
+    return value ? normalizePaperIdentifiers({ ...normalized, [identifierType]: value }) : normalized;
   }
 
   const inferred = inferPaperIdentifierType(identifier);
   if (!inferred) return normalized;
   const value = normalizeIdentifierValue(inferred, identifier);
   if (!value) return normalized;
-  return {
+  return normalizePaperIdentifiers({
     ...normalized,
     [inferred]: value
-  };
+  });
 }
 
 export function inferPaperIdentifierType(value = '') {

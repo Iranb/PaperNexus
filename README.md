@@ -1,14 +1,140 @@
-# PaperNexus
+<p align="center">
+  <strong style="font-size:2em;">PaperNexus</strong>
+</p>
 
-PaperNexus is a local-first research knowledge graph system for paper corpora. It ingests PDF or Markdown, materializes reusable paper snapshots, builds a multilayer graph, and exposes that graph through a CLI, local dashboard, MCP server, and background services.
+<p align="center">Local-first research knowledge graph for paper corpora, literature discovery, method evolution, and evidence-grounded research intelligence.</p>
 
-It also supports queued Web API imports for uploaded `pdf/md` files and portable backup archives for the current single-graph environment.
+<p align="center">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-339933" />
+  <img src="https://img.shields.io/badge/storage-local--first-0f766e" />
+  <img src="https://img.shields.io/badge/interface-CLI%20%7C%20Web%20%7C%20MCP-2563eb" />
+  <img src="https://img.shields.io/badge/license-custom%20MIT-1f2937" />
+</p>
 
-Preferred setup path: run `papernexus init`, then `papernexus analyze --force`.
+<p align="center">
+  <a href="docs/index.md">Docs</a> |
+  <a href="docs/get-started/index.md">Get Started</a> |
+  <a href="docs/pipeline/index.md">Pipeline</a> |
+  <a href="docs/graph/index.md">Graph</a> |
+  <a href="docs/interfaces/index.md">Interfaces</a> |
+  <a href="docs/reference/index.md">Reference</a>
+</p>
 
-Local MCP still works through `papernexus mcp`, and `papernexus serve` can now optionally expose the same MCP surface remotely over authenticated HTTP at `/mcp`.
+---
 
-[Docs Home](docs/index.md) · [Overview](docs/overview/index.md) · [Get Started](docs/get-started/index.md) · [Pipeline](docs/pipeline/index.md) · [Graph](docs/graph/index.md) · [Interfaces](docs/interfaces/index.md) · [Storage](docs/storage/index.md) · [Operations](docs/operations/index.md) · [Reference](docs/reference/index.md) · [Manual Walkthrough](#manual-walkthrough)
+## News
+
+- `2026-05-09` Added a NeurIPS-style technical report source under `papers/`, with an arXiv-ready source package workflow.
+- `2026-05-09` Added a literature-discovery backbone with query planning, provider aggregation, legal full-text resolution, coverage reporting, and import-queue bridging.
+- `2026-05-09` Added method-evolution evidence: method registry, citation-context validation, typed method-to-method edges, lineage lookup, and method evidence APIs.
+- `2026-04-07` Added remote streamable HTTP MCP support on top of `papernexus serve`.
+- `2026-04-07` Added PaddleOCR-VL parser integration and remote parser runtime support.
+
+---
+
+## What Is PaperNexus?
+
+PaperNexus turns a local paper corpus into a reusable research knowledge graph. It ingests PDF or Markdown sources, materializes cacheable semantic snapshots, builds a typed multilayer graph, and exposes that graph through a CLI, browser dashboard, authenticated HTTP APIs, local stdio MCP, remote HTTP MCP, and Python helper scripts.
+
+> PaperNexus is not just a paper folder or an embedding index. Its core artifact is an inspectable graph of papers, problems, methods, claims, evidence, datasets, benchmarks, ideas, and method-evolution relationships.
+
+**Local-first**: source files, snapshots, graph stores, import queues, and discovery artifacts live on your machine.
+
+**Graph-native**: research questions, method lineage, cross-domain evidence, impact, context, ideas, and brainstorming operate over committed graph state.
+
+**Evidence-aware**: method-evolution edges require citation context, exact quotes, temporal checks, confidence, and evidence completeness gates.
+
+**Interface-complete**: CLI for operators, Web UI for inspection, HTTP APIs for apps, and MCP tools for agents.
+
+**Recoverable**: staged analysis, dirty-only rebuilds, import queues, retry/quarantine, backup export, and backup unpack are first-class workflows.
+
+## Quick Start
+
+```bash
+npm install
+npm link
+python -m pip install -U markpdfdown
+
+papernexus init
+papernexus analyze --force
+papernexus serve
+```
+
+Open the local dashboard:
+
+```text
+http://127.0.0.1:4821
+```
+
+If the global command is not found, inspect your global npm binary directory and add it to `PATH`:
+
+```bash
+npm bin -g
+```
+
+## Core Capabilities
+
+**Corpus ingestion**
+
+- PDF and Markdown ingestion with cache-first reuse.
+- MarkPDFDown as the recommended parser path, with Docling fallback for failed or degenerate parses.
+- Optional parser backends: MarkItDown, OpenDataLoader, Docling, Marker, MinerU, and PaddleOCR-VL.
+- Import queue for uploaded `pdf/md` files, with per-task logs and resumable worker state.
+
+**Literature discovery**
+
+- Topic-to-candidate workflow with query planning, venue hints, provider execution, merge, citation expansion, source resolution, and coverage reporting.
+- Provider support for OpenAlex, Semantic Scholar, Crossref, arXiv, DBLP, Europe PMC/PubMed alias, CORE, and Unpaywall DOI lookup.
+- Legal full-text handling with explicit statuses such as `open_pdf`, `needs_institution`, `no_open_pdf`, `anti_bot_blocked`, and `html_not_pdf`.
+- Discovery artifacts include `discovery.json`, `report.md`, `download-manifest.json`, and `latest.json`.
+
+**Knowledge graph**
+
+- Typed graph layers for papers, problems, methods, claims, evidence, datasets, benchmarks, takeaways, idea fragments, and future directions.
+- Staged graph build, graph merge, authoritative graph commit, lite read projection, and generated graph metadata.
+- Kuzu-backed authoritative graph with a lightweight JSON read index.
+
+**Research intelligence**
+
+- Graph-only research lookup paths with `queryTimeLlmCalls: 0`.
+- Cross-domain evidence, method lineage, method evidence, method registry, and unified research answers.
+- Idea catalyst, challenge graph, domain bridge, analogy, brainstorm, and interdisciplinary ranking helpers.
+
+**Operations**
+
+- Browser dashboard, local MCP, remote HTTP MCP, authenticated HTTP routes, macOS background services, logs, backup export, and backup unpack.
+- Python wrapper scripts for remote import, queue inspection, graph queries, paper index lookup, research chains, and stage sync.
+
+## System Workflow
+
+```text
+papers (.pdf / .md)
+  -> materialize
+  -> llm-optimize
+  -> build-graph
+  -> merge-graph
+  -> write-index
+  -> query / answer / brainstorm / serve / MCP
+```
+
+Key storage rule:
+
+- Source files stay under the configured paper source directory.
+- Markdown cache, parser metadata, source manifests, semantic snapshots, queues, and graph artifacts live under the PaperNexus storage layout.
+- Graph commit is separated from earlier stages so interrupted runs can resume cleanly.
+
+## Capability Matrix
+
+| Area | Main entry points | Output |
+|------|-------------------|--------|
+| Setup | `papernexus init`, `papernexus setup`, `papernexus apikey` | Runtime config and secure LLM credentials |
+| Corpus build | `analyze`, `materialize`, `llm-optimize`, `build-graph`, `merge-graph`, `write-index` | Snapshots, graph store, lite index |
+| Import queue | `papernexus imports`, Web upload API, Python import scripts | Import tasks, logs, recovered source files |
+| Discovery | MCP `literature_discovery` | Candidate lists, OA status, manifests, importable PDFs |
+| Graph lookup | `query`, `context`, `impact`, `answer` | Evidence-backed graph results |
+| Ideation | `ideas`, `brainstorm`, `catalyst` | Idea fragments, cross-domain mechanisms, research packets |
+| Serving | `serve`, HTTP API, Web UI, remote MCP | Local dashboard and agent control plane |
+| Operations | `watch`, `enhance`, `service`, `logs`, `backup-export` | Background refresh, overlays, archives |
 
 ## Install
 
@@ -19,87 +145,68 @@ npm install
 npm link
 ```
 
-If the global command is not found:
-
-```bash
-npm bin -g
-```
-
-Add that directory to your shell `PATH`.
-
-## Quick Start
-
-Install parser dependencies first:
+Recommended parser dependency:
 
 ```bash
 python -m pip install -U markpdfdown
 ```
 
-The default parser path now uses MarkPDFDown plus your PaperNexus `llm` config.
-If MarkPDFDown returns a failed parse or a degenerate title such as `Abstract`, PaperNexus automatically reparses the PDF with Docling before the paper can enter duplicate resolution.
-If you want one Python runtime setting for all Python-driven parsers, use `analyze.pythonCommand`; parser-specific fields such as `markpdfdownPython` or `doclingPython` remain supported as overrides.
-If you prefer the older OpenDataLoader path, install it separately:
+Optional parser dependencies:
 
 ```bash
 python -m pip install -U opendataloader-pdf
-```
-
-If you want optional alternative parsers later, install them separately:
-
-```bash
 pip install docling marker-pdf
-```
-
-If you want to use the PaddleOCR-VL PDF parser against a local Docker or vLLM service, install the Python client runtime separately:
-
-```bash
 python -m pip install -U "paddleocr[doc-parser]"
 ```
 
-Run the recommended first-time flow:
+## Configuration
 
-```bash
-papernexus init
-papernexus analyze --force
-papernexus serve
-```
-
-Then open:
+The default runtime config lives at:
 
 ```text
-http://127.0.0.1:4821
+~/.papernexus/config.json
 ```
 
-## Documentation Site
-
-PaperNexus now ships a VitePress documentation site that can be served locally and deployed to GitHub Pages.
+This repository ships a portable template:
 
 ```bash
-npm run docs:dev
-npm run docs:build
+cp ./config.example.json ~/.papernexus/config.json
 ```
 
-The generated reference pages are refreshed automatically by:
+Minimal recommended parser and LLM config:
 
-```bash
-npm run docs:generate
+```json
+{
+  "analyze": {
+    "pdfParser": "markpdfdown",
+    "pythonCommand": "python3",
+    "doclingCommand": "docling",
+    "doclingDevice": "cuda",
+    "doclingImageExportMode": "placeholder",
+    "doclingPreload": true,
+    "doclingUseVlm": false
+  },
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY"
+  }
+}
 ```
 
-If you want the full background setup:
+If Docling should reuse a shared model cache or pin a GPU:
 
-```bash
-papernexus service install
-papernexus service status
-papernexus logs watch
+```json
+{
+  "analyze": {
+    "doclingCudaVisibleDevices": "0",
+    "doclingArtifactsPath": "/path/to/docling/models"
+  }
+}
 ```
 
-To verify your current parser configuration against a single PDF before a full corpus run:
-
-```bash
-papernexus test-pdf-config ./paper.pdf --json
-```
-
-## Most Common Commands
+## Common Commands
 
 ```bash
 # Interactive setup
@@ -111,271 +218,52 @@ papernexus analyze --force
 # Incremental rebuild / resume
 papernexus analyze
 
-# Stage 1: markdown cache + heuristic snapshots
+# Stage-by-stage rebuild
 papernexus materialize --continue
-
-# Stage 2: batched LLM enrichment, dirty-only and cache-first
 papernexus llm-optimize --continue --semantic-extraction llm-primary --batch-size 16
-
-# Stage 3: staged graph build
 papernexus build-graph --continue
-
-# Stage 4a: merge similar evaluation nodes
 papernexus merge-graph --continue
-
-# Merge currently relies on deterministic heuristics only
-papernexus merge-graph --continue
-
-# Stage 4b: commit the staged graph
 papernexus write-index --continue
 
-# Export the current graph environment
-papernexus backup-export
-papernexus backup-export ./papernexus-backup.tgz
-
-# Unpack a backup archive into an inspectable directory
-papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
-
-# Or run stages 2-5 together
-papernexus optimize --continue --semantic-extraction llm-primary
-
-# Query and idea support
+# Query and research intelligence
 papernexus status
 papernexus query "experiment planning"
 papernexus context "knowledge graph"
 papernexus impact "knowledge graph" --direction upstream
+papernexus answer "reduce confirmation bias during tutoring feedback" --mode cross_domain_evidence --target-domain Education
+papernexus answer --method Transformer --mode method_lineage --direction backward
+
+# Ideation
 papernexus ideas "evidence tracing"
 papernexus brainstorm "semi-supervised learning" --mode diverge
+papernexus catalyst --target-domain Education --challenge "reduce confirmation bias during tutoring feedback"
 
-# Enhancement overlays
-papernexus enhance --once
+# Import queue
+papernexus imports status
+papernexus imports running
+papernexus imports log --task-id <task-id>
 
-# Local UI / services
+# Dashboard, services, logs
 papernexus serve
 papernexus service install
+papernexus service status
 papernexus logs watch
+
+# Backup
+papernexus backup-export
+papernexus backup-export ./papernexus-backup.tgz
+papernexus backup-unpack ./papernexus-backup.tgz --output ./restored-papernexus
 ```
 
-Default MarkPDFDown PDF parser config:
+## MCP And HTTP
 
-```json
-{
-  "analyze": {
-    "pdfParser": "markpdfdown",
-    "pythonCommand": "python3",
-    "doclingCommand": "docling",
-    "doclingDevice": "cuda",
-    "doclingImageExportMode": "placeholder",
-    "doclingEnrichPictureClasses": false,
-    "doclingEnrichPictureDescription": false,
-    "doclingPreload": true,
-    "doclingUseVlm": false,
-    "doclingVlmPreset": "granite_docling"
-  },
-  "llm": {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "baseUrl": "https://api.openai.com/v1",
-    "apiKeyEnv": "OPENAI_API_KEY"
-  }
-}
-```
-
-If you need Docling to pin a specific GPU or reuse a shared model cache during fallback parsing, extend the same config with:
-
-```json
-{
-  "analyze": {
-    "doclingCudaVisibleDevices": "2",
-    "doclingArtifactsPath": "/home/disk0/hyq/.cache/docling/models"
-  }
-}
-```
-
-Optional Docling VLM fallback config:
-
-```json
-{
-  "analyze": {
-    "pdfParser": "markpdfdown",
-    "doclingCommand": "docling",
-    "pythonCommand": "python3",
-    "doclingUseVlm": true,
-    "doclingVlmPreset": "granite_docling"
-  },
-  "llm": {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "baseUrl": "https://api.openai.com/v1",
-    "apiKeyEnv": "OPENAI_API_KEY"
-  }
-}
-```
-
-Optional OpenDataLoader PDF parser config:
-
-```json
-{
-  "analyze": {
-    "pdfParser": "opendataloader",
-    "pythonCommand": "python3"
-  }
-}
-```
-
-Optional PaddleOCR-VL remote parser config:
-
-```json
-{
-  "analyze": {
-    "pdfParser": "paddleocr-vl",
-    "pythonCommand": "python3",
-    "paddleocrVlServerUrl": "http://127.0.0.1:8080/v1",
-    "paddleocrVlLayoutModel": "PP-DocLayout-S"
-  }
-}
-```
-
-Optional Marker text-only parser config:
-
-```json
-{
-  "analyze": {
-    "pdfParser": "marker",
-    "markerCommand": "marker_single",
-    "markerBlockBlacklist": ["table", "image"]
-  }
-}
-```
-
-## Manual Walkthrough
-
-This section folds the old `manual/README.md` into the main entrypoint so you can exercise the full product from top to bottom in one place.
-
-### 1. Open the project root
+Local stdio MCP:
 
 ```bash
-cd "/Users/iranb/Library/Mobile Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus"
+papernexus mcp
 ```
 
-### 2. Install and expose the CLI
-
-```bash
-npm install
-npm link
-papernexus help
-```
-
-### 3. Prepare a paper source folder
-
-Recommended default source directory:
-
-```bash
-/Users/iranb/.papernexus/papers
-```
-
-Create it if needed:
-
-```bash
-mkdir -p /Users/iranb/.papernexus/papers
-```
-
-You can start with built-in examples:
-
-```bash
-mkdir -p /Users/iranb/.papernexus/papers/demo
-cp ./examples/*.md /Users/iranb/.papernexus/papers/demo/
-```
-
-Or place your own `.md` / `.pdf` papers there.
-
-### 4. Run first-time setup
-
-```bash
-papernexus init
-```
-
-Recommended answers:
-
-- paper source directory: `/Users/iranb/.papernexus/papers`
-- corpus name: a short name such as `demo` or `gcd`
-- index directory: `/Users/iranb/.papernexus/index-store`
-
-Default runtime config path:
-
-```bash
-/Users/iranb/.papernexus/config.json
-```
-
-The repo now ships a template at [config.example.json](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/config.example.json). Runtime `config.json` and `.papernexus-home/` are local-only and ignored by Git, so copy the template when setting up a new machine:
-
-```bash
-cp ./config.example.json ~/.papernexus/config.json
-```
-
-### 5. Build the first corpus
-
-```bash
-papernexus analyze --force
-```
-
-This should:
-
-- parse papers or reuse cached Markdown
-- build the graph
-- write the authoritative graph store and lite index
-- enqueue enhancement overlays
-
-### 6. Inspect the corpus
-
-```bash
-papernexus list
-papernexus status
-```
-
-Or for a named corpus:
-
-```bash
-papernexus status --corpus <your-corpus-name>
-```
-
-### 7. Explore the graph manually
-
-```bash
-papernexus query "experiment planning" --corpus <your-corpus-name>
-papernexus context "knowledge graph" --corpus <your-corpus-name>
-papernexus impact "knowledge graph" --corpus <your-corpus-name> --direction upstream
-papernexus impact "knowledge graph" --corpus <your-corpus-name> --direction downstream
-papernexus ideas "evidence tracing for experiment planning" --corpus <your-corpus-name>
-papernexus brainstorm "experiment planning" --corpus <your-corpus-name> --mode diverge
-papernexus brainstorm "experiment planning" --corpus <your-corpus-name> --mode converge
-```
-
-### 8. Refresh enhancement overlays
-
-```bash
-papernexus enhance --once --corpus <your-corpus-name>
-```
-
-This populates:
-
-- theory overlay
-- storyline overlay
-- reflection overlay
-
-### 9. Open the dashboard
-
-```bash
-papernexus serve
-```
-
-Open:
-
-```text
-http://127.0.0.1:4821
-```
-
-To expose remote MCP from the same server, add this to `config.json` before starting `serve`:
+Remote HTTP MCP uses the same server as the dashboard. Add this to `config.json`:
 
 ```json
 {
@@ -393,170 +281,137 @@ To expose remote MCP from the same server, add this to `config.json` before star
 }
 ```
 
-Then point an MCP client at `http://<host>:4821/mcp` with `Authorization: Bearer <token>`.
-
-### 10. Turn on background mode
+Then start:
 
 ```bash
-papernexus service install
-papernexus service status
-papernexus logs watch
+papernexus serve
 ```
 
-By default this installs:
-
-- `watch` for incremental refresh
-- `serve` for dashboard/API and enhancement worker
-
-### 11. Verify dynamic updates
-
-1. Add or edit a paper under `/Users/iranb/.papernexus/papers`
-2. Wait a few seconds
-3. Run:
-
-```bash
-papernexus status --corpus <your-corpus-name>
-```
-
-4. Refresh the dashboard
-
-You should see updated graph state and refreshed enhancements.
-
-### 12. Optional: remote Ollama
-
-In `config.json`:
-
-```json
-{
-  "llm": {
-    "provider": "ollama",
-    "model": "qwen2.5:0.5b",
-    "baseUrl": "http://127.0.0.1:11434",
-    "sshHost": "your-remote-host",
-    "relations": true,
-    "batchSize": 8
-  }
-}
-```
-
-Then rerun:
-
-```bash
-papernexus analyze --force
-```
-
-### 13. Optional: MCP mode
-
-```bash
-papernexus mcp
-papernexus setup
-```
-
-For remote MCP over HTTP, enable `serve.mcp.enabled`, start `papernexus serve`, and use a client config like:
-
-```json
-{
-  "mcpServers": {
-    "papernexus-remote": {
-      "url": "http://127.0.0.1:4821/mcp",
-      "transport": "streamable-http",
-      "headers": {
-        "Authorization": "Bearer ${PAPERNEXUS_MCP_TOKEN}"
-      },
-      "connectionTimeoutMs": 30000
-    }
-  }
-}
-```
-
-### 14. Optional: exercise reflection-oriented reasoning
-
-1. Run `papernexus enhance --once --corpus <your-corpus-name>`
-2. Open the dashboard
-3. Inspect `Innovation`, `Experiment`, `Outcome`, and `Reflection`
-
-### 15. What counts as “everything worked”
-
-You’ve exercised the full PaperNexus flow when:
-
-- `papernexus` runs globally
-- the corpus indexes without errors
-- query/context/impact/ideas/brainstorm return results
-- enhancement overlays are generated
-- the dashboard opens
-- services show as loaded
-- adding a paper triggers an incremental update
-
-## Highlights
-
-- PDF and Markdown ingestion with cache-first reuse
-- staged pipeline with resumable commands
-- optional LLM-assisted semantic extraction and relation extraction
-- graph merge stage for duplicate evaluation nodes
-- merge-time LLM node deletion is currently disabled; do not rely on `--node-llm-check`
-- queued Web API import tasks with per-task logs under `.papernexus/imports/`
-- lightweight backup archive export/unpack for committed graph state, runtime config, and markdown-first source recovery
-- Kuzu-backed authoritative graph with lite JSON read index
-- theory, storyline, and reflection overlays
-- local dashboard, MCP server, and macOS background services
-
-## How It Works
+Client target:
 
 ```text
-papers (.pdf / .md)
-  ->
-materialize
-  ->
-llm-optimize
-  ->
-build-graph
-  ->
-merge-graph
-  ->
-write-index
-  ->
-query / brainstorm / serve / watch / enhance
+http://<host>:4821/mcp
+Authorization: Bearer <token>
 ```
 
-Key idea:
+Important MCP tools include:
 
-- source files stay under the paper source directory
-- reusable markdown cache and semantic snapshots live under the corpus `.papernexus/`
-- graph commit is separated from earlier stages so interrupted runs can resume cleanly
+| Tool | Purpose |
+|------|---------|
+| `research_lookup` | Graph search, cross-domain evidence, method lineage, method evidence, method registry, research answers |
+| `literature_discovery` | Plan/search/resolve/run/import/status/report/list for topic-level discovery |
+| `research_briefing` | Briefing-oriented research summaries over existing graph state |
+| `idea_catalyst` | Cross-domain idea generation and research packet support |
+| `import_workflow` | Import task submission and queue inspection |
+
+## Access And Full-Text Policy
+
+PaperNexus prefers structured open APIs and legal open-access sources.
+
+| Source | Access mode |
+|--------|-------------|
+| OpenAlex | REST API |
+| Semantic Scholar | REST API |
+| Crossref | REST API |
+| arXiv | REST API |
+| DBLP | REST/API-style metadata access |
+| Europe PMC / PubMed alias | REST API |
+| CORE | REST API when configured |
+| Unpaywall | DOI-based OA status and PDF lookup |
+
+Full-text resolution only uses legal open-access PDF sources. If a source needs institutional access, returns HTML instead of PDF, is blocked by anti-bot checks, or has no open PDF, PaperNexus records that status instead of attempting to bypass the restriction.
 
 ## Documentation Map
 
-Use the docs folder for detail pages that were previously embedded in the README:
+- [Docs Home](docs/index.md): high-level entry point.
+- [Overview](docs/overview/index.md): system summary and core concepts.
+- [Get Started](docs/get-started/index.md): beginner setup and first corpus.
+- [Pipeline](docs/pipeline/index.md): staged build, imports, parser runtime, recovery, and performance.
+- [Graph](docs/graph/index.md): graph model and cross-domain intelligence.
+- [Interfaces](docs/interfaces/index.md): CLI, Web, HTTP, MCP, and remote import workflows.
+- [Storage](docs/storage/index.md): local storage layout and graph artifacts.
+- [Operations](docs/operations/index.md): service mode, backup, logs, and runtime operations.
+- [Reference](docs/reference/index.md): generated CLI, config, graph schema, HTTP, MCP, script, and module references.
 
-- [Getting Started](docs/getting-started.md)
-  Beginner setup, default paths, first corpus, and common first-run flows.
-- [CLI Reference](docs/cli-reference.md)
-  Command surface, stage commands, common flags, and examples.
-- [Configuration](docs/configuration.md)
-  `config.json`, parser selection, LLM config, Keychain, and remote Ollama.
-- [Pipeline & Storage](docs/pipeline-and-storage.md)
-  Stage semantics, `--continue` / `--force`, cache behavior, merge stage, and storage layout.
-- [Architecture](docs/architecture.md)
-  Graph model, node types, overlays, and repository layout.
-- [Services & UI](docs/services-and-ui.md)
-  Dashboard, `watch`, `serve`, `logs watch`, MCP, and service lifecycle.
+Regenerate reference docs:
+
+```bash
+npm run docs:generate
+```
+
+Serve the documentation site locally:
+
+```bash
+npm run docs:dev
+npm run docs:build
+```
+
+## Project Structure
+
+```text
+PaperNexus/
+├── src/
+│   ├── cli/                    # CLI entry point and command dispatch
+│   ├── core/
+│   │   ├── discovery/          # Literature discovery workflow and providers
+│   │   ├── ingestion/          # Materialize, parser, pipeline, method evidence
+│   │   ├── graph/              # Graph schema, intelligence, catalyst, lineage
+│   │   ├── enhancements/       # Theory/storyline/reflection overlays
+│   │   ├── imports/            # Import queue worker
+│   │   └── search/             # Search and brainstorm helpers
+│   ├── mcp/                    # Local and remote MCP tools/resources/prompts
+│   ├── server/                 # HTTP server and API routes
+│   ├── storage/                # Corpus, Kuzu, import, backup, lite stores
+│   └── lib/                    # Config, keychain, launchd, server paths, utils
+├── scripts/                    # Python wrappers, parser adapters, service helpers
+├── web/                        # Browser dashboard
+├── docs/                       # VitePress docs and generated references
+├── examples/                   # Example paper sources
+├── test/                       # Node test suite
+├── papers/                     # Generated technical reports and paper sources
+├── config.example.json         # Runtime config template
+└── package.json
+```
+
+## Design Philosophy
+
+The bottleneck in research automation is not only retrieval. It is preserving enough structure that later reasoning can be inspected, reused, and challenged.
+
+PaperNexus therefore keeps four boundaries explicit:
+
+- **Source vs snapshot**: parsing and semantic extraction are cached separately.
+- **Snapshot vs graph**: graph construction is staged and recoverable.
+- **Evidence vs answer**: research answers should cite graph evidence rather than invent it at query time.
+- **Open access vs restricted access**: discovery reports legal availability instead of bypassing access controls.
 
 ## Development
 
-Core files:
+Run the full test suite:
 
-- `src/cli/index.js`
-- `src/core/ingestion/pipeline.js`
-- `src/core/llm/ollama.js`
-- `src/storage/corpus-store.js`
-- `src/core/enhancements/worker.js`
-- `src/server/http.js`
+```bash
+npm test
+```
 
-Common verification commands:
+Focused checks:
 
 ```bash
 node --test test/workflow.test.js
 node --test test/materialize-optimize.test.js
-node --test test/staged-pipeline.test.js
-node --test test/merge-graph-stage.test.js
+node --test test/literature-discovery.test.js
+node --test test/method-evolution-overlay.test.js
+node --test test/research-intelligence.test.js
 ```
+
+Useful development commands:
+
+```bash
+node ./src/cli/index.js help
+node ./src/cli/index.js test-pdf-config ./paper.pdf --json
+npm run docs:generate
+```
+
+## License
+
+PaperNexus is released under an MIT-based license with an additional attribution requirement. Any use, redistribution, modification, publication, or derivative work based on PaperNexus must clearly identify PaperNexus as the source and include a link to the original repository when reasonably possible.
+
+See [LICENSE](LICENSE) for the full terms.

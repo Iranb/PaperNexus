@@ -2,6 +2,7 @@
   "name": "papernexus",
   "version": "0.1.0",
   "description": "Serverless knowledge graph framework for academic PDFs, inspired by GitNexus and powered by Marker.",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "bin": {
     "papernexus": "./src/cli/index.js"

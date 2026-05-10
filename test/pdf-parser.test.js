@@ -156,7 +156,7 @@ test('buildRemoteDoclingScript includes docling command and output directory', (
     ocrEngine: 'ocrmac',
     device: 'cuda',
     cudaVisibleDevices: '2',
-    artifactsPath: '/home/hyq/.cache/docling/models',
+    artifactsPath: '/home/researcher/.cache/docling/models',
     imageExportMode: 'placeholder',
     enrichPictureClasses: false,
     enrichPictureDescription: false
@@ -167,7 +167,7 @@ test('buildRemoteDoclingScript includes docling command and output directory', (
   assert.doesNotMatch(script, /\nselect_gpu\n/);
   assert.match(script, /'--device' 'cuda'/);
   assert.match(script, /export OPENBLAS_NUM_THREADS='4'/);
-  assert.match(script, /'--artifacts-path' '\/home\/hyq\/\.cache\/docling\/models'/);
+  assert.match(script, /'--artifacts-path' '\/home\/researcher\/\.cache\/docling\/models'/);
   assert.match(script, /'--image-export-mode' 'placeholder'/);
   assert.match(script, /--no-enrich-picture-classes/);
   assert.match(script, /--no-enrich-picture-description/);
@@ -896,7 +896,7 @@ test('convertPdfToMarkdown passes Docling GPU and image flags through the local 
       doclingPreload: false,
       doclingDevice: 'cuda',
       doclingCudaVisibleDevices: '2',
-      doclingArtifactsPath: '/home/hyq/.cache/docling/models',
+      doclingArtifactsPath: '/home/researcher/.cache/docling/models',
       doclingImageExportMode: 'placeholder',
       doclingEnrichPictureClasses: false,
       doclingEnrichPictureDescription: false,
@@ -914,7 +914,7 @@ test('convertPdfToMarkdown passes Docling GPU and image flags through the local 
     const envLog = await fs.readFile(path.join(os.tmpdir(), 'papernexus-docling-env.log'), 'utf8');
     assert.match(envLog, /^2/m);
     assert.match(argsLog, /--device\ncuda/);
-    assert.match(argsLog, /--artifacts-path\n\/home\/hyq\/\.cache\/docling\/models/);
+    assert.match(argsLog, /--artifacts-path\n\/home\/researcher\/\.cache\/docling\/models/);
     assert.match(argsLog, /--image-export-mode\nplaceholder/);
     assert.match(argsLog, /--no-enrich-picture-classes/);
     assert.match(argsLog, /--no-enrich-picture-description/);

@@ -16,7 +16,7 @@
 
 本计划主要依据论文：
 
-- `/Users/iranb/Downloads/2603.12226v1.pdf`
+- `<downloads-dir>/2603.12226v1.pdf`
 
 从论文抽出的、对 PaperNexus 真正有要求的创新点不是“自动找论文”，而是：
 

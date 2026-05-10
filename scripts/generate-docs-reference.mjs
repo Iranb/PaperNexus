@@ -13,7 +13,8 @@ const generatedRoot = path.join(docsRoot, 'reference', 'generated');
 const srcRoot = path.join(repoRoot, 'src');
 const scriptsRoot = path.join(repoRoot, 'scripts');
 const skillRoot = path.join(repoRoot, 'SKILL');
-const REPO_BLOB_BASE = 'https://github.com/Iranb/PaperNexus/blob/main/';
+const REPO_BLOB_BASE = process.env.PAPERNEXUS_REPO_BLOB_BASE
+  || 'https://github.com/papernexus/PaperNexus/blob/main/';
 
 function heading(text, level = 1) {
   return `${'#'.repeat(level)} ${text}\n`;

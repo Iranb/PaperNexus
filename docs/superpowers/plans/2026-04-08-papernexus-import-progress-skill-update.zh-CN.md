@@ -23,9 +23,9 @@
 
 文件：
 
-- [src/storage/import-store.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/storage/import-store.js)
-- [src/core/imports/worker.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/core/imports/worker.js)
-- [src/core/ingestion/pipeline.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/core/ingestion/pipeline.js)
+- [src/storage/import-store.js](../../../src/storage/import-store.js)
+- [src/core/imports/worker.js](../../../src/core/imports/worker.js)
+- [src/core/ingestion/pipeline.js](../../../src/core/ingestion/pipeline.js)
 
 每个 import task 现在都会持久化：
 
@@ -48,9 +48,9 @@
 
 文件：
 
-- [src/mcp/tool-import-workflow.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/mcp/tool-import-workflow.js)
-- [src/mcp/tools.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/mcp/tools.js)
-- [src/server/api.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/server/api.js)
+- [src/mcp/tool-import-workflow.js](../../../src/mcp/tool-import-workflow.js)
+- [src/mcp/tools.js](../../../src/mcp/tools.js)
+- [src/server/api.js](../../../src/server/api.js)
 
 `import_workflow` 现在新增：
 
@@ -73,7 +73,7 @@
 
 文件：
 
-- [SKILL/PaperNexus/scripts/pn_batch_import.py](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/SKILL/PaperNexus/scripts/pn_batch_import.py)
+- [SKILL/PaperNexus/scripts/pn_batch_import.py](../../../SKILL/PaperNexus/scripts/pn_batch_import.py)
 
 批量脚本现在：
 
@@ -87,10 +87,10 @@
 
 更新文件：
 
-- [SKILL/PaperNexus/SKILL.md](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/SKILL/PaperNexus/SKILL.md)
-- [SKILL/PaperNexusBatchImport/SKILL.md](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/SKILL/PaperNexusBatchImport/SKILL.md)
-- [SKILL/PaperNexusAgenticReasoning/SKILL.md](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/SKILL/PaperNexusAgenticReasoning/SKILL.md)
-- [SKILL/PaperNexusReflection/SKILL.md](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/SKILL/PaperNexusReflection/SKILL.md)
+- [SKILL/PaperNexus/SKILL.md](../../../SKILL/PaperNexus/SKILL.md)
+- [SKILL/PaperNexusBatchImport/SKILL.md](../../../SKILL/PaperNexusBatchImport/SKILL.md)
+- [SKILL/PaperNexusAgenticReasoning/SKILL.md](../../../SKILL/PaperNexusAgenticReasoning/SKILL.md)
+- [SKILL/PaperNexusReflection/SKILL.md](../../../SKILL/PaperNexusReflection/SKILL.md)
 
 现在文档会明确告诉 Agent：
 
@@ -128,7 +128,7 @@ python3 SKILL/PaperNexus/scripts/pn_import_submit.py \
   --corpus "<corpus>" \
   --paper-id "<paperId>" \
   --source "/absolute/local/path/paper.pdf" \
-  --ssh-target "hyq@<host>"
+  --ssh-target "user@<host>"
 ```
 
 ### 单篇上传状态

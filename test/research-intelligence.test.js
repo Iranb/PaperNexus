@@ -5,6 +5,7 @@ import { createKnowledgeGraph } from '../src/core/graph/graph.js';
 import { enrichGraphWithDomainAndMechanismNodes } from '../src/core/graph/domain-bridges.js';
 import {
   buildCrossDomainMechanismEvidence,
+  buildMethodEvolutionEvidenceLookup,
   buildMethodEvolutionGapAnalysis,
   buildResearchIntelligenceAnswer
 } from '../src/core/graph/research-intelligence.js';
@@ -201,6 +202,7 @@ function createMethodLineageFixtureGraph() {
     targetId: 'method:seq2seq',
     type: EDGE_TYPES.EXTENDS_METHOD,
     properties: {
+      candidateId: 'candidate:transformer-seq2seq',
       validationStatus: 'accepted',
       confidence: 0.91,
       exactQuote: 'The Transformer dispenses with recurrence and relies on attention mechanisms.',
@@ -265,6 +267,13 @@ test('buildCrossDomainMechanismEvidence returns mechanism evidence bundles witho
   assert.ok(bundle.supportingSnippets.some((snippet) => snippet.quote.includes('Reflective prompts')));
   assert.ok(bundle.supportingPapers.some((paper) => paper.paperTitle === 'Belief Updating Under Uncertainty'));
   assert.ok(result.evidenceCertificate.sourceSpanCount > 0);
+  assert.equal(result.evidenceCertificate.supportingSourceSpans.length, result.evidenceCertificate.sourceSpanCount);
+  assert.equal(result.evidenceCertificate.supportingEvidenceRefs.length, result.evidenceCertificate.evidenceRefCount);
+  assert.ok(result.evidenceCertificate.supportingBridgePaths.some((path) => path.pathId));
+  assert.equal(result.evidenceCertificate.validation.noLlmQueryInvariant, true);
+  assert.ok(result.evidenceCertificate.validation.gates.some((gate) => (
+    gate.name === 'source_span_or_snippet' && gate.passed === true
+  )));
   assert.notEqual(result.dataStarvation.status, 'starved');
 });
 
@@ -291,6 +300,105 @@ test('buildMethodEvolutionGapAnalysis walks only validated quoted method-evoluti
   assert.ok(result.bottleneckTrajectory.some((entry) => entry.dimension === 'parallelization'));
   assert.ok(result.tradeoffTrajectory.some((entry) => entry.dimension === 'training-complexity'));
   assert.ok(result.nextGapCandidates.some((entry) => entry.groundingEdges.includes('rel:transformer-seq2seq')));
+});
+
+test('buildMethodEvolutionEvidenceLookup returns ranked evidence for a method pair', () => {
+  const graph = createMethodLineageFixtureGraph();
+  graph.addRelationship({
+    id: 'rel:transformer-seq2seq-dag',
+    sourceId: 'method:transformer',
+    targetId: 'method:seq2seq',
+    type: EDGE_TYPES.VARIANT_OF,
+    properties: {
+      relationshipRole: 'method-dag',
+      methodEvolutionProjection: true,
+      citationRelationshipId: 'rel:transformer-seq2seq',
+      candidateId: 'candidate:transformer-seq2seq',
+      validationStatus: 'accepted',
+      confidence: 0.91,
+      exactQuote: 'The Transformer dispenses with recurrence and relies on attention mechanisms.',
+      exactMatch: true,
+      paperEdgeType: EDGE_TYPES.EXTENDS_METHOD,
+      dagEdgeType: EDGE_TYPES.VARIANT_OF,
+      bottleneckDimension: 'parallelization',
+      bottleneckDescription: 'recurrence limited parallel sequence modeling',
+      mechanismType: 'architectural-change',
+      mechanismDescription: 'self-attention replaces recurrent updates',
+      tradeoffDimension: 'training-complexity',
+      tradeoffDescription: 'attention increases compute and memory at long context lengths',
+      evidenceCompletenessStatus: 'complete'
+    }
+  });
+
+  const result = buildMethodEvolutionEvidenceLookup(graph, {
+    sourceMethod: 'Transformer',
+    targetMethod: 'Seq2Seq'
+  });
+
+  assert.equal(result.contractVersion, 'papernexus-method-evidence-v1');
+  assert.equal(result.path, 'method_evidence');
+  assert.equal(result.dataStarvation.status, 'ok');
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].edgeId, 'rel:transformer-seq2seq-dag');
+  assert.equal(result.matches[0].citationRelationshipId, 'rel:transformer-seq2seq');
+  assert.equal(result.matches[0].paperEdgeType, EDGE_TYPES.EXTENDS_METHOD);
+  assert.equal(result.matches[0].dagEdgeType, EDGE_TYPES.VARIANT_OF);
+  assert.equal(result.matches[0].evidence.exactQuote, 'The Transformer dispenses with recurrence and relies on attention mechanisms.');
+  assert.equal(result.diagnostics.queryTimeLlmCalls, 0);
+});
+
+test('buildMethodEvolutionEvidenceLookup can inspect a rejected edge by id', () => {
+  const graph = createMethodLineageFixtureGraph();
+  const result = buildMethodEvolutionEvidenceLookup(graph, {
+    edgeId: 'rel:transformer-future'
+  });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].edgeId, 'rel:transformer-future');
+  assert.equal(result.matches[0].validation.accepted, false);
+  assert.ok(result.matches[0].validation.reasons.includes('reverse_temporal_direction'));
+  assert.equal(result.dataStarvation.status, 'ok');
+});
+
+test('buildMethodEvolutionGapAnalysis reports rejected COMPONENT_OF diagnostics in lineage direction', () => {
+  const graph = createKnowledgeGraph();
+  graph.addNode({
+    id: 'method:hybrid',
+    type: NODE_TYPES.METHOD,
+    name: 'Hybrid Retriever',
+    properties: { year: 2023 }
+  });
+  graph.addNode({
+    id: 'method:bm25',
+    type: NODE_TYPES.METHOD,
+    name: 'BM25',
+    properties: { year: 1994 }
+  });
+  graph.addRelationship({
+    id: 'rel:bm25-hybrid-candidate',
+    sourceId: 'method:bm25',
+    targetId: 'method:hybrid',
+    type: EDGE_TYPES.COMPONENT_OF,
+    properties: {
+      methodEvolutionProjection: true,
+      relationshipRole: 'method-dag',
+      paperEdgeType: EDGE_TYPES.USES_COMPONENT_METHOD,
+      dagEdgeType: EDGE_TYPES.COMPONENT_OF,
+      validationStatus: 'candidate',
+      confidence: 0.62
+    }
+  });
+
+  const result = buildMethodEvolutionGapAnalysis(graph, {
+    method: 'Hybrid Retriever',
+    direction: 'backward'
+  });
+
+  assert.equal(result.lineages.length, 0);
+  assert.ok(result.diagnostics.rejectedEdges.some((edge) => (
+    edge.edgeId === 'rel:bm25-hybrid-candidate'
+    && edge.reasons.includes('not_accepted_or_validated')
+  )));
 });
 
 test('buildResearchIntelligenceAnswer routes both answer paths behind one stable contract', () => {

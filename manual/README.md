@@ -17,6 +17,7 @@ The maintained web documentation now lives under:
 For the shortest path, start with:
 
 - [README Manual Walkthrough](../README.md#manual-walkthrough)
+- [Retrieval Benchmarks](./retrieval-benchmarks.md)
 - [docs/get-started/index.md](../docs/get-started/index.md)
 - [docs/reference/generated/cli.md](../docs/reference/generated/cli.md)
 

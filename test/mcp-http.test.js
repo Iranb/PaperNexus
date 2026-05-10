@@ -89,7 +89,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
   const fixture = await createIndexedCorpus('papernexus-mcp-http', 'mcp-http-papers');
   const port = 55000 + Math.floor(Math.random() * 1000);
   const serverHandle = await startHttpServer(port, {
-    apiToken: 'secret-token',
+    apiToken: 'test',
     mcp: {
       enabled: true
     }
@@ -101,7 +101,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
       id: 1,
       method: 'initialize',
       params: {}
-    }, { token: 'secret-token' }).then((response) => response.json());
+    }, { token: 'test' }).then((response) => response.json());
     assert.equal(initialized.result.serverInfo.name, 'papernexus');
     assert.equal(initialized.result.protocolVersion, '2024-11-05');
 
@@ -110,7 +110,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
       id: 2,
       method: 'tools/list',
       params: {}
-    }, { token: 'secret-token' }).then((response) => response.json());
+    }, { token: 'test' }).then((response) => response.json());
     assert.ok(tools.result.tools.some((tool) => tool.name === 'refresh_corpus'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'mutate_graph'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'corpus_sources'));
@@ -124,7 +124,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
       id: 3,
       method: 'prompts/get',
       params: { name: 'brainstorm_topic' }
-    }, { token: 'secret-token' }).then((response) => response.json());
+    }, { token: 'test' }).then((response) => response.json());
     assert.match(prompt.result.description, /divergent exploration/i);
 
     const methods = await postMcp(port, {
@@ -134,7 +134,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
       params: {
         uri: 'papernexus://corpus/mcp-http-papers/methods'
       }
-    }, { token: 'secret-token' }).then((response) => response.json());
+    }, { token: 'test' }).then((response) => response.json());
     assert.equal(methods.result.contents[0].mimeType, 'text/markdown');
     assert.match(methods.result.contents[0].text, /Methods:/);
 
@@ -150,7 +150,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
           limit: 3
         }
       }
-    }, { token: 'secret-token' }).then((response) => response.json());
+    }, { token: 'test' }).then((response) => response.json());
     assert.match(query.result.content[0].text, /Results for/);
 
     const aggregatedLookup = await postMcp(port, {
@@ -168,7 +168,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
           }
         }
       }
-    }, { token: 'secret-token' }).then((response) => response.json());
+    }, { token: 'test' }).then((response) => response.json());
     const parsedLookup = JSON.parse(aggregatedLookup.result.content[0].text);
     assert.equal(parsedLookup.result.query, 'graph augmented literature mapping');
     assert.ok(parsedLookup.result.groups.length > 0);
@@ -183,7 +183,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
           corpus: fixture.tempCorpusRoot
         }
       }
-    }, { token: 'secret-token' }).then((response) => response.json());
+    }, { token: 'test' }).then((response) => response.json());
     const parsedSources = JSON.parse(corpusSources.result.content[0].text);
     assert.equal(parsedSources.meta.name, 'mcp-http-papers');
     assert.ok(Array.isArray(parsedSources.sources));
@@ -193,7 +193,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
       `http://127.0.0.1:${port}/api/corpus-sources?name=mcp-http-papers`,
       {
         headers: {
-          Authorization: 'Bearer secret-token'
+          Authorization: 'Bearer test'
         }
       }
     ).then((response) => response.json());
@@ -212,14 +212,14 @@ test('serveCommand rejects unauthorized, disabled, invalid, and unsupported HTTP
   const disabledPort = enabledPort + 500;
 
   const enabledServer = await startHttpServer(enabledPort, {
-    apiToken: 'secret-token',
+    apiToken: 'test',
     mcp: {
       enabled: true
     }
   });
 
   const disabledServer = await startHttpServer(disabledPort, {
-    apiToken: 'secret-token'
+    apiToken: 'test'
   });
 
   try {
@@ -238,13 +238,13 @@ test('serveCommand rejects unauthorized, disabled, invalid, and unsupported HTTP
         method: 'initialize',
         params: {}
       }
-    ], { token: 'secret-token' });
+    ], { token: 'test' });
     assert.equal(batchResponse.status, 400);
     const batchPayload = await batchResponse.json();
     assert.equal(batchPayload.error.code, -32600);
 
     const invalidJsonResponse = await postMcp(enabledPort, '{', {
-      token: 'secret-token',
+      token: 'test',
       headers: {
         'Content-Type': 'application/json'
       }
@@ -254,7 +254,7 @@ test('serveCommand rejects unauthorized, disabled, invalid, and unsupported HTTP
     assert.equal(invalidJsonPayload.error.code, -32700);
 
     const unsupportedMethod = await postMcp(enabledPort, '', {
-      token: 'secret-token',
+      token: 'test',
       method: 'GET'
     });
     assert.equal(unsupportedMethod.status, 405);
@@ -264,7 +264,7 @@ test('serveCommand rejects unauthorized, disabled, invalid, and unsupported HTTP
       id: 3,
       method: 'initialize',
       params: {}
-    }, { token: 'secret-token' });
+    }, { token: 'test' });
     assert.equal(disabled.status, 404);
   } finally {
     await enabledServer.stop();
@@ -318,11 +318,11 @@ test('serveCommand background workers ignore an invalid configured storage index
   const serverHandle = await serveCommand({
     host: '127.0.0.1',
     port,
-    apiToken: 'secret-token',
+    apiToken: 'test',
     enableMineruWarmup: false,
     config: {
       serve: {
-        apiToken: 'secret-token'
+        apiToken: 'test'
       },
       storage: {
         indexDir: invalidIndexRoot

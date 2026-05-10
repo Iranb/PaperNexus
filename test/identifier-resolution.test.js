@@ -132,7 +132,7 @@ This note focuses on the generalization gap between FixMatch and supervised lear
       identifierResolution: {
         enabled: true,
         providers: ['openalex'],
-        mailto: 'hyq@example.com'
+        mailto: 'user@example.org'
       }
     });
 
@@ -208,7 +208,7 @@ This paper title should miss every OpenAlex candidate in the test.
       identifierResolution: {
         enabled: true,
         providers: ['openalex'],
-        mailto: 'hyq@example.com'
+        mailto: 'user@example.org'
       }
     };
 
@@ -267,7 +267,7 @@ test('resolvePaperIdentifiersExternally falls back to Crossref when OpenAlex mis
         identifierResolution: {
           enabled: true,
           providers: ['openalex', 'crossref'],
-          mailto: 'hyq@example.com'
+          mailto: 'user@example.org'
         }
       }
     );
@@ -322,7 +322,7 @@ test('resolvePaperIdentifiersExternally falls back to arXiv direct when earlier 
         identifierResolution: {
           enabled: true,
           providers: ['openalex', 'crossref', 'arxiv'],
-          mailto: 'hyq@example.com'
+          mailto: 'user@example.org'
         }
       }
     );
@@ -388,7 +388,7 @@ test('resolvePaperIdentifiersExternally ignores legacy miss cache entries from o
         identifierResolution: {
           enabled: true,
           providers: ['openalex', 'crossref'],
-          mailto: 'hyq@example.com'
+          mailto: 'user@example.org'
         }
       }
     );
@@ -435,7 +435,7 @@ test('resolvePaperIdentifiersExternally does not cache misses when any provider 
       identifierResolution: {
         enabled: true,
         providers: ['openalex', 'crossref', 'arxiv'],
-        mailto: 'hyq@example.com'
+        mailto: 'user@example.org'
       }
     };
 

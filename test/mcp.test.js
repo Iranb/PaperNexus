@@ -285,6 +285,31 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   assert.equal(parsedPreciseLookup.result.matchCount, 1);
   assert.equal(parsedPreciseLookup.result.matches[0].paperTitle, 'Retrieval-Augmented Experiment Planning with Lab Notebooks');
 
+  const methodEvidenceLookup = await pending.request('tools/call', {
+    name: 'research_lookup',
+    arguments: {
+      operation: 'method_evidence',
+      corpus: tempCorpusRoot,
+      method: 'experiment planning',
+      limit: 3
+    }
+  });
+  const parsedMethodEvidence = JSON.parse(methodEvidenceLookup.content[0].text);
+  assert.equal(parsedMethodEvidence.result.contractVersion, 'papernexus-method-evidence-v1');
+  assert.equal(parsedMethodEvidence.result.diagnostics.queryTimeLlmCalls, 0);
+
+  const methodRegistryLookup = await pending.request('tools/call', {
+    name: 'research_lookup',
+    arguments: {
+      operation: 'method_registry',
+      corpus: tempCorpusRoot
+    }
+  });
+  const parsedMethodRegistry = JSON.parse(methodRegistryLookup.content[0].text);
+  assert.equal(parsedMethodRegistry.result.contractVersion, 'papernexus-method-registry-v1');
+  assert.ok(Array.isArray(parsedMethodRegistry.result.registry.methods));
+  assert.equal(parsedMethodRegistry.result.diagnostics.queryTimeLlmCalls, 0);
+
   const aggregatedBriefing = await pending.request('tools/call', {
     name: 'research_briefing',
     arguments: {
@@ -316,9 +341,17 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   });
   const parsedSources = JSON.parse(sourcesResult.content[0].text);
   assert.equal(parsedSources.meta.name, 'mcp-papers');
+  assert.equal(parsedSources.provenance.contractVersion, 'papernexus-corpus-source-provenance-v1');
   assert.ok(Array.isArray(parsedSources.sources));
   assert.equal(parsedSources.sources.length, 2);
   assert.ok(parsedSources.sources.every((entry) => entry.activeInGraph !== false));
+  assert.equal(parsedSources.provenance.graphIndexEvidenceCount, 2);
+  assert.equal(parsedSources.provenance.sourceSpanEvidenceCount, 2);
+  assert.ok(parsedSources.sources.every((entry) => entry.graph_index_evidence?.available === true));
+  assert.ok(parsedSources.sources.every((entry) => entry.graph_index_evidence?.paper_node_id));
+  assert.ok(parsedSources.sources.every((entry) => entry.source_span_evidence?.available === true));
+  assert.ok(parsedSources.sources.every((entry) => entry.source_span_evidence?.spans?.length > 0));
+  assert.ok(parsedSources.sources.every((entry) => entry.source_span_evidence.spans[0].start_line >= 1));
 
   const domainDistanceResult = await pending.request('tools/call', {
     name: 'domain_distance',

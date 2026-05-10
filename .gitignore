@@ -3,6 +3,9 @@
 node_modules/
 .DS_Store
 config.json
+secure-env.enc.json
+*.env.enc
+*.enc.env
 __pycache__/
 *.pyc
 *.py.bak

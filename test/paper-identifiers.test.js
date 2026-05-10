@@ -56,7 +56,8 @@ test('paper identifier helpers merge and infer generic queries', () => {
     identifier: 'https://doi.org/10.48550/ARXIV.2401.12345'
   });
   assert.deepEqual(query, {
-    doi: '10.48550/arxiv.2401.12345'
+    doi: '10.48550/arxiv.2401.12345',
+    arxivId: '2401.12345'
   });
 
   assert.deepEqual(normalizePaperIdentifierQuery({
@@ -119,6 +120,13 @@ test('paper identifier helpers preserve legitimate arxiv identifiers alongside d
   assert.deepEqual(arxivDoiPair, {
     doi: '10.48550/arxiv.2410.11206',
     arxivId: '2410.11206v2'
+  });
+
+  assert.deepEqual(normalizePaperIdentifiers({
+    doi: '10.48550/arXiv.2410.11206'
+  }), {
+    doi: '10.48550/arxiv.2410.11206',
+    arxivId: '2410.11206'
   });
 });
 

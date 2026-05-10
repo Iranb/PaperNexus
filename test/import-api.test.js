@@ -49,21 +49,32 @@ test('import API payload helpers create, list, inspect, and show logs for upload
       force: true
     });
 
+    const notifiedTasks = [];
     const created = await api.createImportTaskPayload(indexRoot, {
       files: [
         createMarkdownUpload('api-upload.md', '# API Upload\n\n## Abstract\n\nCreated through the API helper.\n')
       ]
+    }, {
+      onImportTaskCreated(event) {
+        notifiedTasks.push(event.task.id);
+      }
     });
     assert.equal(created.task.status, 'pending');
     assert.equal(created.deduped, false);
+    assert.deepEqual(notifiedTasks, [created.task.id]);
 
     const deduped = await api.createImportTaskPayload(indexRoot, {
       files: [
         createMarkdownUpload('api-upload-copy.md', '# API Upload\n\n## Abstract\n\nCreated through the API helper.\n')
       ]
+    }, {
+      onImportTaskCreated(event) {
+        notifiedTasks.push(event.task.id);
+      }
     });
     assert.equal(deduped.task.id, created.task.id);
     assert.equal(deduped.deduped, true);
+    assert.deepEqual(notifiedTasks, [created.task.id]);
 
     const listed = await api.listImportTasksPayload(indexRoot);
     assert.equal(listed.tasks.length, 1);

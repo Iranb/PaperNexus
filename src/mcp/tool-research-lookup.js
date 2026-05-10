@@ -2,6 +2,7 @@ import { deriveDomainTaxonomyFromGraph, normalizeFieldOfStudy } from '../core/gr
 import { buildInterdisciplinaryPotentialReport } from '../core/graph/interdisciplinary-potential.js';
 import {
   buildCrossDomainMechanismEvidence,
+  buildMethodEvolutionEvidenceLookup,
   buildMethodEvolutionGapAnalysis,
   buildResearchIntelligenceAnswer
 } from '../core/graph/research-intelligence.js';
@@ -12,6 +13,7 @@ import {
   ideasGraphPayload,
   impactGraphPayload,
   loadCorpusLiteForApi,
+  methodRegistryPayload,
   paperIndexPayload,
   queryGraphPayload,
   resolveCorpusForApi
@@ -154,6 +156,30 @@ export async function executeResearchLookupTool(args = {}, options = {}) {
         generatedAt: new Date().toISOString()
       };
     }
+    case 'method_evidence': {
+      const rootPath = await resolveCorpusForApi(candidate, options);
+      const { graph } = await loadCorpusLiteForApi(rootPath, options);
+      return {
+        rootPath,
+        result: buildMethodEvolutionEvidenceLookup(graph, {
+          query: args.query,
+          method: args.method,
+          methodName: args.methodName,
+          sourceMethod: args.sourceMethod,
+          targetMethod: args.targetMethod,
+          edgeId: args.edgeId,
+          relationshipId: args.relationshipId,
+          citationRelationshipId: args.citationRelationshipId,
+          candidateId: args.candidateId,
+          includeCandidates: args.includeCandidates === true,
+          strictDirection: args.strictDirection === true,
+          limit: args.limit
+        }),
+        generatedAt: new Date().toISOString()
+      };
+    }
+    case 'method_registry':
+      return methodRegistryPayload(candidate, options);
     case 'research_answer': {
       const rootPath = await resolveCorpusForApi(candidate, options);
       const { graph } = await loadCorpusLiteForApi(rootPath, options);

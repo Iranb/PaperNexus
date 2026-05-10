@@ -26,7 +26,7 @@ There is one important refinement: **a bad title alone no longer forces Docling 
 
 ## Supported Parser Families
 
-The current parser layer is implemented in [`src/core/ingestion/pdf-parser.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js).
+The current parser layer is implemented in [`src/core/ingestion/pdf-parser.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js).
 
 The supported parser families are:
 
@@ -99,7 +99,7 @@ This protects throughput while still preserving an audit signal that the parser 
 
 ## MarkItDown Runtime
 
-The PaperNexus wrapper for MarkItDown lives at [`scripts/markitdown_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/markitdown_to_markdown.py).
+The PaperNexus wrapper for MarkItDown lives at [`scripts/markitdown_to_markdown.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/markitdown_to_markdown.py).
 
 ### Default behavior
 

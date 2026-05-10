@@ -879,9 +879,18 @@ We study manifest-level cache reuse for paper A.
 
     const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
     assert.ok(manifest.llmOptimization);
+    assert.deepEqual(manifest.llmOptimization.promptVersions, {
+      semanticObjects: 'semantic-objects-v2',
+      researchRelations: 'research-relations-v1'
+    });
+    assert.equal(JSON.parse(manifest.llmOptimization.semanticConfigSignature).promptVersion, 'semantic-objects-v2');
+    assert.equal(JSON.parse(manifest.llmOptimization.relationConfigSignature).promptVersion, 'research-relations-v1');
 
     const firstSource = manifest.sources[0];
     const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, firstSource.sourceKey);
+    assert.equal(snapshot.llmSemanticObjects.promptVersion, 'semantic-objects-v2');
+    assert.equal(snapshot.llm.semanticPromptVersion, 'semantic-objects-v2');
+    assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v1');
     delete snapshot.llmSemanticObjects.configSignature;
     delete snapshot.llm.semanticConfigSignature;
     await corpusStore.saveSemanticPaperSnapshot(tempCorpusRoot, firstSource.sourceKey, snapshot);

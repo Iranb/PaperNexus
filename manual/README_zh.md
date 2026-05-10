@@ -23,7 +23,7 @@
 在项目根目录打开终端：
 
 ```bash
-cd "/Users/iranb/Library/Mobile Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus"
+cd "<repo-root>"
 ```
 
 ## 1. 安装并暴露 CLI
@@ -59,13 +59,13 @@ npm bin -g
 推荐的默认论文源目录是：
 
 ```bash
-/Users/iranb/.papernexus/papers
+~/.papernexus/papers
 ```
 
 如需要请创建：
 
 ```bash
-mkdir -p /Users/iranb/.papernexus/papers
+mkdir -p ~/.papernexus/papers
 ```
 
 您可以通过以下两种方式之一开始：
@@ -73,8 +73,8 @@ mkdir -p /Users/iranb/.papernexus/papers
 1. 使用内置示例快速演示：
 
 ```bash
-mkdir -p /Users/iranb/.papernexus/papers/demo
-cp ./examples/*.md /Users/iranb/.papernexus/papers/demo/
+mkdir -p ~/.papernexus/papers/demo
+cp ./examples/*.md ~/.papernexus/papers/demo/
 ```
 
 2. 您自己的真实论文语料库：
@@ -93,9 +93,9 @@ papernexus init
 
 推荐的答案：
 
-- 论文源目录：`/Users/iranb/.papernexus/papers`
+- 论文源目录：`~/.papernexus/papers`
 - 语料库名称：选择简短名称，如 `demo` 或 `gcd`
-- 索引目录：`/Users/iranb/.papernexus/index-store`
+- 索引目录：`~/.papernexus/index-store`
 
 可选的 LLM 设置：
 
@@ -106,7 +106,7 @@ papernexus init
 这会将运行时配置写入：
 
 ```bash
-/Users/iranb/.papernexus/config.json
+~/.papernexus/config.json
 ```
 
 ## 4. 构建第一个语料库
@@ -282,14 +282,14 @@ papernexus service status
 日志位于：
 
 ```bash
-/Users/iranb/.papernexus/logs
+~/.papernexus/logs
 ```
 
 ## 10. 验证动态更新
 
 在后台服务运行时：
 
-1. 在 `/Users/iranb/.papernexus/papers` 下添加或编辑论文文件
+1. 在 `~/.papernexus/papers` 下添加或编辑论文文件
 2. 等待片刻
 3. 运行：
 

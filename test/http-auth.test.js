@@ -19,12 +19,12 @@ test('serveCommand requires a token for all API routes while keeping static UI r
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableImports: false,
       config: {
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       }
     });
@@ -35,14 +35,14 @@ test('serveCommand requires a token for all API routes while keeping static UI r
 
       const authorized = await fetch(`http://127.0.0.1:${port}/api/health`, {
         headers: {
-          Authorization: 'Bearer secret-token'
+          Authorization: 'Bearer test'
         }
       });
       assert.equal(authorized.status, 200);
 
       const xHeaderAuthorized = await fetch(`http://127.0.0.1:${port}/api/corpora`, {
         headers: {
-          'x-papernexus-token': 'secret-token'
+          'x-papernexus-token': 'test'
         }
       });
       assert.equal(xHeaderAuthorized.status, 200);
@@ -80,7 +80,7 @@ test('serveCommand returns 503 for API routes when no token is configured', asyn
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
         headers: {
-          Authorization: 'Bearer anything'
+          Authorization: 'Bearer test'
         }
       });
       assert.equal(response.status, 503);
@@ -126,7 +126,7 @@ test('serveCommand API routes prefer the configured storage index over stale reg
       corpora: [
         {
           name: 'stale-macos-corpus',
-          rootPath: '/Users/iranb/.papernexus/index-store',
+          rootPath: '~/.papernexus/index-store',
           indexedAt: new Date(0).toISOString(),
           paperCount: 999
         }
@@ -136,7 +136,7 @@ test('serveCommand API routes prefer the configured storage index over stale reg
     const serverHandle = await httpApi.serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableImports: false,
       config: {
@@ -144,7 +144,7 @@ test('serveCommand API routes prefer the configured storage index over stale reg
           indexDir: indexRoot
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       configBaseDir: workspaceRoot
@@ -153,7 +153,7 @@ test('serveCommand API routes prefer the configured storage index over stale reg
     try {
       const corpora = await fetch(`http://127.0.0.1:${port}/api/corpora`, {
         headers: {
-          Authorization: 'Bearer secret-token'
+          Authorization: 'Bearer test'
         }
       }).then((response) => response.json());
       assert.equal(corpora.corpora.length, 1);
@@ -161,7 +161,7 @@ test('serveCommand API routes prefer the configured storage index over stale reg
 
       const corpus = await fetch(`http://127.0.0.1:${port}/api/corpus?name=http-config-test`, {
         headers: {
-          Authorization: 'Bearer secret-token'
+          Authorization: 'Bearer test'
         }
       }).then((response) => response.json());
       assert.equal(corpus.meta.name, 'http-config-test');
@@ -201,14 +201,14 @@ test('serveCommand logs background worker startup states', async () => {
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: true,
       enableImports: true,
       enableAuthoritativeSync: true,
       logger,
       config: {
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       }
     });
@@ -251,7 +251,7 @@ test('serveCommand warms MinerU backends in the background when imports are enab
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableAuthoritativeSync: false,
       enableImports: true,
@@ -262,7 +262,7 @@ test('serveCommand warms MinerU backends in the background when imports are enab
           mineruHttpUrl: 'http://127.0.0.1:30000'
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       warmMineruBackends: async (warmupOptions) => {
@@ -303,7 +303,7 @@ test('serveCommand forwards analyze parser config into the import worker', async
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableAuthoritativeSync: false,
       enableImports: true,
@@ -318,7 +318,7 @@ test('serveCommand forwards analyze parser config into the import worker', async
           batchSize: 8
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       startImportWorker(workerOptions) {
@@ -376,7 +376,7 @@ test('serveCommand warms Docling runtime in the background when imports are enab
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableAuthoritativeSync: false,
       enableImports: true,
@@ -389,7 +389,7 @@ test('serveCommand warms Docling runtime in the background when imports are enab
           doclingCudaVisibleDevices: '2'
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       warmDoclingRuntime: async (warmupOptions) => {
@@ -427,7 +427,7 @@ test('serveCommand forwards paddleocr-vl parser config into the import worker', 
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableAuthoritativeSync: false,
       enableImports: true,
@@ -438,7 +438,7 @@ test('serveCommand forwards paddleocr-vl parser config into the import worker', 
           paddleocrVlServerUrl: 'http://127.0.0.1:8080/v1'
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       startImportWorker(workerOptions) {
@@ -479,7 +479,7 @@ test('serveCommand forwards Docling GPU config into the import worker', async ()
     const serverHandle = await serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableAuthoritativeSync: false,
       enableImports: true,
@@ -490,14 +490,14 @@ test('serveCommand forwards Docling GPU config into the import worker', async ()
           doclingCommand: 'docling',
           doclingDevice: 'cuda',
           doclingCudaVisibleDevices: '2',
-          doclingArtifactsPath: '/home/hyq/.cache/docling/models',
+          doclingArtifactsPath: '/home/researcher/.cache/docling/models',
           doclingImageExportMode: 'placeholder',
           doclingEnrichPictureClasses: false,
           doclingEnrichPictureDescription: false,
           doclingPreload: true
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       startImportWorker(workerOptions) {
@@ -516,7 +516,7 @@ test('serveCommand forwards Docling GPU config into the import worker', async ()
       assert.equal(calls[0].doclingPython, './shared-python');
       assert.equal(calls[0].doclingDevice, 'cuda');
       assert.equal(calls[0].doclingCudaVisibleDevices, '2');
-      assert.equal(calls[0].doclingArtifactsPath, '/home/hyq/.cache/docling/models');
+      assert.equal(calls[0].doclingArtifactsPath, '/home/researcher/.cache/docling/models');
       assert.equal(calls[0].doclingImageExportMode, 'placeholder');
       assert.equal(calls[0].doclingEnrichPictureClasses, false);
       assert.equal(calls[0].doclingEnrichPictureDescription, false);
@@ -565,7 +565,7 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
     const serverHandle = await httpApi.serveCommand({
       host: '127.0.0.1',
       port,
-      apiToken: 'secret-token',
+      apiToken: 'test',
       enableEnhancements: false,
       enableAuthoritativeSync: false,
       enableImports: false,
@@ -574,7 +574,7 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
           indexDir: indexRoot
         },
         serve: {
-          apiToken: 'secret-token'
+          apiToken: 'test'
         }
       },
       configBaseDir: workspaceRoot
@@ -584,7 +584,7 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
       const created = await fetch(`http://127.0.0.1:${port}/api/imports?name=http-server-file-import-test`, {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer secret-token',
+          Authorization: 'Bearer test',
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -602,7 +602,7 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
       const deduped = await fetch(`http://127.0.0.1:${port}/api/imports?name=http-server-file-import-test`, {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer secret-token',
+          Authorization: 'Bearer test',
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -620,7 +620,7 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
       const invalid = await fetch(`http://127.0.0.1:${port}/api/imports?name=http-server-file-import-test`, {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer secret-token',
+          Authorization: 'Bearer test',
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({

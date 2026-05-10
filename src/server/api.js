@@ -14,7 +14,7 @@ import { getNodeLayer, NODE_TYPES } from '../core/graph/schema.js';
 import { resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
 import { collapseHomePath, isServerPathReference, resolveServerPathReference } from '../lib/server-paths.js';
 import { buildDefaultLlmKeychainAccount } from '../lib/keychain.js';
-import { unique } from '../lib/utils.js';
+import { stableHash, unique } from '../lib/utils.js';
 import {
   createPaperIdentifierKeys,
   createPaperIdentity,
@@ -45,6 +45,10 @@ import {
   buildBrainstorm
 } from '../core/search/search.js';
 import { buildCatalystQuery } from '../core/graph/catalyst-adapter.js';
+import {
+  buildMethodEvolutionEvidenceLookup,
+  buildMethodEvolutionGapAnalysis
+} from '../core/graph/research-intelligence.js';
 
 function countBy(items, keyFn) {
   const counts = {};
@@ -67,16 +71,27 @@ function getApiNodeLayer(node) {
 
 const PORTABLE_PATH_FIELD_NAMES = new Set([
   'rootPath',
+  'root_path',
   'inputPath',
+  'input_path',
   'sourceKey',
+  'source_key',
   'sourcePath',
+  'source_path',
   'sourceMarkdownPath',
+  'source_markdown_path',
   'sourcePdfPath',
+  'source_pdf_path',
   'markdownCachePath',
+  'markdown_cache_path',
   'storedPath',
+  'stored_path',
   'sourcesDir',
+  'sources_dir',
   'remoteFile',
-  'serverFilePath'
+  'remote_file',
+  'serverFilePath',
+  'server_file_path'
 ]);
 
 const PORTABLE_PATH_LIST_FIELD_NAMES = new Set([
@@ -1264,6 +1279,68 @@ export async function evidenceChainPayload(candidate, body = {}, options = {}) {
   }, options);
 }
 
+export async function methodLineagePayload(candidate, body = {}, options = {}) {
+  const effectiveCandidate = (typeof body?.name === 'string' && body.name.trim()) ? body.name.trim() : candidate;
+  const rootPath = await resolveCorpusForApi(effectiveCandidate, options);
+  const { graph } = await loadCorpusLiteForApi(rootPath, options);
+
+  return presentPortablePayload({
+    rootPath,
+    result: buildMethodEvolutionGapAnalysis(graph, {
+      ...body,
+      ...(body?.options && typeof body.options === 'object' && !Array.isArray(body.options) ? body.options : {})
+    }),
+    generatedAt: new Date().toISOString()
+  }, options);
+}
+
+export async function methodEvidencePayload(candidate, body = {}, options = {}) {
+  const effectiveCandidate = (typeof body?.name === 'string' && body.name.trim()) ? body.name.trim() : candidate;
+  const rootPath = await resolveCorpusForApi(effectiveCandidate, options);
+  const { graph } = await loadCorpusLiteForApi(rootPath, options);
+
+  return presentPortablePayload({
+    rootPath,
+    result: buildMethodEvolutionEvidenceLookup(graph, {
+      ...body,
+      ...(body?.options && typeof body.options === 'object' && !Array.isArray(body.options) ? body.options : {})
+    }),
+    generatedAt: new Date().toISOString()
+  }, options);
+}
+
+export async function methodRegistryPayload(candidate, options = {}) {
+  const rootPath = await resolveCorpusForApi(candidate, options);
+  const { graph } = await loadCorpusLiteForApi(rootPath, options);
+  const corpusNode = graph.getNodesByType(NODE_TYPES.CORPUS)[0] || null;
+  const overlay = corpusNode?.properties?.methodEvolutionOverlay || {};
+  const registry = overlay.registry || {};
+
+  return presentPortablePayload({
+    rootPath,
+    result: {
+      contractVersion: 'papernexus-method-registry-v1',
+      path: 'method_registry',
+      generatedAt: overlay.generatedAt || null,
+      source: overlay.source || null,
+      summary: overlay.summary || corpusNode?.properties?.methodEvolutionOverlaySummary || {},
+      registry: {
+        contractVersion: registry.contractVersion || overlay.contractVersion || null,
+        methods: Array.isArray(registry.methods) ? registry.methods : [],
+        aliases: Array.isArray(registry.aliases) ? registry.aliases : [],
+        stubs: Array.isArray(registry.stubs) ? registry.stubs : [],
+        diagnostics: registry.diagnostics || {}
+      },
+      diagnostics: {
+        queryTimeLlmCalls: 0,
+        source: 'graph-only',
+        overlayAvailable: Boolean(overlay.contractVersion || registry.contractVersion)
+      }
+    },
+    generatedAt: new Date().toISOString()
+  }, options);
+}
+
 export async function reflectionChainPayload(candidate, body = {}, options = {}) {
   const request = normalizeGraphRequestBody(body);
   const effectiveCandidate = request.candidate || candidate;
@@ -1450,13 +1527,315 @@ export async function corpusMetaPayload(candidate, options = {}) {
   return resolveCachedPayload(cache.corpusMetaByRoot, rootPath, stamp, buildPayload);
 }
 
+function compactString(value) {
+  return String(value || '').trim();
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    const normalized = compactString(value);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function resolveCorpusSourcePath(rootPath, value) {
+  const raw = compactString(value);
+  if (!raw) return '';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith('file:')) return '';
+  if (raw.startsWith('file:')) {
+    try {
+      return new URL(raw).pathname;
+    } catch {
+      return '';
+    }
+  }
+  return path.isAbsolute(raw) ? raw : path.resolve(rootPath, raw);
+}
+
+async function firstReadableSourcePath(rootPath, entry = {}) {
+  const candidates = unique([
+    entry.sourceMarkdownPath,
+    entry.source_markdown_path,
+    entry.markdownCachePath,
+    entry.markdown_cache_path,
+    entry.sourcePath,
+    entry.source_path,
+    entry.inputPath,
+    entry.input_path,
+    entry.sourceKey,
+    entry.source_key
+  ].map((value) => resolveCorpusSourcePath(rootPath, value)).filter(Boolean));
+
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) return candidate;
+  }
+  return '';
+}
+
+async function readTextPrefix(filePath, maxBytes = 262144) {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    const byteLength = Math.max(0, Math.min(stat.size, maxBytes));
+    const buffer = Buffer.alloc(byteLength);
+    const { bytesRead } = await handle.read(buffer, 0, byteLength, 0);
+    return {
+      text: buffer.slice(0, bytesRead).toString('utf8'),
+      byteLength: stat.size,
+      truncated: stat.size > bytesRead
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+function lineStartsForText(text) {
+  const starts = [0];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '\n') starts.push(index + 1);
+  }
+  return starts;
+}
+
+function lineNumberForOffset(lineStarts, offset) {
+  let low = 0;
+  let high = lineStarts.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (lineStarts[mid] <= offset) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return Math.max(1, high + 1);
+}
+
+function createTextSpan({ text, lineStarts, start, end, role, sourcePath, sourceKey, paperId }) {
+  if (start < 0 || end <= start) return null;
+  const evidenceText = text.slice(start, end);
+  if (!evidenceText.trim()) return null;
+  return {
+    span_id: `source-span:${stableHash(`${sourceKey || sourcePath}:${start}:${end}:${evidenceText}`, 16)}`,
+    source_type: 'source_text',
+    role,
+    paper_id: paperId || null,
+    source_key: sourceKey || null,
+    source_path: sourcePath || null,
+    start_char: start,
+    end_char: end,
+    start_line: lineNumberForOffset(lineStarts, start),
+    end_line: lineNumberForOffset(lineStarts, Math.max(start, end - 1)),
+    evidence_text: evidenceText,
+    evidence_text_sha1: stableHash(evidenceText, 40),
+    source_span_available: true
+  };
+}
+
+function addUniqueSpan(spans, span) {
+  if (!span) return;
+  if (spans.some((entry) => entry.start_char === span.start_char && entry.end_char === span.end_char)) return;
+  spans.push(span);
+}
+
+function findNextTextBlock(text, startOffset, maxLength = 640) {
+  const rest = text.slice(startOffset);
+  const match = rest.match(/\S[\s\S]*?(?=\n\s*\n|$)/);
+  if (!match || match.index === undefined) return null;
+  const rawStart = startOffset + match.index;
+  const rawEnd = rawStart + match[0].length;
+  const block = text.slice(rawStart, rawEnd);
+  const leading = block.match(/^\s*/)?.[0].length || 0;
+  const trailing = block.match(/\s*$/)?.[0].length || 0;
+  const start = rawStart + leading;
+  const end = Math.min(rawEnd - trailing, start + maxLength);
+  return end > start ? { start, end } : null;
+}
+
+function buildSourceTextSpans({ text, title, sourcePath, sourceKey, paperId }) {
+  const normalizedText = String(text || '').replace(/\r\n?/g, '\n');
+  const lineStarts = lineStartsForText(normalizedText);
+  const spans = [];
+  const normalizedTitle = compactString(title);
+  if (normalizedTitle) {
+    const titleIndex = normalizedText.toLowerCase().indexOf(normalizedTitle.toLowerCase());
+    if (titleIndex >= 0) {
+      addUniqueSpan(spans, createTextSpan({
+        text: normalizedText,
+        lineStarts,
+        start: titleIndex,
+        end: titleIndex + normalizedTitle.length,
+        role: 'title',
+        sourcePath,
+        sourceKey,
+        paperId
+      }));
+    }
+  }
+
+  const abstractHeading = normalizedText.match(/^#{1,6}\s*abstract\s*$/im);
+  const abstractBlock = abstractHeading
+    ? findNextTextBlock(normalizedText, abstractHeading.index + abstractHeading[0].length)
+    : null;
+  if (abstractBlock) {
+    addUniqueSpan(spans, createTextSpan({
+      text: normalizedText,
+      lineStarts,
+      start: abstractBlock.start,
+      end: abstractBlock.end,
+      role: 'abstract',
+      sourcePath,
+      sourceKey,
+      paperId
+    }));
+  }
+
+  if (!spans.length) {
+    const fallbackBlock = findNextTextBlock(normalizedText, 0);
+    if (fallbackBlock) {
+      addUniqueSpan(spans, createTextSpan({
+        text: normalizedText,
+        lineStarts,
+        start: fallbackBlock.start,
+        end: fallbackBlock.end,
+        role: 'source_excerpt',
+        sourcePath,
+        sourceKey,
+        paperId
+      }));
+    }
+  }
+
+  return spans.slice(0, 3);
+}
+
+function findPaperNodeForSource(graph, entry = {}) {
+  if (!graph) return null;
+  const paperId = firstString(entry.paperId, entry.paper_id);
+  if (paperId && typeof graph.getNode === 'function') {
+    const direct = graph.getNode(paperId);
+    if (direct) return direct;
+  }
+
+  const sourceKey = firstString(entry.sourceKey, entry.source_key);
+  const canonicalSourceKey = firstString(entry.canonicalSourceKey, entry.canonical_source_key, sourceKey);
+  const title = firstString(entry.paperTitle, entry.paper_title, entry.title).toLowerCase();
+  const candidates = typeof graph.getNodesByType === 'function'
+    ? graph.getNodesByType(NODE_TYPES.PAPER)
+    : (graph.nodes || []).filter((node) => node.type === NODE_TYPES.PAPER);
+  return candidates.find((node) => {
+    const props = node.properties || {};
+    if (paperId && (node.id === paperId || props.paperId === paperId)) return true;
+    if (sourceKey && [props.sourceKey, props.sourcePath, props.sourceMarkdownPath, props.sourcePdfPath].includes(sourceKey)) return true;
+    if (canonicalSourceKey && Array.isArray(props.sourceVariants) && props.sourceVariants.includes(canonicalSourceKey)) return true;
+    if (title && String(node.name || props.paperTitle || '').trim().toLowerCase() === title) return true;
+    return false;
+  }) || null;
+}
+
+function buildGraphIndexEvidence(graph, entry = {}) {
+  const sourceKey = firstString(entry.sourceKey, entry.source_key);
+  const paperId = firstString(entry.paperId, entry.paper_id);
+  const paperNode = findPaperNodeForSource(graph, entry);
+  const incoming = paperNode && typeof graph?.getIncoming === 'function' ? graph.getIncoming(paperNode.id) : [];
+  const outgoing = paperNode && typeof graph?.getOutgoing === 'function' ? graph.getOutgoing(paperNode.id) : [];
+  const neighborNodeIds = unique([
+    ...incoming.map((relationship) => relationship.sourceId),
+    ...outgoing.map((relationship) => relationship.targetId)
+  ].filter(Boolean)).slice(0, 12);
+  const props = paperNode?.properties || {};
+
+  return {
+    available: Boolean(paperNode),
+    paper_id: props.paperId || paperId || paperNode?.id || null,
+    paper_node_id: paperNode?.id || null,
+    paper_node_type: paperNode?.type || null,
+    paper_node_name: paperNode?.name || null,
+    source_key: sourceKey || null,
+    canonical_source_key: firstString(entry.canonicalSourceKey, entry.canonical_source_key, sourceKey) || null,
+    active_in_graph: entry.activeInGraph !== false && entry.active_in_graph !== false,
+    graph_relationship_count: incoming.length + outgoing.length,
+    graph_neighbor_node_ids: neighborNodeIds,
+    identifiers: props.identifiers || entry.identifiers || {},
+    normalized_title: props.normalizedTitle || entry.normalizedTitle || entry.normalized_title || null,
+    title_signature: props.titleSignature || entry.titleSignature || entry.title_signature || null
+  };
+}
+
+async function buildSourceSpanEvidence(rootPath, entry = {}) {
+  const sourcePath = await firstReadableSourcePath(rootPath, entry);
+  const sourceKey = firstString(entry.sourceKey, entry.source_key);
+  const paperId = firstString(entry.paperId, entry.paper_id);
+  if (!sourcePath) {
+    return {
+      available: false,
+      count: 0,
+      source_key: sourceKey || null,
+      source_path: null,
+      spans: []
+    };
+  }
+
+  try {
+    const prefix = await readTextPrefix(sourcePath);
+    const spans = buildSourceTextSpans({
+      text: prefix.text,
+      title: firstString(entry.paperTitle, entry.paper_title, entry.title),
+      sourcePath,
+      sourceKey,
+      paperId
+    });
+    return {
+      available: spans.length > 0,
+      count: spans.length,
+      source_key: sourceKey || null,
+      source_path: sourcePath,
+      byte_length: prefix.byteLength,
+      prefix_truncated: prefix.truncated,
+      spans
+    };
+  } catch (error) {
+    return {
+      available: false,
+      count: 0,
+      source_key: sourceKey || null,
+      source_path: sourcePath,
+      error: error instanceof Error ? error.message : String(error),
+      spans: []
+    };
+  }
+}
+
+async function attachSourceProvenance(rootPath, graph, entry = {}) {
+  const graphIndexEvidence = buildGraphIndexEvidence(graph, entry);
+  const sourceSpanEvidence = await buildSourceSpanEvidence(rootPath, entry);
+  return {
+    ...entry,
+    graph_index_evidence: graphIndexEvidence,
+    source_span_evidence: sourceSpanEvidence
+  };
+}
+
 export async function corpusSourcesPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
-  const [meta, manifest] = await Promise.all([
+  const [meta, manifest, corpusLiteResult] = await Promise.all([
     loadCorpusMeta(rootPath),
-    loadSourceManifest(rootPath)
+    loadSourceManifest(rootPath),
+    loadCorpusLiteForApi(rootPath, options).catch((error) => ({ error }))
   ]);
   const sources = Array.isArray(manifest?.sources) ? manifest.sources : [];
+  const graph = corpusLiteResult?.graph || null;
+  const provenanceSources = await Promise.all(
+    sources.map((entry) => attachSourceProvenance(rootPath, graph, entry))
+  );
+  const graphIndexEvidenceCount = provenanceSources.filter((entry) => (
+    entry.graph_index_evidence?.available === true
+  )).length;
+  const sourceSpanEvidenceCount = provenanceSources.filter((entry) => (
+    entry.source_span_evidence?.available === true
+    && Number(entry.source_span_evidence?.count || 0) > 0
+  )).length;
 
   return presentPortablePayload({
     rootPath,
@@ -1472,7 +1851,14 @@ export async function corpusSourcesPayload(candidate, options = {}) {
       sourceCount: sources.length,
       activeSourceCount: sources.filter((entry) => entry?.activeInGraph !== false).length
     },
-    sources,
+    provenance: {
+      contractVersion: 'papernexus-corpus-source-provenance-v1',
+      graphIndexEvidenceCount,
+      sourceSpanEvidenceCount,
+      graphAvailable: Boolean(graph),
+      graphLoadError: corpusLiteResult?.error ? (corpusLiteResult.error.message || String(corpusLiteResult.error)) : null
+    },
+    sources: provenanceSources,
     generatedAt: new Date().toISOString()
   }, options);
 }
@@ -1609,6 +1995,22 @@ async function resolveImportInputPaths(rootPath, options = {}) {
   return configuredInputs.map((item) => String(item || '').trim()).filter(Boolean);
 }
 
+async function notifyImportTaskCreated(rootPath, task, payload, options = {}) {
+  const callback = options.onImportTaskCreated || options.onImportSubmitted;
+  if (typeof callback !== 'function') return;
+  if (task?.deduped || String(task?.status || '').trim().toLowerCase() === 'completed') return;
+
+  try {
+    await callback({
+      rootPath,
+      task,
+      payload
+    });
+  } catch (error) {
+    options.logger?.warn?.(`[imports] import task notification failed (${error.message || error})`);
+  }
+}
+
 export async function createImportTaskPayload(candidate, body = {}, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
   const files = await normalizeImportRequest(body);
@@ -1640,13 +2042,15 @@ export async function createImportTaskPayload(candidate, body = {}, options = {}
     };
   }
 
-  return presentPortablePayload({
+  const payload = presentPortablePayload({
     rootPath,
     task,
     deduped: Boolean(task?.deduped),
     identifierSync,
     generatedAt: new Date().toISOString()
   }, options);
+  await notifyImportTaskCreated(rootPath, task, payload, options);
+  return payload;
 }
 
 export async function listImportTasksPayload(candidate, options = {}) {

@@ -15,7 +15,7 @@ The recommended shape is:
 
 ## Context
 
-PaperNexus already supports multiple Stage 1 PDF parsers in [src/core/ingestion/marker.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/core/ingestion/marker.js):
+PaperNexus already supports multiple Stage 1 PDF parsers in [src/core/ingestion/marker.js](../../../src/core/ingestion/marker.js):
 
 - `docling`
 - `marker`
@@ -98,7 +98,7 @@ This wrapper should be called by the Node parser layer and should return a clear
 
 ### 3. Keep The Parser Thin In Node
 
-The Node-side parser adapter in [src/core/ingestion/marker.js](/Users/iranb/Library/Mobile%20Documents/com~apple~CloudDocs/OpenClawThings/PaperNexus/src/core/ingestion/marker.js) should:
+The Node-side parser adapter in [src/core/ingestion/marker.js](../../../src/core/ingestion/marker.js) should:
 
 - resolve the parser cache paths
 - skip work when cached Markdown already exists and `force` is not set
