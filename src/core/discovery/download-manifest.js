@@ -21,10 +21,12 @@ function filenameFor(candidate = {}, index = 0) {
   const title = safePart(candidate.title || candidate.identifiers?.doi || candidate.identifiers?.arxivId || `paper_${index + 1}`);
   const raw = candidate.identifiers?.doi || candidate.identifiers?.arxivId || candidate.canonicalId || `${candidate.title || 'paper'}-${index}`;
   const id = stableHash(raw, 12);
-  return [year, title, id].filter(Boolean).join('_') + '.pdf';
+  const extension = candidate.source?.sourceKind === 'markdown' ? '.md' : '.pdf';
+  return [year, title, id].filter(Boolean).join('_') + extension;
 }
 
 function inferDownloadSource(candidate = {}) {
+  if (candidate.source?.sourceKind === 'markdown' && candidate.source?.sourceProvider) return candidate.source.sourceProvider;
   const platforms = Array.isArray(candidate.providers) ? candidate.providers : [];
   if (candidate.identifiers?.arxivId || platforms.includes('arxiv')) return 'arxiv';
   if (candidate.identifiers?.pmcid || platforms.includes('europe_pmc') || platforms.includes('pubmed')) return 'pubmed_central';
@@ -34,18 +36,18 @@ function inferDownloadSource(candidate = {}) {
   return platforms[0] || candidate.source?.sourceProvider || 'unknown';
 }
 
-function skipReason(candidate = {}, fullTextStatus = 'unknown', pdfUrl = '') {
+function skipReason(candidate = {}, fullTextStatus = 'unknown', sourceUrl = '') {
   if (candidate.source?.downloadError) return candidate.source.downloadError;
-  if (fullTextStatus !== 'open_pdf') return `full_text_status=${fullTextStatus || 'unknown'}`;
-  if (!pdfUrl) return 'missing pdf_url';
-  if (!/^https?:\/\//i.test(pdfUrl)) return 'pdf_url must be http(s)';
+  if (fullTextStatus !== 'open_pdf' && fullTextStatus !== 'open_markdown') return `full_text_status=${fullTextStatus || 'unknown'}`;
+  if (!sourceUrl) return 'missing source_url';
+  if (!/^https?:\/\//i.test(sourceUrl)) return 'source_url must be http(s)';
   return null;
 }
 
 function inferDownloadStatus(candidate = {}, fullTextStatus = 'unknown', pdfUrl = '') {
   if (candidate.source?.downloadStatus) return candidate.source.downloadStatus;
   if (candidate.source?.resolutionStatus === 'fulltext_ready') return 'downloaded';
-  if (fullTextStatus === 'open_pdf' && pdfUrl) return 'eligible';
+  if ((fullTextStatus === 'open_pdf' || fullTextStatus === 'open_markdown') && pdfUrl) return 'eligible';
   return 'skipped';
 }
 
@@ -54,12 +56,14 @@ export function buildDiscoveryDownloadManifest(runOrCandidates = {}) {
     const source = candidate.source || {};
     const identifiers = candidate.identifiers || {};
     const pdfUrl = source.pdfUrl || candidate.pdfUrl || '';
-    const fullTextStatus = source.fullTextStatus || (pdfUrl ? 'open_pdf' : 'unknown');
-    const downloadStatus = inferDownloadStatus(candidate, fullTextStatus, pdfUrl);
-    const downloadedPath = source.localPdfPath || (
-      source.resolutionStatus === 'fulltext_ready' ? source.sourcePath || null : null
-    );
-    const reason = downloadStatus === 'downloaded' ? null : skipReason(candidate, fullTextStatus, pdfUrl);
+    const markdownUrl = source.markdownUrl || candidate.markdownUrl || candidate.markdownUrls?.[0] || '';
+    const fullTextStatus = source.fullTextStatus || (markdownUrl ? 'open_markdown' : (pdfUrl ? 'open_pdf' : 'unknown'));
+    const accessUrl = fullTextStatus === 'open_markdown' ? markdownUrl : pdfUrl;
+    const downloadStatus = inferDownloadStatus(candidate, fullTextStatus, accessUrl);
+    const localPdfPath = source.localPdfPath || (source.sourceKind === 'pdf' ? source.sourcePath || null : null);
+    const localMarkdownPath = source.localMarkdownPath || (source.sourceKind === 'markdown' ? source.sourcePath || null : null);
+    const downloadedPath = source.sourcePath || localMarkdownPath || localPdfPath || null;
+    const reason = downloadStatus === 'downloaded' ? null : skipReason(candidate, fullTextStatus, accessUrl);
 
     return {
       index: index + 1,
@@ -71,15 +75,21 @@ export function buildDiscoveryDownloadManifest(runOrCandidates = {}) {
       pmid: identifiers.pmid || null,
       pmcid: identifiers.pmcid || null,
       pdf_url: pdfUrl || null,
+      markdown_url: markdownUrl || null,
       landing_page_url: candidate.landingPageUrl || candidate.bestOaUrl || null,
+      source_kind: source.sourceKind || 'metadata_only',
+      source_path: source.sourcePath || null,
       full_text_status: fullTextStatus,
       source_platforms: Array.isArray(candidate.providers) ? candidate.providers : [],
-      download_source: fullTextStatus === 'open_pdf' || downloadStatus === 'downloaded' ? inferDownloadSource(candidate) : null,
+      download_source: fullTextStatus === 'open_pdf' || fullTextStatus === 'open_markdown' || downloadStatus === 'downloaded' ? inferDownloadSource(candidate) : null,
       download_status: downloadStatus,
       download_error: reason,
-      local_pdf_path: downloadedPath,
-      filename: fullTextStatus === 'open_pdf' || downloadStatus === 'downloaded' ? filenameFor(candidate, index) : null,
-      institutional_access_hints: source.institutionalAccessHints || []
+      local_pdf_path: localPdfPath,
+      local_markdown_path: localMarkdownPath,
+      local_source_path: downloadedPath,
+      filename: fullTextStatus === 'open_pdf' || fullTextStatus === 'open_markdown' || downloadStatus === 'downloaded' ? filenameFor(candidate, index) : null,
+      institutional_access_hints: source.institutionalAccessHints || [],
+      supplementation: source.supplementation || null
     };
   });
 }

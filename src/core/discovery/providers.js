@@ -11,11 +11,14 @@ import {
   hasSemanticScholarApiKey,
   waitForSemanticScholarRateLimit
 } from './s2-rate-limit.js';
+import { scheduleDiscoveryFetch } from './request-scheduler.js';
 
 export const DEFAULT_DISCOVERY_PROVIDERS = ['openalex', 'semantic_scholar', 'crossref', 'arxiv'];
 export const MAX_DISCOVERY_PROVIDER_THREADS = 4;
 export const KNOWN_DISCOVERY_PROVIDERS = new Set([
   ...DEFAULT_DISCOVERY_PROVIDERS,
+  'papers_cool',
+  'pasa',
   'unpaywall',
   'pubmed',
   'europe_pmc',
@@ -33,6 +36,8 @@ const ARXIV_QUERY_URL = 'https://export.arxiv.org/api/query';
 const EUROPE_PMC_SEARCH_URL = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search';
 const DBLP_SEARCH_URL = 'https://dblp.org/search/publ/api';
 const CORE_SEARCH_URL = 'https://api.core.ac.uk/v3/search/works';
+const PAPERS_COOL_BASE_URL = 'https://papers.cool';
+const PASA_API_BASE_URL = 'https://pasa-agent.ai/paper-agent/api/v1';
 
 function normalizeProviderName(value = '') {
   const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
@@ -62,6 +67,11 @@ function toNonNegativeInteger(value, fallback) {
   return Math.max(0, Math.floor(parsed));
 }
 
+function normalizeBaseUrl(value = '', fallback = '') {
+  const normalized = String(value || fallback || '').trim();
+  return normalized.replace(/\/+$/, '');
+}
+
 export function resolveDiscoveryConfig(options = {}) {
   return {
     providers: normalizeDiscoveryProviders(options.providers),
@@ -83,6 +93,35 @@ export function resolveDiscoveryConfig(options = {}) {
       options.providerRequestDelayMs ?? options.provider_request_delay_ms,
       250
     )),
+    providerRequestSchedulerDelayMs: toNonNegativeInteger(
+      options.providerRequestSchedulerDelayMs ?? options.provider_request_scheduler_delay_ms,
+      0
+    ),
+    providerRequestMaxConcurrent: toPositiveInteger(
+      options.providerRequestMaxConcurrent ?? options.provider_request_max_concurrent,
+      MAX_DISCOVERY_PROVIDER_THREADS
+    ),
+    discoveryRequestCache: options.discoveryRequestCache ?? options.discovery_request_cache,
+    discoveryRequestCacheTtlMs: toNonNegativeInteger(
+      options.discoveryRequestCacheTtlMs
+      ?? options.discovery_request_cache_ttl_ms
+      ?? process.env.PAPERNEXUS_DISCOVERY_CACHE_TTL_MS,
+      0
+    ),
+    openAlexRequestDelayMs: toNonNegativeInteger(
+      options.openAlexRequestDelayMs
+      ?? options.openalexRequestDelayMs
+      ?? options.openalex_request_delay_ms
+      ?? process.env.PAPERNEXUS_OPENALEX_REQUEST_DELAY_MS,
+      0
+    ),
+    openAlexMaxConcurrent: toPositiveInteger(
+      options.openAlexMaxConcurrent
+      ?? options.openalexMaxConcurrent
+      ?? options.openalex_max_concurrent
+      ?? process.env.PAPERNEXUS_OPENALEX_MAX_CONCURRENT,
+      MAX_DISCOVERY_PROVIDER_THREADS
+    ),
     maxRetryAfterMs: Math.min(10000, toPositiveInteger(options.maxRetryAfterMs || options.max_retry_after_ms, 10000)),
     mailto: String(
       options.mailto
@@ -102,6 +141,48 @@ export function resolveDiscoveryConfig(options = {}) {
       || process.env.CORE_API_KEY
       || ''
     ).trim(),
+    papersCoolBaseUrl: normalizeBaseUrl(
+      options.papersCoolBaseUrl
+      || options.papers_cool_base_url
+      || process.env.PAPERNEXUS_PAPERS_COOL_BASE_URL,
+      PAPERS_COOL_BASE_URL
+    ),
+    papersCoolSort: toNonNegativeInteger(
+      options.papersCoolSort
+      ?? options.papers_cool_sort,
+      0
+    ) > 0 ? 1 : 0,
+    papersCoolMaxQueries: Math.min(20, toPositiveInteger(
+      options.papersCoolMaxQueries
+      || options.papers_cool_max_queries,
+      4
+    )),
+    pasaApiBaseUrl: normalizeBaseUrl(
+      options.pasaApiBaseUrl
+      || options.pasa_api_base_url
+      || process.env.PAPERNEXUS_PASA_API_BASE_URL,
+      PASA_API_BASE_URL
+    ),
+    pasaRequestTimeoutMs: Math.min(30000, toPositiveInteger(
+      options.pasaRequestTimeoutMs
+      || options.pasa_request_timeout_ms,
+      20000
+    )),
+    pasaTimeoutSeconds: Math.min(120, toPositiveInteger(
+      options.pasaTimeoutSeconds
+      || options.pasa_timeout_seconds,
+      30
+    )),
+    pasaPollIntervalSeconds: Math.min(30, toPositiveInteger(
+      options.pasaPollIntervalSeconds
+      || options.pasa_poll_interval_seconds,
+      1
+    )),
+    pasaMaxQueries: Math.min(20, toPositiveInteger(
+      options.pasaMaxQueries
+      || options.pasa_max_queries,
+      2
+    )),
     userAgent: String(options.userAgent || 'PaperNexus/0.1 literature-discovery').trim()
   };
 }
@@ -117,24 +198,14 @@ async function fetchWithTimeout(url, config = {}, headers = {}) {
   const maxAttempts = 1 + Math.max(0, Math.floor(Number(config.retryCount ?? 1) || 0));
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs || 8000);
     try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'user-agent': config.userAgent || 'PaperNexus/0.1 literature-discovery',
-          ...headers
-        }
-      });
+      const response = await scheduleDiscoveryFetch(url, config, headers);
       if (!shouldRetryResponse(response, config) || attempt === maxAttempts) return response;
       await waitForRetryDelay(response, config, attempt);
     } catch (error) {
       lastError = error;
       if (attempt === maxAttempts || error?.name === 'AbortError') throw error;
       await waitForRetryDelay(null, config, attempt);
-    } finally {
-      clearTimeout(timeout);
     }
   }
   throw lastError || new Error('request-failed');
@@ -574,6 +645,337 @@ async function fetchArxiv(query, planQuery, config) {
   });
 }
 
+function escapeRegExp(value = '') {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeHtml(value = '') {
+  return decodeXml(String(value || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code) => {
+      const value = Number(code);
+      return Number.isFinite(value) ? String.fromCodePoint(value) : _;
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => {
+      const value = Number.parseInt(code, 16);
+      return Number.isFinite(value) ? String.fromCodePoint(value) : _;
+    }));
+}
+
+function stripHtmlDecoded(value = '') {
+  return decodeHtml(stripHtml(value));
+}
+
+function extractHtmlElementById(html = '', id = '') {
+  const pattern = new RegExp(`<([a-z0-9]+)\\b(?=[^>]*\\bid=["']${escapeRegExp(id)}["'])[^>]*>([\\s\\S]*?)<\\/\\1>`, 'i');
+  return html.match(pattern)?.[2] || '';
+}
+
+function extractHtmlElementByClass(html = '', className = '') {
+  const pattern = new RegExp(`<([a-z0-9]+)\\b(?=[^>]*\\bclass=["'][^"']*\\b${escapeRegExp(className)}\\b[^"']*["'])[^>]*>([\\s\\S]*?)<\\/\\1>`, 'i');
+  return html.match(pattern)?.[2] || '';
+}
+
+function extractOpeningTagById(html = '', id = '') {
+  const pattern = new RegExp(`<[a-z0-9]+\\b(?=[^>]*\\bid=["']${escapeRegExp(id)}["'])[^>]*>`, 'i');
+  return html.match(pattern)?.[0] || '';
+}
+
+function extractHtmlAttribute(tag = '', name = '') {
+  const pattern = new RegExp(`\\b${escapeRegExp(name)}=["']([^"']*)["']`, 'i');
+  return decodeHtml(tag.match(pattern)?.[1] || '');
+}
+
+function extractAuthorLinks(html = '') {
+  const authors = [];
+  const pattern = /<a\b(?=[^>]*\bclass=["'][^"']*\bauthor\b[^"']*["'])[^>]*>([\s\S]*?)<\/a>/gi;
+  let match = pattern.exec(html);
+  while (match) {
+    const author = stripHtmlDecoded(match[1]);
+    if (author) authors.push(author);
+    match = pattern.exec(html);
+  }
+  return authors;
+}
+
+function extractPapersCoolPanels(html = '') {
+  const starts = [];
+  const pattern = /<div\b(?=[^>]*\bid=["']([^"']+)["'])(?=[^>]*\bclass=["'][^"']*\bpaper\b[^"']*["'])[^>]*>/gi;
+  let match = pattern.exec(html);
+  while (match) {
+    const arxivId = normalizeArxivId(match[1]);
+    if (arxivId) {
+      starts.push({
+        arxivId,
+        start: match.index,
+        bodyStart: pattern.lastIndex
+      });
+    }
+    match = pattern.exec(html);
+  }
+  return starts.map((entry, index) => ({
+    arxivId: entry.arxivId,
+    body: html.slice(entry.bodyStart, starts[index + 1]?.start || html.length)
+  }));
+}
+
+function parsePapersCoolSearchHtml(html = '', maxResults = 20) {
+  return extractPapersCoolPanels(html).slice(0, maxResults).map(({ arxivId, body }, index) => {
+    const authorsHtml = extractHtmlElementById(body, `authors-${arxivId}`);
+    const dateHtml = extractHtmlElementById(body, `date-${arxivId}`);
+    const pdfTag = extractOpeningTagById(body, `pdf-${arxivId}`);
+    const publicationDate = stripHtmlDecoded(extractHtmlElementByClass(dateHtml, 'date-data')).slice(0, 10) || null;
+    return {
+      index: stripHtmlDecoded(extractHtmlElementByClass(body, 'index')).replace(/^#/, '') || String(index + 1),
+      title: stripHtmlDecoded(
+        extractHtmlElementById(body, `title-${arxivId}`)
+        || extractHtmlElementByClass(body, 'title-link')
+      ),
+      authors: extractAuthorLinks(authorsHtml),
+      abstract: stripHtmlDecoded(extractHtmlElementById(body, `summary-${arxivId}`) || extractHtmlElementByClass(body, 'summary')),
+      arxivId,
+      arxiv_id: arxivId,
+      url: `https://papers.cool/arxiv/${arxivId}`,
+      pdfUrl: arxivPdfUrl(arxivId) || extractHtmlAttribute(pdfTag, 'data'),
+      publicationDate
+    };
+  }).filter((paper) => paper.arxivId || paper.title);
+}
+
+function generatePasaId() {
+  return `${Date.now()}${Math.floor(100000 + Math.random() * 900000)}`;
+}
+
+async function postJsonOnce(url, payload = {}, config = {}, headers = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.pasaRequestTimeoutMs || config.timeoutMs || 20000);
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        'user-agent': config.userAgent || 'PaperNexus/0.1 literature-discovery',
+        ...headers
+      },
+      body: JSON.stringify(payload)
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function postJsonWithRetry(url, payload = {}, config = {}, headers = {}) {
+  const maxAttempts = 1 + Math.max(0, Math.floor(Number(config.retryCount ?? 1) || 0));
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await postJsonOnce(url, payload, config, headers);
+      if (!shouldRetryResponse(response, config) || attempt === maxAttempts) return response;
+      await waitForRetryDelay(response, config, attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts || error?.name === 'AbortError') throw error;
+      await waitForRetryDelay(null, config, attempt);
+    }
+  }
+  throw lastError || new Error('request-failed');
+}
+
+async function postPasaJson(endpoint, payload = {}, config = {}) {
+  const url = new URL(endpoint.replace(/^\/+/, ''), `${config.pasaApiBaseUrl || PASA_API_BASE_URL}/`);
+  const response = await postJsonWithRetry(url, payload, config);
+  if (!response.ok) throw new Error(`pasa http ${response.status}`);
+  return response.json();
+}
+
+function parseEmbeddedJson(value) {
+  if (!value) return {};
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizePasaPaper(raw = {}) {
+  const embedded = parseEmbeddedJson(raw.json_result);
+  const paperId = raw.entry_id || raw.paper_id || embedded.entry_id || embedded.paper_id || '';
+  const publishTime = String(raw.publish_time || embedded.publish_time || '');
+  const authors = Array.isArray(raw.authors)
+    ? raw.authors
+    : (Array.isArray(embedded.authors) ? embedded.authors : [raw.authors || embedded.authors].filter(Boolean));
+  const year = Number(publishTime.slice(0, 4)) || Number(raw.year || embedded.year) || null;
+  const selectReason = raw.select_reason;
+  return {
+    paperId,
+    title: raw.title || embedded.title || '',
+    authors,
+    publishTime,
+    year,
+    score: Number(raw.score || embedded.score) || null,
+    abstract: raw.abstract || embedded.abstract || '',
+    doi: raw.doi || embedded.doi || '',
+    link: embedded.link || raw.link || raw.url || (paperId ? arxivAbsUrl(paperId) : ''),
+    selectedByPasa: typeof selectReason === 'string' ? selectReason.toLowerCase() === 'true' : Boolean(selectReason),
+    bibtex: raw.bib_result || embedded.bib_result || '',
+    raw
+  };
+}
+
+function collectPasaResults(response = {}) {
+  const rawPapers = parseEmbeddedJson(response.papers);
+  const papers = Object.values(rawPapers)
+    .filter((entry) => entry && typeof entry === 'object' && !entry.stop)
+    .map(normalizePasaPaper)
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  return papers.map((paper, index) => ({ ...paper, rank: index + 1 }));
+}
+
+function arxivPdfUrl(arxivId = '') {
+  return arxivId ? `https://arxiv.org/pdf/${arxivId}.pdf` : '';
+}
+
+function arxivAbsUrl(arxivId = '') {
+  return arxivId ? `https://arxiv.org/abs/${arxivId}` : '';
+}
+
+function extractArxivIdFromUrl(value = '') {
+  const raw = String(value || '').trim();
+  const direct = normalizeArxivId(raw);
+  if (direct) return direct;
+  const match = raw.match(/arxiv\.org\/(?:abs|pdf)\/([^?#\s]+)/i)
+    || raw.match(/papers\.cool\/arxiv\/([^?#\s]+)/i)
+    || raw.match(/\barxiv[:/ ]+([a-z.-]+\/\d{7}(?:v\d+)?|\d{4}\.\d{4,5}(?:v\d+)?)\b/i);
+  return match ? normalizeArxivId(match[1]) : '';
+}
+
+function inferArxivYear(arxivId = '') {
+  const match = String(arxivId || '').match(/^(\d{2})\d{2}\./);
+  if (!match) return null;
+  const year = Number(match[1]);
+  return year >= 91 ? 1900 + year : 2000 + year;
+}
+
+async function fetchPapersCool(query, planQuery, config) {
+  const url = new URL('/arxiv/search', `${config.papersCoolBaseUrl || PAPERS_COOL_BASE_URL}/`);
+  url.searchParams.set('highlight', '1');
+  url.searchParams.set('query', query);
+  url.searchParams.set('sort', String(config.papersCoolSort || 0));
+  const response = await fetchWithTimeout(url, config, {
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+  });
+  if (!response.ok) throw new Error(`papers_cool http ${response.status}`);
+  const html = await response.text();
+  const papers = parsePapersCoolSearchHtml(html, config.maxResultsPerQuery);
+  return papers.map((paper) => {
+    const arxivId = extractArxivIdFromUrl(paper.arxivId || paper.arxiv_id || paper.url || paper.pdfUrl);
+    const landingPageUrl = paper.url || (arxivId ? `https://papers.cool/arxiv/${arxivId}` : '');
+    const pdfUrl = paper.pdfUrl || arxivPdfUrl(arxivId);
+    return normalizeCandidate({
+      provider: 'papers_cool',
+      title: paper.title || '',
+      authors: paper.authors || [],
+      year: paper.year || (paper.publicationDate ? Number(String(paper.publicationDate).slice(0, 4)) : null) || inferArxivYear(arxivId),
+      publicationDate: paper.publicationDate || null,
+      publicationType: 'preprint',
+      abstract: paper.abstract_snippet || paper.abstract || '',
+      identifiers: normalizePaperIdentifiers({ arxivId }),
+      openAccessStatus: arxivId ? 'oa' : '',
+      pdfUrl,
+      bestOaUrl: arxivAbsUrl(arxivId) || landingPageUrl,
+      landingPageUrl,
+      fullTextUrls: [pdfUrl, arxivAbsUrl(arxivId)].filter(Boolean),
+      sourceHints: [landingPageUrl, pdfUrl, arxivAbsUrl(arxivId)].filter(Boolean),
+      preferredVenuePacks: planQuery.preferredVenuePacks,
+      retrievalEvidence: [{
+        provider: 'papers_cool',
+        queryId: planQuery.id,
+        query: planQuery.query,
+        family: planQuery.family,
+        preferredVenuePacks: planQuery.preferredVenuePacks,
+        providerId: arxivId || landingPageUrl,
+        rank: Number(paper.index) || null,
+        searchUrl: url.toString()
+      }],
+      rawSummary: 'papers.cool direct arXiv search result.'
+    });
+  });
+}
+
+function pickPasaLink(paper = {}) {
+  return paper.link
+    || paper.url
+    || paper.json_result?.link
+    || paper.json_result?.url
+    || '';
+}
+
+async function fetchPasa(query, planQuery, config) {
+  const sessionId = generatePasaId();
+  const globalId = generatePasaId();
+  await postPasaJson('single_paper_agent', {
+    user_query: query,
+    session_id: sessionId,
+    global_id: globalId
+  }, config);
+
+  const deadline = Date.now() + Math.max(1000, Number(config.pasaTimeoutSeconds || 30) * 1000);
+  let payload = {};
+  let papers = [];
+  while (true) {
+    payload = await postPasaJson('single_get_result', { session_id: sessionId }, config);
+    papers = collectPasaResults(payload);
+    if (payload.finish || Date.now() >= deadline) break;
+    const waitMs = Math.max(0, Number(config.pasaPollIntervalSeconds || 1) * 1000);
+    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  papers = papers.slice(0, config.maxResultsPerQuery);
+
+  return papers.map((paper) => {
+    const link = pickPasaLink(paper);
+    const arxivId = extractArxivIdFromUrl(paper.paperId || paper.paper_id || paper.entry_id || link);
+    const doi = paper.doi || paper.raw?.doi || '';
+    return normalizeCandidate({
+      provider: 'pasa',
+      title: paper.title || '',
+      authors: Array.isArray(paper.authors) ? paper.authors : [],
+      year: paper.year || inferArxivYear(arxivId),
+      publicationDate: paper.publishTime || null,
+      publicationType: arxivId ? 'preprint' : '',
+      abstract: paper.abstract || '',
+      identifiers: normalizePaperIdentifiers({ arxivId, doi }),
+      openAccessStatus: arxivId ? 'oa' : '',
+      pdfUrl: arxivPdfUrl(arxivId),
+      bestOaUrl: arxivAbsUrl(arxivId) || link,
+      landingPageUrl: link || arxivAbsUrl(arxivId),
+      fullTextUrls: [arxivPdfUrl(arxivId), arxivAbsUrl(arxivId), link].filter(Boolean),
+      sourceHints: [link, arxivPdfUrl(arxivId), arxivAbsUrl(arxivId)].filter(Boolean),
+      preferredVenuePacks: planQuery.preferredVenuePacks,
+      retrievalEvidence: [{
+        provider: 'pasa',
+        queryId: planQuery.id,
+        query: planQuery.query,
+        family: planQuery.family,
+        preferredVenuePacks: planQuery.preferredVenuePacks,
+        providerId: arxivId || paper.paperId || link,
+        score: Number(paper.score) || null,
+        rank: Number(paper.rank) || null,
+        sessionId,
+        globalId,
+        finished: payload.finish === true,
+        selectedByPasa: paper.selectedByPasa === true
+      }],
+      rawSummary: 'PASA direct paper-agent API search result.'
+    });
+  });
+}
+
 function normalizeDblpAuthors(info = {}) {
   const authorsRaw = info.authors && typeof info.authors === 'object'
     ? info.authors.author
@@ -789,6 +1191,8 @@ const PROVIDER_FETCHERS = {
   semantic_scholar: fetchSemanticScholar,
   crossref: fetchCrossref,
   arxiv: fetchArxiv,
+  papers_cool: fetchPapersCool,
+  pasa: fetchPasa,
   europe_pmc: fetchEuropePmc,
   pubmed: fetchEuropePmc,
   dblp: fetchDblp,
@@ -800,6 +1204,12 @@ function shouldRunQueryForProvider(provider, query = {}) {
     ? query.providerAllowList.map(normalizeProviderName).filter(Boolean)
     : [];
   return !allowList.length || allowList.includes(provider);
+}
+
+function providerQueryLimit(provider, config = {}) {
+  if (provider === 'papers_cool') return Math.max(1, Math.floor(Number(config.papersCoolMaxQueries || 4)));
+  if (provider === 'pasa') return Math.max(1, Math.floor(Number(config.pasaMaxQueries || 2)));
+  return Number.POSITIVE_INFINITY;
 }
 
 function buildProviderQueryResult(provider, query = {}, values = {}) {
@@ -871,11 +1281,15 @@ export async function executeProviderQueries(params = {}) {
       }
 
       let hasRunProviderQuery = false;
+      let runCount = 0;
+      const queryLimit = providerQueryLimit(provider, config);
       for (const query of plan.queries || []) {
         if (!shouldRunQueryForProvider(provider, query)) continue;
+        if (runCount >= queryLimit) break;
         if (hasRunProviderQuery) await waitForProviderRequestDelay(config);
         const result = await runProviderQuery(provider, fetcher, query, config);
         hasRunProviderQuery = true;
+        runCount += 1;
         queryResults.push(result.queryResult);
         candidateBatches.push(result.candidates);
       }

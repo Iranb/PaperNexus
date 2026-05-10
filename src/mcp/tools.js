@@ -638,13 +638,13 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'literature_discovery',
-    description: 'Discover papers from a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit resolved files into the import queue.',
+    description: 'Discover papers from a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['plan', 'search', 'resolve', 'run', 'import', 'status', 'report', 'list'],
+          enum: ['plan', 'search', 'resolve', 'run', 'import', 'ingest', 'import_and_process', 'supplement', 'status', 'report', 'list'],
           default: 'run'
         },
         corpus: {
@@ -672,6 +672,11 @@ export const PAPERNEXUS_TOOLS = [
               pmcid: { type: 'string' },
               year: { type: 'number' },
               venue: { type: 'string' },
+              markdownUrl: { type: 'string' },
+              markdownUrls: {
+                type: 'array',
+                items: { type: 'string' }
+              },
               pdfUrl: { type: 'string' },
               bestOaUrl: { type: 'string' },
               sourceHints: {
@@ -777,7 +782,7 @@ export const PAPERNEXUS_TOOLS = [
               items: { type: 'string' }
             }
           ],
-          description: 'Provider allow-list. Implemented providers include openalex, semantic_scholar, crossref, arxiv, europe_pmc, pubmed, dblp, and core; unpaywall is used during source resolution.'
+          description: 'Provider allow-list. Default providers are openalex, semantic_scholar, crossref, and arxiv. Implemented opt-in providers include papers_cool, pasa, europe_pmc, pubmed, dblp, and core; unpaywall is used during source resolution.'
         },
         maxQueries: {
           type: 'number',
@@ -819,20 +824,149 @@ export const PAPERNEXUS_TOOLS = [
           description: 'Maximum concurrent literature search providers. Capped at 4.',
           default: 4
         },
+        providerRequestSchedulerDelayMs: {
+          type: 'number',
+          description: 'Optional shared scheduler delay between request starts for providers that do not have a provider-specific delay.',
+          default: 0
+        },
+        providerRequestMaxConcurrent: {
+          type: 'number',
+          description: 'Maximum concurrent HTTP requests per generic provider inside the shared discovery scheduler.',
+          default: 4
+        },
+        discoveryRequestCache: {
+          type: 'boolean',
+          description: 'Enable in-process discovery HTTP response caching for successful deterministic provider requests.',
+          default: false
+        },
+        discoveryRequestCacheTtlMs: {
+          type: 'number',
+          description: 'TTL for the opt-in in-process discovery request cache.',
+          default: 0
+        },
+        openAlexRequestDelayMs: {
+          type: 'number',
+          description: 'Optional shared scheduler delay between OpenAlex request starts. Defaults to 0 unless configured by environment.',
+          default: 0
+        },
+        openAlexMaxConcurrent: {
+          type: 'number',
+          description: 'Maximum concurrent OpenAlex HTTP requests inside the shared discovery scheduler.',
+          default: 4
+        },
+        semanticScholarRequestDelayMs: {
+          type: 'number',
+          description: 'Optional Semantic Scholar request-start delay shared across search and citation expansion. Defaults to the existing Semantic Scholar delay configuration.',
+          default: 1000
+        },
+        semanticScholarMaxConcurrent: {
+          type: 'number',
+          description: 'Maximum concurrent Semantic Scholar HTTP requests inside the shared discovery scheduler.',
+          default: 1
+        },
+        papersCoolBaseUrl: {
+          type: 'string',
+          description: 'Optional papers.cool base URL override. Defaults to https://papers.cool.'
+        },
+        papersCoolSort: {
+          type: 'number',
+          description: 'papers.cool search ordering: 0 for time order, 1 for reading-star order.',
+          default: 0
+        },
+        papersCoolMaxQueries: {
+          type: 'number',
+          description: 'Maximum discovery queries sent to papers.cool per run to avoid over-querying the local/web provider.',
+          default: 4
+        },
+        pasaApiBaseUrl: {
+          type: 'string',
+          description: 'Optional PASA paper-agent API base URL override. Defaults to https://pasa-agent.ai/paper-agent/api/v1.'
+        },
+        pasaRequestTimeoutMs: {
+          type: 'number',
+          description: 'Maximum timeout in milliseconds for one PASA API request.',
+          default: 20000
+        },
+        pasaTimeoutSeconds: {
+          type: 'number',
+          description: 'Maximum PASA polling time per query.',
+          default: 30
+        },
+        pasaPollIntervalSeconds: {
+          type: 'number',
+          description: 'PASA polling interval per query.',
+          default: 1
+        },
+        pasaMaxQueries: {
+          type: 'number',
+          description: 'Maximum discovery queries sent to PASA per run because PASA is slower and rate-limited.',
+          default: 2
+        },
         maxDownloads: {
           type: 'number',
-          description: 'Maximum legal open PDF downloads attempted during resolution.',
+          description: 'Maximum legal open source downloads attempted during resolution. Markdown is attempted before PDF when available.',
           default: 12
         },
         downloadConcurrency: {
           type: 'number',
-          description: 'Maximum concurrent legal PDF/source-resolution downloads. Capped at 4.',
+          description: 'Maximum concurrent legal Markdown/PDF source-resolution downloads. Capped at 4.',
           default: 4
+        },
+        preferMarkdown: {
+          type: 'boolean',
+          description: 'When true (default), resolve and ingest explicit Markdown sources before trying PDF fallback. Generated third-party arXiv Markdown URLs require generateArxivMarkdownSources=true.',
+          default: true
+        },
+        generateArxivMarkdownSources: {
+          type: 'boolean',
+          description: 'When true, generate third-party arXiv Markdown fallback URLs for candidates with an arXiv ID before falling back to arXiv PDF.',
+          default: false
+        },
+        markdownStagingRoot: {
+          type: 'string',
+          description: 'Optional local directory for downloaded discovery Markdown sources. Defaults to the corpus discovery markdown staging directory.'
+        },
+        pdfStagingRoot: {
+          type: 'string',
+          description: 'Optional local directory for downloaded discovery PDF fallback sources. Defaults to the corpus discovery PDF staging directory.'
         },
         allowDownloads: {
           type: 'boolean',
-          description: 'When false, keep PDF URLs and institutional access hints but do not download files.',
+          description: 'When false, keep Markdown/PDF URLs and institutional access hints but do not download files.',
           default: true
+        },
+        candidateId: {
+          type: 'string',
+          description: 'Candidate id to supplement in a persisted discovery run.'
+        },
+        canonicalId: {
+          type: 'string',
+          description: 'Canonical paper id to supplement in a persisted discovery run, such as arxiv:2501.00001 or doi:10.xxxx/example.'
+        },
+        sourcePath: {
+          type: 'string',
+          description: 'For operation=supplement, absolute local .md, .markdown, or .pdf path on the PaperNexus server.'
+        },
+        sourceKind: {
+          type: 'string',
+          enum: ['markdown', 'pdf'],
+          description: 'Optional explicit source kind for operation=supplement.'
+        },
+        sourceProvider: {
+          type: 'string',
+          description: 'Optional full-text source provider for operation=supplement, such as hf, arxiv2md-api, markxiv, arxiv2md, or manual_supplement.'
+        },
+        markdownUrl: {
+          type: 'string',
+          description: 'For seeds or operation=supplement, HTTP(S) URL that returns validated paper Markdown.'
+        },
+        pdfUrl: {
+          type: 'string',
+          description: 'For seeds or operation=supplement, HTTP(S) URL that returns a valid PDF fallback.'
+        },
+        paperMetadata: {
+          type: 'object',
+          description: 'For operation=supplement, optional title/authors/year/identifier corrections to merge before import.'
         },
         citationExpansion: {
           type: 'boolean',
@@ -861,13 +995,45 @@ export const PAPERNEXUS_TOOLS = [
         },
         importResolved: {
           type: 'boolean',
-          description: 'Submit resolved local full-text sources to import_workflow after discovery.',
+          description: 'Submit resolved local full-text sources to the import queue after discovery.',
           default: false
+        },
+        processImports: {
+          type: 'boolean',
+          description: 'After submitting resolved sources, synchronously run the import worker so downloaded PDFs are parsed and fast-committed into the graph. This can be long-running.',
+          default: false
+        },
+        importMaxPasses: {
+          type: 'number',
+          description: 'Maximum import queue tasks to process inline when processImports is true. Defaults to the number of newly submitted tasks.',
+          default: 20
         },
         maxImported: {
           type: 'number',
           description: 'Maximum resolved sources to submit when importResolved is true.',
           default: 20
+        },
+        semanticExtraction: {
+          type: 'string',
+          enum: ['auto', 'heuristic-only', 'llm-assisted', 'llm-primary'],
+          description: 'Optional semantic extraction mode for inline import processing.'
+        },
+        pdfParser: {
+          type: 'string',
+          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl'],
+          description: 'Optional PDF parser override for inline import processing.'
+        },
+        pdfCommand: {
+          type: 'string',
+          description: 'Optional generic PDF parser command override for inline import processing.'
+        },
+        doclingCommand: {
+          type: 'string',
+          description: 'Optional Docling command override for inline import processing.'
+        },
+        pythonCommand: {
+          type: 'string',
+          description: 'Optional Python command override for inline import processing.'
         },
         mailto: {
           type: 'string',
@@ -922,7 +1088,7 @@ export const PAPERNEXUS_TOOLS = [
         },
         runId: {
           type: 'string',
-          description: 'Discovery run id for status/report.'
+          description: 'Discovery run id for status/report or supplement operations. If omitted for status/report, the latest run is used.'
         },
         limit: {
           type: 'number',

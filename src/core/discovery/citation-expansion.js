@@ -9,6 +9,7 @@ import {
   isSemanticScholarApiUrl,
   waitForSemanticScholarRateLimit
 } from './s2-rate-limit.js';
+import { scheduleDiscoveryFetch } from './request-scheduler.js';
 
 const SEMANTIC_SCHOLAR_PAPER_URL = 'https://api.semanticscholar.org/graph/v1/paper';
 const OPENALEX_WORKS_URL = 'https://api.openalex.org/works';
@@ -63,19 +64,7 @@ function getOpenAlexSeedLookup(candidate = {}) {
 }
 
 async function fetchWithTimeout(url, config = {}, headers = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs || 8000);
-  try {
-    return await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'user-agent': config.userAgent || 'PaperNexus/0.1 literature-discovery',
-        ...headers
-      }
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+  return scheduleDiscoveryFetch(url, config, headers);
 }
 
 function maxRetryAfterMs(params = {}) {

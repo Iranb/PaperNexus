@@ -1,7 +1,20 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { resolveCorpus } from '../storage/corpus-store.js';
-import { buildLiteratureDiscoveryRunPlan, runLiteratureDiscovery } from '../core/discovery/workflow.js';
+import {
+  buildDiscoveryMetadataGraph,
+  buildLiteratureDiscoveryRunPlan,
+  runLiteratureDiscovery
+} from '../core/discovery/workflow.js';
 import { submitDiscoveryImports } from '../core/discovery/import-bridge.js';
+import { runImportQueueUntilIdle } from '../core/imports/worker.js';
 import { listDiscoveryRuns, loadDiscoveryRun, saveDiscoveryRun } from '../core/discovery/store.js';
+import { loadImportTask } from '../storage/import-store.js';
+import {
+  createDiscoverySupplementationInterface,
+  resolveDiscoverySources
+} from '../core/discovery/source-resolution.js';
+import { createContentSha256, createSourceIdentity } from '../lib/paper-identifiers.js';
 
 function normalizeOperation(value) {
   return String(value || '').trim().toLowerCase().replace(/-/g, '_');
@@ -13,6 +26,99 @@ function normalizeObject(value) {
 
 function firstDefined(...values) {
   return values.find((value) => value !== undefined);
+}
+
+function enabledFlag(value) {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function shouldSubmitImports(operation, args = {}) {
+  return operation === 'import'
+    || operation === 'ingest'
+    || operation === 'import_and_process'
+    || enabledFlag(firstDefined(args.importResolved, args.import_resolved));
+}
+
+function shouldProcessImports(operation, args = {}) {
+  return operation === 'ingest'
+    || operation === 'import_and_process'
+    || enabledFlag(firstDefined(args.processImports, args.process_imports, args.waitForImports, args.wait_for_imports));
+}
+
+function explicitImportMaxPasses(args = {}, options = {}) {
+  const config = normalizeObject(options.config);
+  const importConfig = normalizeObject(config.imports || config.import);
+  return firstDefined(
+    args.importMaxPasses,
+    args.import_max_passes,
+    args.maxImportPasses,
+    args.max_import_passes,
+    importConfig.maxPasses,
+    importConfig.maxImportPasses
+  );
+}
+
+function countProcessableImportTasks(importResult = {}) {
+  return (importResult.results || []).filter((entry) => {
+    if (!entry.taskId) return false;
+    if (entry.status === 'submitted') return true;
+    if (entry.status !== 'deduped') return false;
+    const taskStatus = String(entry.taskStatus || '').trim().toLowerCase();
+    return taskStatus !== 'completed' && taskStatus !== 'failed';
+  }).length;
+}
+
+function buildImportProcessingOptions(args = {}, options = {}, importResult = {}) {
+  const config = normalizeObject(options.config);
+  const importConfig = normalizeObject(config.imports || config.import);
+  const ingestionConfig = normalizeObject(config.ingestion);
+  const pdfConfig = normalizeObject(config.pdf || config.pdfParser || config.pdf_parser);
+  const submittedTaskCount = countProcessableImportTasks(importResult);
+
+  return {
+    ...options,
+    maxPasses: firstDefined(
+      explicitImportMaxPasses(args, options),
+      Math.max(1, submittedTaskCount)
+    ),
+    semanticExtraction: firstDefined(
+      args.semanticExtraction,
+      args.semantic_extraction,
+      importConfig.semanticExtraction,
+      ingestionConfig.semanticExtraction
+    ),
+    pdfParser: firstDefined(
+      args.pdfParser,
+      args.pdf_parser,
+      importConfig.pdfParser,
+      ingestionConfig.pdfParser,
+      pdfConfig.parser
+    ),
+    pdfCommand: firstDefined(args.pdfCommand, args.pdf_command, importConfig.pdfCommand, pdfConfig.command),
+    pythonCommand: firstDefined(args.pythonCommand, args.python_command, importConfig.pythonCommand),
+    doclingCommand: firstDefined(args.doclingCommand, args.docling_command, importConfig.doclingCommand),
+    doclingPython: firstDefined(args.doclingPython, args.docling_python, importConfig.doclingPython),
+    markitdownPython: firstDefined(args.markitdownPython, args.markitdown_python, importConfig.markitdownPython),
+    markpdfdownPython: firstDefined(args.markpdfdownPython, args.markpdfdown_python, importConfig.markpdfdownPython),
+    opendataloaderPdfPython: firstDefined(
+      args.opendataloaderPdfPython,
+      args.opendataloader_pdf_python,
+      importConfig.opendataloaderPdfPython
+    ),
+    importPreparseConcurrency: firstDefined(
+      args.importPreparseConcurrency,
+      args.import_preparse_concurrency,
+      importConfig.importPreparseConcurrency
+    ),
+    importTaskTimeoutMs: firstDefined(args.importTaskTimeoutMs, args.import_task_timeout_ms, importConfig.importTaskTimeoutMs),
+    importPendingTimeoutMs: firstDefined(
+      args.importPendingTimeoutMs,
+      args.import_pending_timeout_ms,
+      importConfig.importPendingTimeoutMs
+    )
+  };
 }
 
 function buildLlmDiscoveryParams(args = {}, options = {}) {
@@ -61,8 +167,28 @@ function buildDiscoveryParams(rootPath, args = {}, options = {}) {
     maxResultsPerQuery: args.maxResultsPerQuery || args.max_results_per_query,
     maxCandidates: args.maxCandidates || args.max_candidates,
     providerConcurrency: args.providerConcurrency || args.provider_concurrency || args.maxProviderThreads || args.max_provider_threads,
+    providerRequestSchedulerDelayMs: firstDefined(args.providerRequestSchedulerDelayMs, args.provider_request_scheduler_delay_ms),
+    providerRequestMaxConcurrent: firstDefined(args.providerRequestMaxConcurrent, args.provider_request_max_concurrent),
+    discoveryRequestCache: firstDefined(args.discoveryRequestCache, args.discovery_request_cache),
+    discoveryRequestCacheTtlMs: firstDefined(args.discoveryRequestCacheTtlMs, args.discovery_request_cache_ttl_ms),
+    openAlexRequestDelayMs: firstDefined(args.openAlexRequestDelayMs, args.openalexRequestDelayMs, args.openalex_request_delay_ms),
+    openAlexMaxConcurrent: firstDefined(args.openAlexMaxConcurrent, args.openalexMaxConcurrent, args.openalex_max_concurrent),
+    semanticScholarRequestDelayMs: firstDefined(args.semanticScholarRequestDelayMs, args.semantic_scholar_request_delay_ms, args.s2RequestDelayMs, args.s2_request_delay_ms),
+    semanticScholarMaxConcurrent: firstDefined(args.semanticScholarMaxConcurrent, args.semantic_scholar_max_concurrent),
+    papersCoolBaseUrl: firstDefined(args.papersCoolBaseUrl, args.papers_cool_base_url),
+    papersCoolSort: firstDefined(args.papersCoolSort, args.papers_cool_sort),
+    papersCoolMaxQueries: firstDefined(args.papersCoolMaxQueries, args.papers_cool_max_queries),
+    pasaApiBaseUrl: firstDefined(args.pasaApiBaseUrl, args.pasa_api_base_url),
+    pasaRequestTimeoutMs: firstDefined(args.pasaRequestTimeoutMs, args.pasa_request_timeout_ms),
+    pasaTimeoutSeconds: firstDefined(args.pasaTimeoutSeconds, args.pasa_timeout_seconds),
+    pasaPollIntervalSeconds: firstDefined(args.pasaPollIntervalSeconds, args.pasa_poll_interval_seconds),
+    pasaMaxQueries: firstDefined(args.pasaMaxQueries, args.pasa_max_queries),
     maxDownloads: args.maxDownloads || args.max_downloads,
     downloadConcurrency: args.downloadConcurrency || args.download_concurrency || args.maxDownloadThreads || args.max_download_threads,
+    preferMarkdown: args.preferMarkdown ?? args.prefer_markdown,
+    generateArxivMarkdownSources: args.generateArxivMarkdownSources ?? args.generate_arxiv_markdown_sources,
+    markdownStagingRoot: args.markdownStagingRoot || args.markdown_staging_root || args.mdStagingRoot || args.md_staging_root,
+    pdfStagingRoot: args.pdfStagingRoot || args.pdf_staging_root,
     providers: args.providers,
     mailto: args.mailto,
     openAlexApiKey: args.openAlexApiKey || args.openalexApiKey || args.openalex_api_key,
@@ -117,6 +243,9 @@ function applyImportResultsToRun(run, importResult) {
           ? {
               status: importEntry.status,
               taskId: importEntry.taskId || null,
+              taskStatus: importEntry.taskStatus || importEntry.status || '',
+              taskStage: importEntry.taskStage || '',
+              graphUpdate: importEntry.graphUpdate || null,
               error: importEntry.error || ''
             }
           : {
@@ -125,6 +254,239 @@ function applyImportResultsToRun(run, importResult) {
       };
     }),
     importSummary: importResult
+  };
+}
+
+function countAcceptedImportResults(importResult = {}) {
+  const acceptedStatuses = new Set(['submitted', 'deduped', 'completed']);
+  return (importResult.results || []).filter((entry) => acceptedStatuses.has(entry.status)).length;
+}
+
+function resolveSupplementTarget(run = {}, args = {}) {
+  const candidateId = String(args.candidateId || args.candidate_id || '').trim();
+  const canonicalId = String(args.canonicalId || args.canonical_id || '').trim();
+  const title = String(args.title || args.paperTitle || args.paper_title || '').trim().toLowerCase();
+  return (run.candidates || []).find((candidate) => {
+    if (candidateId && (candidate.id === candidateId || candidate.candidateId === candidateId)) return true;
+    if (canonicalId && candidate.canonicalId === canonicalId) return true;
+    if (title && String(candidate.title || '').trim().toLowerCase() === title) return true;
+    return false;
+  }) || null;
+}
+
+function inferSupplementSourceKind(sourcePath = '', explicit = '') {
+  const requested = String(explicit || '').trim().toLowerCase();
+  if (requested === 'markdown' || requested === 'md') return 'markdown';
+  if (requested === 'pdf') return 'pdf';
+  const extension = path.extname(String(sourcePath || '')).toLowerCase();
+  if (extension === '.md' || extension === '.markdown') return 'markdown';
+  if (extension === '.pdf') return 'pdf';
+  return '';
+}
+
+function resolveLocalSupplementPath(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw === '~') return process.env.HOME || raw;
+  if (raw.startsWith('~/')) return path.join(process.env.HOME || '', raw.slice(2));
+  return raw;
+}
+
+function mergeSupplementPaperMetadata(candidate = {}, args = {}) {
+  const paperMetadata = normalizeObject(args.paperMetadata || args.paper_metadata);
+  const identifiers = {
+    ...(candidate.identifiers || {}),
+    ...normalizeObject(paperMetadata.identifiers),
+    ...normalizeObject(args.identifiers)
+  };
+  for (const key of ['doi', 'arxivId', 'pmid', 'pmcid', 'isbn', 'issn']) {
+    if (args[key]) identifiers[key] = args[key];
+    if (paperMetadata[key]) identifiers[key] = paperMetadata[key];
+  }
+  return {
+    ...candidate,
+    ...paperMetadata,
+    title: args.title || paperMetadata.title || candidate.title,
+    authors: paperMetadata.authors || candidate.authors,
+    year: args.year || paperMetadata.year || candidate.year,
+    identifiers
+  };
+}
+
+async function createManualSupplementedCandidate(candidate = {}, args = {}) {
+  const sourcePath = resolveLocalSupplementPath(args.sourcePath || args.source_path || args.serverFilePath || args.server_file_path);
+  if (!sourcePath) return null;
+  const sourceKind = inferSupplementSourceKind(sourcePath, args.sourceKind || args.source_kind);
+  if (sourceKind !== 'markdown' && sourceKind !== 'pdf') {
+    throw new Error('supplement sourcePath must point to a .md, .markdown, or .pdf file, or provide sourceKind.');
+  }
+  const stats = await fs.stat(sourcePath);
+  if (!stats.isFile()) {
+    throw new Error('supplement sourcePath must point to a regular file.');
+  }
+  const buffer = await fs.readFile(sourcePath);
+  const contentSha256 = createContentSha256(buffer);
+  const sourceProvider = String(args.sourceProvider || args.source_provider || 'manual_supplement').trim();
+  const next = mergeSupplementPaperMetadata(candidate, args);
+  const identity = createSourceIdentity({
+    ...next,
+    sourceKind,
+    sourceProvider,
+    contentSha256,
+    resolutionStatus: 'fulltext_ready'
+  });
+
+  return {
+    ...next,
+    source: {
+      ...(next.source || {}),
+      sourceKind,
+      sourcePath,
+      sourceProvider: identity.sourceProvider,
+      contentSha256: identity.contentSha256,
+      sourceId: identity.sourceId,
+      resolutionStatus: 'fulltext_ready',
+      fullTextStatus: sourceKind === 'markdown' ? 'open_markdown' : 'open_pdf',
+      downloadStatus: 'downloaded',
+      downloadError: null,
+      localMarkdownPath: sourceKind === 'markdown' ? sourcePath : null,
+      localPdfPath: sourceKind === 'pdf' ? sourcePath : null,
+      markdownUrl: args.markdownUrl || args.markdown_url || next.source?.markdownUrl || '',
+      pdfUrl: args.pdfUrl || args.pdf_url || next.source?.pdfUrl || '',
+      supplementedAt: new Date().toISOString(),
+      resolutionAttempts: [
+        ...(next.source?.resolutionAttempts || []),
+        {
+          provider: identity.sourceProvider,
+          sourceKind,
+          status: 'success',
+          detail: 'manual-supplement',
+          path: sourcePath,
+          at: new Date().toISOString()
+        }
+      ],
+      supplementation: createDiscoverySupplementationInterface(next, {
+        resolutionStatus: 'fulltext_ready'
+      })
+    }
+  };
+}
+
+async function resolveUrlSupplementedCandidate(rootPath, candidate = {}, args = {}, options = {}) {
+  const markdownUrl = String(args.markdownUrl || args.markdown_url || '').trim();
+  const pdfUrl = String(args.pdfUrl || args.pdf_url || '').trim();
+  if (!markdownUrl && !pdfUrl) return null;
+  const supplemented = mergeSupplementPaperMetadata({
+    ...candidate,
+    markdownUrl: markdownUrl || candidate.markdownUrl,
+    pdfUrl: pdfUrl || candidate.pdfUrl,
+    sourceHints: [
+      ...(candidate.sourceHints || []),
+      markdownUrl,
+      pdfUrl
+    ].filter(Boolean),
+    fullTextUrls: [
+      ...(candidate.fullTextUrls || []),
+      markdownUrl,
+      pdfUrl
+    ].filter(Boolean)
+  }, args);
+  const resolution = await resolveDiscoverySources({
+    ...buildDiscoveryParams(rootPath, args, options),
+    rootPath,
+    candidates: [supplemented],
+    maxDownloads: 1,
+    allowDownloads: args.allowDownloads ?? args.allow_downloads ?? true,
+    preferMarkdown: args.preferMarkdown ?? args.prefer_markdown ?? true
+  });
+  return resolution.candidates?.[0] || null;
+}
+
+function applySupplementCandidate(run = {}, candidate = {}) {
+  return {
+    ...run,
+    candidates: (run.candidates || []).map((entry) => (
+      entry === candidate
+        || (candidate.canonicalId && entry.canonicalId === candidate.canonicalId)
+        || (candidate.id && entry.id === candidate.id)
+        ? candidate
+        : entry
+    ))
+  };
+}
+
+function applySupplementImportResultsToRun(run = {}, importResult = {}) {
+  const importsByCanonicalId = new Map(
+    (importResult.results || []).map((entry) => [entry.canonicalId, entry])
+  );
+  return {
+    ...run,
+    candidates: (run.candidates || []).map((candidate) => {
+      const importEntry = importsByCanonicalId.get(candidate.canonicalId);
+      if (!importEntry) return candidate;
+      return {
+        ...candidate,
+        import: {
+          status: importEntry.status,
+          taskId: importEntry.taskId || null,
+          taskStatus: importEntry.taskStatus || importEntry.status || '',
+          taskStage: importEntry.taskStage || '',
+          graphUpdate: importEntry.graphUpdate || null,
+          error: importEntry.error || ''
+        }
+      };
+    }),
+    importSummary: importResult
+  };
+}
+
+async function refreshImportTaskStatuses(rootPath, importResult = {}) {
+  const results = [];
+
+  for (const entry of importResult.results || []) {
+    if (!entry.taskId) {
+      results.push(entry);
+      continue;
+    }
+
+    try {
+      const task = await loadImportTask(rootPath, entry.taskId);
+      const taskStatus = String(task?.status || '').trim().toLowerCase();
+      const status = taskStatus === 'completed'
+        ? 'completed'
+        : (taskStatus === 'failed' ? 'failed' : entry.status);
+      results.push({
+        ...entry,
+        status,
+        taskStatus: taskStatus || entry.status,
+        taskStage: task?.stage || '',
+        graphUpdate: task?.result?.fastCommitted
+          ? {
+              paperCount: task.result.fastCommitted.paperCount || 0,
+              nodeCount: task.result.fastCommitted.nodeCount || 0,
+              relationshipCount: task.result.fastCommitted.relationshipCount || 0,
+              authoritativeSyncStatus: task.result.authoritativeSync?.status || ''
+            }
+          : null,
+        error: task?.error?.message || task?.error || entry.error || ''
+      });
+    } catch (error) {
+      results.push({
+        ...entry,
+        status: entry.status,
+        taskStatus: entry.status,
+        error: entry.error || error?.message || ''
+      });
+    }
+  }
+
+  return {
+    ...importResult,
+    completed: results.filter((entry) => entry.status === 'completed').length,
+    queued: results.filter((entry) => entry.status === 'submitted').length,
+    deduped: results.filter((entry) => entry.status === 'deduped').length,
+    failed: results.filter((entry) => entry.status === 'failed').length,
+    results
   };
 }
 
@@ -152,24 +514,113 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
     return JSON.stringify(run, null, 2);
   }
 
-  if (operation === 'search' || operation === 'resolve' || operation === 'run' || operation === 'import') {
+  if (operation === 'supplement') {
+    const run = await loadDiscoveryRun(rootPath, args.runId || args.run_id);
+    if (!run) {
+      throw new Error('No literature discovery run found to supplement.');
+    }
+    const target = resolveSupplementTarget(run, args);
+    if (!target) {
+      throw new Error('No matching literature discovery candidate found. Provide candidateId, canonicalId, or title.');
+    }
+
+    const supplemented = await createManualSupplementedCandidate(target, args)
+      || await resolveUrlSupplementedCandidate(rootPath, target, args, options)
+      || {
+        ...mergeSupplementPaperMetadata(target, args),
+        source: {
+          ...(target.source || {}),
+          supplementation: createDiscoverySupplementationInterface(target, target.source || {})
+        }
+      };
+
+    let nextRun = applySupplementCandidate(run, supplemented);
+    nextRun.metadataGraph = buildDiscoveryMetadataGraph(nextRun.candidates);
+    nextRun.coverage = {
+      ...nextRun.coverage,
+      resolvedFullTextCount: nextRun.candidates.filter((candidate) => candidate.source?.resolutionStatus === 'fulltext_ready').length,
+      metadataOnlyCount: nextRun.candidates.filter((candidate) => candidate.source?.resolutionStatus !== 'fulltext_ready').length
+    };
+
+    if (enabledFlag(firstDefined(args.importResolved, args.import_resolved, args.processImports, args.process_imports))) {
+      let importResult = await submitDiscoveryImports({
+        corpus: args.corpus || rootPath,
+        candidates: [supplemented],
+        maxImported: 1,
+        options
+      });
+      if (shouldProcessImports(operation, args) || enabledFlag(firstDefined(args.processImports, args.process_imports))) {
+        importResult = await refreshImportTaskStatuses(rootPath, importResult);
+        const processableTaskCount = countProcessableImportTasks(importResult);
+        const maxPasses = explicitImportMaxPasses(args, options);
+        const processing = processableTaskCount > 0 || maxPasses !== undefined
+          ? await runImportQueueUntilIdle(rootPath, buildImportProcessingOptions(args, options, importResult))
+          : {
+              completedTaskIds: [],
+              failedCount: 0,
+              skipped: true,
+              reason: 'no-submitted-imports'
+            };
+        importResult = {
+          ...(await refreshImportTaskStatuses(rootPath, importResult)),
+          processing
+        };
+      }
+      nextRun = applySupplementImportResultsToRun(nextRun, importResult);
+      nextRun.coverage = {
+        ...nextRun.coverage,
+        importedCount: countAcceptedImportResults(importResult)
+      };
+    }
+
+    if (args.persist !== false) {
+      await saveDiscoveryRun(rootPath, nextRun);
+    }
+    return JSON.stringify(nextRun, null, 2);
+  }
+
+  if (
+    operation === 'search'
+    || operation === 'resolve'
+    || operation === 'run'
+    || operation === 'import'
+    || operation === 'ingest'
+    || operation === 'import_and_process'
+  ) {
     const run = await runLiteratureDiscovery({
       ...buildDiscoveryParams(rootPath, args, options),
       resolveSources: operation === 'search' ? false : (args.resolveSources ?? args.resolve_sources),
       persist: args.persist !== false
     });
 
-    if (operation === 'import' || args.importResolved || args.import_resolved) {
-      const importResult = await submitDiscoveryImports({
+    if (shouldSubmitImports(operation, args)) {
+      let importResult = await submitDiscoveryImports({
         corpus: args.corpus || rootPath,
         candidates: run.candidates,
         maxImported: args.maxImported || args.max_imported,
         options
       });
+      if (shouldProcessImports(operation, args)) {
+        importResult = await refreshImportTaskStatuses(rootPath, importResult);
+        const processableTaskCount = countProcessableImportTasks(importResult);
+        const maxPasses = explicitImportMaxPasses(args, options);
+        const processing = processableTaskCount > 0 || maxPasses !== undefined
+          ? await runImportQueueUntilIdle(rootPath, buildImportProcessingOptions(args, options, importResult))
+          : {
+              completedTaskIds: [],
+              failedCount: 0,
+              skipped: true,
+              reason: 'no-submitted-imports'
+            };
+        importResult = {
+          ...(await refreshImportTaskStatuses(rootPath, importResult)),
+          processing
+        };
+      }
       const nextRun = applyImportResultsToRun(run, importResult);
       nextRun.coverage = {
         ...nextRun.coverage,
-        importedCount: importResult.submitted + importResult.deduped
+        importedCount: countAcceptedImportResults(importResult)
       };
       if (args.persist !== false) {
         await saveDiscoveryRun(rootPath, nextRun);

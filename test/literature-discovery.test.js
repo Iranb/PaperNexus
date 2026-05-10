@@ -6,13 +6,18 @@ import path from 'node:path';
 import { buildLiteratureDiscoveryPlan } from '../src/core/discovery/query-planner.js';
 import { extractResearchEntitiesFromText } from '../src/core/discovery/entities.js';
 import { expandDiscoveryCitations } from '../src/core/discovery/citation-expansion.js';
-import { executeProviderQueries } from '../src/core/discovery/providers.js';
+import { DEFAULT_DISCOVERY_PROVIDERS, KNOWN_DISCOVERY_PROVIDERS, executeProviderQueries } from '../src/core/discovery/providers.js';
 import { resetSemanticScholarRateLimitForTests } from '../src/core/discovery/s2-rate-limit.js';
+import {
+  resetDiscoveryRequestSchedulerForTests,
+  scheduleDiscoveryFetch
+} from '../src/core/discovery/request-scheduler.js';
 import { mergeDiscoveryCandidates } from '../src/core/discovery/merge.js';
 import { resolveDiscoverySources } from '../src/core/discovery/source-resolution.js';
 import { buildLiteratureDiscoveryRunPlan, runLiteratureDiscovery } from '../src/core/discovery/workflow.js';
 import { loadDiscoveryRun } from '../src/core/discovery/store.js';
 import { handleMessage } from '../src/mcp/core.js';
+import { executeLiteratureDiscoveryTool } from '../src/mcp/tool-literature-discovery.js';
 import { createPaperIdentity } from '../src/lib/paper-identifiers.js';
 
 const originalFetch = globalThis.fetch;
@@ -31,8 +36,31 @@ function createTextResponse(payload) {
   return {
     ok: true,
     status: 200,
+    headers: new Map([['content-type', 'text/plain']]),
     async text() {
       return payload;
+    }
+  };
+}
+
+function createMarkdownResponse(payload = '') {
+  const markdown = payload || [
+    '# Test Paper',
+    '',
+    '## Abstract',
+    '',
+    'This is a valid paper markdown fixture used by literature discovery tests.',
+    '',
+    '## Introduction',
+    '',
+    'The body contains enough text to pass validation and exercise Markdown-first source resolution.'
+  ].join('\n');
+  return {
+    ok: true,
+    status: 200,
+    headers: new Map([['content-type', 'text/markdown']]),
+    async text() {
+      return markdown;
     }
   };
 }
@@ -54,10 +82,15 @@ function createPdfResponse() {
 }
 
 function createHtmlResponse() {
-  const buffer = Buffer.from(`<html><body>HTML full text is available here.</body></html>${' '.repeat(800)}`);
+  const html = `<html><body>HTML full text is available here.</body></html>${' '.repeat(800)}`;
+  const buffer = Buffer.from(html);
   return {
     ok: true,
     status: 200,
+    headers: new Map([['content-type', 'text/html']]),
+    async text() {
+      return html;
+    },
     async arrayBuffer() {
       return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
     }
@@ -96,6 +129,8 @@ function createDiscoveryCandidate(overrides = {}) {
     citationCount: overrides.citationCount || null,
     openAccessStatus: overrides.openAccessStatus || '',
     license: overrides.license || '',
+    markdownUrl: overrides.markdownUrl || '',
+    markdownUrls: overrides.markdownUrls || [],
     pdfUrl: overrides.pdfUrl || '',
     bestOaUrl: overrides.bestOaUrl || '',
     landingPageUrl: overrides.landingPageUrl || '',
@@ -106,6 +141,104 @@ function createDiscoveryCandidate(overrides = {}) {
     ...identity
   };
 }
+
+test('scheduleDiscoveryFetch deduplicates identical in-flight requests', async () => {
+  let calls = 0;
+  let releaseFetch = () => {};
+  let markFetchStarted = () => {};
+  const fetchStarted = new Promise((resolve) => {
+    markFetchStarted = resolve;
+  });
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      await new Promise((resolve) => {
+        releaseFetch = resolve;
+        markFetchStarted();
+      });
+      return createJsonResponse({ ok: true, source: 'network' });
+    };
+
+    const first = scheduleDiscoveryFetch('https://api.openalex.org/works?search=inflight', {
+      timeoutMs: 500
+    });
+    const second = scheduleDiscoveryFetch('https://api.openalex.org/works?search=inflight', {
+      timeoutMs: 500
+    });
+
+    await fetchStarted;
+    releaseFetch();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+    assert.equal(calls, 1);
+    assert.deepEqual(await firstResponse.json(), { ok: true, source: 'network' });
+    assert.deepEqual(await secondResponse.json(), { ok: true, source: 'network' });
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scheduleDiscoveryFetch uses opt-in memory cache for repeated successful requests', async () => {
+  let calls = 0;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      return createJsonResponse({ calls });
+    };
+
+    const first = await scheduleDiscoveryFetch('https://api.openalex.org/works?search=cacheable', {
+      timeoutMs: 500,
+      discoveryRequestCache: true,
+      discoveryRequestCacheTtlMs: 1000
+    });
+    const second = await scheduleDiscoveryFetch('https://api.openalex.org/works?search=cacheable', {
+      timeoutMs: 500,
+      discoveryRequestCache: true,
+      discoveryRequestCacheTtlMs: 1000
+    });
+
+    assert.equal(calls, 1);
+    assert.deepEqual(await first.json(), { calls: 1 });
+    assert.deepEqual(await second.json(), { calls: 1 });
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scheduleDiscoveryFetch can pace OpenAlex requests separately from provider worker delay', async () => {
+  const starts = [];
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      starts.push(Date.now());
+      return createJsonResponse({ results: [] });
+    };
+
+    await scheduleDiscoveryFetch('https://api.openalex.org/works?search=first', {
+      timeoutMs: 500,
+      openAlexRequestDelayMs: 15,
+      openAlexMaxConcurrent: 1
+    });
+    await scheduleDiscoveryFetch('https://api.openalex.org/works?search=second', {
+      timeoutMs: 500,
+      openAlexRequestDelayMs: 15,
+      openAlexMaxConcurrent: 1
+    });
+
+    assert.equal(starts.length, 2);
+    assert.ok(starts[1] - starts[0] >= 10);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('buildLiteratureDiscoveryPlan creates deterministic discipline-aware queries', () => {
   const plan = buildLiteratureDiscoveryPlan({
@@ -729,6 +862,149 @@ test('executeProviderQueries maps field-scoped queries to source-native search p
   }
 });
 
+test('default literature discovery providers keep direct papers.cool and PASA opt-in', () => {
+  assert.deepEqual(DEFAULT_DISCOVERY_PROVIDERS, ['openalex', 'semantic_scholar', 'crossref', 'arxiv']);
+  assert.equal(DEFAULT_DISCOVERY_PROVIDERS.includes('papers_cool'), false);
+  assert.equal(DEFAULT_DISCOVERY_PROVIDERS.includes('pasa'), false);
+  assert.ok(KNOWN_DISCOVERY_PROVIDERS.has('papers_cool'));
+  assert.ok(KNOWN_DISCOVERY_PROVIDERS.has('pasa'));
+});
+
+test('executeProviderQueries maps papers.cool search HTML to PDF-ready candidates', async () => {
+  resetDiscoveryRequestSchedulerForTests();
+  const requested = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    requested.push(url);
+    assert.equal(url.hostname, 'papers.cool');
+    assert.equal(url.pathname, '/arxiv/search');
+    return createTextResponse(`
+<html><body>
+  <div class="papers">
+    <div id="2602.20400" class="panel paper">
+      <h2 class="title">
+        <a href="https://arxiv.org/abs/2602.20400" target="_blank"><span class="index notranslate">#1</span></a>
+        <a id="title-2602.20400" class="title-link notranslate" href="/arxiv/2602.20400" target="_blank">Papers Cool Retrieval Test</a>
+        <a id="pdf-2602.20400" class="title-pdf notranslate" data="https://arxiv.org/pdf/2602.20400">[PDF]</a>
+      </h2>
+      <p id="authors-2602.20400" class="metainfo authors notranslate"><strong>Authors</strong>:
+        <a class="author notranslate">Ada Lovelace</a>
+      </p>
+      <p id="summary-2602.20400" class="summary notranslate">An arXiv paper discovered through papers.cool.</p>
+      <p id="date-2602.20400" class="metainfo date"><strong>Publish</strong>: <span class="date-data">2026-02-20 00:00:00 UTC</span></p>
+    </div>
+  </div>
+</body></html>`);
+  };
+  try {
+    const result = await executeProviderQueries({
+      providers: ['papers_cool'],
+      maxResultsPerQuery: 1,
+      plan: {
+        queries: [
+          { id: 'q1', query: 'retrieval test', family: 'direct' }
+        ]
+      }
+    });
+
+    assert.equal(result.queryResults[0].ok, true);
+    assert.equal(requested[0].searchParams.get('query'), 'retrieval test');
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].provider, 'papers_cool');
+    assert.equal(result.candidates[0].identifiers.arxivId, '2602.20400');
+    assert.equal(result.candidates[0].pdfUrl, 'https://arxiv.org/pdf/2602.20400.pdf');
+    assert.ok(result.candidates[0].sourceHints.includes('https://papers.cool/arxiv/2602.20400'));
+    assert.deepEqual(result.candidates[0].authors, ['Ada Lovelace']);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeProviderQueries maps direct PASA API results to PDF-ready candidates', async () => {
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const endpoint = url.pathname.split('/').pop();
+    calls.push({ endpoint, method: init.method, body: JSON.parse(init.body || '{}') });
+    assert.equal(url.hostname, 'pasa-agent.ai');
+    assert.equal(init.method, 'POST');
+    if (endpoint === 'single_paper_agent') return createJsonResponse({ base_resp: { status_code: 0 } });
+    return createJsonResponse({
+      finish: true,
+      papers: JSON.stringify({
+        0: {
+          entry_id: '2501.00001',
+          title: 'PASA Retrieval Test',
+          authors: ['Ada Lovelace'],
+          publish_time: '2025-01-01',
+          score: 0.91,
+          abstract: 'A paper found by PASA.',
+          json_result: JSON.stringify({
+            link: 'https://www.arxiv.org/abs/2501.00001'
+          }),
+          select_reason: 'true'
+        }
+      })
+    });
+  };
+  try {
+    const result = await executeProviderQueries({
+      providers: ['pasa'],
+      maxResultsPerQuery: 1,
+      plan: {
+        queries: [
+          { id: 'q1', query: 'pasa retrieval', family: 'direct' }
+        ]
+      }
+    });
+
+    assert.equal(result.queryResults[0].ok, true);
+    assert.equal(calls[0].endpoint, 'single_paper_agent');
+    assert.equal(calls[1].endpoint, 'single_get_result');
+    assert.equal(calls[0].body.user_query, 'pasa retrieval');
+    assert.equal(calls[0].body.session_id, calls[1].body.session_id);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].provider, 'pasa');
+    assert.equal(result.candidates[0].identifiers.arxivId, '2501.00001');
+    assert.equal(result.candidates[0].pdfUrl, 'https://arxiv.org/pdf/2501.00001.pdf');
+    assert.equal(result.candidates[0].retrievalEvidence[0].sessionId, calls[0].body.session_id);
+    assert.equal(result.candidates[0].retrievalEvidence[0].selectedByPasa, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeProviderQueries reports direct papers.cool HTTP failures without aborting discovery', async () => {
+  resetDiscoveryRequestSchedulerForTests();
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 503,
+    headers: new Map(),
+    async text() {
+      return 'unavailable';
+    }
+  });
+  try {
+    const result = await executeProviderQueries({
+      providers: ['papers_cool'],
+      plan: {
+        queries: [
+          { id: 'q1', query: 'temporary service failure', family: 'direct' }
+        ]
+      }
+    });
+
+    assert.equal(result.candidates.length, 0);
+    assert.equal(result.queryResults[0].provider, 'papers_cool');
+    assert.equal(result.queryResults[0].ok, false);
+    assert.match(result.queryResults[0].reason, /papers_cool http 503/);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('executeProviderQueries searches provider sources with at most four concurrent workers', async () => {
   const providers = ['openalex', 'semantic_scholar', 'crossref', 'arxiv', 'dblp'];
   const hostToProvider = new Map([
@@ -888,6 +1164,16 @@ test('runLiteratureDiscovery merges providers, downloads legal PDFs, and persist
         });
       }
 
+      if (['huggingface.co', 'arxiv2md.org', 'markxiv.org'].includes(url.hostname)) {
+        return {
+          ok: false,
+          status: 404,
+          async text() {
+            return 'not found';
+          }
+        };
+      }
+
       if (url.hostname === 'example.org' || url.hostname === 'arxiv.org') {
         return createPdfResponse();
       }
@@ -899,6 +1185,7 @@ test('runLiteratureDiscovery merges providers, downloads legal PDFs, and persist
       rootPath,
       topic: 'graph neural networks for materials discovery',
       depth: 'quick',
+      providers: ['openalex', 'semantic_scholar', 'crossref', 'arxiv', 'dblp'],
       maxResultsPerQuery: 2,
       maxDownloads: 2,
       mailto: 'paper@example.com'
@@ -993,6 +1280,15 @@ test('runLiteratureDiscovery resolves client seed papers on the PaperNexus serve
     globalThis.fetch = async (input) => {
       const url = new URL(String(input));
       requestedHosts.push(url.hostname);
+      if (['huggingface.co', 'arxiv2md.org', 'markxiv.org'].includes(url.hostname)) {
+        return {
+          ok: false,
+          status: 404,
+          async text() {
+            return 'not found';
+          }
+        };
+      }
       if (url.hostname === 'arxiv.org') {
         return createPdfResponse();
       }
@@ -1214,6 +1510,198 @@ test('resolveDiscoverySources classifies HTML PDF routes for download manifests'
   }
 });
 
+test('resolveDiscoverySources downloads Markdown before trying PDF fallback', async () => {
+  const rootPath = await createTempCorpus();
+  const requestedPaths = [];
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requestedPaths.push(url.pathname);
+      if (url.pathname.endsWith('.md')) {
+        return createMarkdownResponse('# Markdown First Paper\n\n## Abstract\n\nThis Markdown source should be preferred over PDF fallback.\n\n## Introduction\n\nEnough valid body text is present for the source validator to accept the paper markdown.');
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'openalex',
+          title: 'Markdown First Paper',
+          identifiers: { doi: '10.7777/markdown.first' },
+          markdownUrl: 'https://example.org/markdown-first.md',
+          pdfUrl: 'https://example.org/markdown-first.pdf'
+        })
+      ]
+    });
+
+    const source = result.candidates[0].source;
+    assert.equal(source.sourceKind, 'markdown');
+    assert.equal(source.fullTextStatus, 'open_markdown');
+    assert.equal(source.downloadStatus, 'downloaded');
+    assert.ok(source.localMarkdownPath.endsWith('.md'));
+    assert.ok(await fs.stat(source.localMarkdownPath));
+    assert.deepEqual(requestedPaths, ['/markdown-first.md']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiscoverySources falls back to PDF when Markdown is unavailable', async () => {
+  const rootPath = await createTempCorpus();
+  const requestedPaths = [];
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requestedPaths.push(url.pathname);
+      if (url.pathname.endsWith('.md')) {
+        return {
+          ok: false,
+          status: 404,
+          async text() {
+            return 'not found';
+          }
+        };
+      }
+      if (url.pathname.endsWith('.pdf')) {
+        return createPdfResponse();
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'openalex',
+          title: 'PDF Fallback Paper',
+          identifiers: { doi: '10.7777/pdf.fallback' },
+          markdownUrl: 'https://example.org/pdf-fallback.md',
+          pdfUrl: 'https://example.org/pdf-fallback.pdf'
+        })
+      ]
+    });
+
+    const source = result.candidates[0].source;
+    assert.equal(source.sourceKind, 'pdf');
+    assert.equal(source.fullTextStatus, 'open_pdf');
+    assert.equal(source.downloadStatus, 'downloaded');
+    assert.ok(source.localPdfPath.endsWith('.pdf'));
+    assert.deepEqual(requestedPaths, ['/pdf-fallback.md', '/pdf-fallback.pdf']);
+    assert.ok(source.resolutionAttempts.some((attempt) => attempt.sourceKind === 'markdown' && attempt.status === 'failed'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiscoverySources keeps generated arXiv Markdown sources opt-in', async () => {
+  const rootPath = await createTempCorpus();
+  const requested = [];
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requested.push(url);
+      if (url.hostname === 'arxiv.org' && url.pathname === '/pdf/2602.20400.pdf') {
+        return createPdfResponse();
+      }
+      assert.fail(`unexpected generated Markdown request ${url.toString()}`);
+    };
+
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'arxiv',
+          title: 'Default arXiv PDF Paper',
+          identifiers: { arxivId: '2602.20400' }
+        })
+      ]
+    });
+
+    assert.equal(result.candidates[0].source.sourceKind, 'pdf');
+    assert.equal(result.candidates[0].source.fullTextStatus, 'open_pdf');
+    assert.deepEqual(requested.map((url) => `${url.hostname}${url.pathname}`), [
+      'arxiv.org/pdf/2602.20400.pdf'
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiscoverySources tries generated arXiv Markdown sources when enabled', async () => {
+  const rootPath = await createTempCorpus();
+  const requested = [];
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requested.push(url);
+      if (url.hostname === 'huggingface.co' && url.pathname === '/papers/2602.20400.md') {
+        return createMarkdownResponse('# Generated arXiv Markdown\n\n## Abstract\n\nThis generated Markdown fixture should be accepted before PDF fallback.\n\n## Introduction\n\nThe body contains enough text to pass validation and exercise opt-in generated arXiv Markdown source resolution.');
+      }
+      assert.fail(`unexpected generated Markdown request ${url.toString()}`);
+    };
+
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      generateArxivMarkdownSources: true,
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'arxiv',
+          title: 'Generated arXiv Markdown Paper',
+          identifiers: { arxivId: '2602.20400' }
+        })
+      ]
+    });
+
+    assert.equal(result.candidates[0].source.sourceKind, 'markdown');
+    assert.equal(result.candidates[0].source.fullTextStatus, 'open_markdown');
+    assert.deepEqual(requested.map((url) => `${url.hostname}${url.pathname}`), [
+      'huggingface.co/papers/2602.20400.md'
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiscoverySources preserves metadata-only candidates with a supplement interface', async () => {
+  const rootPath = await createTempCorpus();
+
+  try {
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'crossref',
+          title: 'Metadata Only Paper',
+          identifiers: { doi: '10.7777/metadata.only' }
+        })
+      ]
+    });
+
+    const source = result.candidates[0].source;
+    assert.equal(source.resolutionStatus, 'metadata_only');
+    assert.equal(source.supplementation.status, 'needed');
+    assert.equal(source.supplementation.reservedOperation, 'supplement');
+    assert.ok(source.supplementation.acceptedSourceKinds.includes('markdown'));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('resolveDiscoverySources downloads PDFs with bounded concurrency', async () => {
   const rootPath = await createTempCorpus();
   let activeDownloads = 0;
@@ -1342,6 +1830,8 @@ test('runLiteratureDiscovery uses DBLP venue metadata for CS venue coverage', as
     assert.ok(run.candidates[0].venuePackHits.includes('cs_ml_core'));
     assert.equal(run.candidates[0].identifiers.doi, '10.9999/dblp.example');
     assert.equal(run.candidates[0].source.fullTextStatus, 'needs_institution');
+    assert.equal(run.metadataGraph.partialPaperCount, 1);
+    assert.ok(run.metadataGraph.nodes.some((node) => node.type === 'Paper' && node.properties.partial));
   } finally {
     globalThis.fetch = originalFetch;
     await fs.rm(rootPath, { recursive: true, force: true });
@@ -1657,6 +2147,212 @@ test('runLiteratureDiscovery shares Semantic Scholar rate limit across search an
   }
 });
 
+test('literature_discovery ingest processes downloaded PDFs into the graph', async () => {
+  const rootPath = await createTempCorpus();
+  const fakeDoclingPath = path.join(rootPath, 'fake-docling.sh');
+
+  try {
+    await fs.writeFile(fakeDoclingPath, `#!/bin/sh
+input="$1"
+shift
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    out="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+base=$(basename "$input" .pdf)
+mkdir -p "$out"
+printf '# %s\\n\\n## Abstract\\n\\nThis imported PDF was parsed during literature discovery ingest.\\n' "$base" > "$out/$base.md"
+`, { mode: 0o755 });
+
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'dblp.org') {
+        return createJsonResponse({
+          result: {
+            hits: {
+              hit: []
+            }
+          }
+        });
+      }
+      if (url.hostname === 'example.org') {
+        return createPdfResponse();
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const run = JSON.parse(await executeLiteratureDiscoveryTool({
+      operation: 'ingest',
+      corpus: rootPath,
+      topic: 'discovery ingest test',
+      providers: ['dblp'],
+      llmQueryPlanner: false,
+      seedPapers: [{
+        title: 'Discovery Ingest Test Paper',
+        doi: '10.5555/ingest-test',
+        pdfUrl: 'https://example.org/ingest-test.pdf'
+      }],
+      maxResultsPerQuery: 1,
+      maxDownloads: 1,
+      maxImported: 1,
+      importMaxPasses: 1,
+      semanticExtraction: 'heuristic-only',
+      pdfParser: 'docling',
+      doclingCommand: fakeDoclingPath
+    }));
+
+    assert.equal(run.importSummary.completed, 1);
+    assert.equal(run.importSummary.processing.completedTaskIds.length, 1);
+    assert.equal(run.coverage.importedCount, 1);
+    assert.equal(run.candidates[0].import.status, 'completed');
+    assert.equal(run.candidates[0].import.graphUpdate.paperCount, 1);
+
+    const { loadCorpusLite } = await import('../src/storage/corpus-store.js');
+    const corpus = await loadCorpusLite(rootPath);
+    assert.equal(corpus.meta.paperCount, 1);
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('literature_discovery ingest processes downloaded Markdown into the graph', async () => {
+  const rootPath = await createTempCorpus();
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'dblp.org') {
+        return createJsonResponse({
+          result: {
+            hits: {
+              hit: []
+            }
+          }
+        });
+      }
+      if (url.hostname === 'example.org' && url.pathname.endsWith('.md')) {
+        return createMarkdownResponse([
+          '# Discovery Markdown Ingest Test Paper',
+          '',
+          '## Abstract',
+          '',
+          'This imported Markdown was retrieved during literature discovery ingest.',
+          '',
+          '## Introduction',
+          '',
+          'The Markdown path should bypass PDF conversion and still create a Paper node in the graph.'
+        ].join('\n'));
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const run = JSON.parse(await executeLiteratureDiscoveryTool({
+      operation: 'ingest',
+      corpus: rootPath,
+      topic: 'discovery markdown ingest test',
+      providers: ['dblp'],
+      llmQueryPlanner: false,
+      seedPapers: [{
+        title: 'Discovery Markdown Ingest Test Paper',
+        doi: '10.5555/markdown-ingest-test',
+        markdownUrl: 'https://example.org/markdown-ingest-test.md',
+        pdfUrl: 'https://example.org/markdown-ingest-test.pdf'
+      }],
+      maxResultsPerQuery: 1,
+      maxDownloads: 1,
+      maxImported: 1,
+      importMaxPasses: 1,
+      semanticExtraction: 'heuristic-only'
+    }));
+
+    assert.equal(run.candidates[0].source.sourceKind, 'markdown');
+    assert.equal(run.candidates[0].source.fullTextStatus, 'open_markdown');
+    assert.equal(run.importSummary.completed, 1);
+    assert.equal(run.coverage.importedCount, 1);
+    assert.equal(run.candidates[0].import.status, 'completed');
+    assert.equal(run.candidates[0].import.graphUpdate.paperCount, 1);
+
+    const { loadCorpusLite } = await import('../src/storage/corpus-store.js');
+    const corpus = await loadCorpusLite(rootPath);
+    assert.equal(corpus.meta.paperCount, 1);
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('literature_discovery supplement attaches a later Markdown source to a metadata-only candidate', async () => {
+  const rootPath = await createTempCorpus();
+  const supplementalMarkdownPath = path.join(rootPath, 'supplemental-source.md');
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'dblp.org') {
+        return createJsonResponse({
+          result: {
+            hits: {
+              hit: []
+            }
+          }
+        });
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const initialRun = await runLiteratureDiscovery({
+      rootPath,
+      topic: 'supplement source later',
+      providers: ['dblp'],
+      llmQueryPlanner: false,
+      seedPapers: [{
+        title: 'Supplement Later Paper',
+        doi: '10.5555/supplement-later'
+      }],
+      maxResultsPerQuery: 1,
+      maxDownloads: 0,
+      resolveSources: false
+    });
+
+    await fs.writeFile(supplementalMarkdownPath, [
+      '# Supplement Later Paper',
+      '',
+      '## Abstract',
+      '',
+      'This Markdown source was supplied after the initial metadata-only discovery run.',
+      '',
+      '## Introduction',
+      '',
+      'The supplement operation should update source metadata without requiring a new discovery search.'
+    ].join('\n'));
+
+    const supplementedRun = JSON.parse(await executeLiteratureDiscoveryTool({
+      operation: 'supplement',
+      corpus: rootPath,
+      runId: initialRun.runId,
+      canonicalId: 'doi:10.5555/supplement-later',
+      sourcePath: supplementalMarkdownPath,
+      sourceProvider: 'manual_test'
+    }));
+
+    assert.equal(supplementedRun.candidates[0].source.sourceKind, 'markdown');
+    assert.equal(supplementedRun.candidates[0].source.fullTextStatus, 'open_markdown');
+    assert.equal(supplementedRun.candidates[0].source.supplementation.status, 'complete');
+    assert.equal(supplementedRun.metadataGraph.partialPaperCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('expandDiscoveryCitations uses OpenAlex-only seeds for related work expansion', async () => {
   const requestedHosts = [];
 
@@ -1738,15 +2434,42 @@ test('MCP tool list includes literature_discovery', async () => {
 
   const tool = response.tools.find((entry) => entry.name === 'literature_discovery');
   assert.ok(tool);
+  assert.ok(tool.inputSchema.properties.operation.enum.includes('ingest'));
+  assert.ok(tool.inputSchema.properties.operation.enum.includes('supplement'));
   assert.ok(tool.inputSchema.properties.seedPapers);
   assert.ok(tool.inputSchema.properties.entitySeeds);
   assert.ok(tool.inputSchema.properties.datasetSeeds);
   assert.ok(tool.inputSchema.properties.seedTexts);
   assert.ok(tool.inputSchema.properties.providerConcurrency);
+  assert.ok(tool.inputSchema.properties.providerRequestSchedulerDelayMs);
+  assert.ok(tool.inputSchema.properties.providerRequestMaxConcurrent);
+  assert.ok(tool.inputSchema.properties.discoveryRequestCache);
+  assert.ok(tool.inputSchema.properties.discoveryRequestCacheTtlMs);
+  assert.ok(tool.inputSchema.properties.openAlexRequestDelayMs);
+  assert.ok(tool.inputSchema.properties.openAlexMaxConcurrent);
+  assert.ok(tool.inputSchema.properties.semanticScholarRequestDelayMs);
+  assert.ok(tool.inputSchema.properties.semanticScholarMaxConcurrent);
+  assert.ok(tool.inputSchema.properties.papersCoolBaseUrl);
+  assert.ok(tool.inputSchema.properties.papersCoolMaxQueries);
+  assert.ok(tool.inputSchema.properties.pasaApiBaseUrl);
+  assert.ok(tool.inputSchema.properties.pasaRequestTimeoutMs);
+  assert.ok(tool.inputSchema.properties.pasaTimeoutSeconds);
+  assert.ok(tool.inputSchema.properties.pasaMaxQueries);
+  assert.ok(tool.inputSchema.properties.preferMarkdown);
+  assert.ok(tool.inputSchema.properties.generateArxivMarkdownSources);
+  assert.ok(tool.inputSchema.properties.markdownStagingRoot);
+  assert.ok(tool.inputSchema.properties.markdownUrl);
+  assert.ok(tool.inputSchema.properties.sourcePath);
+  assert.ok(tool.inputSchema.properties.sourceKind);
   assert.ok(tool.inputSchema.properties.downloadConcurrency);
   assert.ok(tool.inputSchema.properties.retryCount);
   assert.ok(tool.inputSchema.properties.providerRequestDelayMs);
   assert.ok(tool.inputSchema.properties.maxRetryAfterMs);
+  assert.ok(tool.inputSchema.properties.processImports);
+  assert.ok(tool.inputSchema.properties.importMaxPasses);
+  assert.ok(tool.inputSchema.properties.semanticExtraction);
+  assert.ok(tool.inputSchema.properties.pdfParser);
+  assert.ok(tool.inputSchema.properties.doclingCommand);
   assert.ok(tool.inputSchema.properties.openAlexApiKey);
   assert.ok(tool.inputSchema.properties.openAlexApiKeyFile);
   assert.ok(tool.inputSchema.properties.openAlexRelatedExpansion);

@@ -7,7 +7,10 @@ import {
   resolveDiscoveryConfig
 } from './providers.js';
 import { mergeDiscoveryCandidates } from './merge.js';
-import { resolveDiscoverySources } from './source-resolution.js';
+import {
+  createDiscoverySupplementationInterface,
+  resolveDiscoverySources
+} from './source-resolution.js';
 import { createDiscoveryRunId, saveDiscoveryRun } from './store.js';
 import { expandDiscoveryCitations } from './citation-expansion.js';
 import { extractResearchEntitiesFromText } from './entities.js';
@@ -231,6 +234,12 @@ function normalizeSeedPaper(seed = {}, index = 0) {
   });
   if (!identity.canonicalId && !title) return null;
   const sourceHints = unique([
+    seed.markdownUrl,
+    seed.markdown_url,
+    seed.bestMarkdownUrl,
+    seed.best_markdown_url,
+    ...asArray(seed.markdownUrls),
+    ...asArray(seed.markdown_urls),
     seed.pdfUrl,
     seed.pdf_url,
     seed.bestOaUrl,
@@ -263,6 +272,11 @@ function normalizeSeedPaper(seed = {}, index = 0) {
       : null,
     openAccessStatus: compactText(pickFirst(seed.openAccessStatus, seed.open_access_status)),
     license: compactText(seed.license),
+    markdownUrl: compactText(pickFirst(seed.markdownUrl, seed.markdown_url, seed.bestMarkdownUrl, seed.best_markdown_url)),
+    markdownUrls: unique([
+      ...asArray(seed.markdownUrls),
+      ...asArray(seed.markdown_urls)
+    ].map((entry) => String(entry || '').trim()).filter(Boolean)),
     pdfUrl: compactText(pickFirst(seed.pdfUrl, seed.pdf_url)),
     bestOaUrl: compactText(pickFirst(seed.bestOaUrl, seed.best_oa_url)),
     landingPageUrl: compactText(pickFirst(seed.landingPageUrl, seed.landing_page_url)),
@@ -431,6 +445,81 @@ function selectCandidateWindow(candidates = [], seedCandidates = [], maxCandidat
   return selected;
 }
 
+function buildDiscoveryMetadataGraph(candidates = []) {
+  const nodes = [];
+  const relationships = [];
+  const seenNodes = new Set();
+  const seenRelationships = new Set();
+
+  function addNode(node) {
+    if (!node?.id || seenNodes.has(node.id)) return;
+    seenNodes.add(node.id);
+    nodes.push(node);
+  }
+
+  function addRelationship(relationship) {
+    if (!relationship?.source || !relationship?.target || !relationship?.type) return;
+    const key = `${relationship.source}|${relationship.type}|${relationship.target}`;
+    if (seenRelationships.has(key)) return;
+    seenRelationships.add(key);
+    relationships.push(relationship);
+  }
+
+  for (const candidate of candidates) {
+    const paperId = candidate.canonicalId || candidate.id || candidate.normalizedTitle || stableHash(candidate.title || JSON.stringify(candidate), 16);
+    const source = candidate.source || {};
+    const partial = source.resolutionStatus !== 'fulltext_ready';
+    addNode({
+      id: paperId,
+      type: 'Paper',
+      name: candidate.title || paperId,
+      properties: {
+        partial,
+        resolutionStatus: source.resolutionStatus || 'metadata_only',
+        sourceKind: source.sourceKind || 'metadata_only',
+        fullTextStatus: source.fullTextStatus || 'unknown',
+        title: candidate.title || '',
+        authors: candidate.authors || [],
+        year: candidate.year || null,
+        venue: candidate.venue || '',
+        abstract: candidate.abstract || '',
+        identifiers: candidate.identifiers || {},
+        canonicalId: candidate.canonicalId || '',
+        supplementation: partial ? source.supplementation || null : null
+      }
+    });
+
+    for (const provider of candidate.providers || [candidate.provider].filter(Boolean)) {
+      const providerId = `provider:${provider}`;
+      addNode({
+        id: providerId,
+        type: 'DiscoveryProvider',
+        name: provider,
+        properties: {
+          provider
+        }
+      });
+      addRelationship({
+        source: providerId,
+        target: paperId,
+        type: 'DISCOVERED',
+        properties: {
+          evidenceCount: (candidate.retrievalEvidence || []).filter((entry) => entry.provider === provider).length || 1
+        }
+      });
+    }
+  }
+
+  return {
+    contractVersion: 'literature-discovery-metadata-graph-v1',
+    nodeCount: nodes.length,
+    relationshipCount: relationships.length,
+    partialPaperCount: nodes.filter((node) => node.type === 'Paper' && node.properties?.partial).length,
+    nodes,
+    relationships
+  };
+}
+
 export async function runLiteratureDiscovery(params = {}) {
   const rootPath = params.rootPath;
   if (!rootPath) throw new Error('rootPath is required for literature discovery.');
@@ -507,8 +596,13 @@ export async function runLiteratureDiscovery(params = {}) {
             downloadStatus: candidate.pdfUrl ? 'eligible' : 'skipped',
             downloadError: candidate.pdfUrl ? null : 'Source resolution was not requested.',
             localPdfPath: null,
+            localMarkdownPath: null,
             pdfUrl: candidate.pdfUrl || '',
-            resolutionAttempts: []
+            markdownUrl: candidate.markdownUrl || candidate.markdownUrls?.[0] || '',
+            resolutionAttempts: [],
+            supplementation: createDiscoverySupplementationInterface(candidate, {
+              resolutionStatus: 'metadata_only'
+            })
           }
         })),
         summary: {
@@ -555,6 +649,7 @@ export async function runLiteratureDiscovery(params = {}) {
       queryCount: plan.queries.filter((entry) => entry.family === 'entity_seed').length
     }
   };
+  run.metadataGraph = buildDiscoveryMetadataGraph(run.candidates);
   run.coverage = buildCoverage(run);
   const saved = params.persist === false ? null : await saveDiscoveryRun(rootPath, run);
   return {
@@ -572,4 +667,4 @@ export async function buildLiteratureDiscoveryRunPlan(params = {}) {
   return buildLlmAugmentedLiteratureDiscoveryPlan(params);
 }
 
-export { buildLiteratureDiscoveryPlan, buildCoverage };
+export { buildLiteratureDiscoveryPlan, buildCoverage, buildDiscoveryMetadataGraph };

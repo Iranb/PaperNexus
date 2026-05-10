@@ -21,10 +21,12 @@ const ANTI_BOT_MARKERS = [
   'service unavailable'
 ];
 const FULL_TEXT_STATUS = Object.freeze({
+  OPEN_MARKDOWN: 'open_markdown',
   OPEN_PDF: 'open_pdf',
   NEEDS_INSTITUTION: 'needs_institution',
   NO_OPEN_PDF: 'no_open_pdf',
   ANTI_BOT_BLOCKED: 'anti_bot_blocked',
+  HTML_NOT_MARKDOWN: 'html_not_markdown',
   HTML_NOT_PDF: 'html_not_pdf',
   UNKNOWN: 'unknown'
 });
@@ -103,6 +105,22 @@ function looksLikePdfUrl(value = '') {
   }
 }
 
+function looksLikeMarkdownUrl(value = '') {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    const pathname = url.pathname.toLowerCase();
+    return pathname.endsWith('.md')
+      || pathname.endsWith('.markdown')
+      || (/^huggingface\.co$/i.test(url.hostname) && /^\/papers\/.+\.md$/i.test(pathname))
+      || (/^arxiv2md\.org$/i.test(url.hostname) && (pathname === '/api/markdown' || pathname.startsWith('/abs/')))
+      || (/^markxiv\.org$/i.test(url.hostname) && pathname.startsWith('/abs/'));
+  } catch {
+    const normalized = String(value).toLowerCase();
+    return normalized.includes('.md') || normalized.includes('arxiv2md') || normalized.includes('markxiv');
+  }
+}
+
 function arxivPdfUrl(value = '') {
   const arxivId = normalizeArxivId(value);
   return arxivId ? `https://arxiv.org/pdf/${arxivId}.pdf` : '';
@@ -122,6 +140,73 @@ function collectDownloadUrls(candidate = {}) {
     pmcidPdfUrl(candidate.identifiers?.pmcid)
   ];
   return unique(urls.filter((url) => isHttpUrl(url) && looksLikePdfUrl(url)));
+}
+
+function collectMarkdownInputs(candidate = {}, params = {}) {
+  if (params.preferMarkdown === false || params.prefer_markdown === false) return [];
+
+  const explicitUrls = [
+    candidate.markdownUrl,
+    candidate.markdown_url,
+    candidate.bestMarkdownUrl,
+    candidate.best_markdown_url,
+    candidate.source?.markdownUrl,
+    ...(candidate.markdownUrls || []),
+    ...(candidate.markdown_urls || []),
+    ...(candidate.sourceHints || []),
+    ...(candidate.fullTextUrls || [])
+  ].filter((url) => isHttpUrl(url) && looksLikeMarkdownUrl(url));
+
+  const inputs = explicitUrls.map((url) => ({
+    url,
+    provider: inferMarkdownProvider(url),
+    generated: false
+  }));
+
+  const arxivId = normalizeArxivId(candidate.identifiers?.arxivId || candidate.arxivId || candidate.arxiv_id);
+  if (arxivId && (params.generateArxivMarkdownSources === true || params.generate_arxiv_markdown_sources === true)) {
+    inputs.push(
+      {
+        url: `https://huggingface.co/papers/${arxivId}.md`,
+        provider: 'hf',
+        generated: true
+      },
+      {
+        url: `https://arxiv2md.org/api/markdown?url=${encodeURIComponent(arxivId)}&remove_refs=true&remove_toc=true&remove_citations=true`,
+        provider: 'arxiv2md-api',
+        generated: true
+      },
+      {
+        url: `https://markxiv.org/abs/${arxivId}`,
+        provider: 'markxiv',
+        generated: true
+      },
+      {
+        url: `https://arxiv2md.org/abs/${arxivId}`,
+        provider: 'arxiv2md',
+        generated: true
+      }
+    );
+  }
+
+  const seen = new Set();
+  return inputs.filter((entry) => {
+    const key = entry.url;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function inferMarkdownProvider(value = '') {
+  try {
+    const url = new URL(value);
+    if (/^huggingface\.co$/i.test(url.hostname) && url.pathname.startsWith('/papers/')) return 'hf';
+    if (/^arxiv2md\.org$/i.test(url.hostname) && url.pathname === '/api/markdown') return 'arxiv2md-api';
+    if (/^markxiv\.org$/i.test(url.hostname)) return 'markxiv';
+    if (/^arxiv2md\.org$/i.test(url.hostname)) return 'arxiv2md';
+  } catch {}
+  return 'literature-discovery-markdown';
 }
 
 function validatePdfBuffer(buffer) {
@@ -150,12 +235,63 @@ async function fetchWithTimeout(url, options = {}) {
       redirect: 'follow',
       headers: {
         'user-agent': options.userAgent || 'PaperNexus/0.1 literature-discovery',
-        accept: 'application/pdf,*/*;q=0.8'
+        accept: options.accept || 'application/pdf,*/*;q=0.8'
       }
     });
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function validateMarkdownText(text = '') {
+  const raw = String(text || '');
+  if (raw.length < 200) {
+    return { valid: false, reason: 'too-small' };
+  }
+  const preview = raw.slice(0, 6000).trim().toLowerCase();
+  if (!preview) {
+    return { valid: false, reason: 'empty' };
+  }
+  if (ANTI_BOT_MARKERS.some((marker) => preview.includes(marker))) {
+    return { valid: false, reason: FULL_TEXT_STATUS.ANTI_BOT_BLOCKED };
+  }
+  if (HTML_MARKERS.some((marker) => preview.includes(marker))) {
+    return { valid: false, reason: FULL_TEXT_STATUS.HTML_NOT_MARKDOWN };
+  }
+  const htmlTagHits = (preview.match(/<(html|head|body|script|style|div|span|meta|link)\b/g) || []).length;
+  if (htmlTagHits >= 3) {
+    return { valid: false, reason: FULL_TEXT_STATUS.HTML_NOT_MARKDOWN };
+  }
+  const markdownSignals = ['\n#', '\n##', '\n###', '\n- ', '\n* ', '\n1. ', 'abstract', 'introduction'];
+  if (preview.length < 400 && !markdownSignals.some((signal) => preview.includes(signal))) {
+    return { valid: false, reason: 'too-short-for-paper-markdown' };
+  }
+  return { valid: true, reason: 'markdown-ok' };
+}
+
+async function downloadMarkdown(url, outputPath, options = {}) {
+  const response = await fetchWithTimeout(url, {
+    ...options,
+    accept: 'text/markdown,text/plain;q=0.9,*/*;q=0.2'
+  });
+  if (!response.ok) {
+    const reason = [401, 403, 429, 503].includes(Number(response.status))
+      ? FULL_TEXT_STATUS.ANTI_BOT_BLOCKED
+      : `http-${response.status}`;
+    return { ok: false, reason };
+  }
+  const text = await response.text();
+  const validation = validateMarkdownText(text);
+  if (!validation.valid) {
+    return { ok: false, reason: validation.reason };
+  }
+  await ensureDir(path.dirname(outputPath));
+  await fs.writeFile(outputPath, text);
+  return {
+    ok: true,
+    reason: validation.reason,
+    contentSha256: createContentSha256(Buffer.from(text, 'utf8'))
+  };
 }
 
 async function downloadPdf(url, outputPath, options = {}) {
@@ -230,13 +366,56 @@ function createOutputPath(stagingRoot, candidate) {
   return path.join(stagingRoot, `${safeId || stableHash(id, 16)}.pdf`);
 }
 
-function classifyFailedResolution(next, pdfUrls, options = {}) {
+function createMarkdownOutputPath(stagingRoot, candidate) {
+  const id = candidate.canonicalId || candidate.title || stableHash(JSON.stringify(candidate), 16);
+  const safeId = String(id).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
+  return path.join(stagingRoot, `${safeId || stableHash(id, 16)}.md`);
+}
+
+export function createDiscoverySupplementationInterface(candidate = {}, source = {}) {
+  const identifiers = candidate.identifiers || {};
+  const status = source.resolutionStatus === 'fulltext_ready' ? 'complete' : 'needed';
+  return {
+    status,
+    acceptedSourceKinds: ['markdown', 'pdf', 'metadata'],
+    preferredSourceKind: 'markdown',
+    tool: 'literature_discovery',
+    reservedOperation: 'supplement',
+    matchFields: {
+      runId: '<discovery-run-id>',
+      canonicalId: candidate.canonicalId || '',
+      candidateId: candidate.id || '',
+      identifiers
+    },
+    acceptedInputs: {
+      sourcePath: 'Absolute local .md, .markdown, or .pdf path on the PaperNexus server.',
+      markdownUrl: 'HTTP(S) URL returning validated paper Markdown.',
+      pdfUrl: 'HTTP(S) URL returning a valid PDF when Markdown is unavailable.',
+      paperMetadata: 'Optional title/authors/year/identifier corrections to merge before import.'
+    }
+  };
+}
+
+function classifyFailedResolution(next, markdownInputs, pdfUrls, options = {}) {
   const attempts = next.source.resolutionAttempts || [];
   const failedPdfAttempts = attempts.filter((attempt) => attempt.provider === 'pdf' && attempt.status === 'failed');
+  const failedMarkdownAttempts = attempts.filter((attempt) => attempt.sourceKind === 'markdown' && attempt.status === 'failed');
   const firstTerminalReason = failedPdfAttempts.find((attempt) => (
     attempt.detail === FULL_TEXT_STATUS.ANTI_BOT_BLOCKED || attempt.detail === FULL_TEXT_STATUS.HTML_NOT_PDF
   ))?.detail || '';
+  const firstMarkdownTerminalReason = failedMarkdownAttempts.find((attempt) => (
+    attempt.detail === FULL_TEXT_STATUS.ANTI_BOT_BLOCKED || attempt.detail === FULL_TEXT_STATUS.HTML_NOT_MARKDOWN
+  ))?.detail || '';
   const attemptedDownloads = failedPdfAttempts.length > 0;
+  const attemptedMarkdownDownloads = failedMarkdownAttempts.length > 0;
+
+  if (markdownInputs.length && (!options.allowDownloads || !attemptedMarkdownDownloads)) {
+    return {
+      fullTextStatus: FULL_TEXT_STATUS.OPEN_MARKDOWN,
+      downloadStatus: DOWNLOAD_STATUS.ELIGIBLE,
+      downloadError: null
+    };
+  }
 
   if (firstTerminalReason === FULL_TEXT_STATUS.HTML_NOT_PDF) {
     return {
@@ -250,6 +429,20 @@ function classifyFailedResolution(next, pdfUrls, options = {}) {
       fullTextStatus: FULL_TEXT_STATUS.ANTI_BOT_BLOCKED,
       downloadStatus: DOWNLOAD_STATUS.FAILED,
       downloadError: 'Automated PDF request was blocked by access control or anti-bot protection.'
+    };
+  }
+  if (!pdfUrls.length && firstMarkdownTerminalReason === FULL_TEXT_STATUS.HTML_NOT_MARKDOWN) {
+    return {
+      fullTextStatus: FULL_TEXT_STATUS.HTML_NOT_MARKDOWN,
+      downloadStatus: DOWNLOAD_STATUS.FAILED,
+      downloadError: 'Markdown route returned HTML instead of paper Markdown.'
+    };
+  }
+  if (!pdfUrls.length && firstMarkdownTerminalReason === FULL_TEXT_STATUS.ANTI_BOT_BLOCKED) {
+    return {
+      fullTextStatus: FULL_TEXT_STATUS.ANTI_BOT_BLOCKED,
+      downloadStatus: DOWNLOAD_STATUS.FAILED,
+      downloadError: 'Automated Markdown request was blocked by access control or anti-bot protection.'
     };
   }
   if (pdfUrls.length && (!options.allowDownloads || !attemptedDownloads)) {
@@ -303,11 +496,12 @@ export async function resolveDiscoverySources(params = {}) {
   const maxDownloads = Math.max(0, Math.floor(Number(params.maxDownloads ?? params.maxResolutionAttempts ?? 12)));
   const allowDownloads = params.allowDownloads !== false;
   const downloadConcurrency = resolveDownloadConcurrency(params);
-  const stagingRoot = params.stagingRoot || path.join(rootPath, '.papernexus', 'discovery', 'staging', 'pdf');
+  const pdfStagingRoot = params.pdfStagingRoot || params.pdf_staging_root || params.stagingRoot || path.join(rootPath, '.papernexus', 'discovery', 'staging', 'pdf');
+  const markdownStagingRoot = params.markdownStagingRoot || params.markdown_staging_root || params.mdStagingRoot || params.md_staging_root || path.join(rootPath, '.papernexus', 'discovery', 'staging', 'markdown');
   let downloadReservations = 0;
 
-  function reserveDownloadSlot(pdfUrls = []) {
-    if (!allowDownloads || !pdfUrls.length || downloadReservations >= maxDownloads) return false;
+  function reserveDownloadSlot(sourceUrls = []) {
+    if (!allowDownloads || !sourceUrls.length || downloadReservations >= maxDownloads) return false;
     downloadReservations += 1;
     return true;
   }
@@ -326,12 +520,16 @@ export async function resolveDiscoverySources(params = {}) {
         downloadStatus: DOWNLOAD_STATUS.SKIPPED,
         downloadError: null,
         localPdfPath: null,
+        localMarkdownPath: null,
         pdfUrl: '',
+        markdownUrl: '',
         resolutionAttempts: [],
-        institutionalAccessHints: createInstitutionalAccessHints(candidate, params)
+        institutionalAccessHints: createInstitutionalAccessHints(candidate, params),
+        supplementation: null
       }
     };
 
+    const markdownInputs = collectMarkdownInputs(candidate, params);
     let pdfUrls = collectDownloadUrls(next);
     if (!pdfUrls.length && next.identifiers?.doi) {
       const unpaywall = await resolveUnpaywall(next, params);
@@ -349,9 +547,55 @@ export async function resolveDiscoverySources(params = {}) {
       pdfUrls = collectDownloadUrls(next);
     }
 
-    if (reserveDownloadSlot(pdfUrls)) {
+    const hasReservedDownloadSlot = reserveDownloadSlot([...markdownInputs.map((entry) => entry.url), ...pdfUrls]);
+    if (hasReservedDownloadSlot) {
+      for (const entry of markdownInputs) {
+        const outputPath = createMarkdownOutputPath(markdownStagingRoot, next);
+        const outcome = await downloadMarkdown(entry.url, outputPath, params);
+        next.source.resolutionAttempts.push({
+          provider: entry.provider,
+          sourceKind: 'markdown',
+          status: outcome.ok ? 'success' : 'failed',
+          detail: outcome.reason,
+          url: entry.url,
+          generated: Boolean(entry.generated),
+          at: new Date().toISOString()
+        });
+        if (outcome.ok) {
+          const identity = createSourceIdentity({
+            ...next,
+            identifiers: next.identifiers,
+            title: next.title,
+            sourceKind: 'markdown',
+            sourceProvider: entry.provider,
+            contentSha256: outcome.contentSha256,
+            resolutionStatus: 'fulltext_ready'
+          });
+          next.source = {
+            ...next.source,
+            sourceKind: 'markdown',
+            sourcePath: outputPath,
+            sourceProvider: identity.sourceProvider,
+            contentSha256: identity.contentSha256,
+            sourceId: identity.sourceId,
+            resolutionStatus: 'fulltext_ready',
+            fullTextStatus: FULL_TEXT_STATUS.OPEN_MARKDOWN,
+            downloadStatus: DOWNLOAD_STATUS.DOWNLOADED,
+            downloadError: null,
+            localMarkdownPath: outputPath,
+            markdownUrl: entry.url,
+            supplementation: createDiscoverySupplementationInterface(next, {
+              resolutionStatus: 'fulltext_ready'
+            })
+          };
+          break;
+        }
+      }
+    }
+
+    if (next.source.resolutionStatus !== 'fulltext_ready' && hasReservedDownloadSlot) {
       for (const url of pdfUrls) {
-        const outputPath = createOutputPath(stagingRoot, next);
+        const outputPath = createOutputPath(pdfStagingRoot, next);
         const outcome = await downloadPdf(url, outputPath, params);
         next.source.resolutionAttempts.push({
           provider: 'pdf',
@@ -382,7 +626,10 @@ export async function resolveDiscoverySources(params = {}) {
             downloadStatus: DOWNLOAD_STATUS.DOWNLOADED,
             downloadError: null,
             localPdfPath: outputPath,
-            pdfUrl: url
+            pdfUrl: url,
+            supplementation: createDiscoverySupplementationInterface(next, {
+              resolutionStatus: 'fulltext_ready'
+            })
           };
           break;
         }
@@ -390,7 +637,7 @@ export async function resolveDiscoverySources(params = {}) {
     }
 
     if (next.source.resolutionStatus !== 'fulltext_ready') {
-      const classification = classifyFailedResolution(next, pdfUrls, {
+      const classification = classifyFailedResolution(next, markdownInputs, pdfUrls, {
         allowDownloads,
         maxDownloads
       });
@@ -398,9 +645,11 @@ export async function resolveDiscoverySources(params = {}) {
       next.source.downloadStatus = classification.downloadStatus;
       next.source.downloadError = classification.downloadError;
       next.source.pdfUrl = pdfUrls[0] || next.pdfUrl || '';
+      next.source.markdownUrl = markdownInputs[0]?.url || next.markdownUrl || '';
       if (next.source.institutionalAccessHints.length) {
         next.source.authorizedAccessStatus = 'institutional_access_may_be_available';
       }
+      next.source.supplementation = createDiscoverySupplementationInterface(next, next.source);
     }
 
     return next;
