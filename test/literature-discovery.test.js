@@ -222,6 +222,14 @@ test('scheduleDiscoveryFetch uses opt-in memory cache for repeated successful re
     assert.equal(calls, 1);
     assert.deepEqual(await first.json(), { calls: 1 });
     assert.deepEqual(await second.json(), { calls: 1 });
+    const stats = readDiscoveryRequestSchedulerState().requestStats;
+    assert.equal(stats.total, 2);
+    assert.equal(stats.networkRequests, 1);
+    assert.equal(stats.cacheMisses, 1);
+    assert.equal(stats.cacheHits, 1);
+    assert.equal(stats.cacheMemoryHits, 1);
+    assert.equal(stats.cacheDiskHits, 0);
+    assert.equal(stats.byProvider[0].provider, 'openalex');
   } finally {
     resetDiscoveryRequestSchedulerForTests();
     globalThis.fetch = originalFetch;
@@ -262,7 +270,12 @@ test('scheduleDiscoveryFetch persists cached responses across scheduler resets',
     assert.equal(calls, 1);
     assert.deepEqual(await first.json(), { calls: 1, source: 'network' });
     assert.deepEqual(await second.json(), { calls: 1, source: 'network' });
-    assert.ok(readDiscoveryRequestSchedulerState().cacheEntries > 0);
+    const state = readDiscoveryRequestSchedulerState();
+    assert.ok(state.cacheEntries > 0);
+    assert.equal(state.requestStats.total, 1);
+    assert.equal(state.requestStats.cacheHits, 1);
+    assert.equal(state.requestStats.cacheDiskHits, 1);
+    assert.equal(state.requestStats.networkRequests, 0);
   } finally {
     resetDiscoveryRequestSchedulerForTests();
     globalThis.fetch = originalFetch;

@@ -9,9 +9,26 @@ import {
   renderRetrievalBenchmarkReport,
   runRetrievalBenchmark
 } from '../src/core/benchmarks/retrieval.js';
+import {
+  resetDiscoveryRequestSchedulerForTests,
+  scheduleDiscoveryFetch
+} from '../src/core/discovery/request-scheduler.js';
+
+const originalFetch = globalThis.fetch;
 
 async function createTempDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-retrieval-benchmark-'));
+}
+
+function createJsonResponse(payload) {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Map([['content-type', 'application/json']]),
+    async json() {
+      return payload;
+    }
+  };
 }
 
 test('custom retrieval benchmark runs discovery and computes macro metrics', async () => {
@@ -180,6 +197,73 @@ test('benchmark credential preflight reports provider keys without leaking secre
     } else {
       process.env.IEEE_XPLORE_API_KEY = previousIeee;
     }
+  }
+});
+
+test('benchmark diagnostics record discovery request cache hit and miss stats', async () => {
+  const tempDir = await createTempDir();
+  let calls = 0;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      return createJsonResponse({ results: [] });
+    };
+
+    const report = await runRetrievalBenchmark({
+      benchmark: {
+        name: 'cache-observability',
+        format: 'custom',
+        queryCount: 1,
+        queries: [{
+          id: 'cache-q1',
+          query: 'cache observable retrieval',
+          relevant: [{ title: 'Cache Observable Retrieval', doi: '10.1234/cache.observable' }]
+        }]
+      },
+      cutoffs: [1],
+      discoveryRequestCache: true,
+      discoveryRequestCacheTtlMs: 1000,
+      discoveryRequestCacheDir: tempDir,
+      runDiscovery: async () => {
+        const url = 'https://api.openalex.org/works?search=cache-observable-retrieval';
+        const fetchConfig = {
+          timeoutMs: 500,
+          discoveryRequestCache: true,
+          discoveryRequestCacheTtlMs: 1000,
+          discoveryRequestCacheDir: tempDir
+        };
+        await (await scheduleDiscoveryFetch(url, fetchConfig)).json();
+        await (await scheduleDiscoveryFetch(url, fetchConfig)).json();
+        return {
+          providers: ['openalex'],
+          plan: { queries: [{ query: 'cache observable retrieval' }] },
+          queryResults: [{ provider: 'openalex', queryId: 'cache-q1-openalex', query: 'cache observable retrieval', ok: true, count: 1 }],
+          rawCandidateCount: 1,
+          candidates: [{ title: 'Cache Observable Retrieval', identifiers: { doi: '10.1234/cache.observable' } }]
+        };
+      }
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(report.config.discoveryCacheEnabled, true);
+    assert.equal(report.config.discoveryCacheMode, 'mixed-cache');
+    assert.equal(report.diagnostics.discoveryRequestCache.total, 2);
+    assert.equal(report.diagnostics.discoveryRequestCache.cacheMisses, 1);
+    assert.equal(report.diagnostics.discoveryRequestCache.cacheHits, 1);
+    assert.equal(report.diagnostics.discoveryRequestCache.cacheMemoryHits, 1);
+    assert.equal(report.diagnostics.discoveryRequestCache.networkRequests, 1);
+    assert.deepEqual(report.diagnostics.discoveryRequestCache.byProvider.map((entry) => entry.provider), ['openalex']);
+
+    const markdown = renderRetrievalBenchmarkReport(report);
+    assert.match(markdown, /Discovery cache mode: mixed-cache/);
+    assert.match(markdown, /Discovery request cache: mode=mixed-cache, total=2, hits=1, misses=1, network=1/);
+    assert.match(markdown, /\| openalex \| 2 \| 1 \| 1 \| 0 \| 1 \| 1 \| 1 \|/);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
 
@@ -1099,6 +1183,7 @@ test('benchmark report renders concise markdown summary', () => {
     config: {
       cutoffs: [1],
       depth: 'quick',
+      discoveryCacheMode: 'warm-cache',
       providerCredentials: [{
         provider: 'semantic_scholar',
         configured: true,
@@ -1145,6 +1230,29 @@ test('benchmark report renders concise markdown summary', () => {
         reason: 'timeout',
         count: 1
       }],
+      discoveryRequestCache: {
+        enabled: true,
+        mode: 'warm-cache',
+        total: 4,
+        cacheHits: 4,
+        cacheMemoryHits: 3,
+        cacheDiskHits: 1,
+        cacheMisses: 0,
+        networkRequests: 0,
+        cacheWrites: 0,
+        inFlightHits: 0,
+        circuitBreakerHits: 0,
+        byProvider: [{
+          provider: 'openalex',
+          total: 4,
+          cacheHits: 4,
+          cacheMemoryHits: 3,
+          cacheDiskHits: 1,
+          cacheMisses: 0,
+          networkRequests: 0,
+          cacheWrites: 0
+        }]
+      },
       citationExpansion: {
         seeds: 1,
         addedCandidates: 2,
@@ -1167,6 +1275,8 @@ test('benchmark report renders concise markdown summary', () => {
   assert.match(markdown, /## Diagnostics/);
   assert.match(markdown, /Candidate pool recall: 1\.0000/);
   assert.match(markdown, /Average query duration: 12\.0000 ms/);
+  assert.match(markdown, /Discovery request cache: mode=warm-cache, total=4, hits=4, misses=0, network=0/);
+  assert.match(markdown, /\| openalex \| 4 \| 4 \| 3 \| 1 \| 0 \| 0 \| 0 \|/);
   assert.match(markdown, /Missed gold papers: 1/);
   assert.match(markdown, /\| weak_title_overlap \| 1 \| Gold Paper \| Near Candidate \|/);
   assert.match(markdown, /\| openalex \| timeout \| 1 \|/);

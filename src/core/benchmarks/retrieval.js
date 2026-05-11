@@ -14,6 +14,7 @@ import {
   unique
 } from '../../lib/utils.js';
 import { runLiteratureDiscovery } from '../discovery/workflow.js';
+import { readDiscoveryRequestSchedulerState } from '../discovery/request-scheduler.js';
 import {
   aggregateTaskEvaluationMetrics,
   evaluateBenchmarkTaskCase,
@@ -1958,6 +1959,77 @@ function average(values = []) {
   return numeric.length ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : 0;
 }
 
+const DISCOVERY_REQUEST_STAT_FIELDS = [
+  'total',
+  'cacheDisabled',
+  'cacheMisses',
+  'cacheHits',
+  'cacheMemoryHits',
+  'cacheDiskHits',
+  'networkRequests',
+  'networkErrors',
+  'cacheWrites',
+  'inFlightHits',
+  'circuitBreakerHits'
+];
+
+function numericRequestCounter(stats = {}, field = '') {
+  const value = Number(stats?.[field] || 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function diffRequestCounters(after = {}, before = {}) {
+  const diff = {};
+  for (const field of DISCOVERY_REQUEST_STAT_FIELDS) {
+    diff[field] = Math.max(0, numericRequestCounter(after, field) - numericRequestCounter(before, field));
+  }
+  return diff;
+}
+
+function providerRequestStatsMap(entries = []) {
+  const map = new Map();
+  for (const entry of asArray(entries)) {
+    const provider = compactText(entry?.provider || 'unknown') || 'unknown';
+    map.set(provider, entry);
+  }
+  return map;
+}
+
+function diffDiscoveryRequestStats(afterState = {}, beforeState = {}) {
+  const beforeStats = beforeState.requestStats || {};
+  const afterStats = afterState.requestStats || {};
+  const beforeProviders = providerRequestStatsMap(beforeStats.byProvider || []);
+  const afterProviders = providerRequestStatsMap(afterStats.byProvider || []);
+  const providers = unique([...beforeProviders.keys(), ...afterProviders.keys()]).sort();
+  const byProvider = providers
+    .map((provider) => ({
+      provider,
+      ...diffRequestCounters(afterProviders.get(provider), beforeProviders.get(provider))
+    }))
+    .filter((entry) => entry.total || entry.cacheHits || entry.networkRequests || entry.cacheMisses);
+
+  return {
+    ...diffRequestCounters(afterStats, beforeStats),
+    byProvider
+  };
+}
+
+function resolveDiscoveryCacheEnabled(params = {}, ttlMs = 0) {
+  if (params.discoveryRequestCache === false || params.discovery_request_cache === false) return false;
+  if (params.discoveryRequestCache === true || params.discovery_request_cache === true) return true;
+  return Number(ttlMs || 0) > 0;
+}
+
+function inferDiscoveryCacheMode(cacheStats = {}, enabled = false) {
+  const total = Number(cacheStats.total || 0);
+  if (!enabled) return 'disabled';
+  if (!total) return 'enabled-no-live-requests';
+  if (Number(cacheStats.cacheHits || 0) > 0 && Number(cacheStats.networkRequests || 0) === 0) return 'warm-cache';
+  if (Number(cacheStats.cacheHits || 0) > 0 && Number(cacheStats.networkRequests || 0) > 0) return 'mixed-cache';
+  if (Number(cacheStats.cacheMisses || 0) > 0 && Number(cacheStats.networkRequests || 0) > 0) return 'cold-cache';
+  return 'enabled';
+}
+
 function pickParamWithName(params = {}, names = []) {
   for (const name of names) {
     const value = params[name];
@@ -2283,6 +2355,7 @@ export async function runRetrievalBenchmark(params = {}) {
   const taskEvaluationMode = String(params.taskEvaluation || params.task_evaluation || 'rules').trim().toLowerCase();
   const startedAt = new Date().toISOString();
   const onProgress = typeof params.onProgress === 'function' ? params.onProgress : null;
+  const discoveryRequestStateBefore = readDiscoveryRequestSchedulerState();
 
   const results = await runWithConcurrency(
     selectedQueries,
@@ -2347,6 +2420,33 @@ export async function runRetrievalBenchmark(params = {}) {
     }
   );
   const endedAt = new Date().toISOString();
+  const discoveryRequestStateAfter = readDiscoveryRequestSchedulerState();
+  const discoveryRequestCacheStats = diffDiscoveryRequestStats(discoveryRequestStateAfter, discoveryRequestStateBefore);
+  const discoveryCacheTtlMs = toNumber(pickFirst(
+    params.discoveryRequestCacheTtlMs,
+    params.discovery_request_cache_ttl_ms,
+    process.env.PAPERNEXUS_DISCOVERY_CACHE_TTL_MS
+  ), 0);
+  const discoveryFailureCacheTtlMs = toNumber(pickFirst(
+    params.discoveryRequestFailureCacheTtlMs,
+    params.discovery_request_failure_cache_ttl_ms,
+    process.env.PAPERNEXUS_DISCOVERY_FAILURE_CACHE_TTL_MS
+  ), 0);
+  const discoveryCacheDir = pickFirst(
+    params.discoveryRequestCacheDir,
+    params.discovery_request_cache_dir,
+    process.env.PAPERNEXUS_DISCOVERY_CACHE_DIR
+  ) || null;
+  const discoveryCacheEnabled = resolveDiscoveryCacheEnabled(params, discoveryCacheTtlMs);
+  const discoveryCacheMode = inferDiscoveryCacheMode(discoveryRequestCacheStats, discoveryCacheEnabled);
+  const diagnostics = {
+    ...summarizeBenchmarkDiagnostics(results),
+    discoveryRequestCache: {
+      enabled: discoveryCacheEnabled,
+      mode: discoveryCacheMode,
+      ...discoveryRequestCacheStats
+    }
+  };
   const report = {
     contractVersion: 'retrieval-benchmark-v1',
       generatedAt: endedAt,
@@ -2366,21 +2466,11 @@ export async function runRetrievalBenchmark(params = {}) {
       maxTaskContext: params.maxTaskContext || params.max_task_context || null,
       fixedCorpusLimit: params.fixedCorpusLimit || params.maxFixedCorpusResults || params.max_fixed_corpus_results || null,
       fixedCorpusScorer: evaluationMode === 'fixed-corpus' ? 'hybrid-bm25-v1' : null,
-      discoveryCacheTtlMs: toNumber(pickFirst(
-        params.discoveryRequestCacheTtlMs,
-        params.discovery_request_cache_ttl_ms,
-        process.env.PAPERNEXUS_DISCOVERY_CACHE_TTL_MS
-      ), 0),
-      discoveryFailureCacheTtlMs: toNumber(pickFirst(
-        params.discoveryRequestFailureCacheTtlMs,
-        params.discovery_request_failure_cache_ttl_ms,
-        process.env.PAPERNEXUS_DISCOVERY_FAILURE_CACHE_TTL_MS
-      ), 0),
-      discoveryCacheDir: pickFirst(
-        params.discoveryRequestCacheDir,
-        params.discovery_request_cache_dir,
-        process.env.PAPERNEXUS_DISCOVERY_CACHE_DIR
-      ) || null,
+      discoveryCacheEnabled,
+      discoveryCacheMode,
+      discoveryCacheTtlMs,
+      discoveryFailureCacheTtlMs,
+      discoveryCacheDir,
       discoveryCircuitBreakerFailureThreshold: toNumber(pickFirst(
         params.discoveryCircuitBreakerFailureThreshold,
         params.discovery_circuit_breaker_failure_threshold,
@@ -2399,7 +2489,7 @@ export async function runRetrievalBenchmark(params = {}) {
     alignment: benchmarkAlignment(benchmark, { evaluationMode, taskEvaluationMode }),
     metrics: aggregateMetrics(results),
     taskEvaluation: aggregateTaskEvaluationMetrics(results),
-    diagnostics: summarizeBenchmarkDiagnostics(results),
+    diagnostics,
     results
   };
 
@@ -2464,6 +2554,7 @@ export function renderRetrievalBenchmarkReport(report = {}) {
     `Discovery depth: ${config.depth || 'quick'}`,
     `Providers: ${Array.isArray(config.providers) ? config.providers.join(', ') : (config.providers || 'default')}`,
     `Fixed-corpus scorer: ${config.fixedCorpusScorer || 'n/a'}`,
+    `Discovery cache mode: ${config.discoveryCacheMode || 'unknown'}`,
     `Discovery cache TTL: ${config.discoveryCacheTtlMs || 0} ms`,
     `Discovery failure cache TTL: ${config.discoveryFailureCacheTtlMs || 0} ms`,
     `Discovery circuit breaker: threshold=${config.discoveryCircuitBreakerFailureThreshold || 'default'}, cooldown=${config.discoveryCircuitBreakerCooldownMs || 0} ms`,
@@ -2511,7 +2602,10 @@ export function renderRetrievalBenchmarkReport(report = {}) {
 
   if (report.diagnostics) {
     const diagnostics = report.diagnostics;
-    lines.push(
+    const cacheSummaryLine = diagnostics.discoveryRequestCache
+      ? `Discovery request cache: mode=${diagnostics.discoveryRequestCache.mode || config.discoveryCacheMode || 'unknown'}, total=${diagnostics.discoveryRequestCache.total || 0}, hits=${diagnostics.discoveryRequestCache.cacheHits || 0}, misses=${diagnostics.discoveryRequestCache.cacheMisses || 0}, network=${diagnostics.discoveryRequestCache.networkRequests || 0}, writes=${diagnostics.discoveryRequestCache.cacheWrites || 0}, in-flight=${diagnostics.discoveryRequestCache.inFlightHits || 0}, circuit=${diagnostics.discoveryRequestCache.circuitBreakerHits || 0}`
+      : null;
+    lines.push(...[
       '## Diagnostics',
       '',
       `Evaluated queries: ${diagnostics.evaluatedQueries || 0}`,
@@ -2527,9 +2621,19 @@ export function renderRetrievalBenchmarkReport(report = {}) {
       `Dedup merge rate: ${formatMetric(diagnostics.dedupMergeRate)}`,
       `Missed gold papers: ${diagnostics.missedRelevantTotal || 0}`,
       `Provider failures: ${diagnostics.providerFailuresTotal || 0}`,
+      cacheSummaryLine,
       `Citation expansion: seeds=${diagnostics.citationExpansion?.seeds || 0}, added=${diagnostics.citationExpansion?.addedCandidates || 0}, failed=${diagnostics.citationExpansion?.failedSeeds || 0}`,
       ''
-    );
+    ].filter((line) => line !== null));
+    if (Array.isArray(diagnostics.discoveryRequestCache?.byProvider) && diagnostics.discoveryRequestCache.byProvider.length) {
+      lines.push('| Provider | Requests | Cache hits | Memory hits | Disk hits | Misses | Network | Writes |');
+      lines.push('|---|---:|---:|---:|---:|---:|---:|---:|');
+      for (const providerStats of diagnostics.discoveryRequestCache.byProvider.slice(0, 12)) {
+        const provider = String(providerStats.provider || 'unknown').replace(/\|/g, '\\|');
+        lines.push(`| ${provider} | ${providerStats.total || 0} | ${providerStats.cacheHits || 0} | ${providerStats.cacheMemoryHits || 0} | ${providerStats.cacheDiskHits || 0} | ${providerStats.cacheMisses || 0} | ${providerStats.networkRequests || 0} | ${providerStats.cacheWrites || 0} |`);
+      }
+      lines.push('');
+    }
     if (Array.isArray(diagnostics.goldMissReasons) && diagnostics.goldMissReasons.length) {
       lines.push('| Gold miss reason | Count | Example gold | Nearest candidate |');
       lines.push('|---|---:|---|---|');

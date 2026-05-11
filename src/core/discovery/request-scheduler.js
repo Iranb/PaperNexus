@@ -16,6 +16,61 @@ const providerLimiters = new Map();
 const inFlightRequests = new Map();
 const memoryCache = new Map();
 const providerCircuitBreakers = new Map();
+const requestStats = {
+  totals: createRequestCounters(),
+  byProvider: new Map()
+};
+
+function createRequestCounters() {
+  return {
+    total: 0,
+    cacheDisabled: 0,
+    cacheMisses: 0,
+    cacheHits: 0,
+    cacheMemoryHits: 0,
+    cacheDiskHits: 0,
+    networkRequests: 0,
+    networkErrors: 0,
+    cacheWrites: 0,
+    inFlightHits: 0,
+    circuitBreakerHits: 0
+  };
+}
+
+function resetRequestCounters(target) {
+  const empty = createRequestCounters();
+  for (const key of Object.keys(empty)) {
+    target[key] = empty[key];
+  }
+}
+
+function providerRequestCounters(provider) {
+  const normalized = normalizeProviderName(provider);
+  if (!requestStats.byProvider.has(normalized)) {
+    requestStats.byProvider.set(normalized, createRequestCounters());
+  }
+  return requestStats.byProvider.get(normalized);
+}
+
+function incrementRequestStat(provider, field, amount = 1) {
+  const increment = Math.max(0, Number(amount) || 0);
+  if (!field || !increment) return;
+  requestStats.totals[field] = (requestStats.totals[field] || 0) + increment;
+  const providerCounters = providerRequestCounters(provider);
+  providerCounters[field] = (providerCounters[field] || 0) + increment;
+}
+
+function snapshotRequestStats() {
+  return {
+    ...requestStats.totals,
+    byProvider: [...requestStats.byProvider.entries()]
+      .map(([provider, counters]) => ({
+        provider,
+        ...counters
+      }))
+      .sort((left, right) => left.provider.localeCompare(right.provider))
+  };
+}
 
 function toNonNegativeInteger(value, fallback) {
   const parsed = Number(value);
@@ -401,7 +456,10 @@ async function readDiskCachedSnapshot(cacheConfig = {}) {
       expiresAt: parsed.expiresAt,
       snapshot
     });
-    return snapshot;
+    return {
+      snapshot,
+      source: 'disk'
+    };
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
     return null;
@@ -442,7 +500,12 @@ async function runRawFetch(input, config = {}, headers = {}) {
 async function getCachedSnapshot(key, cacheConfig = {}) {
   const cached = memoryCache.get(key);
   if (cached) {
-    if (cached.expiresAt > Date.now()) return cached.snapshot;
+    if (cached.expiresAt > Date.now()) {
+      return {
+        snapshot: cached.snapshot,
+        source: 'memory'
+      };
+    }
     memoryCache.delete(key);
   }
   return readDiskCachedSnapshot(cacheConfig);
@@ -527,6 +590,7 @@ export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, o
   const requestKey = options.cacheKey || buildRequestKey(input, headers, { ...options, provider });
   const ttlMs = resolveCacheTtlMs(provider, config, { ...options, provider });
   const shouldCache = cacheEnabled(config, { ...options, provider, cacheTtlMs: ttlMs });
+  incrementRequestStat(provider, 'total');
   const cacheConfig = {
     enabled: shouldCache,
     provider,
@@ -538,13 +602,24 @@ export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, o
 
   if (shouldCache) {
     const cached = await getCachedSnapshot(requestKey, cacheConfig);
-    if (cached) return cloneSnapshot(cached);
+    if (cached?.snapshot) {
+      incrementRequestStat(provider, 'cacheHits');
+      incrementRequestStat(provider, cached.source === 'disk' ? 'cacheDiskHits' : 'cacheMemoryHits');
+      return cloneSnapshot(cached.snapshot);
+    }
+    incrementRequestStat(provider, 'cacheMisses');
+  } else {
+    incrementRequestStat(provider, 'cacheDisabled');
   }
 
   const circuitState = activeCircuitBreaker(provider);
-  if (circuitState) return cloneSnapshot(createCircuitBreakerSnapshot(provider, circuitState));
+  if (circuitState) {
+    incrementRequestStat(provider, 'circuitBreakerHits');
+    return cloneSnapshot(createCircuitBreakerSnapshot(provider, circuitState));
+  }
 
   if (inFlightRequests.has(requestKey)) {
+    incrementRequestStat(provider, 'inFlightHits');
     return cloneSnapshot(await inFlightRequests.get(requestKey));
   }
 
@@ -555,6 +630,7 @@ export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, o
     await acquireSlot(limiter, maxConcurrent);
     try {
       await waitForProviderStart(limiter, delayMs);
+      incrementRequestStat(provider, 'networkRequests');
       const response = await runRawFetch(input, config, headers);
       const snapshot = await snapshotResponse(response);
       if (snapshot.ok) {
@@ -562,9 +638,12 @@ export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, o
       } else if (isRetryableFailureSnapshot(snapshot)) {
         recordProviderFailure(provider, config, options, `http-${snapshot.status}`);
       }
+      const cacheWriteEligible = cacheTtlForSnapshot(snapshot, cacheConfig) > 0;
       await setCachedSnapshot(requestKey, snapshot, cacheConfig);
+      if (cacheWriteEligible) incrementRequestStat(provider, 'cacheWrites');
       return snapshot;
     } catch (error) {
+      incrementRequestStat(provider, 'networkErrors');
       recordProviderFailure(provider, config, options, error?.name || error?.message || 'fetch-error');
       throw error;
     } finally {
@@ -585,6 +664,8 @@ export function resetDiscoveryRequestSchedulerForTests() {
   inFlightRequests.clear();
   memoryCache.clear();
   providerCircuitBreakers.clear();
+  resetRequestCounters(requestStats.totals);
+  requestStats.byProvider.clear();
 }
 
 export function readDiscoveryRequestSchedulerState() {
@@ -592,6 +673,7 @@ export function readDiscoveryRequestSchedulerState() {
     providers: [...providerLimiters.keys()],
     inFlightCount: inFlightRequests.size,
     cacheEntries: memoryCache.size,
+    requestStats: snapshotRequestStats(),
     circuitBreakers: [...providerCircuitBreakers.entries()].map(([provider, state]) => ({
       provider,
       failureCount: state.failureCount,
