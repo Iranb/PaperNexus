@@ -117,10 +117,69 @@ test('custom retrieval benchmark runs discovery and computes macro metrics', asy
     assert.equal(report.diagnostics.averageRawCandidateCount, 3);
     assert.equal(report.diagnostics.averageMergedPaperCount, 2);
     assert.equal(report.diagnostics.averageProviderCallCount, 1.5);
+    assert.ok(report.diagnostics.averageQueryDurationMs >= 0);
     assert.equal(report.diagnostics.providerFailuresTotal, 1);
     assert.equal(report.diagnostics.citationExpansion.addedCandidates, 1);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('benchmark credential preflight reports provider keys without leaking secrets', async () => {
+  const previousSemanticScholar = process.env.SEMANTIC_SCHOLAR_API_KEY;
+  const previousIeee = process.env.IEEE_XPLORE_API_KEY;
+
+  try {
+    process.env.SEMANTIC_SCHOLAR_API_KEY = 'semantic-secret-for-report-test';
+    process.env.IEEE_XPLORE_API_KEY = 'ieee-secret-for-report-test';
+
+    const report = await runRetrievalBenchmark({
+      benchmark: {
+        name: 'credential-preflight',
+        format: 'custom',
+        corpus: [{ id: 'd1', title: 'Known Paper' }],
+        corpusSize: 1,
+        queryCount: 1,
+        queries: [{
+          id: 'q1',
+          query: 'Known Paper',
+          relevant: [{ id: 'd1', title: 'Known Paper' }]
+        }]
+      },
+      evaluationMode: 'fixed-corpus',
+      coreApiKey: 'core-secret-for-report-test',
+      cutoffs: [1]
+    });
+
+    const credentials = Object.fromEntries(report.config.providerCredentials.map((entry) => [entry.provider, entry]));
+    assert.equal(credentials.semantic_scholar.configured, true);
+    assert.equal(credentials.semantic_scholar.source, 'env:SEMANTIC_SCHOLAR_API_KEY');
+    assert.equal(credentials.core.configured, true);
+    assert.equal(credentials.core.source, 'param:coreApiKey');
+    assert.equal(credentials.ieee_xplore.configured, true);
+    assert.equal(credentials.ieee_xplore.implemented, false);
+    assert.ok(credentials.semantic_scholar.hashPrefix);
+
+    const serializedReport = JSON.stringify(report);
+    assert.doesNotMatch(serializedReport, /semantic-secret-for-report-test/);
+    assert.doesNotMatch(serializedReport, /core-secret-for-report-test/);
+    assert.doesNotMatch(serializedReport, /ieee-secret-for-report-test/);
+
+    const markdown = renderRetrievalBenchmarkReport(report);
+    assert.match(markdown, /## Provider Credentials/);
+    assert.match(markdown, /\| semantic_scholar \| yes \| env:SEMANTIC_SCHOLAR_API_KEY \|/);
+    assert.doesNotMatch(markdown, /semantic-secret-for-report-test/);
+  } finally {
+    if (previousSemanticScholar === undefined) {
+      delete process.env.SEMANTIC_SCHOLAR_API_KEY;
+    } else {
+      process.env.SEMANTIC_SCHOLAR_API_KEY = previousSemanticScholar;
+    }
+    if (previousIeee === undefined) {
+      delete process.env.IEEE_XPLORE_API_KEY;
+    } else {
+      process.env.IEEE_XPLORE_API_KEY = previousIeee;
+    }
   }
 });
 
@@ -1016,6 +1075,13 @@ test('benchmark report renders concise markdown summary', () => {
     config: {
       cutoffs: [1],
       depth: 'quick',
+      providerCredentials: [{
+        provider: 'semantic_scholar',
+        configured: true,
+        source: 'env:SEMANTIC_SCHOLAR_API_KEY',
+        hashPrefix: 'abcdef12',
+        implemented: true
+      }],
       resolveSources: false
     },
     metrics: {
@@ -1033,6 +1099,7 @@ test('benchmark report renders concise markdown summary', () => {
       zeroMatchQueries: 0,
       zeroMatchRate: 0,
       candidatePoolRecall: 1,
+      averageQueryDurationMs: 12,
       averageRetrievedCount: 3,
       averageRawCandidateCount: 5,
       averageMergedPaperCount: 3,
@@ -1062,7 +1129,10 @@ test('benchmark report renders concise markdown summary', () => {
 
   assert.match(markdown, /Retrieval Benchmark: synthetic/);
   assert.match(markdown, /\| recall@1 \| 1\.0000 \|/);
+  assert.match(markdown, /## Provider Credentials/);
+  assert.match(markdown, /\| semantic_scholar \| yes \| env:SEMANTIC_SCHOLAR_API_KEY \| abcdef12 \| yes \|/);
   assert.match(markdown, /## Diagnostics/);
   assert.match(markdown, /Candidate pool recall: 1\.0000/);
+  assert.match(markdown, /Average query duration: 12\.0000 ms/);
   assert.match(markdown, /\| openalex \| timeout \| 1 \|/);
 });

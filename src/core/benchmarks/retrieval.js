@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ensureDir, fileExists, readJson, writeJson, writeText } from '../../lib/fs.js';
+import { resolveOpenAlexApiKey } from '../../lib/api-keys.js';
 import { createPaperIdentity, normalizePaperIdentifiers, paperIdentifiersOverlap } from '../../lib/paper-identifiers.js';
 import {
   jaccardSimilarity,
@@ -1862,6 +1863,81 @@ function average(values = []) {
   return numeric.length ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : 0;
 }
 
+function pickParamWithName(params = {}, names = []) {
+  for (const name of names) {
+    const value = params[name];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return {
+        value: String(value).trim(),
+        source: `param:${name}`
+      };
+    }
+  }
+  return null;
+}
+
+function pickEnvWithName(env = process.env, names = []) {
+  for (const name of names) {
+    const value = env[name];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return {
+        value: String(value).trim(),
+        source: `env:${name}`
+      };
+    }
+  }
+  return null;
+}
+
+function credentialStatus(provider, resolved, extra = {}) {
+  const value = String(resolved?.value || '').trim();
+  return {
+    provider,
+    configured: Boolean(value),
+    source: value ? resolved.source : '',
+    hashPrefix: value ? stableHash(value, 8) : '',
+    implemented: extra.implemented !== false,
+    optional: extra.optional !== false
+  };
+}
+
+function resolveOpenAlexCredential(params = {}) {
+  const direct = pickParamWithName(params, [
+    'openAlexApiKey',
+    'openalexApiKey',
+    'openalex_api_key',
+    'apiKey'
+  ]);
+  if (direct) return direct;
+  const fromEnv = pickEnvWithName(process.env, ['OPENALEX_API_KEY']);
+  if (fromEnv) return fromEnv;
+  try {
+    const value = resolveOpenAlexApiKey(params);
+    if (value) return { value, source: 'file:openalex_api_key' };
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function summarizeProviderCredentials(params = {}) {
+  return [
+    credentialStatus('openalex', resolveOpenAlexCredential(params)),
+    credentialStatus('semantic_scholar', (
+      pickParamWithName(params, ['semanticScholarApiKey', 'semantic_scholar_api_key', 's2ApiKey', 's2_api_key'])
+      || pickEnvWithName(process.env, ['SEMANTIC_SCHOLAR_API_KEY', 'S2_API_KEY'])
+    )),
+    credentialStatus('core', (
+      pickParamWithName(params, ['coreApiKey', 'core_api_key'])
+      || pickEnvWithName(process.env, ['CORE_API_KEY'])
+    )),
+    credentialStatus('ieee_xplore', (
+      pickParamWithName(params, ['ieeeApiKey', 'ieee_api_key', 'ieeeXploreApiKey', 'ieee_xplore_api_key'])
+      || pickEnvWithName(process.env, ['IEEE_XPLORE_API_KEY', 'IEEE_API_KEY', 'IEEE_XPLORE_TOKEN'])
+    ), { implemented: false })
+  ];
+}
+
 function summarizeBenchmarkDiagnostics(results = []) {
   const evaluatedQueries = results.length;
   const zeroMatchQueries = results.filter((result) => result.relevantCount > 0 && !result.firstRelevantRank).length;
@@ -1886,6 +1962,7 @@ function summarizeBenchmarkDiagnostics(results = []) {
     zeroMatchQueries,
     zeroMatchRate: evaluatedQueries ? zeroMatchQueries / evaluatedQueries : 0,
     candidatePoolRecall: average(candidatePoolRecallValues),
+    averageQueryDurationMs: average(results.map((result) => result.durationMs || 0)),
     averageRetrievedCount: average(results.map((result) => result.retrievedCount)),
     averageRawCandidateCount: average(results.map((result) => result.discovery?.rawCandidateCount || 0)),
     averageMergedPaperCount: average(results.map((result) => result.discovery?.mergedPaperCount || 0)),
@@ -2111,6 +2188,7 @@ export async function runRetrievalBenchmark(params = {}) {
     selectedQueries,
     params.benchmarkConcurrency || params.concurrency || 1,
     async (queryCase, index) => {
+      const queryStartedAt = Date.now();
       onProgress?.({
         completed: index,
         total: selectedQueries.length,
@@ -2137,16 +2215,19 @@ export async function runRetrievalBenchmark(params = {}) {
         ...params,
         taskEvaluation: taskEvaluationMode
       });
+      const queryDurationMs = Date.now() - queryStartedAt;
       onProgress?.({
         completed: index + 1,
         total: selectedQueries.length,
         queryId: queryCase.id,
         query: queryCase.query,
         phase: 'completed',
-        firstRelevantRank: evaluation.firstRelevantRank
+        firstRelevantRank: evaluation.firstRelevantRank,
+        durationMs: queryDurationMs
       });
       return {
         ...evaluation,
+        durationMs: queryDurationMs,
         evaluationMode,
         taskType: queryCase.metadata?.taskType || benchmark.profile?.taskType || null,
         taskEvaluation,
@@ -2210,6 +2291,7 @@ export async function runRetrievalBenchmark(params = {}) {
         params.discovery_circuit_breaker_cooldown_ms,
         process.env.PAPERNEXUS_DISCOVERY_CIRCUIT_BREAKER_COOLDOWN_MS
       ), 0),
+      providerCredentials: summarizeProviderCredentials(params),
       resolveSources: params.resolveSources === true,
       persistDiscoveryRuns: params.persistDiscoveryRuns === true,
       titleMatchThreshold: Number(params.titleMatchThreshold || params.title_match_threshold || DEFAULT_TITLE_MATCH_THRESHOLD)
@@ -2296,6 +2378,22 @@ export function renderRetrievalBenchmarkReport(report = {}) {
     ''
   ];
 
+  if (Array.isArray(config.providerCredentials) && config.providerCredentials.length) {
+    lines.push(
+      '## Provider Credentials',
+      '',
+      '| Provider | Configured | Source | Hash prefix | Provider implemented |',
+      '|---|---:|---|---|---:|'
+    );
+    for (const credential of config.providerCredentials) {
+      const provider = String(credential.provider || 'unknown').replace(/\|/g, '\\|');
+      const source = String(credential.source || '-').replace(/\|/g, '\\|');
+      const hashPrefix = String(credential.hashPrefix || '-').replace(/\|/g, '\\|');
+      lines.push(`| ${provider} | ${credential.configured ? 'yes' : 'no'} | ${source} | ${hashPrefix} | ${credential.implemented === false ? 'no' : 'yes'} |`);
+    }
+    lines.push('');
+  }
+
   if (report.taskEvaluation?.evaluatedQueries) {
     lines.push(
       '## Task Evaluation',
@@ -2320,6 +2418,7 @@ export function renderRetrievalBenchmarkReport(report = {}) {
       `Matched queries: ${diagnostics.matchedQueries || 0}`,
       `Zero-match queries: ${diagnostics.zeroMatchQueries || 0} (${formatMetric(diagnostics.zeroMatchRate)})`,
       `Candidate pool recall: ${formatMetric(diagnostics.candidatePoolRecall)} over ${diagnostics.queriesWithGold || 0} gold-labeled queries`,
+      `Average query duration: ${formatMetric(diagnostics.averageQueryDurationMs)} ms`,
       `Average retrieved candidates: ${formatMetric(diagnostics.averageRetrievedCount)}`,
       `Average raw candidates: ${formatMetric(diagnostics.averageRawCandidateCount)}`,
       `Average merged papers: ${formatMetric(diagnostics.averageMergedPaperCount)}`,
