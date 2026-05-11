@@ -6,6 +6,13 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import {
+  appendRunEvent,
+  startRun,
+  updateRunStage,
+  writeRunCheckpoint,
+  writeRunWorkerLease
+} from '../src/storage/run-store.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -132,6 +139,93 @@ async function createImportQueueFixture(namePrefix = 'cli-imports') {
     failedTask
   };
 }
+
+async function createMinimalCorpusFixture(namePrefix = 'cli-run') {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), `${namePrefix}-home-`));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), `${namePrefix}-corpus-`));
+  const env = {
+    ...process.env,
+    PAPERNEXUS_HOME: tempHome
+  };
+  await fs.mkdir(path.join(tempCorpusRoot, '.papernexus'), { recursive: true });
+  await fs.writeFile(path.join(tempCorpusRoot, '.papernexus', 'meta.json'), `${JSON.stringify({
+    name: `${namePrefix}-corpus`,
+    indexedAt: new Date().toISOString(),
+    paperCount: 0,
+    nodeCount: 0,
+    relationshipCount: 0
+  }, null, 2)}\n`);
+  return {
+    tempHome,
+    tempCorpusRoot,
+    env
+  };
+}
+
+test('CLI run status and report accept corpus as the first positional after subcommand', async () => {
+  const { tempHome, tempCorpusRoot, env } = await createMinimalCorpusFixture('papernexus-cli-run');
+
+  try {
+    const run = await startRun(tempCorpusRoot, {
+      kind: 'graph-v2-migration',
+      command: 'build-shadow',
+      currentStage: 'inventory',
+      manifestToken: 'manifest:cli-test',
+      configSignature: 'config:cli-test'
+    });
+    await updateRunStage(tempCorpusRoot, run.runId, 'inventory', {
+      status: 'running',
+      processedUnits: 1,
+      totalUnits: 4,
+      percent: 25,
+      message: 'inventory progress'
+    });
+    await writeRunCheckpoint(tempCorpusRoot, run.runId, 'inventory/shard-0001', {
+      status: 'completed',
+      inputHash: 'input:test',
+      outputHash: 'output:test'
+    });
+    await writeRunWorkerLease(tempCorpusRoot, run.runId, 'worker-1', {
+      stage: 'inventory',
+      shardId: 'shard-0001'
+    });
+    await appendRunEvent(tempCorpusRoot, run.runId, {
+      event: 'stage-progress',
+      stage: 'inventory',
+      message: 'inventory progress'
+    });
+
+    const status = await spawnCli(['run', 'status', tempCorpusRoot, '--no-config=true'], { env });
+    assert.equal(status.code, 0, status.stderr);
+    assert.match(status.stdout, new RegExp(`Run ${run.runId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.match(status.stdout, /Current stage: inventory/);
+
+    const report = await spawnCli(['run', 'report', tempCorpusRoot, '--no-config=true', '--tail', '5'], { env });
+    assert.equal(report.code, 0, report.stderr);
+    assert.match(report.stdout, /# PaperNexus Run Report/);
+    assert.match(report.stdout, /## Checkpoint Summary/);
+    assert.match(report.stdout, /inventory\/shard-0001/);
+  } finally {
+    await fs.rm(tempHome, { recursive: true, force: true });
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+  }
+});
+
+test('CLI graph-v2 inventory starts a new run when no run id is supplied', async () => {
+  const { tempHome, tempCorpusRoot, env } = await createMinimalCorpusFixture('papernexus-cli-graph-v2');
+
+  try {
+    const result = await spawnCli(['graph-v2', 'inventory', tempCorpusRoot, '--no-config=true', '--json'], { env });
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.report.type, 'inventory');
+    assert.equal(payload.report.rootPath, tempCorpusRoot);
+    assert.ok(payload.runId);
+  } finally {
+    await fs.rm(tempHome, { recursive: true, force: true });
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+  }
+});
 
 test('CLI analyze and brainstorm commands work end-to-end on example corpus', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-home-'));

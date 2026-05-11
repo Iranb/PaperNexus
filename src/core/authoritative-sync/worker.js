@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { readJson, withFileLock, writeJson } from '../../lib/fs.js';
 import {
   completeAuthoritativeSyncJob,
@@ -11,12 +12,28 @@ import {
   loadSourceManifest,
   saveCorpus
 } from '../../storage/corpus-store.js';
+import { saveGraphDeltaToKuzu } from '../../storage/kuzu-store.js';
 import { loadRegistry } from '../../storage/registry.js';
 import { applyGraphDeltaPayload } from '../graph/delta-commit.js';
 import { summarizeCorpusGraph } from '../graph/summary.js';
 
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
+}
+
+function isTruthyEnv(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function shouldRunGraphV2ShadowSync(meta = {}, options = {}) {
+  if (options.graphV2ShadowSync !== undefined) {
+    return Boolean(options.graphV2ShadowSync);
+  }
+  if (isTruthyEnv(process.env.PAPERNEXUS_GRAPH_V2_SHADOW_SYNC)) {
+    return true;
+  }
+  const status = String(meta?.graphV2Status || '').trim().toLowerCase();
+  return status === 'shadow' || status === 'shadow-sync';
 }
 
 async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
@@ -29,7 +46,8 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
     loadSourceManifest(rootPath)
   ]);
 
-  const { metaPath } = getCorpusPaths(rootPath);
+  const paths = getCorpusPaths(rootPath);
+  const { metaPath } = paths;
   const runningMeta = {
     ...corpus.meta,
     authoritativeSyncStatus: 'running',
@@ -44,19 +62,69 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
     indexedAt: new Date().toISOString(),
     ...summarizeCorpusGraph(nextGraph)
   };
+  const graphV2Active = String(corpus?.meta?.graphV2Status || '').trim().toLowerCase() === 'active';
+  const graphV2ShadowSync = !graphV2Active && shouldRunGraphV2ShadowSync(corpus?.meta, options);
+  let graphV2ShadowSyncResult = null;
+  let graphV2ShadowSyncError = null;
+  let graphV2ShadowSyncSkipped = false;
+  if (graphV2Active) {
+    await saveGraphDeltaToKuzu(paths.kuzuGraphPath, job.deltaPayload, {
+      jobId: job.jobId,
+      baseManifestToken: job.baseManifestToken || null,
+      targetManifestToken: job.targetManifestToken || null,
+      onProgress: options.onProgress
+    });
+  } else {
+    await saveCorpus(rootPath, nextGraph, nextMeta, {
+      liteViewMode: 'incremental',
+      liteViewSources: manifest?.sources || [],
+      onProgress: options.onProgress
+    });
 
-  await saveCorpus(rootPath, nextGraph, nextMeta, {
-    liteViewMode: 'incremental',
-    liteViewSources: manifest?.sources || [],
-    onProgress: options.onProgress
-  });
+    if (graphV2ShadowSync) {
+      const graphV2ShadowPath = options.graphV2ShadowPath || path.join(paths.corpusDir, 'graph-v2.kuzu');
+      try {
+        graphV2ShadowSyncResult = await saveGraphDeltaToKuzu(graphV2ShadowPath, job.deltaPayload, {
+          jobId: `shadow:${job.jobId}`,
+          baseManifestToken: job.baseManifestToken || null,
+          targetManifestToken: job.targetManifestToken || null,
+          onProgress: options.onProgress
+        });
+      } catch (error) {
+        graphV2ShadowSyncError = error;
+        options.onProgress?.({
+          phase: 'graph-v2-shadow-sync',
+          label: `graph-v2 shadow sync failed: ${error.message}`,
+          error
+        });
+      }
+      graphV2ShadowSyncSkipped = !graphV2ShadowSyncResult && !graphV2ShadowSyncError;
+    }
+  }
 
   const completedAt = new Date().toISOString();
+  const graphV2ShadowSyncMeta = graphV2ShadowSync
+    ? graphV2ShadowSyncError
+      ? {
+          graphV2ShadowSyncStatus: 'failed',
+          graphV2ShadowSyncFailedAt: completedAt,
+          graphV2ShadowSyncError: graphV2ShadowSyncError.message
+        }
+      : {
+          graphV2ShadowSyncStatus: graphV2ShadowSyncSkipped ? 'skipped' : 'synced',
+          graphV2ShadowSyncedAt: completedAt,
+          graphV2ShadowSyncError: null
+        }
+    : {};
   const syncedMeta = {
     ...nextMeta,
     authoritativeSyncStatus: 'synced',
     authoritativeSyncedAt: completedAt,
-    lastAuthoritativeSyncJobId: job.jobId
+    authoritativeSyncFailedAt: null,
+    authoritativeSyncError: null,
+    lastAuthoritativeSyncJobId: job.jobId,
+    graphV2Status: graphV2Active ? 'active' : nextMeta.graphV2Status || corpus?.meta?.graphV2Status || null,
+    ...graphV2ShadowSyncMeta
   };
   await writeJson(metaPath, syncedMeta);
 

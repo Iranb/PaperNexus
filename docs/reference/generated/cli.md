@@ -39,6 +39,21 @@ Commands:
   papernexus imports [status] [<corpus>] [--limit <n>] [--json]
   papernexus imports running [<corpus>] [--limit <n>] [--json]
   papernexus imports log [<task-id>] [<corpus>] [--task-id <id>] [--tail <n>] [--json]
+  papernexus run status [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus run tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
+  papernexus run report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
+  papernexus run continue [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus run retry-failed [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus run abort [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 inventory [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 build-shadow [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 verify [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 cutover [<corpus>] [--run-id <id|latest>] [--force] [--json]
+  papernexus graph-v2 rollback [<corpus>] [--run-id <id|latest>] [--backup-dir <dir>] [--json]
+  papernexus graph-v2 status [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
+  papernexus graph-v2 continue [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
   papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
@@ -73,6 +88,10 @@ LLM Fallback Options:
     Pull the fallback Ollama model automatically when it is missing.
   --fallback-ollama-bootstrap <native|docker>
     Bootstrap Ollama with the local ollama binary or a Docker container.
+  --llm-chunk-pipeline <true|false|paper>
+    Use chunk-level LLM map/reduce for Stage 2. Default: true.
+  --llm-chunk-limit-per-paper <n>
+    Maximum selected chunks per paper for chunk-level LLM extraction. Default: 12.
 
 MarkItDown Options:
   --markitdown-python <python>
@@ -218,6 +237,21 @@ Examples:
 | `imports` | See synopsis and in-command help. | `papernexus imports [status] [&lt;corpus&gt;] [--limit &lt;n&gt;] [--json]` |
 | `imports` | See synopsis and in-command help. | `papernexus imports running [&lt;corpus&gt;] [--limit &lt;n&gt;] [--json]` |
 | `imports` | See synopsis and in-command help. | `papernexus imports log [&lt;task-id&gt;] [&lt;corpus&gt;] [--task-id &lt;id&gt;] [--tail &lt;n&gt;] [--json]` |
+| `run` | See synopsis and in-command help. | `papernexus run status [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `run` | See synopsis and in-command help. | `papernexus run tail [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--tail &lt;n&gt;] [--json]` |
+| `run` | See synopsis and in-command help. | `papernexus run report [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--tail &lt;n&gt;] [--json]` |
+| `run` | See synopsis and in-command help. | `papernexus run continue [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `run` | See synopsis and in-command help. | `papernexus run retry-failed [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `run` | See synopsis and in-command help. | `papernexus run abort [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 inventory [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 build-shadow [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 verify [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 cutover [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--force] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 rollback [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--backup-dir &lt;dir&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 status [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 tail [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--tail &lt;n&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 continue [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
+| `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 report [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--tail &lt;n&gt;] [--json]` |
 | `benchmark-retrieval` | See synopsis and in-command help. | `papernexus benchmark-retrieval &lt;benchmark-path&gt; [--format &lt;auto\|custom\|beir\|litsearch\|bioasq\|trec\|sage\|scholarqa\|paperask\|sparbench\|scinetbench\|csfcube&gt;] [--evaluation-mode &lt;live\|fixed-corpus&gt;] [--task-evaluation &lt;off\|rules\|llm&gt;] [--generate-task-answers &lt;true\|false&gt;] [--max-task-context &lt;n&gt;] [--corpus &lt;name\|path&gt;] [--providers &lt;name[,name...]&gt;] [--depth &lt;quick\|default\|deep&gt;] [--benchmark-limit &lt;n&gt;] [--max-queries &lt;n&gt;] [--max-results-per-query &lt;n&gt;] [--max-candidates &lt;n&gt;] [--k &lt;1,5,10,20&gt;] [--output &lt;dir&gt;] [--json]` |
 | `test-pdf-config` | See synopsis and in-command help. | `papernexus test-pdf-config &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
 | `test-pdf-to-markdown` | See synopsis and in-command help. | `papernexus test-pdf-to-markdown &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |

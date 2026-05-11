@@ -284,8 +284,9 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 | `trigger` | optional | string |  |
 | `limit` | optional | number |  |
 | `taskIds` | optional | array | Optional task ids used to filter queue_progress snapshots. |
-| `timeout` | optional | number | Maximum seconds to wait for completion when operation is wait. |
+| `timeout` | optional | number | Maximum seconds to wait for completion when operation is wait. By default this also includes the downstream authoritative graph sync job for completed imports. |
 | `interval` | optional | number | Polling interval in seconds when operation is wait. |
+| `waitForAuthoritativeSync` | optional | boolean | When operation is wait, keep waiting after the import task completes until its authoritative graph sync job is completed, failed, or superseded. Defaults to true. |
 
 ## Tool: literature_discovery
 

@@ -243,7 +243,7 @@ Paper B is the only changed import source that should call the LLM.
     globalThis.fetch = async (_url, options) => {
       const request = JSON.parse(options.body);
       const papers = extractPromptPapers(request.messages?.[0]?.content || '');
-      requestedPaperIds.push(...papers.map((paper) => paper.id));
+      requestedPaperIds.push(...papers.map((paper) => paper.sourceKey || paper.id));
 
       return {
         ok: true,
@@ -881,8 +881,11 @@ We study manifest-level cache reuse for paper A.
     assert.ok(manifest.llmOptimization);
     assert.deepEqual(manifest.llmOptimization.promptVersions, {
       semanticObjects: 'semantic-objects-v2',
-      researchRelations: 'research-relations-v1'
+      researchRelations: 'research-relations-v1',
+      chunkSemanticObjects: 'chunk-semantic-objects-v1',
+      chunkResearchRelations: 'chunk-research-relations-v1'
     });
+    assert.ok(manifest.llmOptimization.chunkPipelineConfigSignature);
     assert.equal(JSON.parse(manifest.llmOptimization.semanticConfigSignature).promptVersion, 'semantic-objects-v2');
     assert.equal(JSON.parse(manifest.llmOptimization.relationConfigSignature).promptVersion, 'research-relations-v1');
 
@@ -891,6 +894,12 @@ We study manifest-level cache reuse for paper A.
     assert.equal(snapshot.llmSemanticObjects.promptVersion, 'semantic-objects-v2');
     assert.equal(snapshot.llm.semanticPromptVersion, 'semantic-objects-v2');
     assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v1');
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.equal(snapshot.llm.chunkPipeline.configSignature, manifest.llmOptimization.chunkPipelineConfigSignature);
+    assert.equal(snapshot.llmSemanticObjects.chunkPipeline.enabled, true);
+    const chunkStore = await import('../src/storage/chunk-store.js');
+    const storedChunks = await chunkStore.loadPaperChunks(tempCorpusRoot, firstSource.sourceKey);
+    assert.ok(storedChunks.chunkCount >= 1);
     delete snapshot.llmSemanticObjects.configSignature;
     delete snapshot.llm.semanticConfigSignature;
     await corpusStore.saveSemanticPaperSnapshot(tempCorpusRoot, firstSource.sourceKey, snapshot);
@@ -1019,7 +1028,8 @@ We study resumable batch checkpoints for paper C.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 1
+      llmBatchSize: 1,
+      llmChunkLimitPerPaper: 1
     });
 
     assert.equal(firstRun.stage, 'llm-optimized');
@@ -1077,7 +1087,8 @@ We study resumable batch checkpoints for paper C.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 1
+      llmBatchSize: 1,
+      llmChunkLimitPerPaper: 1
     });
 
     assert.equal(secondRun.stage, 'llm-optimized');
@@ -1489,7 +1500,8 @@ We study reusing stage 2 metadata without rescanning source files.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 1
+      llmBatchSize: 1,
+      llmChunkLimitPerPaper: 1
     });
     assert.equal(semanticFetchCount, 1);
 
@@ -1503,7 +1515,8 @@ We study reusing stage 2 metadata without rescanning source files.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 1
+      llmBatchSize: 1,
+      llmChunkLimitPerPaper: 1
     });
 
     assert.equal(rerun.stage, 'llm-optimized');

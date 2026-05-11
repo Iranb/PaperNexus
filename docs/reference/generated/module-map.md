@@ -38,6 +38,7 @@ This page is generated from the repository file tree. It is intended as a system
 | --- | --- |
 | [`src/storage/authoritative-sync-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/authoritative-sync-store.js) | Persistent job queue for authoritative sync work. |
 | [`src/storage/backup-archive.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/backup-archive.js) | Backup Archive implementation. |
+| [`src/storage/chunk-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/chunk-store.js) | Chunk Store implementation. |
 | [`src/storage/corpus-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/corpus-store.js) | Persistent corpus graph, meta, manifest, and mutation write path. |
 | [`src/storage/enhancement-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/enhancement-store.js) | Persistent enhancement queue and overlay job state. |
 | [`src/storage/import-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/import-store.js) | Queued import task persistence, logs, progress, and queue snapshots. |
@@ -46,6 +47,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/storage/llm-rate-limit-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/llm-rate-limit-store.js) | LLM Rate Limit Store implementation. |
 | [`src/storage/pdf-parse-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/pdf-parse-store.js) | Pdf Parse Store implementation. |
 | [`src/storage/registry.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/registry.js) | Global registry of indexed corpora. |
+| [`src/storage/run-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/run-store.js) | Run Store implementation. |
 
 ## Core
 
@@ -62,6 +64,9 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/discovery/merge.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/merge.js) | Merge implementation. |
 | [`src/core/discovery/providers.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/providers.js) | Providers implementation. |
 | [`src/core/discovery/query-planner.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/query-planner.js) | Query Planner implementation. |
+| [`src/core/discovery/request-scheduler.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/request-scheduler.js) | Request Scheduler implementation. |
+| [`src/core/discovery/s2-rate-limit.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/s2-rate-limit.js) | S2 Rate Limit implementation. |
+| [`src/core/discovery/semantic-scholar-snippets.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/semantic-scholar-snippets.js) | Semantic Scholar Snippets implementation. |
 | [`src/core/discovery/source-resolution.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/source-resolution.js) | Source Resolution implementation. |
 | [`src/core/discovery/store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/store.js) | Store implementation. |
 | [`src/core/discovery/venue-registry.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/venue-registry.js) | Venue Registry implementation. |
@@ -78,6 +83,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/domain-bridges.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/domain-bridges.js) | Cross-domain bridge construction, takeaways, and transferable edge enrichment. |
 | [`src/core/graph/domain-taxonomy.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/domain-taxonomy.js) | Graph-derived domain taxonomy and distance computation. |
 | [`src/core/graph/graph.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/graph.js) | Graph implementation. |
+| [`src/core/graph/idea-catalyst-live.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-live.js) | Idea Catalyst Live implementation. |
 | [`src/core/graph/idea-catalyst-packets.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-packets.js) | Idea Catalyst Packets implementation. |
 | [`src/core/graph/interdisciplinary-potential.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/interdisciplinary-potential.js) | Interdisciplinary Potential implementation. |
 | [`src/core/graph/interdisciplinary-ranking.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/interdisciplinary-ranking.js) | Explainable interdisciplinary potential ranking. |
@@ -92,6 +98,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/summary.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/summary.js) | Summary implementation. |
 | [`src/core/graph/takeaway-extraction.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/takeaway-extraction.js) | Takeaway Extraction implementation. |
 | [`src/core/graph/takeaways.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/takeaways.js) | Graph-native Takeaway and IdeaFragment normalization helpers. |
+| [`src/core/graph-v2/migration.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph-v2/migration.js) | Migration implementation. |
 | [`src/core/imports/worker.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/imports/worker.js) | Asynchronous upload/import queue worker. |
 | [`src/core/ingestion/graph-postprocess.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/graph-postprocess.js) | Graph Postprocess implementation. |
 | [`src/core/ingestion/graph-precompute.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/graph-precompute.js) | Graph Precompute implementation. |

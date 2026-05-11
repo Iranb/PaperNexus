@@ -1676,6 +1676,53 @@ test('resolveDiscoverySources tries generated arXiv Markdown sources when enable
   }
 });
 
+test('resolveDiscoverySources continues after generated Markdown fetch failures', async () => {
+  const rootPath = await createTempCorpus();
+  const requested = [];
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requested.push(url);
+      if (url.hostname === 'huggingface.co' && url.pathname === '/papers/2602.20400.md') {
+        throw new TypeError('fetch failed');
+      }
+      if (url.hostname === 'arxiv2md.org' && url.pathname === '/api/markdown') {
+        return createMarkdownResponse('# Fallback Generated Markdown\n\n## Abstract\n\nThe first generated Markdown provider failed, so source resolution should continue to the next provider.\n\n## Introduction\n\nThe fallback Markdown contains enough body text to pass validation and avoid falling back to PDF.');
+      }
+      assert.fail(`unexpected generated Markdown request ${url.toString()}`);
+    };
+
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      generateArxivMarkdownSources: true,
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'arxiv',
+          title: 'Generated arXiv Markdown Fallback Paper',
+          identifiers: { arxivId: '2602.20400' }
+        })
+      ]
+    });
+
+    const source = result.candidates[0].source;
+    assert.equal(source.sourceKind, 'markdown');
+    assert.equal(source.sourceProvider, 'arxiv2md-api');
+    assert.equal(source.fullTextStatus, 'open_markdown');
+    assert.deepEqual(requested.map((url) => `${url.hostname}${url.pathname}`), [
+      'huggingface.co/papers/2602.20400.md',
+      'arxiv2md.org/api/markdown'
+    ]);
+    assert.equal(source.resolutionAttempts[0].status, 'failed');
+    assert.match(source.resolutionAttempts[0].detail, /^fetch-failed:/);
+    assert.equal(source.resolutionAttempts[1].status, 'success');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('resolveDiscoverySources preserves metadata-only candidates with a supplement interface', async () => {
   const rootPath = await createTempCorpus();
 

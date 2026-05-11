@@ -1,5 +1,9 @@
 import path from 'node:path';
 import {
+  listAuthoritativeSyncHistory,
+  listAuthoritativeSyncJobs
+} from '../storage/authoritative-sync-store.js';
+import {
   createImportTaskPayload,
   importTaskLogPayload,
   importTaskPayload,
@@ -12,6 +16,12 @@ function normalizeOperation(value) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function enabledFlag(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (value === true || value === false) return value;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
 }
 
 function normalizePathLeaf(value) {
@@ -73,6 +83,60 @@ async function resolveTaskId(candidate, args = {}, options = {}) {
   const listed = await listImportTasksPayload(candidate, options);
   const task = (listed.tasks || []).find((entry) => taskMatchesReference(entry, args));
   return String(task?.id || '').trim();
+}
+
+function getTaskAuthoritativeSync(task = {}) {
+  const resultSync = task?.result?.authoritativeSync;
+  if (resultSync && typeof resultSync === 'object' && !Array.isArray(resultSync)) {
+    return resultSync;
+  }
+  const taskSync = task?.authoritativeSync;
+  if (taskSync && typeof taskSync === 'object' && !Array.isArray(taskSync)) {
+    return taskSync;
+  }
+  return null;
+}
+
+function isAuthoritativeSyncTerminal(job = {}) {
+  const status = String(job?.status || '').trim().toLowerCase();
+  return status === 'completed' || status === 'failed' || status === 'superseded';
+}
+
+async function loadAuthoritativeSyncJobSnapshot(rootPath, jobId) {
+  const normalizedJobId = String(jobId || '').trim();
+  if (!normalizedJobId) return null;
+
+  const activeJobs = await listAuthoritativeSyncJobs(rootPath);
+  const active = activeJobs.find((job) => job.jobId === normalizedJobId);
+  if (active) return active;
+
+  const history = await listAuthoritativeSyncHistory(rootPath);
+  return history.find((job) => job.jobId === normalizedJobId) || null;
+}
+
+async function waitForAuthoritativeSyncJob(rootPath, task, deadline, intervalSeconds) {
+  const sync = getTaskAuthoritativeSync(task);
+  const jobId = String(sync?.jobId || sync?.job_id || '').trim();
+  if (!jobId) return sync;
+
+  while (true) {
+    const job = await loadAuthoritativeSyncJobSnapshot(rootPath, jobId);
+    if (job && isAuthoritativeSyncTerminal(job)) {
+      return {
+        ...(sync || {}),
+        jobId,
+        status: job.status,
+        job
+      };
+    }
+
+    if (Date.now() >= deadline) {
+      const status = job?.status || sync?.status || 'unknown';
+      throw new Error(`Timed out waiting for authoritative sync job ${jobId}. Last status=${status}`);
+    }
+
+    await sleep(Math.max(0.05, intervalSeconds) * 1000);
+  }
 }
 
 export async function executeImportWorkflowTool(args = {}, options = {}) {
@@ -160,9 +224,21 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
         ]);
         const status = String(taskPayload.task?.status || '').trim().toLowerCase();
         if (status === 'completed' || status === 'failed') {
+          const authoritativeSync = status === 'completed' && enabledFlag(
+            args.waitForAuthoritativeSync ?? args.wait_for_authoritative_sync,
+            true
+          )
+            ? await waitForAuthoritativeSyncJob(
+                taskPayload.rootPath,
+                taskPayload.task,
+                deadline,
+                intervalSeconds
+              )
+            : getTaskAuthoritativeSync(taskPayload.task);
           return {
             rootPath: taskPayload.rootPath,
             task: taskPayload.task,
+            authoritativeSync,
             log: logPayload.log || '',
             generatedAt: new Date().toISOString()
           };

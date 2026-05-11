@@ -55,6 +55,21 @@ Commands:
   papernexus imports [status] [<corpus>] [--limit <n>] [--json]
   papernexus imports running [<corpus>] [--limit <n>] [--json]
   papernexus imports log [<task-id>] [<corpus>] [--task-id <id>] [--tail <n>] [--json]
+  papernexus run status [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus run tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
+  papernexus run report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
+  papernexus run continue [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus run retry-failed [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus run abort [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 inventory [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 build-shadow [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 verify [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 cutover [<corpus>] [--run-id <id|latest>] [--force] [--json]
+  papernexus graph-v2 rollback [<corpus>] [--run-id <id|latest>] [--backup-dir <dir>] [--json]
+  papernexus graph-v2 status [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
+  papernexus graph-v2 continue [<corpus>] [--run-id <id|latest>] [--json]
+  papernexus graph-v2 report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
   papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
@@ -89,6 +104,10 @@ LLM Fallback Options:
     Pull the fallback Ollama model automatically when it is missing.
   --fallback-ollama-bootstrap <native|docker>
     Bootstrap Ollama with the local ollama binary or a Docker container.
+  --llm-chunk-pipeline <true|false|paper>
+    Use chunk-level LLM map/reduce for Stage 2. Default: true.
+  --llm-chunk-limit-per-paper <n>
+    Maximum selected chunks per paper for chunk-level LLM extraction. Default: 12.
 
 MarkItDown Options:
   --markitdown-python <python>
@@ -462,6 +481,8 @@ function buildLlmOptions(flags, config) {
     llmRelations: firstDefined(flags.relations, flags['ollama-relations'], llmConfig.relations, ollamaConfig.relations),
     llmTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], flags['ollama-timeout-ms'], llmConfig.timeoutMs, ollamaConfig.timeoutMs), undefined),
     llmBatchSize: toNumber(firstDefined(flags['batch-size'], flags['ollama-batch-size'], llmConfig.batchSize, ollamaConfig.batchSize), undefined),
+    llmChunkPipeline: firstDefined(flags['llm-chunk-pipeline'], flags['chunk-llm-pipeline'], llmConfig.chunkPipeline),
+    llmChunkLimitPerPaper: toNumber(firstDefined(flags['llm-chunk-limit-per-paper'], flags['chunk-limit-per-paper'], llmConfig.chunkLimitPerPaper), undefined),
     llmMaxTokens: toNumber(firstDefined(flags['max-tokens'], llmConfig.maxTokens), undefined),
     ollamaModel: firstDefined(flags['ollama-model'], ollamaConfig.model),
     ollamaUrl: firstDefined(flags['ollama-url'], ollamaConfig.url),
@@ -780,10 +801,13 @@ async function loadRuntimeModules() {
     httpServer,
     corpusStore,
     importStore,
+    runStore,
     registry,
+    kuzuStore,
     enhancementWorker,
     enhancementStore,
-    backupArchive
+    backupArchive,
+    graphV2Migration
   ] = await Promise.all([
     import('../core/ingestion/pipeline.js'),
     import('../core/search/search.js'),
@@ -794,10 +818,13 @@ async function loadRuntimeModules() {
     import('../server/http.js'),
     import('../storage/corpus-store.js'),
     import('../storage/import-store.js'),
+    import('../storage/run-store.js'),
     import('../storage/registry.js'),
+    import('../storage/kuzu-store.js'),
     import('../core/enhancements/worker.js'),
     import('../storage/enhancement-store.js'),
-    import('../storage/backup-archive.js')
+    import('../storage/backup-archive.js'),
+    import('../core/graph-v2/migration.js')
   ]);
 
   return {
@@ -810,10 +837,13 @@ async function loadRuntimeModules() {
     ...httpServer,
     ...corpusStore,
     ...importStore,
+    ...runStore,
     ...registry,
+    ...kuzuStore,
     ...enhancementWorker,
     ...enhancementStore,
-    ...backupArchive
+    ...backupArchive,
+    ...graphV2Migration
   };
 }
 
@@ -1811,6 +1841,229 @@ function renderImportTaskLogPayload(payload = {}, options = {}) {
   return lines.join('\n');
 }
 
+function renderRunStatusPayload(payload = {}, options = {}) {
+  const state = payload.state || payload.run || {};
+  const stages = Object.entries(state.stages || {});
+  const lines = [
+    `Run ${payload.runId || state.runId || 'unknown'}`,
+    `Kind: ${String(state.kind || payload.kind || 'run')}`,
+    `Root: ${presentCliPath(payload.rootPath)}`,
+    `Status: ${String(state.status || 'unknown')}`,
+    `Current stage: ${String(state.currentStage || 'unknown')}`,
+    `Updated at: ${formatCliTimestamp(state.updatedAt || payload.updatedAt || state.startedAt)}`
+  ];
+  if (state.manifestToken) {
+    lines.push(`Manifest token: ${state.manifestToken}`);
+  }
+  if (state.configSignature) {
+    lines.push(`Config signature: ${state.configSignature}`);
+  }
+  if (state.resumedAt) {
+    lines.push(`Resumed at: ${formatCliTimestamp(state.resumedAt)}`);
+  }
+  if (state.overall) {
+    lines.push(
+      `Progress: ${formatCliPercent(state.overall.percent)}`
+      + ` (${state.overall.processedUnits || 0}/${state.overall.totalUnits || 0})`
+    );
+  }
+  if (state.lastError?.message) {
+    lines.push(`Last error: ${state.lastError.message}`);
+  }
+  if (state.warnings?.length) {
+    lines.push('Warnings:');
+    for (const warning of state.warnings) {
+      lines.push(`  - ${warning}`);
+    }
+  }
+  if (stages.length) {
+    lines.push('', 'Stages:');
+    for (const [stageName, stageState] of stages.slice(0, Math.max(1, Number(options.limit || 8)))) {
+      lines.push(
+        `  ${stageName}: ${String(stageState.status || 'unknown')}`
+        + ` ${formatCliPercent(stageState.percent || 0)}`
+        + ` (${stageState.processedUnits || 0}/${stageState.totalUnits || 0})`
+      );
+      if (stageState.message) {
+        lines.push(`    ${stageState.message}`);
+      }
+      if (stageState.lastError?.message) {
+        lines.push(`    error: ${stageState.lastError.message}`);
+      }
+    }
+  }
+  if (payload.checkpoints?.length) {
+    lines.push('', 'Checkpoints:');
+    for (const checkpoint of payload.checkpoints.slice(0, Math.max(1, Number(options.limit || 8)))) {
+      lines.push(`  ${checkpoint.checkpointKey}: ${checkpoint.status}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function renderRunEventsPayload(payload = {}, options = {}) {
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  if (!events.length) {
+    return [
+      `No run events recorded for ${payload.runId || 'unknown run'}.`,
+      `Events file: ${presentCliPath(payload.eventsPath)}`
+    ].join('\n');
+  }
+
+  const lines = [
+    `Run events for ${payload.runId || 'unknown run'}`,
+    `Events file: ${presentCliPath(payload.eventsPath)}`,
+    `Showing last ${events.length} event(s)`
+  ];
+  for (const event of events.slice(-Math.max(1, Number(options.tail || events.length)))) {
+    lines.push(
+      `${event.seq || '?'} ${formatCliTimestamp(event.time)}`
+      + ` [${String(event.level || 'info').toUpperCase()}]`
+      + ` ${String(event.event || 'event')}`
+      + (event.stage ? ` (${event.stage})` : '')
+      + (event.message ? ` - ${event.message}` : '')
+    );
+    if (event.error?.message) {
+      lines.push(`  error: ${event.error.message}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function formatStatusCounts(counts = {}) {
+  const entries = Object.entries(counts || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) return 'none';
+  return entries.map(([status, count]) => `${status}: ${count}`).join(', ');
+}
+
+function renderRunReportPayload(payload = {}, options = {}) {
+  const state = payload.state || payload.run || {};
+  const summary = payload.summary || {};
+  const checkpoints = Array.isArray(payload.checkpoints) ? payload.checkpoints : [];
+  const workers = Array.isArray(payload.workers) ? payload.workers : [];
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  const limit = Math.max(1, Number(options.limit || 12) || 12);
+  const tail = Math.max(1, Number(options.tail || 12) || 12);
+  const lines = [
+    '# PaperNexus Run Report',
+    '',
+    `Run: ${payload.runId || state.runId || 'unknown'}`,
+    `Kind: ${String(state.kind || payload.kind || 'run')}`,
+    `Root: ${presentCliPath(payload.rootPath)}`,
+    `Status: ${String(state.status || 'unknown')}`,
+    `Current stage: ${String(state.currentStage || 'unknown')}`,
+    `Updated at: ${formatCliTimestamp(state.updatedAt || payload.updatedAt || state.startedAt)}`,
+    `Can continue: ${state.canContinue ? 'yes' : 'no'}`
+  ];
+
+  if (state.manifestToken) lines.push(`Manifest token: ${state.manifestToken}`);
+  if (state.configSignature) lines.push(`Config signature: ${state.configSignature}`);
+  if (state.resumedAt) lines.push(`Resumed at: ${formatCliTimestamp(state.resumedAt)}`);
+  if (state.overall) {
+    lines.push(
+      `Progress: ${formatCliPercent(state.overall.percent)}`
+      + ` (${state.overall.processedUnits || 0}/${state.overall.totalUnits || 0})`
+    );
+  }
+  if (state.lastError?.message) lines.push(`Last error: ${state.lastError.message}`);
+
+  lines.push(
+    '',
+    '## Stage Summary'
+  );
+  const stages = Object.entries(state.stages || {});
+  if (!stages.length) {
+    lines.push('No stages recorded.');
+  } else {
+    for (const [stageName, stageState] of stages.slice(0, limit)) {
+      lines.push(
+        `- ${stageName}: ${String(stageState.status || 'unknown')}`
+        + ` ${formatCliPercent(stageState.percent || 0)}`
+        + ` (${stageState.processedUnits || 0}/${stageState.totalUnits || 0})`
+      );
+    }
+  }
+
+  lines.push(
+    '',
+    '## Checkpoint Summary',
+    `Total: ${summary.checkpointCount || checkpoints.length}`,
+    `By status: ${formatStatusCounts(summary.checkpointStatuses)}`
+  );
+  for (const checkpoint of checkpoints.slice(0, limit)) {
+    lines.push(`- ${checkpoint.checkpointKey}: ${checkpoint.status || 'unknown'}`);
+  }
+
+  lines.push(
+    '',
+    '## Worker Leases',
+    `Total: ${summary.workerCount || workers.length}`,
+    `By status: ${formatStatusCounts(summary.workerStatuses)}`
+  );
+  for (const worker of workers.slice(0, limit)) {
+    lines.push(
+      `- ${worker.workerId}: ${worker.status || 'unknown'}`
+      + (worker.stage ? ` (${worker.stage})` : '')
+      + (worker.shardId ? ` shard=${worker.shardId}` : '')
+    );
+  }
+
+  lines.push('', '## Recent Events');
+  if (!events.length) {
+    lines.push('No events recorded.');
+  } else {
+    for (const event of events.slice(-tail)) {
+      lines.push(
+        `- ${event.seq || '?'} ${formatCliTimestamp(event.time)}`
+        + ` [${String(event.level || 'info').toUpperCase()}]`
+        + ` ${String(event.event || 'event')}`
+        + (event.stage ? ` (${event.stage})` : '')
+        + (event.message ? ` - ${event.message}` : '')
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function renderGraphV2ReportPayload(payload = {}, options = {}) {
+  const report = payload.report || {};
+  const lines = [
+    `graph-v2 ${report.type || 'report'}`,
+    `Run: ${payload.runId || report.runId || 'unknown'}`,
+    `Root: ${presentCliPath(payload.rootPath)}`,
+    `Corpus: ${report.corpusName || 'unknown'}`,
+    `Manifest token: ${report.manifestToken || 'n/a'}`
+  ];
+  if (report.ok !== undefined) {
+    lines.push(`Verification: ${report.ok ? 'passed' : 'failed'}`);
+  }
+  if (report.backupId) {
+    lines.push(`Backup: ${report.backupId}`);
+  }
+  if (report.cutoverAt) {
+    lines.push(`Cutover at: ${formatCliTimestamp(report.cutoverAt)}`);
+  }
+  if (report.rolledBackAt) {
+    lines.push(`Rolled back at: ${formatCliTimestamp(report.rolledBackAt)}`);
+  }
+  if (report.expected) {
+    lines.push(`Expected nodes/relationships: ${report.expected.nodeCount || 0}/${report.expected.relationshipCount || 0}`);
+  }
+  if (report.graphV2) {
+    lines.push(`graph-v2 nodes/relationships: ${report.graphV2.nodeCount || 0}/${report.graphV2.relationshipCount || 0}`);
+  }
+  if (report.warnings?.length) {
+    lines.push('Warnings:');
+    for (const warning of report.warnings.slice(0, Math.max(1, Number(options.limit || 8)))) {
+      lines.push(`  - ${warning}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 function resolveImportsSubcommand(positionals = []) {
   const supported = new Set(['status', 'running', 'log']);
   const candidate = String(positionals[0] || '').trim().toLowerCase();
@@ -1825,6 +2078,62 @@ function resolveImportsSubcommand(positionals = []) {
   return {
     subcommand: 'status',
     taskId: '',
+    corpus: positionals[0]
+  };
+}
+
+function resolveRunOrCorpusArgs(args = []) {
+  const cleaned = args.filter((value) => String(value || '').trim());
+  if (cleaned.length >= 2) {
+    return {
+      runId: String(cleaned[0] || '').trim(),
+      corpus: cleaned[1]
+    };
+  }
+  return {
+    runId: '',
+    corpus: cleaned[0]
+  };
+}
+
+function normalizeRunIdOption(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized === 'true') return '';
+  return normalized;
+}
+
+function resolveRunSubcommand(positionals = []) {
+  const supported = new Set(['status', 'tail', 'report', 'continue', 'retry-failed', 'abort']);
+  const candidate = String(positionals[0] || '').trim().toLowerCase();
+  if (supported.has(candidate)) {
+    const resolved = resolveRunOrCorpusArgs(positionals.slice(1));
+    return {
+      subcommand: candidate,
+      runId: resolved.runId,
+      corpus: resolved.corpus
+    };
+  }
+  return {
+    subcommand: 'status',
+    runId: '',
+    corpus: positionals[0]
+  };
+}
+
+function resolveGraphV2Subcommand(positionals = []) {
+  const supported = new Set(['inventory', 'build-shadow', 'verify', 'cutover', 'rollback', 'continue', 'status', 'tail', 'report']);
+  const candidate = String(positionals[0] || '').trim().toLowerCase();
+  if (supported.has(candidate)) {
+    const resolved = resolveRunOrCorpusArgs(positionals.slice(1));
+    return {
+      subcommand: candidate,
+      runId: resolved.runId,
+      corpus: resolved.corpus
+    };
+  }
+  return {
+    subcommand: 'status',
+    runId: '',
     corpus: positionals[0]
   };
 }
@@ -2368,6 +2677,259 @@ async function main() {
       }));
     }
     return;
+  }
+
+  if (command === 'run') {
+    const runCommand = resolveRunSubcommand(positionals);
+    const corpusCandidate = resolveConfiguredCorpus(flags, config, runCommand.corpus, configBaseDir);
+    const rootPath = await runtime.resolveCorpus(corpusCandidate);
+    const runId = normalizeRunIdOption(flags['run-id'] || runCommand.runId) || 'latest';
+
+    if (runCommand.subcommand === 'status') {
+      const payload = await runtime.loadRunStatus(rootPath, runId);
+      if (flags.json) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(renderRunStatusPayload(payload, {
+          limit: toNumber(flags.limit, 8)
+        }));
+      }
+      return;
+    }
+
+    if (runCommand.subcommand === 'tail') {
+      const payload = await runtime.tailRunEvents(rootPath, runId, {
+        tail: toNumber(flags.tail, 20)
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(renderRunEventsPayload(payload, {
+          tail: toNumber(flags.tail, 20)
+        }));
+      }
+      return;
+    }
+
+    if (runCommand.subcommand === 'report') {
+      const payload = await runtime.loadRunReport(rootPath, runId, {
+        tail: toNumber(flags.tail, 20)
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(renderRunReportPayload(payload, {
+          limit: toNumber(flags.limit, 12),
+          tail: toNumber(flags.tail, 20)
+        }));
+      }
+      return;
+    }
+
+    if (runCommand.subcommand === 'continue') {
+      const status = await runtime.loadRunStatus(rootPath, runId);
+      const resumed = String(status.run.kind || '').trim() === 'graph-v2-migration'
+        ? await runtime.continueGraphV2Migration(rootPath, {
+            runId,
+            acceptManifestDrift: Boolean(flags['accept-manifest-drift']),
+            acceptConfigDrift: Boolean(flags['accept-config-drift']),
+            resetShadow: flags['reset-shadow'] !== false
+          })
+        : await runtime.continueRun(rootPath, {
+            runId,
+            acceptManifestDrift: Boolean(flags['accept-manifest-drift']),
+            acceptConfigDrift: Boolean(flags['accept-config-drift'])
+          });
+      const payload = await runtime.loadRunStatus(rootPath, resumed.runId || runId);
+      if (flags.json) {
+        console.log(JSON.stringify({ resumed, payload }, null, 2));
+      } else {
+        console.log(renderRunStatusPayload(payload));
+      }
+      return;
+    }
+
+    if (runCommand.subcommand === 'retry-failed') {
+      const resumed = await runtime.retryFailedRun(rootPath, { runId });
+      const payload = await runtime.loadRunStatus(rootPath, resumed.runId || runId);
+      if (flags.json) {
+        console.log(JSON.stringify({ resumed, payload }, null, 2));
+      } else {
+        console.log(renderRunStatusPayload(payload));
+      }
+      return;
+    }
+
+    if (runCommand.subcommand === 'abort') {
+      const aborted = await runtime.abortRun(rootPath, {
+        runId,
+        reason: flags.reason || flags.message || ''
+      });
+      const payload = await runtime.loadRunStatus(rootPath, aborted.runId || runId);
+      if (flags.json) {
+        console.log(JSON.stringify({ aborted, payload }, null, 2));
+      } else {
+        console.log(renderRunStatusPayload(payload));
+      }
+      return;
+    }
+  }
+
+  if (command === 'graph-v2' || command === 'graphv2') {
+    const graphV2Command = resolveGraphV2Subcommand(positionals);
+    const corpusCandidate = resolveConfiguredCorpus(flags, config, graphV2Command.corpus, configBaseDir);
+    const rootPath = await runtime.resolveCorpus(corpusCandidate);
+    const explicitRunId = normalizeRunIdOption(flags['run-id'] || graphV2Command.runId);
+    const runId = explicitRunId || 'latest';
+
+    if (graphV2Command.subcommand === 'status') {
+      const payload = await runtime.loadRunStatus(rootPath, runId);
+      if (flags.json) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(renderRunStatusPayload(payload, {
+          limit: toNumber(flags.limit, 8)
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'tail') {
+      const payload = await runtime.tailRunEvents(rootPath, runId, {
+        tail: toNumber(flags.tail, 20)
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(renderRunEventsPayload(payload, {
+          tail: toNumber(flags.tail, 20)
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'report') {
+      const payload = await runtime.loadRunReport(rootPath, runId, {
+        tail: toNumber(flags.tail, 20)
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(renderRunReportPayload(payload, {
+          limit: toNumber(flags.limit, 12),
+          tail: toNumber(flags.tail, 20)
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'inventory') {
+      const report = await runtime.inventoryGraphV2(rootPath, {
+        runId: explicitRunId || undefined,
+        acceptManifestDrift: Boolean(flags['accept-manifest-drift']),
+        acceptConfigDrift: Boolean(flags['accept-config-drift'])
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(renderGraphV2ReportPayload({
+          rootPath,
+          runId: report.runId,
+          report: report.report
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'build-shadow') {
+      const report = await runtime.buildGraphV2Shadow(rootPath, {
+        runId: explicitRunId || undefined,
+        resetShadow: flags['reset-shadow'] !== false,
+        force: Boolean(flags.force)
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(renderGraphV2ReportPayload({
+          rootPath,
+          runId: report.runId,
+          report: report.report
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'verify') {
+      const report = await runtime.verifyGraphV2(rootPath, {
+        runId: explicitRunId || undefined,
+        allowWarnings: Boolean(flags.force)
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(renderGraphV2ReportPayload({
+          rootPath,
+          runId: report.runId,
+          report: report.report
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'cutover') {
+      const report = await runtime.cutoverGraphV2(rootPath, {
+        runId: explicitRunId || undefined,
+        force: Boolean(flags.force),
+        skipVerify: Boolean(flags['skip-verify'])
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(renderGraphV2ReportPayload({
+          rootPath,
+          runId: report.runId,
+          report: report.report
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'rollback') {
+      const report = await runtime.rollbackGraphV2(rootPath, {
+        runId: explicitRunId || undefined,
+        backupDir: flags['backup-dir'] || flags.backupDir || ''
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(renderGraphV2ReportPayload({
+          rootPath,
+          runId: report.runId,
+          report: report.report
+        }));
+      }
+      return;
+    }
+
+    if (graphV2Command.subcommand === 'continue') {
+      const report = await runtime.continueGraphV2Migration(rootPath, {
+        runId,
+        acceptManifestDrift: Boolean(flags['accept-manifest-drift']),
+        acceptConfigDrift: Boolean(flags['accept-config-drift']),
+        resetShadow: flags['reset-shadow'] !== false,
+        force: Boolean(flags.force)
+      });
+      if (flags.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(renderGraphV2ReportPayload({
+          rootPath,
+          runId: report.runId,
+          report: report.report || report
+        }));
+      }
+      return;
+    }
   }
 
   if (command === 'benchmark-retrieval' || command === 'bench-retrieval') {

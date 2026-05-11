@@ -243,6 +243,11 @@ async function fetchWithTimeout(url, options = {}) {
   }
 }
 
+function formatFetchFailure(error) {
+  const message = String(error?.message || error || 'fetch failed').replace(/\s+/g, ' ').trim();
+  return `fetch-failed: ${message || 'fetch failed'}`;
+}
+
 function validateMarkdownText(text = '') {
   const raw = String(text || '');
   if (raw.length < 200) {
@@ -270,10 +275,15 @@ function validateMarkdownText(text = '') {
 }
 
 async function downloadMarkdown(url, outputPath, options = {}) {
-  const response = await fetchWithTimeout(url, {
-    ...options,
-    accept: 'text/markdown,text/plain;q=0.9,*/*;q=0.2'
-  });
+  let response;
+  try {
+    response = await fetchWithTimeout(url, {
+      ...options,
+      accept: 'text/markdown,text/plain;q=0.9,*/*;q=0.2'
+    });
+  } catch (error) {
+    return { ok: false, reason: formatFetchFailure(error) };
+  }
   if (!response.ok) {
     const reason = [401, 403, 429, 503].includes(Number(response.status))
       ? FULL_TEXT_STATUS.ANTI_BOT_BLOCKED
@@ -295,7 +305,12 @@ async function downloadMarkdown(url, outputPath, options = {}) {
 }
 
 async function downloadPdf(url, outputPath, options = {}) {
-  const response = await fetchWithTimeout(url, options);
+  let response;
+  try {
+    response = await fetchWithTimeout(url, options);
+  } catch (error) {
+    return { ok: false, reason: formatFetchFailure(error) };
+  }
   if (!response.ok) {
     const reason = [401, 403, 429, 503].includes(Number(response.status))
       ? FULL_TEXT_STATUS.ANTI_BOT_BLOCKED

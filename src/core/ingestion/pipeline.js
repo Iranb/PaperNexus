@@ -30,10 +30,15 @@ import { summarizeCorpusGraph } from '../graph/summary.js';
 import { applyGraphDeltaPayload, buildGraphDeltaPayload, buildGraphDiffPayload } from '../graph/delta-commit.js';
 import {
   adjudicateCrossPaperCandidates,
+  createChunkSemanticObjectInferenceResult,
+  inferChunkResearchSemanticsBatch,
+  inferChunkSemanticObjectsBatch,
   inferGraphNodeChecksBatch,
   inferPaperResearchSemanticsBatch,
   inferPaperSemanticObjectsBatch,
   normalizeSemanticExtractionMode,
+  CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION,
+  CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION,
   resolveSemanticExtractionPlan,
   resolveOllamaConfig
 } from '../llm/ollama.js';
@@ -92,6 +97,18 @@ import {
   saveStage2JobState,
   saveStagedCorpusBuild
 } from '../../storage/corpus-store.js';
+import {
+  createChunkLlmTaskKey,
+  createChunkRecordsForParsedPaper,
+  getChunkStorePaths,
+  loadPaperChunks,
+  loadPaperReduceCheckpoint,
+  loadChunkExtractionResult,
+  summarizeChunkExtractionResults,
+  saveChunkExtractionResult,
+  writePaperReduceCheckpoint,
+  writePaperChunks
+} from '../../storage/chunk-store.js';
 import { enqueuePaperEnhancements, pruneEnhancementsForManifest } from '../../storage/enhancement-store.js';
 import {
   getImportPaths,
@@ -184,7 +201,9 @@ const CATALYST_METADATA_CONTRACT_VERSION = 1;
 function createLlmPromptVersions() {
   return {
     semanticObjects: SEMANTIC_OBJECTS_PROMPT_VERSION,
-    researchRelations: RESEARCH_RELATIONS_PROMPT_VERSION
+    researchRelations: RESEARCH_RELATIONS_PROMPT_VERSION,
+    chunkSemanticObjects: CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION,
+    chunkResearchRelations: CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION
   };
 }
 
@@ -1531,6 +1550,10 @@ function isEnabledFlag(value) {
   return value === true || value === '1' || value === 'true';
 }
 
+function isDisabledFlag(value) {
+  return value === false || value === '0' || value === 'false' || value === 'off' || value === 'no';
+}
+
 function canAttemptLlmRelations(options = {}) {
   const relationsRequested = isEnabledFlag(options.llmRelations) || isEnabledFlag(options.ollamaRelations);
   if (!relationsRequested) return false;
@@ -1779,9 +1802,18 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
   const snapshotSemanticSignature = snapshot.llmSemanticObjects?.configSignature
     || snapshot.llm?.semanticConfigSignature
     || null;
+  const chunkPipelineEnabledNow = shouldUseStage2ChunkLlmPipeline(options);
+  const currentChunkPipelineSignature = createChunkPipelineConfigSignature(options);
+  const snapshotChunkPipeline = snapshot.llmSemanticObjects?.chunkPipeline || snapshot.llm?.chunkPipeline || null;
+  const snapshotChunkPipelineSignature = snapshotChunkPipeline?.configSignature || null;
+  const snapshotChunkPipelineEnabled = Boolean(snapshotChunkPipeline?.enabled);
   const semanticConfiguredNow = semanticPlan.shouldAttempt && semanticPlan.requestedMode !== 'heuristic-only';
   const semanticMissingForCurrentConfig = semanticConfiguredNow
     && snapshotSemanticSignature !== currentSemanticSignature;
+  const semanticMissingForChunkPipelineConfig = semanticConfiguredNow
+    && (chunkPipelineEnabledNow
+      ? snapshotChunkPipelineSignature !== currentChunkPipelineSignature
+      : snapshotChunkPipelineEnabled);
   const semanticMissingCatalystMetadata = semanticConfiguredNow
     && !hasCatalystMetadataContract(snapshot);
   const semanticRetryableFailure = semanticConfiguredNow
@@ -1810,7 +1842,13 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
     && snapshot.llm?.relationParticipationReason === 'rate-limited';
 
   const semanticRequired = !rateLimitCooldownActive
-    && (semanticMissingForCurrentConfig || semanticMissingCatalystMetadata || semanticRetryableFailure || semanticRateLimitExpired);
+    && (
+      semanticMissingForCurrentConfig
+      || semanticMissingForChunkPipelineConfig
+      || semanticMissingCatalystMetadata
+      || semanticRetryableFailure
+      || semanticRateLimitExpired
+    );
   const relationRequired = !rateLimitCooldownActive
     && (relationMissingForCurrentConfig || relationRetryableFailure || relationRateLimitExpired);
 
@@ -1939,8 +1977,32 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
 
 async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources, options = {}) {
   const records = materializedSources.filter((record) => record.semanticPaper);
-  const semanticPending = records.filter((record) => record.parsedPaper && record.sourceState.llmRefreshState?.semanticRequired);
-  const relationPending = records.filter((record) => record.parsedPaper && record.sourceState.llmRefreshState?.relationRequired);
+  const useChunkPipeline = shouldUseStage2ChunkLlmPipeline(options);
+  const chunkWorkRecords = records.filter((record) => (
+    record.parsedPaper
+    && record.sourceState.llmRefreshState?.anyRequired
+  ));
+  if (useChunkPipeline && chunkWorkRecords.length) {
+    await runChunkLlmPipelineForRecords(rootPath, chunkWorkRecords, options, null);
+    for (const record of records) {
+      record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
+    }
+  }
+  const shouldUsePaperLevelFallback = (record) => (
+    !useChunkPipeline
+    || !record.sourceState.chunkPipelineProcessed
+    || record.sourceState.chunkPipelineFallbackRequired
+  );
+  const semanticPending = records.filter((record) => (
+    record.parsedPaper
+    && record.sourceState.llmRefreshState?.semanticRequired
+    && shouldUsePaperLevelFallback(record)
+  ));
+  const relationPending = records.filter((record) => (
+    record.parsedPaper
+    && record.sourceState.llmRefreshState?.relationRequired
+    && shouldUsePaperLevelFallback(record)
+  ));
   if (!semanticPending.length && !relationPending.length) {
     for (const record of records) {
       applySemanticAdmissionPolicy(record.semanticPaper);
@@ -2148,13 +2210,796 @@ function applyRelationBatchResultToRecord(record, inference, options = {}) {
   };
 }
 
+function resolveChunkLlmLimitPerPaper(options = {}) {
+  const explicit = Number(firstDefinedValue(
+    options.llmChunkLimitPerPaper,
+    options.chunkLimitPerPaper,
+    process.env.PAPERNEXUS_LLM_CHUNK_LIMIT_PER_PAPER
+  ));
+  if (Number.isFinite(explicit) && explicit >= 0) {
+    return Math.floor(explicit);
+  }
+  return 12;
+}
+
+function shouldUseStage2ChunkLlmPipeline(options = {}) {
+  const explicit = firstDefinedValue(
+    options.llmChunkPipeline,
+    options.chunkLlmPipeline,
+    options.useChunkLlmPipeline,
+    process.env.PAPERNEXUS_LLM_CHUNK_PIPELINE
+  );
+  if (explicit === undefined) return true;
+  const normalized = String(explicit).trim().toLowerCase();
+  if (['paper', 'paper-level', 'legacy', 'off', 'false', '0', 'no'].includes(normalized)) {
+    return false;
+  }
+  return !isDisabledFlag(explicit);
+}
+
+function hasExplicitChunkPipelineOption(options = {}) {
+  return firstDefinedValue(
+    options.llmChunkPipeline,
+    options.chunkLlmPipeline,
+    options.useChunkLlmPipeline
+  ) !== undefined;
+}
+
+function createChunkPipelineConfigSignature(options = {}) {
+  return stableHash(JSON.stringify({
+    version: 1,
+    enabled: shouldUseStage2ChunkLlmPipeline(options),
+    selectionVersion: 1,
+    chunkLimitPerPaper: resolveChunkLlmLimitPerPaper(options),
+    promptVersions: {
+      semantic: CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION,
+      relation: CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION
+    }
+  }), 20);
+}
+
+function isImportantChunkRole(role = '') {
+  return new Set([
+    'abstract',
+    'introduction',
+    'background',
+    'method',
+    'experiments',
+    'results',
+    'analysis',
+    'discussion',
+    'conclusion'
+  ]).has(String(role || '').trim().toLowerCase());
+}
+
+function scoreChunkForLlm(chunk = {}) {
+  const role = String(chunk.sectionRole || '').trim().toLowerCase();
+  const heading = normalizeText(chunk.sectionHeading || '');
+  const text = normalizeText(chunk.text || '');
+  let score = Number(chunk.tokenEstimate || 0) / 100;
+
+  if (role === 'abstract') score += 10;
+  if (role === 'introduction') score += 8;
+  if (role === 'background') score += 5;
+  if (role === 'method') score += 7;
+  if (role === 'experiments' || role === 'results' || role === 'analysis' || role === 'discussion') score += 6;
+  if (role === 'conclusion') score += 4;
+  if (role === 'references') score -= 100;
+  if (Array.isArray(chunk.citations) && chunk.citations.length) score += Math.min(4, chunk.citations.length * 0.5);
+  if (/\b(dataset|benchmark|metric|accuracy|f1|auc|bleu|rouge|ablation|comparison|evaluation)\b/i.test(text)) score += 2;
+  if (/\b(problem|method|approach|framework|model|system|pipeline)\b/i.test(`${heading} ${text}`)) score += 1.5;
+  if (/\b(citation|reference|bibliography)\b/i.test(`${heading} ${text}`)) score -= 3;
+  if (!text) score -= 10;
+  return score;
+}
+
+function selectChunkLlmCandidates(chunkRecords = [], options = {}) {
+  const limit = resolveChunkLlmLimitPerPaper(options);
+  const selected = [...(chunkRecords || [])]
+    .filter((chunk) => chunk && chunk.text && chunk.sectionRole !== 'references')
+    .map((chunk) => ({
+      ...chunk,
+      llmSelectionScore: scoreChunkForLlm(chunk)
+    }))
+    .sort((left, right) => (
+      right.llmSelectionScore - left.llmSelectionScore
+      || left.order - right.order
+      || left.chunkId.localeCompare(right.chunkId)
+    ));
+
+  if (!limit) {
+    return selected;
+  }
+
+  return selected.slice(0, Math.min(limit, selected.length));
+}
+
+function enrichChunkSemanticRecordWithEvidence(result, chunk) {
+  const sourceChunkIds = [String(chunk?.chunkId || '').trim()].filter(Boolean);
+  const sourceChunkOrders = [Number(chunk?.order || 0)].filter((value) => Number.isFinite(value) && value > 0);
+  const attach = (item = {}) => ({
+    ...item,
+    sourceChunkIds: unique([...(item.sourceChunkIds || []), ...sourceChunkIds]),
+    sourceChunkOrders: unique([...(item.sourceChunkOrders || []), ...sourceChunkOrders]),
+    sectionHeading: item.sectionHeading || chunk?.sectionHeading || '',
+    sectionRole: item.sectionRole || chunk?.sectionRole || '',
+    evidenceText: item.evidenceText || item.text || chunk?.text || ''
+  });
+
+  return {
+    ...result,
+    problems: (result.problems || []).map(attach),
+    methods: (result.methods || []).map(attach),
+    claims: (result.claims || []).map(attach),
+    findings: (result.findings || []).map(attach),
+    researchGoals: (result.researchGoals || []).map(attach),
+    limitations: (result.limitations || []).map(attach),
+    assumptions: (result.assumptions || []).map(attach),
+    evidences: (result.evidences || []).map(attach),
+    futureDirections: (result.futureDirections || []).map(attach),
+    benchmarks: (result.benchmarks || []).map(attach),
+    datasets: (result.datasets || []).map(attach),
+    metrics: (result.metrics || []).map(attach),
+    researchQuestions: (result.researchQuestions || []).map((item) => ({
+      ...item,
+      sourceChunkIds,
+      sourceChunkOrders,
+      supportingSnippets: (item.supportingSnippets || []).map((snippet) => ({
+        ...snippet,
+        sourceChunkIds,
+        sourceChunkOrders,
+        sectionHeading: snippet.sectionHeading || chunk?.sectionHeading || '',
+        sectionRole: snippet.sectionRole || chunk?.sectionRole || ''
+      }))
+    })),
+    openChallenges: (result.openChallenges || []).map((item) => ({
+      ...item,
+      sourceChunkIds,
+      sourceChunkOrders
+    })),
+    takeaways: (result.takeaways || []).map((item) => ({
+      ...item,
+      sourceChunkIds,
+      sourceChunkOrders,
+      supportingSnippets: (item.supportingSnippets || []).map((snippet) => ({
+        ...snippet,
+        sourceChunkIds,
+        sourceChunkOrders,
+        sectionHeading: snippet.sectionHeading || chunk?.sectionHeading || '',
+        sectionRole: snippet.sectionRole || chunk?.sectionRole || ''
+      }))
+    })),
+    ideaFragments: (result.ideaFragments || []).map((item) => ({
+      ...item,
+      sourceChunkIds,
+      sourceChunkOrders,
+      supportingSnippets: (item.supportingSnippets || []).map((snippet) => ({
+        ...snippet,
+        sourceChunkIds,
+        sourceChunkOrders,
+        sectionHeading: snippet.sectionHeading || chunk?.sectionHeading || '',
+        sectionRole: snippet.sectionRole || chunk?.sectionRole || ''
+      }))
+    }))
+  };
+}
+
+function buildChunkSemanticReducerResult(record, chunkResults = [], options = {}) {
+  const pending = [];
+  const completed = [];
+  const failed = [];
+  const rateLimited = [];
+
+  for (const item of chunkResults || []) {
+    if (!item) continue;
+    const status = String(item.status || (item.rateLimitCooldownUntil ? 'rate-limited' : item.error ? 'failed' : 'completed')).toLowerCase();
+    if (status === 'completed') completed.push(item);
+    else if (status === 'rate-limited') rateLimited.push(item);
+    else if (status === 'failed') failed.push(item);
+    else pending.push(item);
+  }
+
+  const semanticCandidates = completed.map((item) => enrichChunkSemanticRecordWithEvidence({
+    ...item.result,
+    chunkId: item.chunk?.chunkId || item.chunkId || null
+  }, item.chunk || {}));
+  const primarySemantic = semanticCandidates.reduce((acc, item) => {
+    if (!acc) return item;
+    return {
+      ...acc,
+      problems: mergeSemanticSlotsByMode(acc.problems, item.problems, 4, 'llm-assisted'),
+      methods: mergeSemanticSlotsByMode(acc.methods, item.methods, 3, 'llm-assisted'),
+      claims: mergeSemanticSlotsByMode(acc.claims, item.claims, 5, 'llm-assisted'),
+      findings: mergeSemanticSlotsByMode(acc.findings, item.findings, 6, 'llm-assisted'),
+      researchGoals: mergeSemanticSlotsByMode(acc.researchGoals, item.researchGoals, 4, 'llm-assisted'),
+      limitations: mergeSemanticSlotsByMode(acc.limitations, item.limitations, 5, 'llm-assisted'),
+      assumptions: mergeSemanticSlotsByMode(acc.assumptions, item.assumptions, 5, 'llm-assisted'),
+      evidences: mergeSemanticSlotsByMode(acc.evidences, item.evidences, 8, 'llm-assisted'),
+      futureDirections: mergeSemanticSlotsByMode(acc.futureDirections, item.futureDirections, 4, 'llm-assisted'),
+      benchmarks: mergeSemanticSlotsByMode(acc.benchmarks, item.benchmarks, 8, 'llm-assisted'),
+      datasets: mergeSemanticSlotsByMode(acc.datasets, item.datasets, 6, 'llm-assisted'),
+      metrics: mergeSemanticSlotsByMode(acc.metrics, item.metrics, 6, 'llm-assisted'),
+      researchQuestions: unique([...(acc.researchQuestions || []), ...(item.researchQuestions || [])]),
+      openChallenges: unique([...(acc.openChallenges || []), ...(item.openChallenges || [])]),
+      takeaways: unique([...(acc.takeaways || []), ...(item.takeaways || [])]),
+      ideaFragments: unique([...(acc.ideaFragments || []), ...(item.ideaFragments || [])]),
+      fieldCandidates: unique([...(acc.fieldCandidates || []), ...(item.fieldCandidates || [])]),
+      domainTags: unique([...(acc.domainTags || []), ...(item.domainTags || [])]),
+      abstractMechanisms: unique([...(acc.abstractMechanisms || []), ...(item.abstractMechanisms || [])]),
+      abstractMechanismObjects: unique([...(acc.abstractMechanismObjects || []), ...(item.abstractMechanismObjects || [])])
+    };
+  }, null);
+
+  const effectiveMode = primarySemantic?.mode || options.semanticExtraction || 'heuristic-only';
+  const semanticResult = createChunkSemanticObjectInferenceResult({
+    provider: primarySemantic?.provider || 'disabled',
+    requestedMode: primarySemantic ? (primarySemantic.requestedMode || 'heuristic-only') : 'heuristic-only',
+    effectiveMode,
+    attempted: completed.length > 0 || failed.length > 0 || rateLimited.length > 0,
+    participated: completed.length > 0,
+    reason: completed.length ? null : rateLimited.length ? 'rate-limited' : failed.length ? 'request-failed' : 'mode-disabled',
+    error: failed[0]?.error || null,
+    chunkId: record?.sourceState?.sourceKey || null,
+    paperId: record?.semanticPaper?.paperId || null,
+    sourceKey: record?.sourceState?.sourceKey || null,
+    sectionHeading: null,
+    sectionRole: null,
+    chunkOrder: null,
+    textHash: null,
+    problems: primarySemantic?.problems || [],
+    methods: primarySemantic?.methods || [],
+    claims: primarySemantic?.claims || [],
+    findings: primarySemantic?.findings || [],
+    researchGoals: primarySemantic?.researchGoals || [],
+    limitations: primarySemantic?.limitations || [],
+    assumptions: primarySemantic?.assumptions || [],
+    evidences: primarySemantic?.evidences || [],
+    futureDirections: primarySemantic?.futureDirections || [],
+    benchmarks: primarySemantic?.benchmarks || [],
+    datasets: primarySemantic?.datasets || [],
+    metrics: primarySemantic?.metrics || [],
+    fieldOfStudy: primarySemantic?.fieldOfStudy || null,
+    fieldCandidates: primarySemantic?.fieldCandidates || [],
+    domainTags: primarySemantic?.domainTags || [],
+    abstractMechanisms: primarySemantic?.abstractMechanisms || [],
+    abstractMechanismObjects: primarySemantic?.abstractMechanismObjects || [],
+    researchQuestions: primarySemantic?.researchQuestions || [],
+    openChallenges: primarySemantic?.openChallenges || [],
+    takeaways: primarySemantic?.takeaways || [],
+    ideaFragments: primarySemantic?.ideaFragments || [],
+    rateLimitCooldownUntil: rateLimited[0]?.rateLimitCooldownUntil || null
+  });
+
+  return {
+    semanticResult,
+    summary: {
+      total: chunkResults.length,
+      completed: completed.length,
+      failed: failed.length,
+      rateLimited: rateLimited.length,
+      pending: pending.length
+    },
+    chunks: chunkResults
+  };
+}
+
+async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jobState = null, context = {}) {
+  const quiet = Boolean(options.quiet);
+  const semanticExtractionPlan = resolveSemanticExtractionPlan(options);
+  const allowSemantic = semanticExtractionPlan.shouldAttempt;
+  const allowRelations = canAttemptLlmRelations(options);
+  const batchSize = Math.max(1, Number(firstDefinedValue(options.llmBatchSize, options.batchSize, 8)));
+  const llmChunkLimitPerPaper = resolveChunkLlmLimitPerPaper(options);
+  const chunkPipelineConfigSignature = createChunkPipelineConfigSignature(options);
+  const totalPapers = records.length;
+  const chunkReadyRecords = [];
+
+  for (const record of records) {
+    const parsedPaper = await ensureParsedPaperForLlmRecord(record);
+    const chunkRecords = createChunkRecordsForParsedPaper(parsedPaper, record.semanticPaper, {
+      sourceState: record.sourceState
+    });
+    const storedChunks = await writePaperChunks(rootPath, record.sourceState.sourceKey, chunkRecords, {
+      force: Boolean(options.force)
+    });
+    const chunkTextById = new Map(chunkRecords.map((chunk) => [chunk.chunkId, chunk.text || '']));
+    const hydratedChunks = (storedChunks.chunks || []).map((chunk) => ({
+      ...chunk,
+      text: chunkTextById.get(chunk.chunkId) || ''
+    }));
+    const candidateChunks = selectChunkLlmCandidates(hydratedChunks, {
+      llmChunkLimitPerPaper
+    }).map((chunk) => ({
+      ...chunk,
+      semanticPaper: record.semanticPaper,
+      sourceKey: record.sourceState.sourceKey,
+      paperId: record.semanticPaper.paperId,
+      paperTitle: record.semanticPaper.paperTitle
+    }));
+    record.sourceState.chunkPipelineProcessed = true;
+    record.sourceState.chunkPipelineFallbackRequired = Boolean(record.sourceState.llmRefreshState?.anyRequired && !candidateChunks.length);
+    chunkReadyRecords.push({
+      ...record,
+      parsedPaper,
+      chunkRecords: hydratedChunks,
+      selectedChunks: candidateChunks,
+      chunkStore: storedChunks
+    });
+  }
+
+  const totalChunks = chunkReadyRecords.reduce((sum, record) => sum + (record.selectedChunks?.length || 0), 0);
+  if (jobState) {
+    jobState.phases.chunk = {
+      ...jobState.phases.chunk,
+      status: totalChunks ? 'running' : 'completed',
+      total: totalChunks,
+      completed: 0,
+      batchCount: Math.ceil(totalChunks / batchSize),
+      lastBatchNumber: 0
+    };
+    jobState.phases.llmMap = {
+      ...jobState.phases.llmMap,
+      status: totalChunks ? 'running' : 'completed',
+      total: totalChunks,
+      completed: 0,
+      batchCount: Math.ceil(totalChunks / batchSize),
+      lastBatchNumber: 0
+    };
+    jobState.phases.paperReduce = {
+      ...jobState.phases.paperReduce,
+      status: totalPapers ? 'running' : 'completed',
+      total: totalPapers,
+      completed: 0,
+      batchCount: Math.ceil(totalPapers / batchSize),
+      lastBatchNumber: 0
+    };
+    await saveStage2JobState(rootPath, jobState);
+  }
+
+  const semanticTaskRuns = [];
+  const relationTaskRuns = [];
+  let completedChunkTasks = 0;
+  let completedRelationTasks = 0;
+  const semanticWorkRecords = chunkReadyRecords.filter((record) => record.sourceState.llmRefreshState?.semanticRequired);
+  const semanticChunkCount = semanticWorkRecords.reduce((sum, record) => sum + (record.selectedChunks?.length || 0), 0);
+
+  if (allowSemantic && semanticChunkCount) {
+    const semanticTasks = [];
+    for (const record of semanticWorkRecords) {
+      for (const chunk of record.selectedChunks || []) {
+        const taskKey = createChunkLlmTaskKey(chunk, {
+          taskType: 'semantic',
+          promptVersion: CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION,
+          model: semanticExtractionPlan.config?.model || '',
+          provider: semanticExtractionPlan.config?.provider || '',
+          baseUrl: semanticExtractionPlan.config?.baseUrl || '',
+          extractionMode: semanticExtractionPlan.requestedMode,
+          configSignature: createSemanticConfigSignature(options)
+        });
+        const cached = !options.force ? await loadChunkExtractionResult(rootPath, taskKey) : null;
+        if (cached?.status === 'completed') {
+          semanticTasks.push({ taskKey, chunk, record, status: 'completed', result: cached.result || cached, reused: true });
+          continue;
+        }
+        semanticTasks.push({ taskKey, chunk, record, status: cached?.status || 'pending', reused: false });
+      }
+    }
+
+    if (jobState) {
+      jobState.phases.chunk.total = semanticTasks.length;
+      jobState.phases.llmMap.total = semanticTasks.length;
+      await saveStage2JobState(rootPath, jobState);
+    }
+
+    for (let start = 0; start < semanticTasks.length; start += batchSize) {
+      const batch = semanticTasks.slice(start, start + batchSize);
+      const pending = batch.filter((item) => item.status !== 'completed');
+      const batchResults = pending.length
+        ? await inferChunkSemanticObjectsBatch(pending.map((item) => ({
+            id: item.chunk.chunkId,
+            chunk: item.chunk,
+            sourceKey: item.record.sourceState.sourceKey,
+            paperId: item.record.semanticPaper.paperId,
+            paperTitle: item.record.semanticPaper.paperTitle,
+            semanticPaper: item.record.semanticPaper,
+            text: item.chunk.text
+          })), {
+            ...options,
+            llmBatchSize: batchSize,
+            onBatchComplete(event = {}) {
+              if (!quiet) {
+                emitPipelineProgress(options, {
+                  stage: 'llm-optimize',
+                  currentStep: 'chunk semantic extraction',
+                  processedUnits: Math.min(semanticTaskRuns.length + Number(event.completed || 0), semanticTasks.length),
+                  totalUnits: semanticTasks.length,
+                  stagePercent: semanticTasks.length ? (((semanticTaskRuns.length + Number(event.completed || 0)) / semanticTasks.length) * 100) : 100,
+                  message: `chunk semantic batch ${event.batchNumber}/${Math.max(1, event.totalBatches || 1)}`
+                });
+              }
+            }
+          })
+        : [];
+
+      for (let index = 0; index < batch.length; index += 1) {
+        const task = batch[index];
+        if (task.status === 'completed') {
+          semanticTaskRuns.push(task);
+          continue;
+        }
+        const result = batchResults.shift();
+        const status = result?.rateLimitCooldownUntil ? 'rate-limited' : result?.error ? 'failed' : 'completed';
+        const payload = {
+          status,
+          chunk: task.chunk,
+          result,
+          sourceKey: task.record.sourceState.sourceKey,
+          paperId: task.record.semanticPaper.paperId,
+          completedAt: status === 'completed' ? new Date().toISOString() : null,
+          error: result?.error || null,
+          rateLimitCooldownUntil: result?.rateLimitCooldownUntil || null
+        };
+        await saveChunkExtractionResult(rootPath, task.taskKey, payload);
+        semanticTaskRuns.push({
+          ...task,
+          ...payload
+        });
+      }
+
+      completedChunkTasks = Math.min(start + batch.length, semanticTasks.length);
+      if (jobState) {
+        jobState.phases.chunk.completed = completedChunkTasks;
+        jobState.phases.llmMap.completed = completedChunkTasks;
+        jobState.phases.chunk.lastBatchNumber = Math.floor(start / batchSize) + 1;
+        jobState.phases.llmMap.lastBatchNumber = Math.floor(start / batchSize) + 1;
+        await saveStage2JobState(rootPath, jobState);
+      }
+    }
+  } else if (semanticChunkCount) {
+    for (const record of semanticWorkRecords) {
+      for (const chunk of record.selectedChunks || []) {
+        semanticTaskRuns.push({
+          taskKey: createChunkLlmTaskKey(chunk, {
+            taskType: 'semantic',
+            promptVersion: CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION,
+            model: '',
+            provider: 'disabled',
+            extractionMode: semanticExtractionPlan.requestedMode,
+            configSignature: createSemanticConfigSignature(options)
+          }),
+          chunk,
+          record,
+          status: 'skipped',
+          result: createChunkSemanticObjectInferenceResult({
+            requestedMode: semanticExtractionPlan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: false,
+            participated: false,
+            reason: semanticExtractionPlan.reason || 'mode-disabled',
+            chunkId: chunk.chunkId,
+            paperId: record.semanticPaper.paperId,
+            sourceKey: record.sourceState.sourceKey,
+            sectionHeading: chunk.sectionHeading,
+            sectionRole: chunk.sectionRole,
+            chunkOrder: chunk.chunkOrder,
+            textHash: chunk.textHash
+          })
+        });
+      }
+    }
+  }
+
+  for (const record of semanticWorkRecords) {
+    if (!record.selectedChunks?.length) {
+      record.sourceState.chunkPipelineFallbackRequired = true;
+      continue;
+    }
+    const perPaperChunkRuns = semanticTaskRuns.filter((task) => task.record.sourceState.sourceKey === record.sourceState.sourceKey);
+    const reducer = buildChunkSemanticReducerResult(record, perPaperChunkRuns, options);
+    const semanticResult = reducer.semanticResult;
+    const { semanticExtractionMode, semanticObjectCount } = applySemanticObjectInference(
+      record.semanticPaper,
+      semanticResult,
+      semanticExtractionPlan
+    );
+    const previousSemanticRetryCount = Number(record.semanticPaper.llm?.semanticRetryCount || 0);
+    const semanticPhaseStatus = semanticResult.participated
+      ? 'completed'
+      : reducer.summary.rateLimited
+        ? 'pending'
+        : reducer.summary.failed
+          ? 'failed'
+          : 'skipped';
+    record.semanticPaper = finalizeSemanticPaperLlmMetadata(
+      record.semanticPaper,
+      semanticResult,
+      {
+        benchmarks: [],
+        findings: [],
+        researchGoals: [],
+        relations: []
+      },
+      semanticExtractionPlan,
+      semanticExtractionMode,
+      semanticObjectCount,
+      options
+    );
+    if (allowRelations) {
+      delete record.semanticPaper.llm.relationConfigSignature;
+      delete record.semanticPaper.llm.relationPromptVersion;
+      delete record.semanticPaper.llm.relationParticipationReason;
+    }
+    if (semanticResult.participated) {
+      record.semanticPaper.llm.semanticRetryCount = 0;
+    } else {
+      record.semanticPaper.llm.semanticRetryCount = semanticPhaseStatus === 'failed'
+        ? previousSemanticRetryCount + 1
+        : previousSemanticRetryCount;
+    }
+    record.semanticPaper.llm.chunkPipeline = {
+      enabled: true,
+      configSignature: chunkPipelineConfigSignature,
+      promptVersions: {
+        semantic: CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION,
+        relation: CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION
+      },
+      selectedChunkCount: record.selectedChunks?.length || 0,
+      processedChunkCount: perPaperChunkRuns.filter((task) => task.status === 'completed').length,
+      failedChunkCount: perPaperChunkRuns.filter((task) => task.status === 'failed').length,
+      rateLimitedChunkCount: perPaperChunkRuns.filter((task) => task.status === 'rate-limited').length
+    };
+    record.semanticPaper.llmSemanticObjects = {
+      ...(record.semanticPaper.llmSemanticObjects || {}),
+      ...semanticResult,
+      chunkPipeline: record.semanticPaper.llm.chunkPipeline
+    };
+    await writePaperReduceCheckpoint(rootPath, record.sourceState.sourceKey, {
+      status: semanticPhaseStatus,
+      inputHash: stableHash(JSON.stringify({
+        chunkTasks: perPaperChunkRuns.map((task) => task.taskKey),
+        semanticConfigSignature: createSemanticConfigSignature(options),
+        chunkPipelineConfigSignature,
+        promptVersions: createLlmPromptVersions()
+      }), 24),
+      outputHash: stableHash(JSON.stringify(semanticResult), 24),
+      promptVersion: CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION,
+      model: semanticExtractionPlan.config?.model || '',
+      processedSourceKeys: [record.sourceState.sourceKey],
+      failedSourceKeys: perPaperChunkRuns
+        .filter((task) => task.status === 'failed' || task.status === 'rate-limited')
+        .map((task) => task.record.sourceState.sourceKey),
+      startedAt: record.chunkStore?.updatedAt || new Date().toISOString(),
+      completedAt: semanticPhaseStatus === 'completed' ? new Date().toISOString() : null
+    });
+    if (jobState) {
+      updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'chunk', 'completed', null);
+      updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'semantic', semanticPhaseStatus, semanticResult.error);
+      updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'paperReduce', semanticPhaseStatus, semanticResult.error);
+    }
+    await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+  }
+
+  const relationPending = [];
+  if (allowRelations) {
+    for (const record of chunkReadyRecords) {
+      record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
+      if (record.sourceState.llmRefreshState.relationRequired) {
+        if (record.selectedChunks?.length) {
+          relationPending.push(record);
+        } else {
+          record.sourceState.chunkPipelineFallbackRequired = true;
+        }
+      }
+    }
+
+    if (relationPending.length) {
+      const relationTasks = [];
+      for (const record of relationPending) {
+        const candidateChunks = selectChunkLlmCandidates(record.chunkRecords || [], {
+          llmChunkLimitPerPaper
+        });
+        for (const chunk of candidateChunks) {
+          const taskKey = createChunkLlmTaskKey(chunk, {
+            taskType: 'relation',
+            promptVersion: CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION,
+            model: resolveOllamaConfig(options).model || '',
+            provider: resolveOllamaConfig(options).provider || '',
+            baseUrl: resolveOllamaConfig(options).baseUrl || '',
+            extractionMode: options.semanticExtraction || 'heuristic-only',
+            configSignature: createRelationConfigSignature(options)
+          });
+          const cached = !options.force ? await loadChunkExtractionResult(rootPath, taskKey) : null;
+          if (cached?.status === 'completed') {
+            relationTasks.push({ taskKey, chunk, record, status: 'completed', result: cached.result || cached, reused: true });
+            continue;
+          }
+          relationTasks.push({ taskKey, chunk, record, status: cached?.status || 'pending', reused: false });
+        }
+      }
+
+      if (jobState) {
+        jobState.phases.relation = {
+          ...jobState.phases.relation,
+          status: relationTasks.length ? 'running' : 'completed',
+          total: relationTasks.length,
+          completed: 0,
+          batchCount: Math.ceil(relationTasks.length / batchSize),
+          lastBatchNumber: 0
+        };
+        await saveStage2JobState(rootPath, jobState);
+      }
+
+      for (let start = 0; start < relationTasks.length; start += batchSize) {
+        const batch = relationTasks.slice(start, start + batchSize);
+        const pending = batch.filter((item) => item.status !== 'completed');
+        const batchResults = pending.length
+          ? await inferChunkResearchSemanticsBatch(pending.map((item) => ({
+              id: item.chunk.chunkId,
+              chunk: item.chunk,
+              sourceKey: item.record.sourceState.sourceKey,
+              paperId: item.record.semanticPaper.paperId,
+              paperTitle: item.record.semanticPaper.paperTitle,
+              semanticPaper: item.record.semanticPaper,
+              text: item.chunk.text
+            })), {
+              ...options,
+              llmBatchSize: batchSize
+            })
+          : [];
+
+        for (let index = 0; index < batch.length; index += 1) {
+          const task = batch[index];
+          if (task.status === 'completed') {
+            relationTaskRuns.push(task);
+            continue;
+          }
+          const result = batchResults.shift();
+          const status = result?.rateLimitCooldownUntil ? 'rate-limited' : result?.error ? 'failed' : 'completed';
+          await saveChunkExtractionResult(rootPath, task.taskKey, {
+            status,
+            chunk: task.chunk,
+            result,
+            sourceKey: task.record.sourceState.sourceKey,
+            paperId: task.record.semanticPaper.paperId,
+            completedAt: status === 'completed' ? new Date().toISOString() : null,
+            error: result?.error || null,
+            rateLimitCooldownUntil: result?.rateLimitCooldownUntil || null
+          });
+          relationTaskRuns.push({
+            ...task,
+            result,
+            status
+          });
+        }
+
+        completedRelationTasks = Math.min(start + batch.length, relationTasks.length);
+        if (jobState) {
+          jobState.phases.relation.completed = completedRelationTasks;
+          jobState.phases.relation.lastBatchNumber = Math.floor(start / batchSize) + 1;
+          await saveStage2JobState(rootPath, jobState);
+        }
+      }
+
+      for (const record of relationPending) {
+        const perPaperRelationRuns = relationTaskRuns.filter((task) => task.record.sourceState.sourceKey === record.sourceState.sourceKey);
+        const relationCompletedCount = perPaperRelationRuns.filter((task) => task.status === 'completed').length;
+        const relationFailedCount = perPaperRelationRuns.filter((task) => task.status === 'failed').length;
+        const relationRateLimitedCount = perPaperRelationRuns.filter((task) => task.status === 'rate-limited').length;
+        const reduced = perPaperRelationRuns.reduce((acc, task) => {
+          const result = task.result || {};
+          if (task.status === 'rate-limited') {
+            acc.rateLimitCooldownUntil = acc.rateLimitCooldownUntil || result.rateLimitCooldownUntil || task.rateLimitCooldownUntil || null;
+            return acc;
+          }
+          if (!result || task.status === 'failed' || task.status === 'rate-limited') {
+            acc.error = acc.error || result?.error || task.error || null;
+            return acc;
+          }
+          acc.benchmarks = mergeSemanticSlots(acc.benchmarks, result.benchmarks || [], 8);
+          acc.findings = mergeSemanticSlots(acc.findings, result.findings || [], 8);
+          acc.researchGoals = mergeSemanticSlots(acc.researchGoals, result.researchGoals || [], 4);
+          acc.relations = unique([...(acc.relations || []), ...(result.relations || [])]);
+          acc.provider = acc.provider !== 'disabled' ? acc.provider : (result.provider || 'disabled');
+          acc.error = acc.error || result.error || null;
+          return acc;
+        }, {
+          provider: 'disabled',
+          benchmarks: [],
+          findings: [],
+          researchGoals: [],
+          relations: [],
+          error: null,
+          rateLimitCooldownUntil: null
+        });
+        const relationPhaseStatus = relationCompletedCount
+          ? 'completed'
+          : relationRateLimitedCount
+            ? 'pending'
+            : relationFailedCount
+              ? 'failed'
+              : 'skipped';
+
+        applyRelationBatchResultToRecord(record, {
+          provider: reduced.provider,
+          benchmarks: reduced.benchmarks,
+          findings: reduced.findings,
+          researchGoals: reduced.researchGoals,
+          relations: reduced.relations,
+          error: reduced.error,
+          reason: relationRateLimitedCount ? 'rate-limited' : null,
+          rateLimitCooldownUntil: reduced.rateLimitCooldownUntil
+        }, options);
+        record.semanticPaper.llm.chunkPipeline = {
+          ...(record.semanticPaper.llm.chunkPipeline || {}),
+          relationChunkCount: record.selectedChunks?.length || 0,
+          relationProcessedChunkCount: relationCompletedCount,
+          relationFailedChunkCount: relationFailedCount,
+          relationRateLimitedChunkCount: relationRateLimitedCount
+        };
+        record.semanticPaper.llmSemanticObjects = {
+          ...(record.semanticPaper.llmSemanticObjects || {}),
+          chunkPipeline: record.semanticPaper.llm.chunkPipeline
+        };
+        await writePaperReduceCheckpoint(rootPath, record.sourceState.sourceKey, {
+          status: relationPhaseStatus,
+          inputHash: stableHash(JSON.stringify({
+            chunkTasks: perPaperRelationRuns.map((task) => task.taskKey),
+            relationConfigSignature: createRelationConfigSignature(options),
+            chunkPipelineConfigSignature,
+            promptVersions: createLlmPromptVersions()
+          }), 24),
+          outputHash: stableHash(JSON.stringify(reduced), 24),
+          promptVersion: CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION,
+          model: resolveOllamaConfig(options).model || '',
+          processedSourceKeys: [record.sourceState.sourceKey],
+          failedSourceKeys: perPaperRelationRuns
+            .filter((task) => task.status === 'failed' || task.status === 'rate-limited')
+            .map((task) => task.record.sourceState.sourceKey),
+          startedAt: record.chunkStore?.updatedAt || new Date().toISOString(),
+          completedAt: relationPhaseStatus === 'completed' ? new Date().toISOString() : null
+        });
+        if (jobState) {
+          updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'relation', relationPhaseStatus, reduced.error);
+        }
+        await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+      }
+    }
+  }
+
+  return {
+    records: chunkReadyRecords,
+    semanticTaskRuns,
+    relationTaskRuns,
+    totalChunks,
+    completedChunkTasks,
+    completedRelationTasks
+  };
+}
+
 function seedStage2JobStateFromRecords(jobState, records) {
   for (const record of records) {
     const paperStatus = getOrCreateStage2PaperStatus(jobState, record.sourceState.sourceKey);
+    paperStatus.chunk = {
+      status: record.sourceState.llmRefreshState?.anyRequired ? 'pending' : 'completed',
+      updatedAt: paperStatus.chunk?.updatedAt || null,
+      error: paperStatus.chunk?.error || null
+    };
     paperStatus.semantic = {
       status: record.sourceState.llmRefreshState.semanticRequired ? 'pending' : 'completed',
       updatedAt: paperStatus.semantic?.updatedAt || null,
       error: paperStatus.semantic?.error || null
+    };
+    paperStatus.llmMap = {
+      status: record.sourceState.llmRefreshState?.semanticRequired || record.sourceState.llmRefreshState?.relationRequired
+        ? 'pending'
+        : 'completed',
+      updatedAt: paperStatus.llmMap?.updatedAt || null,
+      error: paperStatus.llmMap?.error || null
+    };
+    paperStatus.paperReduce = {
+      status: record.sourceState.llmRefreshState?.anyRequired ? 'pending' : 'completed',
+      updatedAt: paperStatus.paperReduce?.updatedAt || null,
+      error: paperStatus.paperReduce?.error || null
     };
     paperStatus.relation = {
       status: record.sourceState.llmRefreshState.relationRequired ? 'pending' : 'completed',
@@ -2210,13 +3055,6 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   seedStage2JobStateFromRecords(jobState, records);
   await saveStage2JobState(rootPath, jobState);
 
-  const initialSemanticPending = records.filter((record) => record.sourceState.llmRefreshState.semanticRequired);
-  const semanticPending = [];
-  for (const record of initialSemanticPending) {
-    await ensureParsedPaperForLlmRecord(record);
-    semanticPending.push(record);
-  }
-
   const batchSize = Math.max(1, Number(firstDefinedValue(options.llmBatchSize, options.batchSize, 8)));
   let llmCompletedUnits = 0;
   announceStage(
@@ -2230,7 +3068,46 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   const formatBatchLabel = (batchNumber, totalBatches, completed, total) =>
     `batch ${batchNumber}/${Math.max(1, totalBatches)}, ${Math.min(completed, total)}/${total} papers completed`;
 
-  const relationPendingCount = records.filter((record) => record.sourceState.llmRefreshState.relationRequired).length;
+  const useChunkPipeline = shouldUseStage2ChunkLlmPipeline(options);
+  const chunkWorkRecords = records.filter((record) => (
+    !record.sourceState.llmRefreshState?.scopedOut
+    && record.sourceState.llmRefreshState?.anyRequired
+  ));
+  if (useChunkPipeline && chunkWorkRecords.length) {
+    emitPipelineProgress(options, {
+      stage: 'llm-optimize',
+      currentStep: 'chunk map/reduce',
+      processedUnits: 0,
+      totalUnits: chunkWorkRecords.length,
+      stagePercent: 0,
+      message: 'Starting chunk LLM map/reduce'
+    });
+    await runChunkLlmPipelineForRecords(rootPath, chunkWorkRecords, options, jobState);
+    for (const record of chunkWorkRecords) {
+      record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
+    }
+  }
+
+  const shouldUsePaperLevelFallback = (record) => (
+    !useChunkPipeline
+    || !record.sourceState.chunkPipelineProcessed
+    || record.sourceState.chunkPipelineFallbackRequired
+  );
+
+  const initialSemanticPending = records.filter((record) => (
+    record.sourceState.llmRefreshState.semanticRequired
+    && shouldUsePaperLevelFallback(record)
+  ));
+  const semanticPending = [];
+  for (const record of initialSemanticPending) {
+    await ensureParsedPaperForLlmRecord(record);
+    semanticPending.push(record);
+  }
+
+  const relationPendingCount = records.filter((record) => (
+    record.sourceState.llmRefreshState.relationRequired
+    && shouldUsePaperLevelFallback(record)
+  )).length;
   const totalLlmUnits = semanticPending.length + relationPendingCount;
   emitPipelineProgress(options, {
     stage: 'llm-optimize',
@@ -2272,6 +3149,15 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       for (let index = 0; index < batchRecords.length; index += 1) {
         const record = batchRecords[index];
         const summary = applySemanticBatchResultToRecord(record, semanticBatchResults[index], semanticExtractionPlan, options);
+        record.semanticPaper.llm.chunkPipeline = {
+          enabled: false,
+          reason: useChunkPipeline ? 'chunk-pipeline-fallback' : 'disabled',
+          configSignature: createChunkPipelineConfigSignature(options)
+        };
+        record.semanticPaper.llmSemanticObjects = {
+          ...(record.semanticPaper.llmSemanticObjects || {}),
+          chunkPipeline: record.semanticPaper.llm.chunkPipeline
+        };
         await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
         updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'semantic', summary.status, summary.error);
       }
@@ -2302,7 +3188,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       continue;
     }
     record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
-    if (record.sourceState.llmRefreshState.relationRequired) {
+    if (record.sourceState.llmRefreshState.relationRequired && shouldUsePaperLevelFallback(record)) {
       await ensureParsedPaperForLlmRecord(record);
       relationPending.push(record);
     }
@@ -2339,6 +3225,16 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       for (let index = 0; index < batchRecords.length; index += 1) {
         const record = batchRecords[index];
         const summary = applyRelationBatchResultToRecord(record, relationBatchResults[index], options);
+        record.semanticPaper.llm.chunkPipeline = {
+          ...(record.semanticPaper.llm.chunkPipeline || {}),
+          enabled: false,
+          reason: useChunkPipeline ? 'chunk-pipeline-fallback' : 'disabled',
+          configSignature: createChunkPipelineConfigSignature(options)
+        };
+        record.semanticPaper.llmSemanticObjects = {
+          ...(record.semanticPaper.llmSemanticObjects || {}),
+          chunkPipeline: record.semanticPaper.llm.chunkPipeline
+        };
         await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
         updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'relation', summary.status, summary.error);
       }
@@ -3459,6 +4355,7 @@ function createLlmOptimizationToken(manifest, options = {}) {
     manifestToken: createManifestCommitToken(manifest),
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    chunkPipelineConfigSignature: createChunkPipelineConfigSignature(options),
     promptVersions: createLlmPromptVersions()
   }), 20);
 }
@@ -3470,6 +4367,7 @@ function buildLlmOptimizationState(manifest, options = {}) {
     catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    chunkPipelineConfigSignature: createChunkPipelineConfigSignature(options),
     promptVersions: createLlmPromptVersions(),
     token: createLlmOptimizationToken(manifest, options)
   };
@@ -3498,6 +4396,7 @@ function buildLlmOptimizationCooldownState(manifest, options = {}, rateLimitCool
     catalystMetadataContractVersion: CATALYST_METADATA_CONTRACT_VERSION,
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    chunkPipelineConfigSignature: createChunkPipelineConfigSignature(options),
     promptVersions: createLlmPromptVersions(),
     token: null,
     rateLimitCooldownUntil
@@ -3531,7 +4430,22 @@ function createStage2JobToken(manifest, options = {}) {
 
 function createEmptyStage2PaperStatus() {
   return {
+    chunk: {
+      status: 'pending',
+      updatedAt: null,
+      error: null
+    },
     semantic: {
+      status: 'pending',
+      updatedAt: null,
+      error: null
+    },
+    llmMap: {
+      status: 'pending',
+      updatedAt: null,
+      error: null
+    },
+    paperReduce: {
       status: 'pending',
       updatedAt: null,
       error: null
@@ -3552,13 +4466,35 @@ function createStage2JobState(manifest, options = {}) {
     manifestToken: createManifestCommitToken(manifest),
     semanticConfigSignature: createSemanticConfigSignature(options),
     relationConfigSignature: createRelationConfigSignature(options),
+    chunkPipelineConfigSignature: createChunkPipelineConfigSignature(options),
     promptVersions: createLlmPromptVersions(),
     status: 'running',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     completedAt: null,
     phases: {
+      chunk: {
+        status: 'pending',
+        completed: 0,
+        total: 0,
+        batchCount: 0,
+        lastBatchNumber: 0
+      },
       semantic: {
+        status: 'pending',
+        completed: 0,
+        total: 0,
+        batchCount: 0,
+        lastBatchNumber: 0
+      },
+      llmMap: {
+        status: 'pending',
+        completed: 0,
+        total: 0,
+        batchCount: 0,
+        lastBatchNumber: 0
+      },
+      paperReduce: {
         status: 'pending',
         completed: 0,
         total: 0,
@@ -6007,7 +6943,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
     const mergeWithExistingManifestSources = Boolean(options.mergeWithExistingManifestSources && previousManifest);
     const analysisOptions = {
       ...options,
-      semanticExtraction: normalizedSemanticExtractionMode
+      semanticExtraction: normalizedSemanticExtractionMode,
+      ...(hasExplicitChunkPipelineOption(options) ? {} : { llmChunkPipeline: false })
     };
     const forceMaterialization = Boolean(options.force && !optimizeOnly && !llmOnly);
     const forceLlmRefresh = Boolean(options.force && (optimizeOnly || llmOnly));

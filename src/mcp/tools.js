@@ -625,13 +625,17 @@ export const PAPERNEXUS_TOOLS = [
         },
         timeout: {
           type: 'number',
-          description: 'Maximum seconds to wait for completion when operation is wait.',
+          description: 'Maximum seconds to wait for completion when operation is wait. By default this also includes the downstream authoritative graph sync job for completed imports.',
           default: 1800
         },
         interval: {
           type: 'number',
           description: 'Polling interval in seconds when operation is wait.',
           default: 2
+        },
+        waitForAuthoritativeSync: {
+          type: 'boolean',
+          description: 'When operation is wait, keep waiting after the import task completes until its authoritative graph sync job is completed, failed, or superseded. Defaults to true.'
         }
       },
       required: ['operation']

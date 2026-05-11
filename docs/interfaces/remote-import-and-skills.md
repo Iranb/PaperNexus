@@ -42,7 +42,7 @@ Important wrappers include:
 2. if the source file is local, upload it to the server with staging
 3. submit the remote import task
 4. query progress by `paperId`, `source`, or `taskId`
-5. only declare success when the task reports `completed` at the final stage
+5. only declare success when `import_workflow wait` returns the task as `completed` at the final stage and the downstream authoritative sync status is terminal
 
 Every uploaded paper now needs at least one precise identifier:
 
@@ -70,15 +70,15 @@ The important boundary is that discovery and graph ingestion are intentionally a
 - `literature_discovery run` / `resolve` can persist discovery artifacts and legal source-resolution results; the graph still may not contain those papers.
 - `literature_discovery import` or `importResolved=true` submits resolved full text to the import queue.
 - `literature_discovery ingest`, `import_and_process`, or `processImports=true` asks PaperNexus to process imports inline, but this can be long-running because parsing, semantic extraction, fast commit, and authoritative graph sync can lag behind discovery.
-- `research_lookup`, `research_briefing`, and `idea_catalyst mode=graph` only see papers after the corresponding import task has reached `status=completed` and `stage=completed`.
+- `research_lookup`, `research_briefing`, and `idea_catalyst mode=graph` only see papers safely after the corresponding `import_workflow wait` has returned `status=completed`, `stage=completed`, and an authoritative sync status of `completed` or `superseded`.
 
 Agents should therefore report interim results precisely:
 
 - use "discovered" for candidates in a discovery report
 - use "submitted" for accepted import tasks
-- use "in graph" only after import queue completion
+- use "in graph" only after import queue completion and authoritative sync readiness
 
-When graph build is delayed, use `literature_discovery status` / `report` for the paper list and `import_workflow queue_progress`, `status`, or `wait` for graph-readiness. Do not rerun graph queries just because discovery finished.
+When graph build is delayed, use `literature_discovery status` / `report` for the paper list and `import_workflow queue_progress`, `status`, or `wait` for graph-readiness. `import_workflow wait` now waits for the authoritative sync job by default; pass `waitForAuthoritativeSync=false` only when you intentionally want raw import-task completion. Do not rerun graph queries just because discovery finished.
 
 Recommended server-side inspection command:
 

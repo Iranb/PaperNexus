@@ -51,6 +51,8 @@ const ANTHROPIC_VERSION = '2023-06-01';
 const TRANSIENT_LLM_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const llmRateLimitCooldowns = new Map();
 const execFileAsync = promisify(nodeExecFile);
+export const CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION = 'chunk-semantic-objects-v1';
+export const CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION = 'chunk-research-relations-v1';
 
 function pickDefined(...values) {
   for (const value of values) {
@@ -477,6 +479,135 @@ function buildSemanticExtractionBatchPrompt(entries) {
     '',
     'Papers:',
     JSON.stringify(papers, null, 2)
+  ].join('\n');
+}
+
+function buildChunkSemanticExtractionBatchPrompt(entries) {
+  const chunks = entries.map((entry, index) => {
+    const semanticPaper = entry.semanticPaper || {};
+    const chunk = entry.chunk || {};
+    return {
+      id: String(entry.id || chunk.chunkId || `chunk-${index + 1}`),
+      sourceKey: String(entry.sourceKey || semanticPaper.sourceKey || '').trim(),
+      paperId: String(entry.paperId || semanticPaper.paperId || '').trim(),
+      title: cleanText(entry.paperTitle || semanticPaper.paperTitle || '', 240),
+      sectionHeading: cleanText(entry.sectionHeading || chunk.sectionHeading || '', 120),
+      sectionRole: cleanText(entry.sectionRole || chunk.sectionRole || '', 32),
+      chunkOrder: Number(entry.chunkOrder || chunk.chunkOrder || 0),
+      text: cleanText(entry.text || chunk.text || '', 900),
+      heuristicCandidates: collectEntitySnapshot(semanticPaper).slice(0, 16)
+    };
+  });
+
+  return [
+    'You are extracting structured research objects from paper chunks for a knowledge graph.',
+    'Return strict JSON only.',
+    'Do not invent unsupported entities.',
+    'Prefer short canonical names for Problem and Method nodes.',
+    'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the chunk text.',
+    'Merge synonymous surface forms into one canonical object when possible.',
+    '',
+    'Return this JSON shape:',
+    '{',
+    '  "chunks": [',
+    '    {',
+    '      "id": "...",',
+    '      "problems": [{"name":"...", "type":"Problem", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "methods": [{"name":"...", "type":"Method", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "claims": [{"name":"...", "type":"Claim", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "findings": [{"name":"...", "type":"Finding", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "researchGoals": [{"name":"...", "type":"ResearchGoal", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "limitations": [{"name":"...", "type":"Limitation", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "assumptions": [{"name":"...", "type":"Assumption", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "evidences": [{"name":"...", "type":"Evidence", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "futureDirections": [{"name":"...", "type":"FutureDirection", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "benchmarks": [{"name":"...", "type":"Benchmark", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "datasets": [{"name":"...", "type":"Dataset", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "metrics": [{"name":"...", "type":"Metric", "evidenceText":"...", "sectionHeading":"...", "sectionRole":"...", "confidence":0.0, "explicitOrInferred":"explicit"}],',
+    '      "fieldOfStudy": "Computer Science",',
+    '      "fieldCandidates": ["Computer Science", "Psychology"],',
+    '      "domainTags": ["Computer Science", "Psychology"],',
+    '      "abstractMechanisms": ["memory preservation"],',
+    '      "researchQuestions": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "relatedProblems":["..."], "relatedMechanisms":["..."]}],',
+    '      "openChallenges": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "challengeType":"mixed", "relatedMechanisms":["..."]}],',
+    '      "takeaways": [{"name":"...", "text":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "relatedChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}],',
+    '      "ideaFragments": [{"name":"...", "text":"...", "targetDomain":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "sourceTakeaways":["..."], "addressesChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}]',
+    '    }',
+    '  ]',
+    '}',
+    '',
+    'Guidelines:',
+    '- Problems: name the research challenge, not a sentence fragment.',
+    '- Methods: use the canonical method or framework name.',
+    '- Claims: capture the main asserted result or contribution.',
+    '- Findings: capture concrete empirical observations.',
+    '- ResearchGoals: capture the overarching goal or vision driving the research.',
+    '- Limitations and assumptions: keep them specific and falsifiable.',
+    '- Evidence: extract compact evidence units, not the entire paragraph.',
+    '- If a category is unsupported, return an empty list.',
+    '- `abstractMechanisms` may be a list of strings.',
+    '- Prefer the object form when you can infer mechanism type, category, description, or aliases confidently.',
+    '- `researchQuestions` should decompose the paper problem into reusable research questions.',
+    '- `openChallenges` should capture unresolved obstacles and provide both domain-specific and domain-agnostic wording when possible.',
+    '- `takeaways` should capture reusable insights grounded in the chunk text and linked to challenges or mechanisms when possible.',
+    '- `ideaFragments` should capture transfer-ready idea atoms grounded in the chunk text, not freeform speculation.',
+    '',
+    'Papers:',
+    JSON.stringify(chunks, null, 2)
+  ].join('\n');
+}
+
+function buildChunkResearchSemanticsBatchPrompt(entries) {
+  const chunks = entries.map((entry, index) => {
+    const semanticPaper = entry.semanticPaper || {};
+    const chunk = entry.chunk || {};
+    return {
+      id: String(entry.id || chunk.chunkId || `chunk-${index + 1}`),
+      sourceKey: String(entry.sourceKey || semanticPaper.sourceKey || '').trim(),
+      paperId: String(entry.paperId || semanticPaper.paperId || '').trim(),
+      title: cleanText(entry.paperTitle || semanticPaper.paperTitle || '', 240),
+      sectionHeading: cleanText(entry.sectionHeading || chunk.sectionHeading || '', 120),
+      sectionRole: cleanText(entry.sectionRole || chunk.sectionRole || '', 32),
+      chunkOrder: Number(entry.chunkOrder || chunk.chunkOrder || 0),
+      text: cleanText(entry.text || chunk.text || '', 900),
+      candidateEntities: collectEntitySnapshot(semanticPaper).slice(0, 16)
+    };
+  });
+
+  return [
+    'You are building a multi-layer research knowledge graph from paper chunks.',
+    'Return strict JSON only.',
+    'Do not invent entities or relations that are unsupported by the chunk text.',
+    'Focus on relations that help research topic selection, assumption tracking, method transfer, and innovation composition.',
+    '',
+    'Allowed node types:',
+    [...ALLOWED_NODE_TYPES].join(', '),
+    '',
+    'Allowed relation types:',
+    [...ALLOWED_RELATION_TYPES].join(', '),
+    '',
+    'Return this JSON shape:',
+    '{',
+    '  "chunks": [',
+    '    {',
+    '      "id": "...",',
+    '      "benchmarks": [{"name": "...", "type": "Benchmark", "evidenceText": "...", "sectionHeading": "...", "confidence": 0.0, "explicitOrInferred": "explicit"}],',
+    '      "findings": [{"name": "...", "type": "Finding", "evidenceText": "...", "sectionHeading": "...", "confidence": 0.0, "explicitOrInferred": "explicit"}],',
+    '      "researchGoals": [{"name": "...", "type": "ResearchGoal", "evidenceText": "...", "sectionHeading": "...", "confidence": 0.0, "explicitOrInferred": "explicit"}],',
+    '      "relations": [{"sourceType": "Method", "sourceName": "...", "targetType": "Problem", "targetName": "...", "type": "APPLIES_TO", "confidence": 0.0, "evidenceText": "...", "rationale": "...", "explicitOrInferred": "explicit"}]',
+    '    }',
+    '  ]',
+    '}',
+    '',
+    'Key relations to capture:',
+    '- LEADS_TO: Method/Finding/Claim → ResearchGoal/Problem',
+    '- BLOCKED_BY: ResearchGoal/Problem/Method → Limitation/Assumption/Problem',
+    '- SOLVES: Paper → Problem, USES: Paper → Method, CLAIMS: Paper → Claim',
+    '',
+    'Only emit relations that are strongly grounded in the chunk text. Use explicitOrInferred="inferred" for transfer/composition hypotheses.',
+    '',
+    'Papers:',
+    JSON.stringify(chunks, null, 2)
   ].join('\n');
 }
 
@@ -1078,6 +1209,13 @@ function createSemanticObjectInferenceResult({
   participated = false,
   reason = null,
   error = null,
+  chunkId = null,
+  paperId = null,
+  sourceKey = null,
+  sectionHeading = null,
+  sectionRole = null,
+  chunkOrder = null,
+  textHash = null,
   problems = [],
   methods = [],
   claims = [],
@@ -1130,7 +1268,14 @@ function createSemanticObjectInferenceResult({
     takeaways,
     ideaFragments,
     rateLimitCooldownUntil,
-    error
+    error,
+    chunkId,
+    paperId,
+    sourceKey,
+    sectionHeading,
+    sectionRole,
+    chunkOrder,
+    textHash
   };
 }
 
@@ -2267,6 +2412,531 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
     } finally {
       options.onBatchComplete?.({
         phase: 'semantic-extraction',
+        batchNumber: Math.floor(start / batchSize) + 1,
+        totalBatches,
+        completed: completedAfterBatch,
+        total: entries.length,
+        batchSize: batch.length
+      });
+    }
+
+    if (stopAfterCurrentBatch) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+export function createChunkSemanticObjectInferenceResult({
+  provider = 'disabled',
+  requestedMode = 'heuristic-only',
+  effectiveMode = 'heuristic-only',
+  attempted = false,
+  participated = false,
+  reason = null,
+  error = null,
+  chunkId = null,
+  paperId = null,
+  sourceKey = null,
+  sectionHeading = null,
+  sectionRole = null,
+  chunkOrder = null,
+  textHash = null,
+  problems = [],
+  methods = [],
+  claims = [],
+  findings = [],
+  researchGoals = [],
+  limitations = [],
+  assumptions = [],
+  evidences = [],
+  futureDirections = [],
+  benchmarks = [],
+  datasets = [],
+  metrics = [],
+  fieldOfStudy = null,
+  fieldCandidates = [],
+  domainTags = [],
+  abstractMechanisms = [],
+  abstractMechanismObjects = [],
+  researchQuestions = [],
+  openChallenges = [],
+  takeaways = [],
+  ideaFragments = [],
+  rateLimitCooldownUntil = null
+} = {}) {
+  return createSemanticObjectInferenceResult({
+    provider,
+    requestedMode,
+    effectiveMode,
+    attempted,
+    participated,
+    reason,
+    error,
+    chunkId,
+    paperId,
+    sourceKey,
+    sectionHeading,
+    sectionRole,
+    chunkOrder,
+    textHash,
+    problems,
+    methods,
+    claims,
+    findings,
+    researchGoals,
+    limitations,
+    assumptions,
+    evidences,
+    futureDirections,
+    benchmarks,
+    datasets,
+    metrics,
+    fieldOfStudy,
+    fieldCandidates,
+    domainTags,
+    abstractMechanisms,
+    abstractMechanismObjects,
+    researchQuestions,
+    openChallenges,
+    takeaways,
+    ideaFragments,
+    rateLimitCooldownUntil
+  });
+}
+
+function normalizeChunkBatchEntry(entry = {}, index = 0) {
+  const chunk = entry.chunk || {};
+  const semanticPaper = entry.semanticPaper || {};
+  const chunkId = String(entry.id || chunk.chunkId || `chunk-${index + 1}`).trim();
+  return {
+    ...entry,
+    id: chunkId,
+    chunkId,
+    sourceKey: String(entry.sourceKey || semanticPaper.sourceKey || '').trim(),
+    paperId: String(entry.paperId || semanticPaper.paperId || '').trim(),
+    paperTitle: String(entry.paperTitle || semanticPaper.paperTitle || '').trim(),
+    sectionHeading: String(entry.sectionHeading || chunk.sectionHeading || '').trim(),
+    sectionRole: String(entry.sectionRole || chunk.sectionRole || '').trim(),
+    chunkOrder: Number(entry.chunkOrder || chunk.chunkOrder || 0),
+    text: String(entry.text || chunk.text || '').trim(),
+    textHash: String(entry.textHash || chunk.textHash || '').trim()
+  };
+}
+
+function sanitizeChunkSemanticRaw(rawPaper = {}, batchEntry = {}, provider = 'disabled', plan = {}) {
+  return createChunkSemanticObjectInferenceResult({
+    provider,
+    requestedMode: plan.requestedMode,
+    effectiveMode: plan.effectiveMode,
+    attempted: true,
+    participated: true,
+    reason: null,
+    chunkId: batchEntry.chunkId,
+    paperId: batchEntry.paperId,
+    sourceKey: batchEntry.sourceKey,
+    sectionHeading: batchEntry.sectionHeading,
+    sectionRole: batchEntry.sectionRole,
+    chunkOrder: batchEntry.chunkOrder,
+    textHash: batchEntry.textHash,
+    ...sanitizeSemanticMetadata(rawPaper),
+    problems: sanitizeEntityGroup(rawPaper, 'problems', NODE_TYPES.PROBLEM),
+    methods: sanitizeEntityGroup(rawPaper, 'methods', NODE_TYPES.METHOD),
+    claims: sanitizeEntityGroup(rawPaper, 'claims', NODE_TYPES.CLAIM),
+    findings: sanitizeEntityGroup(rawPaper, 'findings', NODE_TYPES.FINDING),
+    researchGoals: sanitizeEntityGroup(rawPaper, 'researchGoals', NODE_TYPES.RESEARCH_GOAL),
+    limitations: sanitizeEntityGroup(rawPaper, 'limitations', NODE_TYPES.LIMITATION),
+    assumptions: sanitizeEntityGroup(rawPaper, 'assumptions', NODE_TYPES.ASSUMPTION),
+    evidences: sanitizeEntityGroup(rawPaper, 'evidences', NODE_TYPES.EVIDENCE),
+    futureDirections: sanitizeEntityGroup(rawPaper, 'futureDirections', NODE_TYPES.FUTURE_DIRECTION),
+    benchmarks: sanitizeEntityGroup(rawPaper, 'benchmarks', NODE_TYPES.BENCHMARK),
+    datasets: sanitizeEntityGroup(rawPaper, 'datasets', NODE_TYPES.DATASET),
+    metrics: sanitizeEntityGroup(rawPaper, 'metrics', NODE_TYPES.METRIC),
+    researchQuestions: sanitizeResearchQuestionGroup(rawPaper),
+    openChallenges: sanitizeChallengeGroup(rawPaper),
+    takeaways: sanitizeTakeawayGroup(rawPaper),
+    ideaFragments: sanitizeIdeaFragmentGroup(rawPaper),
+    error: null
+  });
+}
+
+export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
+  const plan = resolveSemanticExtractionPlan(options);
+  if (!entries?.length) return [];
+
+  if (!plan.shouldAttempt) {
+    return entries.map((entry, index) => {
+      const normalized = normalizeChunkBatchEntry(entry, index);
+      return createChunkSemanticObjectInferenceResult({
+        requestedMode: plan.requestedMode,
+        effectiveMode: plan.effectiveMode,
+        attempted: false,
+        participated: false,
+        reason: plan.reason,
+        chunkId: normalized.chunkId,
+        paperId: normalized.paperId,
+        sourceKey: normalized.sourceKey,
+        sectionHeading: normalized.sectionHeading,
+        sectionRole: normalized.sectionRole,
+        chunkOrder: normalized.chunkOrder,
+        textHash: normalized.textHash
+      });
+    });
+  }
+
+  const batchSize = Math.max(1, Number(plan.config?.batchSize || DEFAULT_BATCH_SIZE));
+  const results = new Array(entries.length);
+  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+
+  for (let start = 0; start < entries.length; start += batchSize) {
+    let completedAfterBatch = Math.min(start + batchSize, entries.length);
+    let stopAfterCurrentBatch = false;
+    const batch = entries.slice(start, start + batchSize).map((entry, index) => normalizeChunkBatchEntry(entry, start + index));
+
+    try {
+      const payload = await requestLlmGenerate(plan.config, buildChunkSemanticExtractionBatchPrompt(batch));
+      const raw = parseJsonText(payload.text);
+      const resultProvider = payload.provider || plan.config.provider;
+      const chunkErrors = new Map(
+        (raw?.errors || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), String(entry.error || 'request-failed')])
+      );
+      const chunkResults = new Map(
+        (raw?.chunks || raw?.papers || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), entry])
+      );
+
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        const rawPaper = chunkResults.get(batchEntry.id);
+        const rawError = chunkErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
+        if (rawError) {
+          results[start + offset] = createChunkSemanticObjectInferenceResult({
+            provider: resultProvider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'request-failed',
+            error: rawError,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          });
+          continue;
+        }
+
+        if (!rawPaper) {
+          results[start + offset] = createChunkSemanticObjectInferenceResult({
+            provider: resultProvider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'request-failed',
+            error: `Missing batch semantic result for ${batchEntry.id}`,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          });
+          continue;
+        }
+
+        results[start + offset] = sanitizeChunkSemanticRaw(rawPaper, batchEntry, resultProvider, plan);
+      }
+    } catch (error) {
+      const failedProvider = error.fallbackFromRateLimit && plan.config.fallback?.provider
+        ? plan.config.fallback.provider
+        : plan.config.provider;
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        results[start + offset] = createChunkSemanticObjectInferenceResult({
+          provider: failedProvider,
+          requestedMode: plan.requestedMode,
+          effectiveMode: 'heuristic-only',
+          attempted: true,
+          participated: false,
+          reason: 'request-failed',
+          error: error.message,
+          chunkId: batchEntry.chunkId,
+          paperId: batchEntry.paperId,
+          sourceKey: batchEntry.sourceKey,
+          sectionHeading: batchEntry.sectionHeading,
+          sectionRole: batchEntry.sectionRole,
+          chunkOrder: batchEntry.chunkOrder,
+          textHash: batchEntry.textHash
+        });
+      }
+
+      if (isLlmRateLimitError(error)) {
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[start + offset] = createChunkSemanticObjectInferenceResult({
+            provider: failedProvider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'rate-limited',
+            error: null,
+            rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          });
+        }
+
+        for (let index = start + batch.length; index < entries.length; index += 1) {
+          const batchEntry = normalizeChunkBatchEntry(entries[index], index);
+          results[index] = createChunkSemanticObjectInferenceResult({
+            provider: failedProvider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'rate-limited',
+            error: null,
+            rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          });
+        }
+        completedAfterBatch = entries.length;
+        stopAfterCurrentBatch = true;
+      }
+    } finally {
+      options.onBatchComplete?.({
+        phase: 'chunk-semantic-extraction',
+        batchNumber: Math.floor(start / batchSize) + 1,
+        totalBatches,
+        completed: completedAfterBatch,
+        total: entries.length,
+        batchSize: batch.length
+      });
+    }
+
+    if (stopAfterCurrentBatch) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+function sanitizeChunkRelationRaw(rawPaper = {}, batchEntry = {}, provider = 'disabled', config = {}) {
+  return {
+    provider,
+    benchmarks: (rawPaper.benchmarks || [])
+      .map((record) => sanitizeEntityRecord(record, NODE_TYPES.BENCHMARK))
+      .filter(Boolean),
+    findings: (rawPaper.findings || [])
+      .map((record) => sanitizeEntityRecord(record, NODE_TYPES.FINDING))
+      .filter(Boolean),
+    researchGoals: (rawPaper.researchGoals || [])
+      .map((record) => sanitizeEntityRecord(record, NODE_TYPES.RESEARCH_GOAL))
+      .filter(Boolean),
+    relations: (rawPaper.relations || [])
+      .map(sanitizeRelationRecord)
+      .filter(Boolean),
+    error: null,
+    chunkId: batchEntry.chunkId,
+    paperId: batchEntry.paperId,
+    sourceKey: batchEntry.sourceKey,
+    sectionHeading: batchEntry.sectionHeading,
+    sectionRole: batchEntry.sectionRole,
+    chunkOrder: batchEntry.chunkOrder,
+    textHash: batchEntry.textHash,
+    chunkConfigSignature: config.signature || null
+  };
+}
+
+export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
+  if (!entries?.length) return [];
+
+  if (!llmRelationsEnabled(options)) {
+    return entries.map((entry, index) => {
+      const normalized = normalizeChunkBatchEntry(entry, index);
+      return {
+        provider: 'disabled',
+        benchmarks: [],
+        findings: [],
+        researchGoals: [],
+        relations: [],
+        error: null,
+        chunkId: normalized.chunkId,
+        paperId: normalized.paperId,
+        sourceKey: normalized.sourceKey,
+        sectionHeading: normalized.sectionHeading,
+        sectionRole: normalized.sectionRole,
+        chunkOrder: normalized.chunkOrder,
+        textHash: normalized.textHash
+      };
+    });
+  }
+
+  const config = resolveLlmConfig(options);
+  if (!config.enabled || !config.model) {
+    return entries.map((entry, index) => {
+      const normalized = normalizeChunkBatchEntry(entry, index);
+      return {
+        provider: 'disabled',
+        benchmarks: [],
+        findings: [],
+        researchGoals: [],
+        relations: [],
+        error: null,
+        chunkId: normalized.chunkId,
+        paperId: normalized.paperId,
+        sourceKey: normalized.sourceKey,
+        sectionHeading: normalized.sectionHeading,
+        sectionRole: normalized.sectionRole,
+        chunkOrder: normalized.chunkOrder,
+        textHash: normalized.textHash
+      };
+    });
+  }
+
+  const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const results = new Array(entries.length);
+  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+
+  for (let start = 0; start < entries.length; start += batchSize) {
+    let completedAfterBatch = Math.min(start + batchSize, entries.length);
+    let stopAfterCurrentBatch = false;
+    const batch = entries.slice(start, start + batchSize).map((entry, index) => normalizeChunkBatchEntry(entry, start + index));
+
+    try {
+      const payload = await requestLlmGenerate(config, buildChunkResearchSemanticsBatchPrompt(batch));
+      const raw = parseJsonText(payload.text);
+      const resultProvider = payload.provider || config.provider;
+      const chunkErrors = new Map(
+        (raw?.errors || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), String(entry.error || 'request-failed')])
+      );
+      const chunkResults = new Map(
+        (raw?.chunks || raw?.papers || [])
+          .filter((entry) => entry?.id)
+          .map((entry) => [String(entry.id), entry])
+      );
+
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        const rawPaper = chunkResults.get(batchEntry.id);
+        const rawError = chunkErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
+        if (rawError) {
+          results[start + offset] = {
+            provider: resultProvider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: rawError,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          };
+          continue;
+        }
+
+        if (!rawPaper) {
+          results[start + offset] = {
+            provider: resultProvider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: `Missing batch relation result for ${batchEntry.id}`,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          };
+          continue;
+        }
+
+        results[start + offset] = sanitizeChunkRelationRaw(rawPaper, batchEntry, resultProvider, {
+          signature: createCrossPaperJudgmentConfigSignature(options)
+        });
+      }
+    } catch (error) {
+      const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const batchEntry = batch[offset];
+        results[start + offset] = {
+          provider: failedProvider,
+          benchmarks: [],
+          findings: [],
+          researchGoals: [],
+          relations: [],
+          error: error.message,
+          chunkId: batchEntry.chunkId,
+          paperId: batchEntry.paperId,
+          sourceKey: batchEntry.sourceKey,
+          sectionHeading: batchEntry.sectionHeading,
+          sectionRole: batchEntry.sectionRole,
+          chunkOrder: batchEntry.chunkOrder,
+          textHash: batchEntry.textHash
+        };
+      }
+
+      if (isLlmRateLimitError(error)) {
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[start + offset] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+          results[start + offset].chunkId = batchEntry.chunkId;
+          results[start + offset].paperId = batchEntry.paperId;
+          results[start + offset].sourceKey = batchEntry.sourceKey;
+          results[start + offset].sectionHeading = batchEntry.sectionHeading;
+          results[start + offset].sectionRole = batchEntry.sectionRole;
+          results[start + offset].chunkOrder = batchEntry.chunkOrder;
+          results[start + offset].textHash = batchEntry.textHash;
+        }
+
+        for (let index = start + batch.length; index < entries.length; index += 1) {
+          const batchEntry = normalizeChunkBatchEntry(entries[index], index);
+          results[index] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+          results[index].chunkId = batchEntry.chunkId;
+          results[index].paperId = batchEntry.paperId;
+          results[index].sourceKey = batchEntry.sourceKey;
+          results[index].sectionHeading = batchEntry.sectionHeading;
+          results[index].sectionRole = batchEntry.sectionRole;
+          results[index].chunkOrder = batchEntry.chunkOrder;
+          results[index].textHash = batchEntry.textHash;
+        }
+        completedAfterBatch = entries.length;
+        stopAfterCurrentBatch = true;
+      }
+    } finally {
+      options.onBatchComplete?.({
+        phase: 'chunk-relation-extraction',
         batchNumber: Math.floor(start / batchSize) + 1,
         totalBatches,
         completed: completedAfterBatch,
