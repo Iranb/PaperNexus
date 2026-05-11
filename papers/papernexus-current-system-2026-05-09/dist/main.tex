@@ -296,6 +296,95 @@ First, the architecture is coherent: discovery feeds ingestion, ingestion feeds 
 
 For this May 10 report build, local verification included the full Node test suite and a release-hygiene scan. The test suite passed 366 of 366 tests. The scan found no repository-text, arXiv-source, or PDF string matches for private home paths, personal account names, long bearer-token literals, OpenAI-style keys, GitHub-style tokens, or private-key blocks.
 
+\paragraph{Local pipeline measurements.}
+On May 11, 2026, we ran several local measurements to separate the cost of graph commit, synchronization, PDF parsing, and LLM-based semantic enrichment. The tests were run against local \papernexus{} corpora and authenticated local server surfaces. They are engineering measurements rather than a public benchmark suite, but they are useful for locating the current bottleneck and for validating the migration plan toward larger corpora.
+
+\begin{table}[t]
+\centering
+\caption{Stage timing from a 10-real-paper local pipeline run. Values are means reported by the pipeline progress logs for that run.}
+\label{tab:local-stage-timing}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l l Y Y@{}}
+\toprule
+Measured stage & Mean duration & What the measurement covers & Interpretation \\
+\midrule
+Fast graph commit & 0.084 s & Lightweight graph projection commit after semantic materialization. & The durable write path is small relative to parsing and LLM work. \\
+Sync & 0.59 s & Local synchronization work around the committed research memory. & Synchronization overhead is not the limiting stage in the observed run. \\
+LLM optimize & 113.7 s & Semantic enrichment through the LLM-optimization stage. & This is the dominant cost in the LLM-enhanced pipeline. \\
+Active sync & 120.4 s & End-to-end active synchronization window observed for the same workload. & The total active window tracks LLM optimization closely, with storage overhead remaining secondary. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Production-style import timing shape after scoped import processing was enabled. These values describe normal single-paper import tasks and are separate from the 10-paper aggregate pipeline log above.}
+\label{tab:local-import-timing-shape}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l l Y@{}}
+\toprule
+Stage & Typical time per paper & Operational reading \\
+\midrule
+PDF to Markdown & 0.3--1.5 s & Parser work is usually short for ordinary born-digital PDFs. \\
+Materialize total & 0.4--2.2 s & Source reading, PDF conversion, Markdown cache, and snapshot creation remain low seconds. \\
+LLM Stage 2 semantic extraction & 30--40 s & The import task normally waits on LLM request latency or provider throughput. \\
+Fast commit & 3.5--4 s & A visible fixed cost, but still smaller than LLM extraction for ordinary imports. \\
+End-to-end import task & 40--46 s & Normal LLM-enhanced single-paper imports are dominated by Stage 2. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Queue recovery and continue validation from a production-style import incident.}
+\label{tab:local-queue-recovery}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l Y Y Y@{}}
+\toprule
+Measurement & Before recovery & Recovery evidence & Final active queue state \\
+\midrule
+Historical queue audit & 117 completed tasks and 33 failed tasks. & All 33 uploaded source files still existed; 24 were PDF uploads and 9 were Markdown uploads; all 33 had equivalent completed imports later in the queue. & 117 completed, 0 failed, 0 pending, 0 running, and overall progress at 100\%. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Single-prompt multi-paper LLM extraction test using local \code{cliproxyapi} with \code{qwen3.6-plus} and thinking disabled.}
+\label{tab:local-llm-batch}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}r l Y Y@{}}
+\toprule
+Papers in one prompt & Completion time & Result & Interpretation \\
+\midrule
+1 & 4.992 s & HTTP 200 with parseable structured output. & Establishes a local CPA/Qwen baseline for one-paper extraction. \\
+10 & 45.561 s & HTTP 200 with parseable structured output. & Small multi-paper batching is feasible and reduces orchestration overhead. \\
+100 & 256.409 s & HTTP 200, but the response was truncated at 60,848 characters and JSON parsing failed. & A 100-paper single prompt is not production-safe; batching must be bounded by prompt/output budget and recoverable by split retry. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Authenticated PDF upload and import stress measurements. Each run used a fresh temporary corpus with one seed Markdown source, so committed paper counts are one larger than the number of uploaded PDFs.}
+\label{tab:local-upload-stress}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}r l l l l Y@{}}
+\toprule
+Uploaded PDFs & Request payload & Enqueue latency & End-to-end time & Materialize / PDF parse & Committed graph \\
+\midrule
+1 & 182,972 bytes & 14 ms & 2.026 s & 1.443 s / 1.417 s & 2 papers, 25 nodes, 55 edges \\
+100 & 18,292,646 bytes & 60 ms & 30.289 s & 113.589 s / 110.907 s & 101 papers, 223 nodes, 1,837 edges \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The upload stress test used the HTTP import route with base64 file payloads, the background import worker, the MarkItDown PDF parser, four-way analysis concurrency, and \code{semanticExtraction=heuristic-only}. Therefore the measured path includes upload, queueing, PDF-to-Markdown conversion, materialization, the pipeline's LLM-optimization stage in heuristic-only mode, and fast graph commit, but excludes external LLM enrichment calls. The 100-PDF run completed without failed import tasks. Its additional cumulative substage timings were 0.418 seconds for Markdown reads, 0.499 seconds for Markdown parsing, and 1.665 seconds for semantic snapshots. Because parsing ran concurrently, 113.589 seconds of cumulative materialization work completed in 30.289 seconds of wall time, or roughly 3.3 uploaded PDFs per second for this small-PDF workload.
+
+Taken together, these measurements show that the current graph write and synchronization path is not the observed bottleneck. Without external LLM enrichment, PDF-to-Markdown conversion dominates the import path. With LLM enrichment enabled, the LLM-optimization stage dominates by one to two orders of magnitude over graph commit, depending on whether the measurement is a single import task or an aggregate pipeline run. The queue-recovery audit also validates the intended continue behavior: stale historical failures can be reconciled without deleting task logs or uploaded sources, while the active queue presents the recovered state to agents. The CPA/Qwen batch test shows why the system should not optimize by sending arbitrarily large paper batches to a single prompt: 10 papers worked, while 100 papers returned an HTTP success with unusable truncated JSON. The safer production design is prompt-budget batching, deterministic schema validation, batch-level checkpoints, and split retry/continue for malformed or oversized outputs.
+
+This conclusion is consistent with the staged extraction design studied from arXiv:2604.28158. That system does not rely on one giant prompt over full papers. It parses PDFs into structured sections using Nougat for born-digital PDFs and GROBID as a fallback, then runs a two-phase LLM extraction process over selected evidence. The first phase uses Introduction and Method sections plus reference titles and abstracts, averaging about 21.2 references and 5.8k input / 2.1k output tokens per prompt. The second phase only processes non-background candidates, batches about 10 candidates at a time, averages about 7.9k input / 2.8k output tokens, and repairs malformed batches once before dropping persistent failures. For \papernexus{}, the practical implication is to keep full-text parsing local and reusable, feed the LLM only the sections needed for the target extraction, and make every LLM batch independently resumable.
+
 \section{Limitations and Future Work}
 
 \papernexus{} has several current limitations.

@@ -39,6 +39,8 @@ const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_TIMEOUT_MS = 45000;
 const DEFAULT_BATCH_SIZE = 8;
+const DEFAULT_BATCH_PROMPT_MAX_CHARS = 24000;
+const DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT = 3;
 const DEFAULT_MAX_TOKENS = 2048;
 const DEFAULT_RATE_LIMIT_RETRY_COUNT = 3;
 const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 1000;
@@ -1430,6 +1432,83 @@ function toNonNegativeNumber(value, fallback) {
   return Math.max(0, parsed);
 }
 
+function resolveBatchPromptMaxChars(options = {}) {
+  return toNonNegativeInteger(
+    pickDefined(
+      options.llmBatchPromptMaxChars,
+      options.batchPromptMaxChars,
+      process.env.PAPERNEXUS_LLM_BATCH_PROMPT_MAX_CHARS,
+      DEFAULT_BATCH_PROMPT_MAX_CHARS
+    ),
+    DEFAULT_BATCH_PROMPT_MAX_CHARS
+  );
+}
+
+function resolveBatchFailureSplitRetryCount(options = {}) {
+  return toNonNegativeInteger(
+    pickDefined(
+      options.llmBatchFailureSplitRetryCount,
+      options.batchFailureSplitRetryCount,
+      process.env.PAPERNEXUS_LLM_BATCH_FAILURE_SPLIT_RETRY_COUNT,
+      DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT
+    ),
+    DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT
+  );
+}
+
+function partitionEntriesByPromptBudget(entries = [], promptBuilder, options = {}, maxBatchSize = DEFAULT_BATCH_SIZE) {
+  const hardBatchSize = Math.max(1, Number(maxBatchSize || DEFAULT_BATCH_SIZE));
+  const promptMaxChars = resolveBatchPromptMaxChars(options);
+  const batches = [];
+  let current = [];
+
+  for (const entry of entries) {
+    if (current.length >= hardBatchSize) {
+      batches.push(current);
+      current = [];
+    }
+
+    const candidate = [...current, entry];
+    const wouldExceedBudget = current.length > 0
+      && promptMaxChars > 0
+      && String(promptBuilder(candidate)).length > promptMaxChars;
+
+    if (wouldExceedBudget) {
+      batches.push(current);
+      current = [entry];
+    } else {
+      current = candidate;
+    }
+  }
+
+  if (current.length) {
+    batches.push(current);
+  }
+
+  return batches;
+}
+
+function isBatchOutputParseError(error) {
+  if (Number(error?.statusCode || 0)) return false;
+  return /(?:valid json|json parse|unexpected token|unexpected end)/i.test(String(error?.message || ''));
+}
+
+function shouldRetryBatchBySplitting(error, batch = [], retryCount = 0) {
+  return Boolean(
+    retryCount > 0
+    && batch.length > 1
+    && !isLlmRateLimitError(error)
+    && isBatchOutputParseError(error)
+  );
+}
+
+function splitBatchForRetry(batch = []) {
+  if (!batch.length) return [];
+  if (batch.length === 1) return [batch];
+  const midpoint = Math.ceil(batch.length / 2);
+  return [batch.slice(0, midpoint), batch.slice(midpoint)].filter((subBatch) => subBatch.length);
+}
+
 function resolveLlmRetryConfig(config = {}) {
   const retryCount = toNonNegativeInteger(config.rateLimitRetryCount, DEFAULT_RATE_LIMIT_RETRY_COUNT);
   const retryDelayMs = toNonNegativeNumber(config.rateLimitRetryDelayMs, DEFAULT_RATE_LIMIT_RETRY_DELAY_MS);
@@ -2291,19 +2370,31 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
   }
 
   const batchSize = Math.max(1, Number(plan.config?.batchSize || DEFAULT_BATCH_SIZE));
+  const normalizedEntries = entries.map((entry, index) => ({
+    ...entry,
+    id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${index + 1}`),
+    __batchIndex: index
+  }));
+  const batches = partitionEntriesByPromptBudget(
+    normalizedEntries,
+    buildSemanticExtractionBatchPrompt,
+    options,
+    batchSize
+  );
   const results = new Array(entries.length);
-  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+  const totalBatches = Math.max(1, batches.length);
+  const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
+  const promptMaxChars = resolveBatchPromptMaxChars(options);
 
-  for (let start = 0; start < entries.length; start += batchSize) {
-    let completedAfterBatch = Math.min(start + batchSize, entries.length);
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const batch = batches[batchIndex];
+    let completedAfterBatch = Math.max(...batch.map((entry) => entry.__batchIndex)) + 1;
     let stopAfterCurrentBatch = false;
-    const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
-      ...entry,
-      id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${start + index + 1}`)
-    }));
+    const prompt = buildSemanticExtractionBatchPrompt(batch);
+    const promptChars = String(prompt).length;
 
     try {
-      const payload = await requestLlmGenerate(plan.config, buildSemanticExtractionBatchPrompt(batch));
+      const payload = await requestLlmGenerate(plan.config, prompt);
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || plan.config.provider;
       const paperErrors = new Map(
@@ -2322,7 +2413,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         const rawPaper = paperResults.get(batchEntry.id);
         const rawError = paperErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
         if (rawError) {
-          results[start + offset] = createSemanticObjectInferenceResult({
+          results[batchEntry.__batchIndex] = createSemanticObjectInferenceResult({
             provider: resultProvider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
@@ -2335,7 +2426,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         }
 
         if (!rawPaper) {
-          results[start + offset] = createSemanticObjectInferenceResult({
+          results[batchEntry.__batchIndex] = createSemanticObjectInferenceResult({
             provider: resultProvider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
@@ -2347,7 +2438,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           continue;
         }
 
-        results[start + offset] = createSemanticObjectInferenceResult({
+        results[batchEntry.__batchIndex] = createSemanticObjectInferenceResult({
           provider: resultProvider,
           requestedMode: plan.requestedMode,
           effectiveMode: plan.effectiveMode,
@@ -2375,48 +2466,107 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         });
       }
     } catch (error) {
-      const failedProvider = error.fallbackFromRateLimit && plan.config.fallback?.provider
-        ? plan.config.fallback.provider
-        : plan.config.provider;
-      for (let offset = 0; offset < batch.length; offset += 1) {
-        results[start + offset] = createSemanticObjectInferenceResult({
-          provider: failedProvider,
-          requestedMode: plan.requestedMode,
-          effectiveMode: 'heuristic-only',
-          attempted: true,
-          participated: false,
-          reason: 'request-failed',
+      let recoveredBySplitRetry = false;
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+        options.onBatchRetry?.({
+          phase: 'semantic-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
           error: error.message
         });
+        const retryResults = await inferPaperSemanticObjectsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = retryResults[offset] || createSemanticObjectInferenceResult({
+            provider: plan.config.provider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'request-failed',
+            error: `Missing split-retry semantic result for ${batchEntry.id}`
+          });
+        }
+
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            results[index] = createSemanticObjectInferenceResult({
+              provider: rateLimitedResult.provider || plan.config.provider,
+              requestedMode: plan.requestedMode,
+              effectiveMode: 'heuristic-only',
+              attempted: true,
+              participated: false,
+              reason: 'rate-limited',
+              error: null,
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null
+            });
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
+        recoveredBySplitRetry = true;
       }
 
-      if (isLlmRateLimitError(error)) {
+      if (!recoveredBySplitRetry) {
+        const failedProvider = error.fallbackFromRateLimit && plan.config.fallback?.provider
+          ? plan.config.fallback.provider
+          : plan.config.provider;
         for (let offset = 0; offset < batch.length; offset += 1) {
-          results[start + offset] = createRateLimitedSemanticObjectInferenceResult({
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = createSemanticObjectInferenceResult({
             provider: failedProvider,
             requestedMode: plan.requestedMode,
-            error
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'request-failed',
+            error: error.message
           });
         }
 
-        for (let index = start + batch.length; index < entries.length; index += 1) {
-          results[index] = createRateLimitedSemanticObjectInferenceResult({
-            provider: failedProvider,
-            requestedMode: plan.requestedMode,
-            error
-          });
+        if (isLlmRateLimitError(error)) {
+          for (let offset = 0; offset < batch.length; offset += 1) {
+            const batchEntry = batch[offset];
+            results[batchEntry.__batchIndex] = createRateLimitedSemanticObjectInferenceResult({
+              provider: failedProvider,
+              requestedMode: plan.requestedMode,
+              error
+            });
+          }
+
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            results[index] = createRateLimitedSemanticObjectInferenceResult({
+              provider: failedProvider,
+              requestedMode: plan.requestedMode,
+              error
+            });
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
         }
-        completedAfterBatch = entries.length;
-        stopAfterCurrentBatch = true;
       }
     } finally {
       options.onBatchComplete?.({
         phase: 'semantic-extraction',
-        batchNumber: Math.floor(start / batchSize) + 1,
+        batchNumber: batchIndex + 1,
         totalBatches,
         completed: completedAfterBatch,
         total: entries.length,
-        batchSize: batch.length
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars
       });
     }
 
@@ -2586,16 +2736,30 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
   }
 
   const batchSize = Math.max(1, Number(plan.config?.batchSize || DEFAULT_BATCH_SIZE));
+  const normalizedEntries = entries.map((entry, index) => ({
+    ...normalizeChunkBatchEntry(entry, index),
+    __batchIndex: index
+  }));
+  const batches = partitionEntriesByPromptBudget(
+    normalizedEntries,
+    buildChunkSemanticExtractionBatchPrompt,
+    options,
+    batchSize
+  );
   const results = new Array(entries.length);
-  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+  const totalBatches = Math.max(1, batches.length);
+  const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
+  const promptMaxChars = resolveBatchPromptMaxChars(options);
 
-  for (let start = 0; start < entries.length; start += batchSize) {
-    let completedAfterBatch = Math.min(start + batchSize, entries.length);
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const batch = batches[batchIndex];
+    let completedAfterBatch = Math.max(...batch.map((entry) => entry.__batchIndex)) + 1;
     let stopAfterCurrentBatch = false;
-    const batch = entries.slice(start, start + batchSize).map((entry, index) => normalizeChunkBatchEntry(entry, start + index));
+    const prompt = buildChunkSemanticExtractionBatchPrompt(batch);
+    const promptChars = String(prompt).length;
 
     try {
-      const payload = await requestLlmGenerate(plan.config, buildChunkSemanticExtractionBatchPrompt(batch));
+      const payload = await requestLlmGenerate(plan.config, prompt);
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || plan.config.provider;
       const chunkErrors = new Map(
@@ -2614,7 +2778,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         const rawPaper = chunkResults.get(batchEntry.id);
         const rawError = chunkErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
         if (rawError) {
-          results[start + offset] = createChunkSemanticObjectInferenceResult({
+          results[batchEntry.__batchIndex] = createChunkSemanticObjectInferenceResult({
             provider: resultProvider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
@@ -2634,7 +2798,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         }
 
         if (!rawPaper) {
-          results[start + offset] = createChunkSemanticObjectInferenceResult({
+          results[batchEntry.__batchIndex] = createChunkSemanticObjectInferenceResult({
             provider: resultProvider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
@@ -2653,44 +2817,39 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
           continue;
         }
 
-        results[start + offset] = sanitizeChunkSemanticRaw(rawPaper, batchEntry, resultProvider, plan);
+        results[batchEntry.__batchIndex] = sanitizeChunkSemanticRaw(rawPaper, batchEntry, resultProvider, plan);
       }
     } catch (error) {
-      const failedProvider = error.fallbackFromRateLimit && plan.config.fallback?.provider
-        ? plan.config.fallback.provider
-        : plan.config.provider;
-      for (let offset = 0; offset < batch.length; offset += 1) {
-        const batchEntry = batch[offset];
-        results[start + offset] = createChunkSemanticObjectInferenceResult({
-          provider: failedProvider,
-          requestedMode: plan.requestedMode,
-          effectiveMode: 'heuristic-only',
-          attempted: true,
-          participated: false,
-          reason: 'request-failed',
-          error: error.message,
-          chunkId: batchEntry.chunkId,
-          paperId: batchEntry.paperId,
-          sourceKey: batchEntry.sourceKey,
-          sectionHeading: batchEntry.sectionHeading,
-          sectionRole: batchEntry.sectionRole,
-          chunkOrder: batchEntry.chunkOrder,
-          textHash: batchEntry.textHash
+      let recoveredBySplitRetry = false;
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+        options.onBatchRetry?.({
+          phase: 'chunk-semantic-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
+          error: error.message
         });
-      }
-
-      if (isLlmRateLimitError(error)) {
+        const retryResults = await inferChunkSemanticObjectsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
         for (let offset = 0; offset < batch.length; offset += 1) {
           const batchEntry = batch[offset];
-          results[start + offset] = createChunkSemanticObjectInferenceResult({
-            provider: failedProvider,
+          results[batchEntry.__batchIndex] = retryResults[offset] || createChunkSemanticObjectInferenceResult({
+            provider: plan.config.provider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'rate-limited',
-            error: null,
-            rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+            reason: 'request-failed',
+            error: `Missing split-retry semantic result for ${batchEntry.id}`,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
             sourceKey: batchEntry.sourceKey,
@@ -2701,17 +2860,48 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
           });
         }
 
-        for (let index = start + batch.length; index < entries.length; index += 1) {
-          const batchEntry = normalizeChunkBatchEntry(entries[index], index);
-          results[index] = createChunkSemanticObjectInferenceResult({
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            const batchEntry = normalizedEntries[index];
+            results[index] = createChunkSemanticObjectInferenceResult({
+              provider: rateLimitedResult.provider || plan.config.provider,
+              requestedMode: plan.requestedMode,
+              effectiveMode: 'heuristic-only',
+              attempted: true,
+              participated: false,
+              reason: 'rate-limited',
+              error: null,
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null,
+              chunkId: batchEntry.chunkId,
+              paperId: batchEntry.paperId,
+              sourceKey: batchEntry.sourceKey,
+              sectionHeading: batchEntry.sectionHeading,
+              sectionRole: batchEntry.sectionRole,
+              chunkOrder: batchEntry.chunkOrder,
+              textHash: batchEntry.textHash
+            });
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
+        recoveredBySplitRetry = true;
+      }
+
+      if (!recoveredBySplitRetry) {
+        const failedProvider = error.fallbackFromRateLimit && plan.config.fallback?.provider
+          ? plan.config.fallback.provider
+          : plan.config.provider;
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = createChunkSemanticObjectInferenceResult({
             provider: failedProvider,
             requestedMode: plan.requestedMode,
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'rate-limited',
-            error: null,
-            rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+            reason: 'request-failed',
+            error: error.message,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
             sourceKey: batchEntry.sourceKey,
@@ -2721,17 +2911,63 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
             textHash: batchEntry.textHash
           });
         }
-        completedAfterBatch = entries.length;
-        stopAfterCurrentBatch = true;
+
+        if (isLlmRateLimitError(error)) {
+          for (let offset = 0; offset < batch.length; offset += 1) {
+            const batchEntry = batch[offset];
+            results[batchEntry.__batchIndex] = createChunkSemanticObjectInferenceResult({
+              provider: failedProvider,
+              requestedMode: plan.requestedMode,
+              effectiveMode: 'heuristic-only',
+              attempted: true,
+              participated: false,
+              reason: 'rate-limited',
+              error: null,
+              rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+              chunkId: batchEntry.chunkId,
+              paperId: batchEntry.paperId,
+              sourceKey: batchEntry.sourceKey,
+              sectionHeading: batchEntry.sectionHeading,
+              sectionRole: batchEntry.sectionRole,
+              chunkOrder: batchEntry.chunkOrder,
+              textHash: batchEntry.textHash
+            });
+          }
+
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            const batchEntry = normalizedEntries[index];
+            results[index] = createChunkSemanticObjectInferenceResult({
+              provider: failedProvider,
+              requestedMode: plan.requestedMode,
+              effectiveMode: 'heuristic-only',
+              attempted: true,
+              participated: false,
+              reason: 'rate-limited',
+              error: null,
+              rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+              chunkId: batchEntry.chunkId,
+              paperId: batchEntry.paperId,
+              sourceKey: batchEntry.sourceKey,
+              sectionHeading: batchEntry.sectionHeading,
+              sectionRole: batchEntry.sectionRole,
+              chunkOrder: batchEntry.chunkOrder,
+              textHash: batchEntry.textHash
+            });
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
       }
     } finally {
       options.onBatchComplete?.({
         phase: 'chunk-semantic-extraction',
-        batchNumber: Math.floor(start / batchSize) + 1,
+        batchNumber: batchIndex + 1,
         totalBatches,
         completed: completedAfterBatch,
         total: entries.length,
-        batchSize: batch.length
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars
       });
     }
 
@@ -2817,16 +3053,30 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
   }
 
   const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const normalizedEntries = entries.map((entry, index) => ({
+    ...normalizeChunkBatchEntry(entry, index),
+    __batchIndex: index
+  }));
+  const batches = partitionEntriesByPromptBudget(
+    normalizedEntries,
+    buildChunkResearchSemanticsBatchPrompt,
+    options,
+    batchSize
+  );
   const results = new Array(entries.length);
-  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+  const totalBatches = Math.max(1, batches.length);
+  const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
+  const promptMaxChars = resolveBatchPromptMaxChars(options);
 
-  for (let start = 0; start < entries.length; start += batchSize) {
-    let completedAfterBatch = Math.min(start + batchSize, entries.length);
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const batch = batches[batchIndex];
+    let completedAfterBatch = Math.max(...batch.map((entry) => entry.__batchIndex)) + 1;
     let stopAfterCurrentBatch = false;
-    const batch = entries.slice(start, start + batchSize).map((entry, index) => normalizeChunkBatchEntry(entry, start + index));
+    const prompt = buildChunkResearchSemanticsBatchPrompt(batch);
+    const promptChars = String(prompt).length;
 
     try {
-      const payload = await requestLlmGenerate(config, buildChunkResearchSemanticsBatchPrompt(batch));
+      const payload = await requestLlmGenerate(config, prompt);
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || config.provider;
       const chunkErrors = new Map(
@@ -2845,7 +3095,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         const rawPaper = chunkResults.get(batchEntry.id);
         const rawError = chunkErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
         if (rawError) {
-          results[start + offset] = {
+          results[batchEntry.__batchIndex] = {
             provider: resultProvider,
             benchmarks: [],
             findings: [],
@@ -2864,7 +3114,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         }
 
         if (!rawPaper) {
-          results[start + offset] = {
+          results[batchEntry.__batchIndex] = {
             provider: resultProvider,
             benchmarks: [],
             findings: [],
@@ -2882,66 +3132,137 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
           continue;
         }
 
-        results[start + offset] = sanitizeChunkRelationRaw(rawPaper, batchEntry, resultProvider, {
+        results[batchEntry.__batchIndex] = sanitizeChunkRelationRaw(rawPaper, batchEntry, resultProvider, {
           signature: createCrossPaperJudgmentConfigSignature(options)
         });
       }
     } catch (error) {
-      const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
-      for (let offset = 0; offset < batch.length; offset += 1) {
-        const batchEntry = batch[offset];
-        results[start + offset] = {
-          provider: failedProvider,
-          benchmarks: [],
-          findings: [],
-          researchGoals: [],
-          relations: [],
-          error: error.message,
-          chunkId: batchEntry.chunkId,
-          paperId: batchEntry.paperId,
-          sourceKey: batchEntry.sourceKey,
-          sectionHeading: batchEntry.sectionHeading,
-          sectionRole: batchEntry.sectionRole,
-          chunkOrder: batchEntry.chunkOrder,
-          textHash: batchEntry.textHash
-        };
-      }
-
-      if (isLlmRateLimitError(error)) {
+      let recoveredBySplitRetry = false;
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+        options.onBatchRetry?.({
+          phase: 'chunk-relation-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
+          error: error.message
+        });
+        const retryResults = await inferChunkResearchSemanticsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
         for (let offset = 0; offset < batch.length; offset += 1) {
           const batchEntry = batch[offset];
-          results[start + offset] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
-          results[start + offset].chunkId = batchEntry.chunkId;
-          results[start + offset].paperId = batchEntry.paperId;
-          results[start + offset].sourceKey = batchEntry.sourceKey;
-          results[start + offset].sectionHeading = batchEntry.sectionHeading;
-          results[start + offset].sectionRole = batchEntry.sectionRole;
-          results[start + offset].chunkOrder = batchEntry.chunkOrder;
-          results[start + offset].textHash = batchEntry.textHash;
+          results[batchEntry.__batchIndex] = retryResults[offset] || {
+            provider: config.provider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: `Missing split-retry relation result for ${batchEntry.id}`,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          };
         }
 
-        for (let index = start + batch.length; index < entries.length; index += 1) {
-          const batchEntry = normalizeChunkBatchEntry(entries[index], index);
-          results[index] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
-          results[index].chunkId = batchEntry.chunkId;
-          results[index].paperId = batchEntry.paperId;
-          results[index].sourceKey = batchEntry.sourceKey;
-          results[index].sectionHeading = batchEntry.sectionHeading;
-          results[index].sectionRole = batchEntry.sectionRole;
-          results[index].chunkOrder = batchEntry.chunkOrder;
-          results[index].textHash = batchEntry.textHash;
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            const batchEntry = normalizedEntries[index];
+            results[index] = {
+              provider: rateLimitedResult.provider || config.provider,
+              benchmarks: [],
+              findings: [],
+              researchGoals: [],
+              relations: [],
+              reason: 'rate-limited',
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null,
+              error: null,
+              chunkId: batchEntry.chunkId,
+              paperId: batchEntry.paperId,
+              sourceKey: batchEntry.sourceKey,
+              sectionHeading: batchEntry.sectionHeading,
+              sectionRole: batchEntry.sectionRole,
+              chunkOrder: batchEntry.chunkOrder,
+              textHash: batchEntry.textHash
+            };
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
         }
-        completedAfterBatch = entries.length;
-        stopAfterCurrentBatch = true;
+        recoveredBySplitRetry = true;
+      }
+
+      if (!recoveredBySplitRetry) {
+        const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = {
+            provider: failedProvider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: error.message,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          };
+        }
+
+        if (isLlmRateLimitError(error)) {
+          for (let offset = 0; offset < batch.length; offset += 1) {
+            const batchEntry = batch[offset];
+            results[batchEntry.__batchIndex] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+            results[batchEntry.__batchIndex].chunkId = batchEntry.chunkId;
+            results[batchEntry.__batchIndex].paperId = batchEntry.paperId;
+            results[batchEntry.__batchIndex].sourceKey = batchEntry.sourceKey;
+            results[batchEntry.__batchIndex].sectionHeading = batchEntry.sectionHeading;
+            results[batchEntry.__batchIndex].sectionRole = batchEntry.sectionRole;
+            results[batchEntry.__batchIndex].chunkOrder = batchEntry.chunkOrder;
+            results[batchEntry.__batchIndex].textHash = batchEntry.textHash;
+          }
+
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            const batchEntry = normalizedEntries[index];
+            results[index] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+            results[index].chunkId = batchEntry.chunkId;
+            results[index].paperId = batchEntry.paperId;
+            results[index].sourceKey = batchEntry.sourceKey;
+            results[index].sectionHeading = batchEntry.sectionHeading;
+            results[index].sectionRole = batchEntry.sectionRole;
+            results[index].chunkOrder = batchEntry.chunkOrder;
+            results[index].textHash = batchEntry.textHash;
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
       }
     } finally {
       options.onBatchComplete?.({
         phase: 'chunk-relation-extraction',
-        batchNumber: Math.floor(start / batchSize) + 1,
+        batchNumber: batchIndex + 1,
         totalBatches,
         completed: completedAfterBatch,
         total: entries.length,
-        batchSize: batch.length
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars
       });
     }
 
@@ -3045,19 +3366,31 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
   }
 
   const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
-  const results = new Array(entries.length);
-  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
-
-  for (let start = 0; start < entries.length; start += batchSize) {
-    let completedAfterBatch = Math.min(start + batchSize, entries.length);
-    let stopAfterCurrentBatch = false;
-    const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
+  const normalizedEntries = entries.map((entry, index) => ({
       ...entry,
-      id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${start + index + 1}`)
+      id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${index + 1}`),
+      __batchIndex: index
     }));
+  const batches = partitionEntriesByPromptBudget(
+    normalizedEntries,
+    buildResearchSemanticsBatchPrompt,
+    options,
+    batchSize
+  );
+  const results = new Array(entries.length);
+  const totalBatches = Math.max(1, batches.length);
+  const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
+  const promptMaxChars = resolveBatchPromptMaxChars(options);
+
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const batch = batches[batchIndex];
+    let completedAfterBatch = Math.max(...batch.map((entry) => entry.__batchIndex)) + 1;
+    let stopAfterCurrentBatch = false;
+    const prompt = buildResearchSemanticsBatchPrompt(batch);
+    const promptChars = String(prompt).length;
 
     try {
-      const payload = await requestLlmGenerate(config, buildResearchSemanticsBatchPrompt(batch));
+      const payload = await requestLlmGenerate(config, prompt);
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || config.provider;
       const paperErrors = new Map(
@@ -3076,7 +3409,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         const rawPaper = paperResults.get(batchEntry.id);
         const rawError = paperErrors.get(batchEntry.id) || (rawPaper?.error ? String(rawPaper.error) : '');
         if (rawError) {
-          results[start + offset] = {
+          results[batchEntry.__batchIndex] = {
             provider: resultProvider,
             benchmarks: [],
             findings: [],
@@ -3088,7 +3421,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         }
 
         if (!rawPaper) {
-          results[start + offset] = {
+          results[batchEntry.__batchIndex] = {
             provider: resultProvider,
             benchmarks: [],
             findings: [],
@@ -3099,7 +3432,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
           continue;
         }
 
-        results[start + offset] = {
+        results[batchEntry.__batchIndex] = {
           provider: resultProvider,
           benchmarks: (rawPaper.benchmarks || [])
             .map((record) => sanitizeEntityRecord(record, NODE_TYPES.BENCHMARK))
@@ -3117,37 +3450,95 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         };
       }
     } catch (error) {
-      const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
-      for (let offset = 0; offset < batch.length; offset += 1) {
-        results[start + offset] = {
-          provider: failedProvider,
-          benchmarks: [],
-          findings: [],
-          researchGoals: [],
-          relations: [],
+      let recoveredBySplitRetry = false;
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+        options.onBatchRetry?.({
+          phase: 'relation-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
           error: error.message
-        };
+        });
+        const retryResults = await inferPaperResearchSemanticsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = retryResults[offset] || {
+            provider: config.provider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: `Missing split-retry relation result for ${batchEntry.id}`
+          };
+        }
+
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            results[index] = {
+              provider: rateLimitedResult.provider || config.provider,
+              benchmarks: [],
+              findings: [],
+              researchGoals: [],
+              relations: [],
+              reason: 'rate-limited',
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null,
+              error: null
+            };
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
+        recoveredBySplitRetry = true;
       }
 
-      if (isLlmRateLimitError(error)) {
+      if (!recoveredBySplitRetry) {
+        const failedProvider = error.fallbackFromRateLimit && config.fallback?.provider ? config.fallback.provider : config.provider;
         for (let offset = 0; offset < batch.length; offset += 1) {
-          results[start + offset] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = {
+            provider: failedProvider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            error: error.message
+          };
         }
 
-        for (let index = start + batch.length; index < entries.length; index += 1) {
-          results[index] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+        if (isLlmRateLimitError(error)) {
+          for (let offset = 0; offset < batch.length; offset += 1) {
+            const batchEntry = batch[offset];
+            results[batchEntry.__batchIndex] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+          }
+
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            results[index] = createRateLimitedResearchSemanticsResult({ ...config, provider: failedProvider }, error);
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
         }
-        completedAfterBatch = entries.length;
-        stopAfterCurrentBatch = true;
       }
     } finally {
       options.onBatchComplete?.({
         phase: 'relation-extraction',
-        batchNumber: Math.floor(start / batchSize) + 1,
+        batchNumber: batchIndex + 1,
         totalBatches,
         completed: completedAfterBatch,
         total: entries.length,
-        batchSize: batch.length
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars
       });
     }
 

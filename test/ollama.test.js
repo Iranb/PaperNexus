@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   adjudicateCrossPaperCandidates,
   clearLlmRateLimitCooldowns,
+  inferChunkSemanticObjectsBatch,
   inferPaperResearchSemanticsBatch,
   inferPaperSemanticObjects,
   inferPaperSemanticObjectsBatch,
@@ -929,6 +930,168 @@ test('batch LLM inference reports batch progress callbacks', async () => {
   assert.equal(batchEvents[1].batchNumber, 2);
   assert.equal(batchEvents[1].totalBatches, 2);
   assert.equal(batchEvents[1].completed, 3);
+});
+
+test('inferChunkSemanticObjectsBatch splits oversized prompts by prompt budget', async () => {
+  let fetchCount = 0;
+  const batchEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const chunks = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  chunks: chunks.map((chunk) => ({
+                    id: chunk.id,
+                    problems: [],
+                    methods: [],
+                    claims: [],
+                    findings: [],
+                    researchGoals: [],
+                    limitations: [],
+                    assumptions: [],
+                    evidences: [],
+                    futureDirections: [],
+                    benchmarks: [],
+                    datasets: [],
+                    metrics: [],
+                    fieldOfStudy: 'Computer Science',
+                    fieldCandidates: ['Computer Science'],
+                    domainTags: ['Computer Science'],
+                    abstractMechanisms: [],
+                    researchQuestions: [],
+                    openChallenges: [],
+                    takeaways: [],
+                    ideaFragments: []
+                  }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    {
+      id: 'chunk-1',
+      text: 'A'.repeat(1200),
+      chunk: { chunkId: 'chunk-1', text: 'A'.repeat(1200) },
+      semanticPaper: { paperId: 'paper-1', paperTitle: 'Paper 1' }
+    },
+    {
+      id: 'chunk-2',
+      text: 'B'.repeat(1200),
+      chunk: { chunkId: 'chunk-2', text: 'B'.repeat(1200) },
+      semanticPaper: { paperId: 'paper-2', paperTitle: 'Paper 2' }
+    },
+    {
+      id: 'chunk-3',
+      text: 'C'.repeat(1200),
+      chunk: { chunkId: 'chunk-3', text: 'C'.repeat(1200) },
+      semanticPaper: { paperId: 'paper-3', paperTitle: 'Paper 3' }
+    }
+  ];
+
+  const results = await inferChunkSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmBatchSize: 10,
+    llmBatchPromptMaxChars: 1800,
+    onBatchComplete(event) {
+      batchEvents.push(event);
+    }
+  });
+
+  assert.equal(results.length, 3);
+  assert.ok(fetchCount > 1);
+  assert.equal(batchEvents.length, fetchCount);
+  assert.equal(results.every((result) => result.participated), true);
+});
+
+test('inferPaperSemanticObjectsBatch retries malformed batch output with smaller batches', async () => {
+  let fetchCount = 0;
+  const retryEvents = [];
+  const batchEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: papers.length > 2
+                  ? '<xml></xml>'
+                  : JSON.stringify({
+                      papers: papers.map((paper) => ({
+                        id: paper.id,
+                        problems: [],
+                        methods: [],
+                        claims: [],
+                        findings: []
+                      }))
+                    })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} },
+    { id: 'paper-3', parsedPaper: { title: 'C', sections: [] }, semanticPaper: {} },
+    { id: 'paper-4', parsedPaper: { title: 'D', sections: [] }, semanticPaper: {} }
+  ];
+
+  const results = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmBatchSize: 4,
+    llmBatchFailureSplitRetryCount: 2,
+    onBatchRetry(event) {
+      retryEvents.push(event);
+    },
+    onBatchComplete(event) {
+      batchEvents.push(event);
+    }
+  });
+
+  assert.equal(fetchCount, 3);
+  assert.equal(results.length, 4);
+  assert.equal(results.every((result) => result.participated), true);
+  assert.equal(retryEvents.length, 1);
+  assert.equal(retryEvents[0].batchSize, 4);
+  assert.equal(retryEvents[0].retryBatchSize, 2);
+  assert.equal(batchEvents.length, 1);
+  assert.equal(batchEvents[0].completed, 4);
 });
 
 test('inferPaperResearchSemantics supports OpenAI chat-completions style responses', async () => {

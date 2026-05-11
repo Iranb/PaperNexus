@@ -59,6 +59,8 @@
     "model": "gpt-4o-mini",
     "baseUrl": "https://api.openai.com/v1",
     "relations": true,
+    "batchPromptMaxChars": 24000,
+    "batchFailureSplitRetryCount": 3,
     "apiKeyEnv": "OPENAI_API_KEY"
   },
   "literatureDiscovery": {

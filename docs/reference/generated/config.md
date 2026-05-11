@@ -70,6 +70,8 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "model": "gpt-4o-mini",
     "baseUrl": "https://api.openai.com/v1",
     "relations": true,
+    "batchPromptMaxChars": 24000,
+    "batchFailureSplitRetryCount": 3,
     "apiKeyEnv": "OPENAI_API_KEY"
   },
   "literatureDiscovery": {
@@ -141,6 +143,8 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `llm.model` | string | `gpt-4o-mini` |
 | `llm.baseUrl` | string | `https://api.openai.com/v1` |
 | `llm.relations` | boolean | `true` |
+| `llm.batchPromptMaxChars` | number | `24000` |
+| `llm.batchFailureSplitRetryCount` | number | `3` |
 | `llm.apiKeyEnv` | string | `OPENAI_API_KEY` |
 | `literatureDiscovery` | object | section |
 | `literatureDiscovery.institutionalAccessMode` | string | `hints-only` |

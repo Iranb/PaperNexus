@@ -481,6 +481,8 @@ function buildLlmOptions(flags, config) {
     llmRelations: firstDefined(flags.relations, flags['ollama-relations'], llmConfig.relations, ollamaConfig.relations),
     llmTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], flags['ollama-timeout-ms'], llmConfig.timeoutMs, ollamaConfig.timeoutMs), undefined),
     llmBatchSize: toNumber(firstDefined(flags['batch-size'], flags['ollama-batch-size'], llmConfig.batchSize, ollamaConfig.batchSize), undefined),
+    llmBatchPromptMaxChars: toNumber(firstDefined(flags['batch-prompt-max-chars'], llmConfig.batchPromptMaxChars), undefined),
+    llmBatchFailureSplitRetryCount: toNumber(firstDefined(flags['batch-failure-split-retry-count'], llmConfig.batchFailureSplitRetryCount), undefined),
     llmChunkPipeline: firstDefined(flags['llm-chunk-pipeline'], flags['chunk-llm-pipeline'], llmConfig.chunkPipeline),
     llmChunkLimitPerPaper: toNumber(firstDefined(flags['llm-chunk-limit-per-paper'], flags['chunk-limit-per-paper'], llmConfig.chunkLimitPerPaper), undefined),
     llmMaxTokens: toNumber(firstDefined(flags['max-tokens'], llmConfig.maxTokens), undefined),
