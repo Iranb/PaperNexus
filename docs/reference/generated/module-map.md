@@ -56,6 +56,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/authoritative-sync/worker.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/authoritative-sync/worker.js) | Authoritative sync queue processor for full graph state. |
 | [`src/core/benchmarks/retrieval.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/benchmarks/retrieval.js) | Retrieval implementation. |
 | [`src/core/benchmarks/task-evaluation.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/benchmarks/task-evaluation.js) | Task Evaluation implementation. |
+| [`src/core/discovery/browser-session-download.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/browser-session-download.js) | Browser Session Download implementation. |
 | [`src/core/discovery/citation-expansion.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/citation-expansion.js) | Citation Expansion implementation. |
 | [`src/core/discovery/download-manifest.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/download-manifest.js) | Download Manifest implementation. |
 | [`src/core/discovery/entities.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/entities.js) | Entities implementation. |

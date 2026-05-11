@@ -89,6 +89,7 @@ export function buildDiscoveryDownloadManifest(runOrCandidates = {}) {
       local_source_path: downloadedPath,
       filename: fullTextStatus === 'open_pdf' || fullTextStatus === 'open_markdown' || downloadStatus === 'downloaded' ? filenameFor(candidate, index) : null,
       institutional_access_hints: source.institutionalAccessHints || [],
+      browser_access_barriers: source.browserAccessBarriers || [],
       supplementation: source.supplementation || null
     };
   });

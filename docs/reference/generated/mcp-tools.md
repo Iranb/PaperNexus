@@ -379,7 +379,16 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `providerRequestDelayMs` | optional | number | Minimum delay between consecutive queries sent to the same provider. Set to 0 for fast local tests; keep nonzero for public APIs to reduce HTTP 429s. |
 | `maxRetryAfterMs` | optional | number | Maximum Retry-After delay respected before a provider request fails fast. |
 | `institutionalResolverBaseUrl` | optional | string | Optional campus library/OpenURL resolver URL. PaperNexus records resolver hints; it does not bypass authentication or paywalls. |
-| `institutionalAccessMode` | optional | string (hints-only) | Authorized institutional access handling mode. Current implementation records hints only. |
+| `institutionalAccessMode` | optional | string (hints-only, browser, headless-browser, browser-session) | Authorized institutional access handling mode. Use headless-browser/browser-session to try a Playwright persistent browser profile after open-access download paths fail; SSO and captcha pages are recorded as manual barriers, not thrown. |
+| `browserProfileDir` | optional | string | Optional browser user data directory for institutional browser-session downloads. Defaults to the selected browser channel profile root, such as Microsoft Edge User Data. |
+| `browserProfileName` | optional | string | Browser profile name inside browserProfileDir for browser-session downloads. |
+| `browserChannel` | optional | string | Playwright browser channel for browser-session downloads, usually msedge or chrome. |
+| `browserExecutablePath` | optional | string | Optional Chromium/Chrome executable path for browser-session downloads. When set, it overrides browserChannel; useful on headless servers with a Playwright browser cache. |
+| `browserHeadless` | optional | boolean | Run the persistent browser-session downloader in headless mode. |
+| `browserDownloadTimeoutMs` | optional | number | Per-page/per-request timeout for browser-session PDF download attempts. |
+| `browserAuthHosts` | optional | array | Institution SSO host fragments that should be recorded as manual auth redirects during browser-session downloads. |
+| `browserAuthUrlFragments` | optional | array | Institution SSO URL fragments that should be recorded as manual auth redirects during browser-session downloads. |
+| `browserAuthPageTitles` | optional | array | Institution SSO page-title fragments that should be recorded as manual auth redirects during browser-session downloads. |
 | `runId` | optional | string | Discovery run id for status/report or supplement operations. If omitted for status/report, the latest run is used. |
 | `limit` | optional | number | Maximum runs returned by list. |
 | `persist` | optional | boolean | Persist discovery artifacts under the corpus .papernexus directory. |

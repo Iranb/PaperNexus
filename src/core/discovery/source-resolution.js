@@ -9,6 +9,11 @@ import {
   normalizePmcid
 } from '../../lib/paper-identifiers.js';
 import { stableHash, unique } from '../../lib/utils.js';
+import {
+  collectBrowserSessionCandidateUrls,
+  downloadPdfWithBrowserSession,
+  shouldUseBrowserSessionDownloads
+} from './browser-session-download.js';
 
 const HTML_MARKERS = ['<!doctype html', '<html', '<head', '<body', '<script', '<title'];
 const ANTI_BOT_MARKERS = [
@@ -415,6 +420,8 @@ function classifyFailedResolution(next, markdownInputs, pdfUrls, options = {}) {
   const attempts = next.source.resolutionAttempts || [];
   const failedPdfAttempts = attempts.filter((attempt) => attempt.provider === 'pdf' && attempt.status === 'failed');
   const failedMarkdownAttempts = attempts.filter((attempt) => attempt.sourceKind === 'markdown' && attempt.status === 'failed');
+  const failedBrowserAttempts = attempts.filter((attempt) => attempt.provider === 'browser_session' && attempt.status === 'failed');
+  const manualBrowserAttempt = attempts.find((attempt) => attempt.provider === 'browser_session' && attempt.status === 'manual_pending');
   const firstTerminalReason = failedPdfAttempts.find((attempt) => (
     attempt.detail === FULL_TEXT_STATUS.ANTI_BOT_BLOCKED || attempt.detail === FULL_TEXT_STATUS.HTML_NOT_PDF
   ))?.detail || '';
@@ -429,6 +436,22 @@ function classifyFailedResolution(next, markdownInputs, pdfUrls, options = {}) {
       fullTextStatus: FULL_TEXT_STATUS.OPEN_MARKDOWN,
       downloadStatus: DOWNLOAD_STATUS.ELIGIBLE,
       downloadError: null
+    };
+  }
+
+  if (manualBrowserAttempt) {
+    const barrierKind = String(manualBrowserAttempt.accessBarrier?.kind || '').trim();
+    if (barrierKind === 'sso') {
+      return {
+        fullTextStatus: FULL_TEXT_STATUS.NEEDS_INSTITUTION,
+        downloadStatus: DOWNLOAD_STATUS.SKIPPED,
+        downloadError: 'Browser session reached institutional SSO; sign in with the configured browser profile and retry.'
+      };
+    }
+    return {
+      fullTextStatus: FULL_TEXT_STATUS.ANTI_BOT_BLOCKED,
+      downloadStatus: DOWNLOAD_STATUS.FAILED,
+      downloadError: 'Browser session reached an access challenge or captcha; recorded for manual follow-up.'
     };
   }
 
@@ -474,6 +497,13 @@ function classifyFailedResolution(next, markdownInputs, pdfUrls, options = {}) {
       downloadError: failedPdfAttempts.map((attempt) => attempt.detail).filter(Boolean).join('; ') || 'PDF download failed.'
     };
   }
+  if (failedBrowserAttempts.length) {
+    return {
+      fullTextStatus: FULL_TEXT_STATUS.UNKNOWN,
+      downloadStatus: DOWNLOAD_STATUS.FAILED,
+      downloadError: failedBrowserAttempts.map((attempt) => attempt.detail).filter(Boolean).join('; ') || 'Browser-session PDF download failed.'
+    };
+  }
 
   const unpaywallAttempt = attempts.find((attempt) => attempt.provider === 'unpaywall');
   if (unpaywallAttempt?.detail === 'closed' || unpaywallAttempt?.detail === 'oa_without_pdf') {
@@ -513,6 +543,10 @@ export async function resolveDiscoverySources(params = {}) {
   const downloadConcurrency = resolveDownloadConcurrency(params);
   const pdfStagingRoot = params.pdfStagingRoot || params.pdf_staging_root || params.stagingRoot || path.join(rootPath, '.papernexus', 'discovery', 'staging', 'pdf');
   const markdownStagingRoot = params.markdownStagingRoot || params.markdown_staging_root || params.mdStagingRoot || params.md_staging_root || path.join(rootPath, '.papernexus', 'discovery', 'staging', 'markdown');
+  const useBrowserSessionDownloads = shouldUseBrowserSessionDownloads(params);
+  const browserSessionDownloader = typeof params.browserSessionDownloader === 'function'
+    ? params.browserSessionDownloader
+    : downloadPdfWithBrowserSession;
   let downloadReservations = 0;
 
   function reserveDownloadSlot(sourceUrls = []) {
@@ -540,6 +574,7 @@ export async function resolveDiscoverySources(params = {}) {
         markdownUrl: '',
         resolutionAttempts: [],
         institutionalAccessHints: createInstitutionalAccessHints(candidate, params),
+        browserAccessBarriers: [],
         supplementation: null
       }
     };
@@ -563,6 +598,8 @@ export async function resolveDiscoverySources(params = {}) {
     }
 
     const hasReservedDownloadSlot = reserveDownloadSlot([...markdownInputs.map((entry) => entry.url), ...pdfUrls]);
+    const browserSessionUrls = useBrowserSessionDownloads ? collectBrowserSessionCandidateUrls(next) : [];
+    const hasBrowserReservedDownloadSlot = hasReservedDownloadSlot || reserveDownloadSlot(browserSessionUrls);
     if (hasReservedDownloadSlot) {
       for (const entry of markdownInputs) {
         const outputPath = createMarkdownOutputPath(markdownStagingRoot, next);
@@ -648,6 +685,61 @@ export async function resolveDiscoverySources(params = {}) {
           };
           break;
         }
+      }
+    }
+
+    if (
+      next.source.resolutionStatus !== 'fulltext_ready'
+      && useBrowserSessionDownloads
+      && hasBrowserReservedDownloadSlot
+      && browserSessionUrls.length
+    ) {
+      const outputPath = createOutputPath(pdfStagingRoot, next);
+      const outcome = await browserSessionDownloader(next, outputPath, params);
+      const attempt = {
+        provider: 'browser_session',
+        status: outcome.ok ? 'success' : (outcome.accessBarrier ? 'manual_pending' : 'failed'),
+        detail: outcome.reason,
+        url: outcome.url || browserSessionUrls[0] || '',
+        strategy: outcome.strategy || 'browser_session',
+        accessBarrier: outcome.accessBarrier || null,
+        attempts: Array.isArray(outcome.attempts) ? outcome.attempts : [],
+        at: new Date().toISOString()
+      };
+      next.source.resolutionAttempts.push(attempt);
+      if (outcome.accessBarrier) {
+        next.source.browserAccessBarriers = [
+          ...(next.source.browserAccessBarriers || []),
+          outcome.accessBarrier
+        ];
+      }
+      if (outcome.ok) {
+        const identity = createSourceIdentity({
+          ...next,
+          identifiers: next.identifiers,
+          title: next.title,
+          sourceKind: 'pdf',
+          sourceProvider: 'browser_session',
+          contentSha256: outcome.contentSha256,
+          resolutionStatus: 'fulltext_ready'
+        });
+        next.source = {
+          ...next.source,
+          sourceKind: 'pdf',
+          sourcePath: outputPath,
+          sourceProvider: identity.sourceProvider,
+          contentSha256: identity.contentSha256,
+          sourceId: identity.sourceId,
+          resolutionStatus: 'fulltext_ready',
+          fullTextStatus: FULL_TEXT_STATUS.OPEN_PDF,
+          downloadStatus: DOWNLOAD_STATUS.DOWNLOADED,
+          downloadError: null,
+          localPdfPath: outputPath,
+          pdfUrl: outcome.url || browserSessionUrls[0] || '',
+          supplementation: createDiscoverySupplementationInterface(next, {
+            resolutionStatus: 'fulltext_ready'
+          })
+        };
       }
     }
 

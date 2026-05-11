@@ -18,7 +18,7 @@ import { buildLiteratureDiscoveryRunPlan, runLiteratureDiscovery } from '../src/
 import { loadDiscoveryRun } from '../src/core/discovery/store.js';
 import { handleMessage } from '../src/mcp/core.js';
 import { executeLiteratureDiscoveryTool } from '../src/mcp/tool-literature-discovery.js';
-import { createPaperIdentity } from '../src/lib/paper-identifiers.js';
+import { createContentSha256, createPaperIdentity } from '../src/lib/paper-identifiers.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -1818,6 +1818,105 @@ test('resolveDiscoverySources records institutional-access candidates without do
     assert.equal(result.candidates[0].source.fullTextStatus, 'needs_institution');
     assert.equal(result.candidates[0].source.downloadStatus, 'skipped');
     assert.equal(result.candidates[0].source.authorizedAccessStatus, 'institutional_access_may_be_available');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiscoverySources uses browser-session downloader when institutional browser mode is enabled', async () => {
+  const rootPath = await createTempCorpus();
+  const calls = [];
+
+  try {
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      institutionalAccessMode: 'headless-browser',
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'crossref',
+          title: 'Subscription Browser Session Paper',
+          identifiers: { doi: '10.1021/browser.session' },
+          landingPageUrl: 'https://pubs.acs.org/doi/10.1021/browser.session'
+        })
+      ],
+      browserSessionDownloader: async (candidate, outputPath) => {
+        calls.push({ candidate, outputPath });
+        const buffer = Buffer.concat([
+          Buffer.from('%PDF-1.7\n'),
+          Buffer.alloc(800, 32),
+          Buffer.from('\n%%EOF\n')
+        ]);
+        await fs.mkdir(path.dirname(outputPath), { recursive: true });
+        await fs.writeFile(outputPath, buffer);
+        return {
+          ok: true,
+          reason: 'pdf-header-ok',
+          url: 'https://pubs.acs.org/doi/pdf/10.1021/browser.session',
+          strategy: 'browser_context_request',
+          contentSha256: createContentSha256(buffer)
+        };
+      }
+    });
+
+    assert.equal(calls.length, 1);
+    const source = result.candidates[0].source;
+    assert.equal(source.sourceKind, 'pdf');
+    assert.equal(source.sourceProvider, 'browser_session');
+    assert.equal(source.fullTextStatus, 'open_pdf');
+    assert.equal(source.downloadStatus, 'downloaded');
+    assert.equal(source.pdfUrl, 'https://pubs.acs.org/doi/pdf/10.1021/browser.session');
+    assert.ok(source.localPdfPath.endsWith('.pdf'));
+    assert.ok(await fs.stat(source.localPdfPath));
+    assert.ok(source.resolutionAttempts.some((attempt) => attempt.provider === 'browser_session' && attempt.status === 'success'));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiscoverySources records browser-session SSO barriers without throwing', async () => {
+  const rootPath = await createTempCorpus();
+
+  try {
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      institutionalAccessMode: 'browser-session',
+      browserAuthHosts: ['sso.example.edu'],
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'crossref',
+          title: 'SSO Protected Browser Session Paper',
+          identifiers: { doi: '10.1002/sso.session' },
+          landingPageUrl: 'https://doi.org/10.1002/sso.session'
+        })
+      ],
+      browserSessionDownloader: async () => ({
+        ok: false,
+        reason: 'institution_auth_redirect',
+        url: 'https://sso.example.edu/login',
+        strategy: 'browser_article_page',
+        accessBarrier: {
+          kind: 'sso',
+          reason: 'institution_auth_redirect',
+          url: 'https://sso.example.edu/login',
+          title: 'University Single Sign-On'
+        }
+      })
+    });
+
+    const source = result.candidates[0].source;
+    assert.equal(source.resolutionStatus, 'metadata_only');
+    assert.equal(source.fullTextStatus, 'needs_institution');
+    assert.equal(source.downloadStatus, 'skipped');
+    assert.match(source.downloadError, /SSO/);
+    assert.equal(source.browserAccessBarriers.length, 1);
+    assert.equal(source.browserAccessBarriers[0].kind, 'sso');
+    assert.ok(source.resolutionAttempts.some((attempt) => (
+      attempt.provider === 'browser_session'
+      && attempt.status === 'manual_pending'
+      && attempt.accessBarrier?.kind === 'sso'
+    )));
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

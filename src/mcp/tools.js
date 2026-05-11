@@ -1088,9 +1088,52 @@ export const PAPERNEXUS_TOOLS = [
         },
         institutionalAccessMode: {
           type: 'string',
-          enum: ['hints-only'],
-          description: 'Authorized institutional access handling mode. Current implementation records hints only.',
+          enum: ['hints-only', 'browser', 'headless-browser', 'browser-session'],
+          description: 'Authorized institutional access handling mode. Use headless-browser/browser-session to try a Playwright persistent browser profile after open-access download paths fail; SSO and captcha pages are recorded as manual barriers, not thrown.',
           default: 'hints-only'
+        },
+        browserProfileDir: {
+          type: 'string',
+          description: 'Optional browser user data directory for institutional browser-session downloads. Defaults to the selected browser channel profile root, such as Microsoft Edge User Data.'
+        },
+        browserProfileName: {
+          type: 'string',
+          description: 'Browser profile name inside browserProfileDir for browser-session downloads.',
+          default: 'Default'
+        },
+        browserChannel: {
+          type: 'string',
+          description: 'Playwright browser channel for browser-session downloads, usually msedge or chrome.',
+          default: 'msedge'
+        },
+        browserExecutablePath: {
+          type: 'string',
+          description: 'Optional Chromium/Chrome executable path for browser-session downloads. When set, it overrides browserChannel; useful on headless servers with a Playwright browser cache.'
+        },
+        browserHeadless: {
+          type: 'boolean',
+          description: 'Run the persistent browser-session downloader in headless mode.',
+          default: true
+        },
+        browserDownloadTimeoutMs: {
+          type: 'number',
+          description: 'Per-page/per-request timeout for browser-session PDF download attempts.',
+          default: 12000
+        },
+        browserAuthHosts: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Institution SSO host fragments that should be recorded as manual auth redirects during browser-session downloads.'
+        },
+        browserAuthUrlFragments: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Institution SSO URL fragments that should be recorded as manual auth redirects during browser-session downloads.'
+        },
+        browserAuthPageTitles: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Institution SSO page-title fragments that should be recorded as manual auth redirects during browser-session downloads.'
         },
         runId: {
           type: 'string',

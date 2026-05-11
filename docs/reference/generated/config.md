@@ -71,6 +71,17 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "baseUrl": "https://api.openai.com/v1",
     "relations": true,
     "apiKeyEnv": "OPENAI_API_KEY"
+  },
+  "literatureDiscovery": {
+    "institutionalAccessMode": "hints-only",
+    "browserChannel": "msedge",
+    "browserExecutablePath": "",
+    "browserProfileName": "Default",
+    "browserHeadless": true,
+    "browserDownloadTimeoutMs": 12000,
+    "browserAuthHosts": [],
+    "browserAuthUrlFragments": [],
+    "browserAuthPageTitles": []
   }
 }
 ```
@@ -131,6 +142,16 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `llm.baseUrl` | string | `https://api.openai.com/v1` |
 | `llm.relations` | boolean | `true` |
 | `llm.apiKeyEnv` | string | `OPENAI_API_KEY` |
+| `literatureDiscovery` | object | section |
+| `literatureDiscovery.institutionalAccessMode` | string | `hints-only` |
+| `literatureDiscovery.browserChannel` | string | `msedge` |
+| `literatureDiscovery.browserExecutablePath` | string | `` |
+| `literatureDiscovery.browserProfileName` | string | `Default` |
+| `literatureDiscovery.browserHeadless` | boolean | `true` |
+| `literatureDiscovery.browserDownloadTimeoutMs` | number | `12000` |
+| `literatureDiscovery.browserAuthHosts` | array | `[]` |
+| `literatureDiscovery.browserAuthUrlFragments` | array | `[]` |
+| `literatureDiscovery.browserAuthPageTitles` | array | `[]` |
 
 ## Maintenance Notes
 

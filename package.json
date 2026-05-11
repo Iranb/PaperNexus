@@ -25,7 +25,8 @@
     "jsonrepair": "^3.13.1",
     "kuzu": "^0.11.3",
     "ngraph.graph": "^20.1.2",
-    "ngraph.leiden": "^0.2.0"
+    "ngraph.leiden": "^0.2.0",
+    "playwright-core": "^1.59.1"
   },
   "devDependencies": {
     "vitepress": "^1.6.4"

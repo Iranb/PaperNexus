@@ -158,6 +158,8 @@ function buildLlmDiscoveryParams(args = {}, options = {}) {
 }
 
 function buildDiscoveryParams(rootPath, args = {}, options = {}) {
+  const config = normalizeObject(options.config);
+  const discoveryConfig = normalizeObject(config.literatureDiscovery || config.literature_discovery || config.discovery);
   return {
     rootPath,
     topic: args.topic || args.query,
@@ -223,7 +225,16 @@ function buildDiscoveryParams(rootPath, args = {}, options = {}) {
     maxRelatedPerSeed: args.maxRelatedPerSeed || args.max_related_per_seed,
     openAlexRelatedExpansion: args.openAlexRelatedExpansion ?? args.openalexRelatedExpansion ?? args.openalex_related_expansion,
     institutionalResolverBaseUrl: args.institutionalResolverBaseUrl || args.institutional_resolver_base_url,
-    institutionalAccessMode: args.institutionalAccessMode || args.institutional_access_mode,
+    institutionalAccessMode: firstDefined(args.institutionalAccessMode, args.institutional_access_mode, discoveryConfig.institutionalAccessMode, discoveryConfig.institutional_access_mode),
+    browserProfileDir: firstDefined(args.browserProfileDir, args.browser_profile_dir, discoveryConfig.browserProfileDir, discoveryConfig.browser_profile_dir),
+    browserProfileName: firstDefined(args.browserProfileName, args.browser_profile_name, discoveryConfig.browserProfileName, discoveryConfig.browser_profile_name),
+    browserExecutablePath: firstDefined(args.browserExecutablePath, args.browser_executable_path, discoveryConfig.browserExecutablePath, discoveryConfig.browser_executable_path),
+    browserChannel: firstDefined(args.browserChannel, args.browser_channel, discoveryConfig.browserChannel, discoveryConfig.browser_channel),
+    browserHeadless: firstDefined(args.browserHeadless, args.browser_headless, discoveryConfig.browserHeadless, discoveryConfig.browser_headless),
+    browserDownloadTimeoutMs: firstDefined(args.browserDownloadTimeoutMs, args.browser_download_timeout_ms, discoveryConfig.browserDownloadTimeoutMs, discoveryConfig.browser_download_timeout_ms),
+    browserAuthHosts: firstDefined(args.browserAuthHosts, args.browser_auth_hosts, discoveryConfig.browserAuthHosts, discoveryConfig.browser_auth_hosts),
+    browserAuthUrlFragments: firstDefined(args.browserAuthUrlFragments, args.browser_auth_url_fragments, discoveryConfig.browserAuthUrlFragments, discoveryConfig.browser_auth_url_fragments),
+    browserAuthPageTitles: firstDefined(args.browserAuthPageTitles, args.browser_auth_page_titles, discoveryConfig.browserAuthPageTitles, discoveryConfig.browser_auth_page_titles),
     persist: args.persist,
     ...buildLlmDiscoveryParams(args, options)
   };
