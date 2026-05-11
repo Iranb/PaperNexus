@@ -9,7 +9,7 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`list_corpora`](#tool-list_corpora) | List all locally indexed academic-paper corpora available to PaperNexus. |
 | [`corpus_status`](#tool-corpus_status) | Show corpus stats and top research problems for a specific corpus. |
 | [`corpus_sources`](#tool-corpus_sources) | Return source manifest entries plus per-paper graph-index and source-span provenance so remote clients can reconcile which papers are materialized in the graph. |
-| [`query`](#tool-query) | Search a research knowledge graph for relevant papers, problems, methods, claims, findings, limitations, assumptions, evidence, datasets, benchmarks, metrics, and future directions. |
+| [`query`](#tool-query) | Search already committed research knowledge-graph state for relevant papers, problems, methods, claims, findings, limitations, assumptions, evidence, datasets, benchmarks, metrics, and future directions. Use literature_discovery for fresh keyword/topic discovery before papers are ingested. |
 | [`context`](#tool-context) | Get the local graph neighborhood of a paper, problem, method, claim, finding, limitation, assumption, evidence, dataset, benchmark, metric, or future-direction node. |
 | [`impact`](#tool-impact) | Traverse research graph edges to inspect upstream or downstream impact across problems, methods, claims, findings, limitations, assumptions, evidence, datasets, and benchmarks. |
 | [`ideas`](#tool-ideas) | Generate candidate research directions from problem, limitation, evidence-gap, and method-transfer patterns in the graph. |
@@ -17,10 +17,10 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`domain_distance`](#tool-domain_distance) | Compute the graph-derived domain distance matrix for an indexed corpus, optionally centered on a target domain. |
 | [`extract_takeaways`](#tool-extract_takeaways) | Extract structured cross-domain takeaways from bridge nodes for a target domain and conceptual challenges. |
 | [`interdisciplinary_potential`](#tool-interdisciplinary_potential) | Rank source domains by interdisciplinary potential using community structure, cross-domain bridges, and structured takeaways. |
-| [`research_lookup`](#tool-research_lookup) | Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups. |
+| [`research_lookup`](#tool-research_lookup) | Run high-level lookup operations over already committed graph state using one remote HTTP MCP surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups. Use literature_discovery first for fresh keyword literature search; graph lookup only sees imported papers after import tasks reach status=completed and stage=completed. |
 | [`research_briefing`](#tool-research_briefing) | Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP MCP tool surface. |
-| [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. |
-| [`literature_discovery`](#tool-literature_discovery) | Discover papers from a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit resolved files into the import queue. |
+| [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. |
+| [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
 | [`mutate_graph`](#tool-mutate_graph) | Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Trigger incremental re-analysis of a corpus to pick up new or changed papers. Returns the updated corpus status after refresh. |
@@ -64,7 +64,7 @@ Return source manifest entries plus per-paper graph-index and source-span proven
 
 <a id="tool-query"></a>
 
-Search a research knowledge graph for relevant papers, problems, methods, claims, findings, limitations, assumptions, evidence, datasets, benchmarks, metrics, and future directions.
+Search already committed research knowledge-graph state for relevant papers, problems, methods, claims, findings, limitations, assumptions, evidence, datasets, benchmarks, metrics, and future directions. Use literature_discovery for fresh keyword/topic discovery before papers are ingested.
 
 ### Input Schema
 
@@ -190,7 +190,7 @@ Rank source domains by interdisciplinary potential using community structure, cr
 
 <a id="tool-research_lookup"></a>
 
-Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups.
+Run high-level lookup operations over already committed graph state using one remote HTTP MCP surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups. Use literature_discovery first for fresh keyword literature search; graph lookup only sees imported papers after import tasks reach status=completed and stage=completed.
 
 ### Input Schema
 
@@ -260,13 +260,13 @@ Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP 
 
 <a id="tool-import_workflow"></a>
 
-Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks.
+Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed.
 
 ### Input Schema
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (submit, list, status, progress, queue_progress, log, wait) |  |
+| `operation` | required | string (submit, list, status, progress, queue_progress, log, wait) | Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `taskId` | optional | string | Import task id for status, log, or wait. |
 | `paperId` | optional | string | Optional paper id used to resolve a task when taskId is omitted. |
@@ -291,13 +291,13 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 <a id="tool-literature_discovery"></a>
 
-Discover papers from a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit resolved files into the import queue.
+Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers.
 
 ### Input Schema
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (plan, search, resolve, run, import, status, report, list) |  |
+| `operation` | required | string (plan, search, resolve, run, import, ingest, import_and_process, supplement, status, report, list) | plan/search/run/resolve produce discovery artifacts and do not by themselves make papers graph-visible. import submits resolved full text to the import queue. ingest/import_and_process also process imports inline, but graph visibility still depends on completed import tasks. status/report/list inspect persisted discovery runs. |
 | `corpus` | optional | string | Corpus name or indexed root path. Required except for plan. |
 | `topic` | optional | string | Research topic, question, related-work paragraph, seed concept, or paper title. |
 | `query` | optional | string | Alias for topic. |
@@ -313,7 +313,7 @@ Discover papers from a topic, merge multi-provider metadata, resolve legal open 
 | `maxEntityQueries` | optional | number | Maximum dataset/benchmark/entity queries added to the provider plan. |
 | `depth` | optional | string (quick, default, deep) |  |
 | `discipline` | optional | string | Optional discipline hint such as computer-science, biomedicine, physics-math, chemistry-materials, economics-social-science, humanities-law, or chinese-scholarship. |
-| `providers` | optional | string \| array | Provider allow-list. Implemented providers include openalex, semantic_scholar, crossref, arxiv, europe_pmc, pubmed, dblp, and core; unpaywall is used during source resolution. |
+| `providers` | optional | string \| array | Provider allow-list. Default providers are openalex, semantic_scholar, crossref, and arxiv. Implemented opt-in providers include papers_cool, pasa, europe_pmc, pubmed, dblp, and core; unpaywall is used during source resolution. |
 | `maxQueries` | optional | number | Maximum query families to execute after LLM planning and deterministic fallback expansion. |
 | `llmQueryPlanner` | optional | boolean | Use the configured LLM to split the topic into orthogonal literature-search queries before deterministic query expansion. Defaults to true; missing or failing LLM config falls back to deterministic planning. |
 | `maxLlmQueries` | optional | number | Maximum LLM-planned orthogonal queries inserted before deterministic expansion. Defaults by depth: quick=3, default=4, deep=8. |
@@ -323,18 +323,54 @@ Discover papers from a topic, merge multi-provider metadata, resolve legal open 
 | `maxResultsPerQuery` | optional | number | Maximum provider results per query. |
 | `maxCandidates` | optional | number | Maximum merged candidates retained in the run. Defaults by depth: quick=80, default=240, deep=3000. |
 | `providerConcurrency` | optional | number | Maximum concurrent literature search providers. Capped at 4. |
-| `maxDownloads` | optional | number | Maximum legal open PDF downloads attempted during resolution. |
-| `downloadConcurrency` | optional | number | Maximum concurrent legal PDF/source-resolution downloads. Capped at 4. |
-| `allowDownloads` | optional | boolean | When false, keep PDF URLs and institutional access hints but do not download files. |
+| `providerRequestSchedulerDelayMs` | optional | number | Optional shared scheduler delay between request starts for providers that do not have a provider-specific delay. |
+| `providerRequestMaxConcurrent` | optional | number | Maximum concurrent HTTP requests per generic provider inside the shared discovery scheduler. |
+| `discoveryRequestCache` | optional | boolean | Enable in-process discovery HTTP response caching for successful deterministic provider requests. |
+| `discoveryRequestCacheTtlMs` | optional | number | TTL for the opt-in in-process discovery request cache. |
+| `openAlexRequestDelayMs` | optional | number | Optional shared scheduler delay between OpenAlex request starts. Defaults to 0 unless configured by environment. |
+| `openAlexMaxConcurrent` | optional | number | Maximum concurrent OpenAlex HTTP requests inside the shared discovery scheduler. |
+| `semanticScholarRequestDelayMs` | optional | number | Optional Semantic Scholar request-start delay shared across search and citation expansion. Defaults to the existing Semantic Scholar delay configuration. |
+| `semanticScholarMaxConcurrent` | optional | number | Maximum concurrent Semantic Scholar HTTP requests inside the shared discovery scheduler. |
+| `papersCoolBaseUrl` | optional | string | Optional papers.cool base URL override. Defaults to https://papers.cool. |
+| `papersCoolSort` | optional | number | papers.cool search ordering: 0 for time order, 1 for reading-star order. |
+| `papersCoolMaxQueries` | optional | number | Maximum discovery queries sent to papers.cool per run to avoid over-querying the local/web provider. |
+| `pasaApiBaseUrl` | optional | string | Optional PASA paper-agent API base URL override. Defaults to https://pasa-agent.ai/paper-agent/api/v1. |
+| `pasaRequestTimeoutMs` | optional | number | Maximum timeout in milliseconds for one PASA API request. |
+| `pasaTimeoutSeconds` | optional | number | Maximum PASA polling time per query. |
+| `pasaPollIntervalSeconds` | optional | number | PASA polling interval per query. |
+| `pasaMaxQueries` | optional | number | Maximum discovery queries sent to PASA per run because PASA is slower and rate-limited. |
+| `maxDownloads` | optional | number | Maximum legal open source downloads attempted during resolution. Markdown is attempted before PDF when available. |
+| `downloadConcurrency` | optional | number | Maximum concurrent legal Markdown/PDF source-resolution downloads. Capped at 4. |
+| `preferMarkdown` | optional | boolean | When true (default), resolve and ingest explicit Markdown sources before trying PDF fallback. Generated third-party arXiv Markdown URLs require generateArxivMarkdownSources=true. |
+| `generateArxivMarkdownSources` | optional | boolean | When true, generate third-party arXiv Markdown fallback URLs for candidates with an arXiv ID before falling back to arXiv PDF. |
+| `markdownStagingRoot` | optional | string | Optional local directory for downloaded discovery Markdown sources. Defaults to the corpus discovery markdown staging directory. |
+| `pdfStagingRoot` | optional | string | Optional local directory for downloaded discovery PDF fallback sources. Defaults to the corpus discovery PDF staging directory. |
+| `allowDownloads` | optional | boolean | When false, keep Markdown/PDF URLs and institutional access hints but do not download files. |
+| `candidateId` | optional | string | Candidate id to supplement in a persisted discovery run. |
+| `canonicalId` | optional | string | Canonical paper id to supplement in a persisted discovery run, such as arxiv:2501.00001 or doi:10.xxxx/example. |
+| `sourcePath` | optional | string | For operation=supplement, absolute local .md, .markdown, or .pdf path on the PaperNexus server. |
+| `sourceKind` | optional | string (markdown, pdf) | Optional explicit source kind for operation=supplement. |
+| `sourceProvider` | optional | string | Optional full-text source provider for operation=supplement, such as hf, arxiv2md-api, markxiv, arxiv2md, or manual_supplement. |
+| `markdownUrl` | optional | string | For seeds or operation=supplement, HTTP(S) URL that returns validated paper Markdown. |
+| `pdfUrl` | optional | string | For seeds or operation=supplement, HTTP(S) URL that returns a valid PDF fallback. |
+| `paperMetadata` | optional | object | For operation=supplement, optional title/authors/year/identifier corrections to merge before import. |
 | `citationExpansion` | optional | boolean | Expand top seed papers through Semantic Scholar references/citations. Defaults to true only for depth=deep. |
 | `maxCitationSeeds` | optional | number | Maximum seed papers used for citation expansion. |
 | `maxCitationsPerSeed` | optional | number | Maximum references and citations retained per seed during citation expansion. |
 | `openAlexRelatedExpansion` | optional | boolean | Expand top seed papers through OpenAlex related_works during citation expansion. |
 | `maxRelatedPerSeed` | optional | number | Maximum OpenAlex related_works retained per seed during citation expansion. |
-| `importResolved` | optional | boolean | Submit resolved local full-text sources to import_workflow after discovery. |
-| `maxImported` | optional | number | Maximum resolved sources to submit when importResolved is true. |
+| `importResolved` | optional | boolean | Submit resolved local full-text sources to the import queue after discovery. This accepts work into the queue; use processImports or import_workflow wait/status before treating papers as graph-visible. |
+| `processImports` | optional | boolean | After submitting resolved sources, synchronously run the import worker so downloaded PDFs are parsed and fast-committed into the graph. Use this only when the caller intentionally wants to wait for graph visibility; it can be long-running. |
+| `importMaxPasses` | optional | number | Maximum import queue tasks to process inline when processImports is true. Defaults to the number of newly submitted tasks. |
+| `maxImported` | optional | number | Maximum resolved full-text sources to submit when importResolved is true. Metadata-only candidates remain in discovery artifacts but are not graph-visible until materialized through import. |
+| `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction mode for inline import processing. |
+| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl) | Optional PDF parser override for inline import processing. |
+| `pdfCommand` | optional | string | Optional generic PDF parser command override for inline import processing. |
+| `doclingCommand` | optional | string | Optional Docling command override for inline import processing. |
+| `pythonCommand` | optional | string | Optional Python command override for inline import processing. |
 | `mailto` | optional | string | Contact email used for polite API calls and Unpaywall. |
-| `openAlexApiKey` | optional | string | Optional OpenAlex API key. If omitted, OPENALEX_API_KEY in the environment is used when available. |
+| `openAlexApiKey` | optional | string | Optional OpenAlex API key. If omitted, openAlexApiKeyFile, OPENALEX_API_KEY, or ~/.papernexus/openalex_api_key is used when available. |
+| `openAlexApiKeyFile` | optional | string | Optional local file containing the OpenAlex API key. Supports ~/ paths. Useful when the key should not be configured in the shell. |
 | `coreApiKey` | optional | string | Optional CORE API key. If omitted, CORE can also be enabled with CORE_API_KEY in the environment. |
 | `timeoutMs` | optional | number | Per-request timeout in milliseconds. |
 | `retryCount` | optional | number | Retry count for transient provider failures such as HTTP 429 and 5xx responses. |
@@ -343,7 +379,7 @@ Discover papers from a topic, merge multi-provider metadata, resolve legal open 
 | `maxRetryAfterMs` | optional | number | Maximum Retry-After delay respected before a provider request fails fast. |
 | `institutionalResolverBaseUrl` | optional | string | Optional campus library/OpenURL resolver URL. PaperNexus records resolver hints; it does not bypass authentication or paywalls. |
 | `institutionalAccessMode` | optional | string (hints-only) | Authorized institutional access handling mode. Current implementation records hints only. |
-| `runId` | optional | string | Discovery run id for status/report. |
+| `runId` | optional | string | Discovery run id for status/report or supplement operations. If omitted for status/report, the latest run is used. |
 | `limit` | optional | number | Maximum runs returned by list. |
 | `persist` | optional | boolean | Persist discovery artifacts under the corpus .papernexus directory. |
 
@@ -360,10 +396,19 @@ Run a challenge-aware interdisciplinary ideation pass over the graph and return 
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `problem` | required | string | Research problem statement to analyze. |
 | `targetDomain` | required | string | Target domain that needs cross-domain inspiration. |
+| `mode` | optional | string (graph, live_discovery, hybrid) | graph uses the existing indexed corpus. live_discovery runs the paper-faithful Semantic Scholar Snippets workflow. hybrid returns graph output plus live discovery output. |
+| `liveDiscovery` | optional | boolean | Alias for mode=live_discovery. |
 | `fineGrainedDomain` | optional | string | Optional finer-grained target domain label used in the staged packet bundle. |
 | `coarseGrainedDomain` | optional | string | Optional coarse-grained target domain label used in the staged packet bundle. |
 | `mechanisms` | optional | string \| array |  |
 | `numSourceDomains` | optional | number |  |
+| `numQuestions` | optional | number | Maximum target-domain research questions in live_discovery mode. |
+| `maxPapersPerQuery` | optional | number | Maximum Semantic Scholar snippet results per target/source query in live_discovery mode. |
+| `sourceRelevanceThreshold` | optional | number | Paper-level relevance majority threshold for retaining a source domain in live_discovery mode. |
+| `targetFieldOfStudy` | optional | string | Optional Semantic Scholar coarse field override for the target domain, such as Computer Science or Medicine. |
+| `year` | optional | string | Optional Semantic Scholar publication year filter for live_discovery mode, such as 2018-2024 or -2023. |
+| `publicationDateOrYear` | optional | string | Optional Semantic Scholar publication date/year range for live_discovery mode. |
+| `insertedBefore` | optional | string | Optional Semantic Scholar index insertion cutoff for live_discovery mode. |
 | `relevanceThreshold` | optional | number |  |
 | `limit` | optional | number |  |
 | `outputMode` | optional | string (idea_fragments, packet_bundle) |  |

@@ -38,6 +38,7 @@ Wrapper mapping:
 - If that server path is under the server user's home directory, keep it in `~/...` form.
 - For local PDFs or Markdown files, use `pn_import_submit.py --source ...` or `pn_batch_import.py submit`.
 - Only read reflection overlays after the import task reaches `completed`.
+- If a paper came from keyword `literature_discovery`, its discovery report can be available before reflection overlays are graph-committed. Treat that interim state as discovery evidence and wait for `status=completed` plus `stage=completed` before reading graph/reflection chains.
 
 ## Typical Workflow
 

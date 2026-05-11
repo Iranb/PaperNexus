@@ -103,7 +103,8 @@ Per paper:
 - `progress.queuePosition` shows where the task sits among unfinished queue entries
 - `registry.matchedBy` explains whether task resolution came from `paper-id`, `source`, `task-id`, or `remote-scan`
 
-Do not claim a paper is in the graph when only `submitted=true`.
+Graph availability has a build delay. Do not claim a paper is in the graph when only `submitted=true`, `synced=false`, `deduped`, or `resolved`.
+Only graph tools such as `research_lookup`, `research_briefing`, and `idea_catalyst mode=graph` can see the paper after the corresponding task reports `status=completed` and `stage=completed`.
 
 ## Batch Tracking Rules
 

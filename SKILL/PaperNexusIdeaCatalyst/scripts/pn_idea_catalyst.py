@@ -31,10 +31,13 @@ def parse_args():
     add_connection_args(parser)
     parser.add_argument("--problem", required=True)
     parser.add_argument("--target-domain", required=True)
+    parser.add_argument("--mode", choices=["graph", "live_discovery", "hybrid"], default="graph")
     parser.add_argument("--fine-grained-domain", default="")
     parser.add_argument("--coarse-grained-domain", default="")
     parser.add_argument("--num-questions", type=int, default=5)
     parser.add_argument("--num-source-domains", type=int, default=3)
+    parser.add_argument("--max-papers-per-query", type=int, default=20)
+    parser.add_argument("--source-relevance-threshold", type=float, default=0.5)
     parser.add_argument("--relevance-threshold", type=int, default=3)
     parser.add_argument("--limit", type=int, default=8)
     parser.add_argument("--mechanisms", action="append", default=[])
@@ -53,10 +56,13 @@ def main() -> int:
             "corpus": corpus,
             "problem": args.problem,
             "targetDomain": args.target_domain,
+            "mode": args.mode,
             "fineGrainedDomain": args.fine_grained_domain,
             "coarseGrainedDomain": args.coarse_grained_domain,
             "numQuestions": args.num_questions,
             "numSourceDomains": args.num_source_domains,
+            "maxPapersPerQuery": args.max_papers_per_query,
+            "sourceRelevanceThreshold": args.source_relevance_threshold,
             "relevanceThreshold": args.relevance_threshold,
             "limit": args.limit,
             "mechanisms": args.mechanisms,

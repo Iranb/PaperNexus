@@ -26,6 +26,7 @@ Default client assumption:
 Preferred MCP tools:
 
 - `list_corpora`
+- `literature_discovery`
 - `research_lookup`
 - `research_briefing`
 - `idea_catalyst`
@@ -78,6 +79,35 @@ For OpenClaw-native use, call these tools on the configured `papernexus-remote` 
   Use to force-refresh one already-indexed paper or one duplicate group
 - `list_corpora`
   Use to resolve the current corpus when the active corpus is not explicit
+- `literature_discovery`
+  Use for keyword/topic literature survey, provider search, legal full-text resolution, discovery reports, and optional import submission.
+  Important operations: `plan`, `search`, `resolve`, `run`, `import`, `ingest`, `import_and_process`, `status`, `report`, `list`, `supplement`
+
+## Keyword Discovery And Graph-Lag Policy
+
+Use `literature_discovery` when the user asks for keyword-based literature research, missing-paper discovery, related-work expansion, citation expansion, or "find papers and add them to PaperNexus".
+
+Keep three states separate:
+
+- discovery result: candidate papers and coverage artifacts are available through `literature_discovery status` / `report`
+- submitted import: resolved full-text files were handed to the import queue, but graph visibility is not guaranteed yet
+- graph committed: `import_workflow status` / `wait` reports `status=completed` and `stage=completed`
+
+Recommended flow:
+
+1. Use `literature_discovery plan` for query families when the topic is broad or ambiguous.
+2. Use `literature_discovery search` for fast metadata-only keyword survey.
+3. Use `literature_discovery run` or `resolve` when you need legal Markdown/PDF source resolution and persisted coverage artifacts.
+4. Use `literature_discovery import` or `run` with `importResolved=true` to submit resolved full text to the import queue.
+5. Use `literature_discovery ingest`, `import_and_process`, or `processImports=true` only when the caller intentionally wants to wait for parsing and fast graph commit. This can be long-running.
+6. After any import submission, use `import_workflow queue_progress`, `status`, or `wait` before graph queries.
+7. Run `research_lookup query`, `context`, `impact`, `research_briefing`, or `idea_catalyst mode=graph` only after the relevant import tasks are complete.
+
+Latency rule:
+
+- Do not treat "discovery completed", "downloaded", "resolved", "submitted", or "deduped" as "already in the graph".
+- During graph-build delay, answer from `literature_discovery report` and label it as discovery evidence, not graph evidence.
+- If the user needs immediate analysis before import finishes, use discovery artifacts for paper lists and clearly say graph-grounded analysis is pending import completion.
 
 ## Remote Import Checklist
 
@@ -104,7 +134,7 @@ For OpenClaw-native use, call these tools on the configured `papernexus-remote` 
 7. Batch progress:
    `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> status`
    because it uses one remote `queue_progress` snapshot instead of guessing by time
-8. Only claim graph sync succeeded when the task is `status=completed` and `stage=completed`.
+8. Only claim graph sync or graph visibility succeeded when the task is `status=completed` and `stage=completed`.
 
 Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging and `serverFilePath`.
 

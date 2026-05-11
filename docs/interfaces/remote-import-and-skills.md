@@ -60,6 +60,26 @@ PaperNexus now distinguishes:
 - `canonicalId`: same paper identity
 - `sourceId`: same fulltext artifact identity
 
+## Keyword Discovery Before Graph Commit
+
+Keyword literature research enters the system through the `literature_discovery` MCP tool, not through graph lookup tools.
+
+The important boundary is that discovery and graph ingestion are intentionally asynchronous:
+
+- `literature_discovery plan` and `search` produce query plans and metadata candidates; they do not mutate the graph.
+- `literature_discovery run` / `resolve` can persist discovery artifacts and legal source-resolution results; the graph still may not contain those papers.
+- `literature_discovery import` or `importResolved=true` submits resolved full text to the import queue.
+- `literature_discovery ingest`, `import_and_process`, or `processImports=true` asks PaperNexus to process imports inline, but this can be long-running because parsing, semantic extraction, fast commit, and authoritative graph sync can lag behind discovery.
+- `research_lookup`, `research_briefing`, and `idea_catalyst mode=graph` only see papers after the corresponding import task has reached `status=completed` and `stage=completed`.
+
+Agents should therefore report interim results precisely:
+
+- use "discovered" for candidates in a discovery report
+- use "submitted" for accepted import tasks
+- use "in graph" only after import queue completion
+
+When graph build is delayed, use `literature_discovery status` / `report` for the paper list and `import_workflow queue_progress`, `status`, or `wait` for graph-readiness. Do not rerun graph queries just because discovery finished.
+
 Recommended server-side inspection command:
 
 ```bash

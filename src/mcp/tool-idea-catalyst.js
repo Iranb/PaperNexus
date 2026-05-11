@@ -1,6 +1,7 @@
 import {
   catalystGraphPayload
 } from '../server/api.js';
+import { runLiveIdeaCatalyst } from '../core/graph/idea-catalyst-live.js';
 
 function clampScore(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -14,6 +15,83 @@ function normalizeMechanisms(value) {
     return value.split(',').map((entry) => entry.trim()).filter(Boolean);
   }
   return [];
+}
+
+function normalizeObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '') ?? undefined;
+}
+
+function enabledFlag(value) {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function normalizeMode(args = {}) {
+  const raw = String(args.mode || args.workflowMode || args.workflow_mode || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  if (enabledFlag(args.liveDiscovery ?? args.live_discovery)) return 'live_discovery';
+  if (raw === 'live' || raw === 'snippets' || raw === 'paper_faithful') return 'live_discovery';
+  if (raw === 'live_discovery' || raw === 'hybrid' || raw === 'graph') return raw;
+  return 'graph';
+}
+
+function buildLiveLlmParams(args = {}, options = {}) {
+  const config = normalizeObject(options.config);
+  const llmConfig = normalizeObject(config.llm);
+  const ollamaConfig = normalizeObject(config.ollama);
+  const fallbackConfig = normalizeObject(llmConfig.fallback);
+  const fallbackOllamaConfig = normalizeObject(fallbackConfig.ollamaBootstrap || fallbackConfig.ollama);
+
+  return {
+    llmProvider: firstDefined(args.llmProvider, args.llm_provider, llmConfig.provider),
+    llmModel: firstDefined(args.llmModel, args.llm_model, args.ollamaModel, args.ollama_model, llmConfig.model, ollamaConfig.model),
+    llmBaseUrl: firstDefined(args.llmBaseUrl, args.llm_base_url, args.ollamaUrl, args.ollama_url, llmConfig.baseUrl, llmConfig.url, ollamaConfig.url),
+    llmApiKey: firstDefined(args.llmApiKey, args.llm_api_key, llmConfig.apiKey),
+    llmApiKeyEnv: firstDefined(args.llmApiKeyEnv, args.llm_api_key_env, llmConfig.apiKeyEnv),
+    llmApiKeySource: firstDefined(args.llmApiKeySource, args.llm_api_key_source, llmConfig.apiKeySource),
+    llmApiKeyService: firstDefined(args.llmApiKeyService, args.llm_api_key_service, llmConfig.apiKeyService),
+    llmApiKeyAccount: firstDefined(args.llmApiKeyAccount, args.llm_api_key_account, llmConfig.apiKeyAccount),
+    llmTimeoutMs: firstDefined(args.llmTimeoutMs, args.llm_timeout_ms, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
+    llmMaxTokens: firstDefined(args.llmMaxTokens, args.llm_max_tokens, llmConfig.maxTokens),
+    llmFallbackProvider: firstDefined(args.llmFallbackProvider, args.llm_fallback_provider, fallbackConfig.provider),
+    llmFallbackModel: firstDefined(args.llmFallbackModel, args.llm_fallback_model, fallbackConfig.model),
+    llmFallbackBaseUrl: firstDefined(args.llmFallbackBaseUrl, args.llm_fallback_base_url, fallbackConfig.baseUrl, fallbackConfig.url),
+    llmFallbackApiKey: firstDefined(args.llmFallbackApiKey, args.llm_fallback_api_key, fallbackConfig.apiKey),
+    llmFallbackApiKeyEnv: firstDefined(args.llmFallbackApiKeyEnv, args.llm_fallback_api_key_env, fallbackConfig.apiKeyEnv),
+    llmFallbackApiKeySource: firstDefined(args.llmFallbackApiKeySource, args.llm_fallback_api_key_source, fallbackConfig.apiKeySource),
+    llmFallbackApiKeyService: firstDefined(args.llmFallbackApiKeyService, args.llm_fallback_api_key_service, fallbackConfig.apiKeyService),
+    llmFallbackApiKeyAccount: firstDefined(args.llmFallbackApiKeyAccount, args.llm_fallback_api_key_account, fallbackConfig.apiKeyAccount),
+    llmFallbackTimeoutMs: firstDefined(args.llmFallbackTimeoutMs, args.llm_fallback_timeout_ms, fallbackConfig.timeoutMs),
+    llmFallbackMaxTokens: firstDefined(args.llmFallbackMaxTokens, args.llm_fallback_max_tokens, fallbackConfig.maxTokens),
+    llmFallbackAutoStart: firstDefined(args.llmFallbackAutoStart, args.llm_fallback_auto_start, fallbackConfig.autoStart),
+    llmFallbackAutoPull: firstDefined(args.llmFallbackAutoPull, args.llm_fallback_auto_pull, fallbackConfig.autoPull),
+    llmFallbackOllamaBootstrap: firstDefined(args.llmFallbackOllamaBootstrap, args.llm_fallback_ollama_bootstrap, fallbackOllamaConfig.mode)
+  };
+}
+
+function buildLiveCatalystParams(args = {}, problem = '', targetDomain = '', options = {}) {
+  return {
+    ...args,
+    problem,
+    targetDomain,
+    fineGrainedDomain: args.fineGrainedDomain || args.fine_grained_domain,
+    coarseGrainedDomain: args.coarseGrainedDomain || args.coarse_grained_domain,
+    numQuestions: args.numQuestions || args.num_questions,
+    numSourceDomains: args.numSourceDomains || args.num_source_domains,
+    maxPapersPerQuery: args.maxPapersPerQuery ?? args.max_papers_per_query,
+    sourceRelevanceThreshold: args.sourceRelevanceThreshold ?? args.source_relevance_threshold,
+    targetFieldOfStudy: args.targetFieldOfStudy || args.target_field_of_study || args.fieldsOfStudy || args.fields_of_study,
+    semanticScholarRequestDelayMs: firstDefined(args.semanticScholarRequestDelayMs, args.semantic_scholar_request_delay_ms, args.s2RequestDelayMs, args.s2_request_delay_ms),
+    semanticScholarMaxConcurrent: firstDefined(args.semanticScholarMaxConcurrent, args.semantic_scholar_max_concurrent),
+    retryCount: args.retryCount ?? args.retry_count,
+    retryBackoffMs: args.retryBackoffMs ?? args.retry_backoff_ms,
+    timeoutMs: args.timeoutMs ?? args.timeout_ms,
+    ...buildLiveLlmParams(args, options)
+  };
 }
 
 function buildIdeaFragment(entry, problem, threshold, index) {
@@ -78,12 +156,37 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
   const mechanisms = normalizeMechanisms(args.mechanisms);
   const outputMode = String(args.outputMode || args.output_mode || 'idea_fragments').trim() || 'idea_fragments';
   const includeAnalysis = args.includeAnalysis === true || args.include_analysis === true;
+  const mode = normalizeMode(args);
 
   if (!problem) {
     throw new Error('problem is required.');
   }
   if (!targetDomain) {
     throw new Error('targetDomain is required.');
+  }
+
+  if (mode === 'live_discovery') {
+    const live = await runLiveIdeaCatalyst(
+      buildLiveCatalystParams(args, problem, targetDomain, options),
+      options
+    );
+
+    if (outputMode === 'packet_bundle') {
+      return {
+        mode,
+        packet_bundle: live.packetBundle,
+        live_discovery: includeAnalysis ? live : undefined,
+        generatedAt: live.generatedAt
+      };
+    }
+
+    return {
+      mode,
+      idea_fragments: live.idea_fragments || [],
+      faithfulness_report: live.faithfulness_report,
+      ...(includeAnalysis ? { analysis: live } : {}),
+      generatedAt: live.generatedAt
+    };
   }
 
   const payload = await catalystGraphPayload(candidate, {
@@ -101,7 +204,7 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
   }, options);
 
   if (outputMode === 'packet_bundle') {
-    return {
+    const graphResponse = {
       rootPath: payload.rootPath,
       packet_bundle: payload.packetBundle,
       ...(includeAnalysis ? {
@@ -113,9 +216,30 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       } : {}),
       generatedAt: payload.generatedAt
     };
+    if (mode !== 'hybrid') return graphResponse;
+    const live = await runLiveIdeaCatalyst(
+      buildLiveCatalystParams(args, problem, targetDomain, options),
+      options
+    );
+    return {
+      ...graphResponse,
+      mode,
+      live_packet_bundle: live.packetBundle,
+      live_discovery: includeAnalysis ? live : undefined
+    };
   }
 
   const legacy = buildLegacyIdeaCatalystResponse(payload, problem, relevanceThreshold);
+  legacy.mode = mode;
+  if (mode === 'hybrid') {
+    const live = await runLiveIdeaCatalyst(
+      buildLiveCatalystParams(args, problem, targetDomain, options),
+      options
+    );
+    legacy.live_idea_fragments = live.idea_fragments || [];
+    legacy.faithfulness_report = live.faithfulness_report;
+    if (includeAnalysis) legacy.live_analysis = live;
+  }
   if (!includeAnalysis) {
     delete legacy.analysis;
   }

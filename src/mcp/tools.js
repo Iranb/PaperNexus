@@ -38,7 +38,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'query',
-    description: 'Search a research knowledge graph for relevant papers, problems, methods, claims, findings, limitations, assumptions, evidence, datasets, benchmarks, metrics, and future directions.',
+    description: 'Search already committed research knowledge-graph state for relevant papers, problems, methods, claims, findings, limitations, assumptions, evidence, datasets, benchmarks, metrics, and future directions. Use literature_discovery for fresh keyword/topic discovery before papers are ingested.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -287,7 +287,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'research_lookup',
-    description: 'Run high-level graph lookup operations over remote HTTP MCP using one tool surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups.',
+    description: 'Run high-level lookup operations over already committed graph state using one remote HTTP MCP surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups. Use literature_discovery first for fresh keyword literature search; graph lookup only sees imported papers after import tasks reach status=completed and stage=completed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -540,13 +540,14 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'import_workflow',
-    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks.',
+    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait']
+          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait'],
+          description: 'Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout.'
         },
         corpus: {
           type: 'string',
@@ -638,14 +639,15 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'literature_discovery',
-    description: 'Discover papers from a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue.',
+    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
           enum: ['plan', 'search', 'resolve', 'run', 'import', 'ingest', 'import_and_process', 'supplement', 'status', 'report', 'list'],
-          default: 'run'
+          default: 'run',
+          description: 'plan/search/run/resolve produce discovery artifacts and do not by themselves make papers graph-visible. import submits resolved full text to the import queue. ingest/import_and_process also process imports inline, but graph visibility still depends on completed import tasks. status/report/list inspect persisted discovery runs.'
         },
         corpus: {
           type: 'string',
@@ -995,12 +997,12 @@ export const PAPERNEXUS_TOOLS = [
         },
         importResolved: {
           type: 'boolean',
-          description: 'Submit resolved local full-text sources to the import queue after discovery.',
+          description: 'Submit resolved local full-text sources to the import queue after discovery. This accepts work into the queue; use processImports or import_workflow wait/status before treating papers as graph-visible.',
           default: false
         },
         processImports: {
           type: 'boolean',
-          description: 'After submitting resolved sources, synchronously run the import worker so downloaded PDFs are parsed and fast-committed into the graph. This can be long-running.',
+          description: 'After submitting resolved sources, synchronously run the import worker so downloaded PDFs are parsed and fast-committed into the graph. Use this only when the caller intentionally wants to wait for graph visibility; it can be long-running.',
           default: false
         },
         importMaxPasses: {
@@ -1010,7 +1012,7 @@ export const PAPERNEXUS_TOOLS = [
         },
         maxImported: {
           type: 'number',
-          description: 'Maximum resolved sources to submit when importResolved is true.',
+          description: 'Maximum resolved full-text sources to submit when importResolved is true. Metadata-only candidates remain in discovery artifacts but are not graph-visible until materialized through import.',
           default: 20
         },
         semanticExtraction: {
@@ -1121,6 +1123,17 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Target domain that needs cross-domain inspiration.'
         },
+        mode: {
+          type: 'string',
+          enum: ['graph', 'live_discovery', 'hybrid'],
+          default: 'graph',
+          description: 'graph uses the existing indexed corpus. live_discovery runs the paper-faithful Semantic Scholar Snippets workflow. hybrid returns graph output plus live discovery output.'
+        },
+        liveDiscovery: {
+          type: 'boolean',
+          default: false,
+          description: 'Alias for mode=live_discovery.'
+        },
         fineGrainedDomain: {
           type: 'string',
           description: 'Optional finer-grained target domain label used in the staged packet bundle.'
@@ -1141,6 +1154,37 @@ export const PAPERNEXUS_TOOLS = [
         numSourceDomains: {
           type: 'number',
           default: 3
+        },
+        numQuestions: {
+          type: 'number',
+          default: 4,
+          description: 'Maximum target-domain research questions in live_discovery mode.'
+        },
+        maxPapersPerQuery: {
+          type: 'number',
+          default: 20,
+          description: 'Maximum Semantic Scholar snippet results per target/source query in live_discovery mode.'
+        },
+        sourceRelevanceThreshold: {
+          type: 'number',
+          default: 0.5,
+          description: 'Paper-level relevance majority threshold for retaining a source domain in live_discovery mode.'
+        },
+        targetFieldOfStudy: {
+          type: 'string',
+          description: 'Optional Semantic Scholar coarse field override for the target domain, such as Computer Science or Medicine.'
+        },
+        year: {
+          type: 'string',
+          description: 'Optional Semantic Scholar publication year filter for live_discovery mode, such as 2018-2024 or -2023.'
+        },
+        publicationDateOrYear: {
+          type: 'string',
+          description: 'Optional Semantic Scholar publication date/year range for live_discovery mode.'
+        },
+        insertedBefore: {
+          type: 'string',
+          description: 'Optional Semantic Scholar index insertion cutoff for live_discovery mode.'
         },
         relevanceThreshold: {
           type: 'number',

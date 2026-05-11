@@ -17,6 +17,7 @@ Use this skill when the goal is to reason through a research problem step by ste
 
 Preferred MCP tools:
 
+- `literature_discovery`
 - `research_lookup`
 - `research_briefing`
 - `import_workflow`
@@ -33,13 +34,15 @@ Shell fallback wrappers:
 
 Use this order:
 
-1. `research_lookup` for anchor resolution and graph lookup
-2. `research_briefing` for typed chains and briefs
-3. import wrappers only when local files must be staged before `import_workflow submit`
-4. local repo commands only for isolated development
+1. `literature_discovery` for fresh keyword/topic literature search before papers are in the graph
+2. `research_lookup` for anchor resolution and graph lookup on already committed graph state
+3. `research_briefing` for typed chains and briefs
+4. import wrappers only when local files must be staged before `import_workflow submit`
+5. local repo commands only for isolated development
 
 Default MCP mapping:
 
+- `literature_discovery` -> fresh search, source resolution, discovery reports, optional import submission
 - `pn_graph_query.py` -> `research_lookup`
 - `pn_research_chains.py` -> `research_briefing`
 - import wrappers -> `import_workflow`
@@ -51,6 +54,7 @@ Default MCP mapping:
 - If the paper is local to the agent machine, use `pn_import_submit.py --source ...` or `pn_batch_import.py submit`.
 - Only use `--server-file-path` when the file is already on the PaperNexus server.
 - During reasoning tasks, do not tell the user a paper is in the graph right after submit; check queue status first.
+- Graph queries lag behind discovery and import submission. Treat `literature_discovery` results as discovery evidence until `import_workflow status` / `wait` reports `status=completed` and `stage=completed`.
 
 ## Reasoning Loop
 

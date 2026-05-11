@@ -18,6 +18,12 @@ Preferred MCP tools:
 - `research_lookup`
 - `research_briefing`
 
+Fresh-discovery boundary:
+
+- this skill reads already committed graph state
+- if the user asks for new keyword literature search, use the main PaperNexus skill and `literature_discovery` first
+- after `literature_discovery import` or any upload, wait for `import_workflow` to report `status=completed` and `stage=completed` before expecting chain or brief tools to include the new papers
+
 Shell fallback wrappers:
 
 - `python3 SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py`
