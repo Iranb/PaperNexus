@@ -1724,6 +1724,67 @@ function buildRankEvents(candidates = [], relevant = [], options = {}) {
   });
 }
 
+function summarizeBestGoldCandidate(gold = {}, candidates = [], options = {}) {
+  if (!candidates.length) return null;
+  const titleThreshold = Number(options.titleMatchThreshold || DEFAULT_TITLE_MATCH_THRESHOLD);
+  let best = null;
+
+  candidates.forEach((candidate, index) => {
+    const similarity = titleSimilarity(candidate, gold);
+    const hasIdentifierOverlap = paperIdentifiersOverlap(candidate, gold);
+    const hasAliasOverlap = collectMatchAliases(gold).some((alias) => (
+      new Set(collectMatchAliases(candidate)).has(alias)
+    ));
+    const score = (hasIdentifierOverlap ? 2 : 0) + (hasAliasOverlap ? 1.5 : 0) + similarity;
+    if (!best || score > best.score) {
+      best = {
+        score,
+        rank: index + 1,
+        title: candidate.title || '',
+        canonicalId: candidate.canonicalId || candidate.id || '',
+        titleSimilarity: similarity,
+        hasIdentifierOverlap,
+        hasAliasOverlap,
+        titleMatchThreshold: titleThreshold
+      };
+    }
+  });
+
+  if (!best) return null;
+  delete best.score;
+  return best;
+}
+
+function classifyGoldMiss(bestCandidate = null) {
+  if (!bestCandidate) return 'no_candidates';
+  if (bestCandidate.hasIdentifierOverlap || bestCandidate.hasAliasOverlap) return 'identity_match_not_ranked';
+  if (bestCandidate.titleSimilarity >= bestCandidate.titleMatchThreshold) return 'title_match_not_ranked';
+  if (bestCandidate.titleSimilarity >= Math.max(0.5, bestCandidate.titleMatchThreshold - 0.15)) {
+    return 'near_title_match_below_threshold';
+  }
+  if (bestCandidate.titleSimilarity > 0) return 'weak_title_overlap';
+  return 'not_in_candidate_pool';
+}
+
+function summarizeUnmatchedRelevant(relevant = [], candidates = [], events = [], options = {}) {
+  const matched = new Set(events.filter((event) => event.isRelevant).map((event) => event.match.index));
+  return relevant
+    .map((gold, index) => ({ gold, index }))
+    .filter((entry) => !matched.has(entry.index))
+    .slice(0, 20)
+    .map(({ gold, index }) => {
+      const bestCandidate = summarizeBestGoldCandidate(gold, candidates, options);
+      return {
+        index,
+        title: gold.title || '',
+        canonicalId: gold.canonicalId || gold.id || '',
+        relevance: Math.max(0, Number(gold.relevance || 1)),
+        reason: classifyGoldMiss(bestCandidate),
+        bestCandidate
+      };
+    });
+}
+
 function dcgAt(events = [], cutoff = 10) {
   return events.slice(0, cutoff).reduce((sum, event, index) => (
     sum + (event.relevanceScore > 0 ? event.relevanceScore / Math.log2(index + 2) : 0)
@@ -1773,6 +1834,8 @@ export function evaluateRetrievalResults(queryCase = {}, candidates = [], option
       break;
     }
   }
+  const matchedRelevantIndexes = new Set(events.filter((event) => event.isRelevant).map((event) => event.match.index));
+  const unmatchedRelevant = summarizeUnmatchedRelevant(relevant, candidates, events, options);
 
   for (const cutoff of cutoffs) {
     const hits = events.slice(0, cutoff).filter((event) => event.isRelevant).length;
@@ -1796,9 +1859,11 @@ export function evaluateRetrievalResults(queryCase = {}, candidates = [], option
     relevantCount: relevant.length,
     relevantWeight: relevant.reduce((sum, paper) => sum + Math.max(0, Number(paper.relevance || 1)), 0),
     retrievedCount: candidates.length,
-    matchedCount: new Set(events.filter((event) => event.isRelevant).map((event) => event.match.index)).size,
+    matchedCount: matchedRelevantIndexes.size,
+    unmatchedRelevantCount: Math.max(0, relevant.length - matchedRelevantIndexes.size),
     firstRelevantRank,
     metrics,
+    unmatchedRelevant,
     topMatches: events
       .filter((event) => event.match)
       .slice(0, 10)
@@ -1855,6 +1920,36 @@ function aggregateProviderFailures(results = []) {
     right.count - left.count
     || left.provider.localeCompare(right.provider)
     || left.reason.localeCompare(right.reason)
+  ));
+}
+
+function aggregateGoldMissReasons(results = []) {
+  const grouped = new Map();
+  for (const result of results) {
+    for (const miss of result.unmatchedRelevant || []) {
+      const reason = miss.reason || 'unknown';
+      if (!grouped.has(reason)) {
+        grouped.set(reason, {
+          reason,
+          count: 0,
+          examples: []
+        });
+      }
+      const entry = grouped.get(reason);
+      entry.count += 1;
+      if (entry.examples.length < 3) {
+        entry.examples.push({
+          query: truncate(result.query || '', 100),
+          title: truncate(miss.title || '', 100),
+          bestCandidateTitle: truncate(miss.bestCandidate?.title || '', 100),
+          bestCandidateRank: miss.bestCandidate?.rank || null,
+          titleSimilarity: miss.bestCandidate?.titleSimilarity || 0
+        });
+      }
+    }
+  }
+  return [...grouped.values()].sort((left, right) => (
+    right.count - left.count || left.reason.localeCompare(right.reason)
   ));
 }
 
@@ -1954,6 +2049,7 @@ function summarizeBenchmarkDiagnostics(results = []) {
     return summary;
   }, { seeds: 0, addedCandidates: 0, failedSeeds: 0 });
   const providerFailures = aggregateProviderFailures(results);
+  const goldMissReasons = aggregateGoldMissReasons(results);
 
   return {
     evaluatedQueries,
@@ -1973,6 +2069,10 @@ function summarizeBenchmarkDiagnostics(results = []) {
       const merged = Number(result.discovery?.mergedPaperCount || 0);
       return raw > 0 ? Math.max(0, raw - merged) / raw : 0;
     })),
+    missedRelevantTotal: results.reduce((sum, result) => (
+      sum + Number(result.unmatchedRelevantCount ?? (result.unmatchedRelevant || []).length)
+    ), 0),
+    goldMissReasons,
     providerFailuresTotal: providerFailures.reduce((sum, entry) => sum + entry.count, 0),
     providerFailures,
     citationExpansion
@@ -2425,10 +2525,23 @@ export function renderRetrievalBenchmarkReport(report = {}) {
       `Average discovery queries: ${formatMetric(diagnostics.averageDiscoveryQueryCount)}`,
       `Average provider calls: ${formatMetric(diagnostics.averageProviderCallCount)}`,
       `Dedup merge rate: ${formatMetric(diagnostics.dedupMergeRate)}`,
+      `Missed gold papers: ${diagnostics.missedRelevantTotal || 0}`,
       `Provider failures: ${diagnostics.providerFailuresTotal || 0}`,
       `Citation expansion: seeds=${diagnostics.citationExpansion?.seeds || 0}, added=${diagnostics.citationExpansion?.addedCandidates || 0}, failed=${diagnostics.citationExpansion?.failedSeeds || 0}`,
       ''
     );
+    if (Array.isArray(diagnostics.goldMissReasons) && diagnostics.goldMissReasons.length) {
+      lines.push('| Gold miss reason | Count | Example gold | Nearest candidate |');
+      lines.push('|---|---:|---|---|');
+      for (const miss of diagnostics.goldMissReasons.slice(0, 10)) {
+        const example = miss.examples?.[0] || {};
+        const reason = String(miss.reason || 'unknown').replace(/\|/g, '\\|');
+        const gold = String(example.title || '-').replace(/\|/g, '\\|');
+        const candidate = String(example.bestCandidateTitle || '-').replace(/\|/g, '\\|');
+        lines.push(`| ${reason} | ${miss.count || 0} | ${gold} | ${candidate} |`);
+      }
+      lines.push('');
+    }
     if (Array.isArray(diagnostics.providerFailures) && diagnostics.providerFailures.length) {
       lines.push('| Provider | Reason | Count |', '|---|---|---:|');
       for (const failure of diagnostics.providerFailures.slice(0, 10)) {

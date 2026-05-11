@@ -1010,6 +1010,30 @@ test('retrieval evaluation deduplicates repeated hits for the same relevant pape
   assert.equal(evaluation.topMatches[1].duplicateRelevantMatch, true);
 });
 
+test('retrieval evaluation records unmatched gold miss reasons', () => {
+  const evaluation = evaluateRetrievalResults(
+    {
+      id: 'q1',
+      query: 'graph augmented literature mapping',
+      relevant: [
+        { id: 'd1', title: 'Graph-Augmented Literature Mapping' },
+        { id: 'd2', title: 'Citation Graph Planning', doi: '10.5555/citation.graph' }
+      ]
+    },
+    [
+      { id: 'c1', title: 'Graph Augmented Literature Maps' }
+    ],
+    { cutoffs: [1] }
+  );
+
+  assert.equal(evaluation.matchedCount, 0);
+  assert.equal(evaluation.unmatchedRelevantCount, 2);
+  assert.equal(evaluation.unmatchedRelevant.length, 2);
+  assert.equal(evaluation.unmatchedRelevant[0].reason, 'weak_title_overlap');
+  assert.equal(evaluation.unmatchedRelevant[0].bestCandidate.rank, 1);
+  assert.equal(evaluation.unmatchedRelevant[1].reason, 'weak_title_overlap');
+});
+
 test('graded relevance reports weighted recall, f1, exact match, and graded ndcg', () => {
   const evaluation = evaluateRetrievalResults(
     {
@@ -1106,6 +1130,15 @@ test('benchmark report renders concise markdown summary', () => {
       averageDiscoveryQueryCount: 2,
       averageProviderCallCount: 4,
       dedupMergeRate: 0.4,
+      missedRelevantTotal: 1,
+      goldMissReasons: [{
+        reason: 'weak_title_overlap',
+        count: 1,
+        examples: [{
+          title: 'Gold Paper',
+          bestCandidateTitle: 'Near Candidate'
+        }]
+      }],
       providerFailuresTotal: 1,
       providerFailures: [{
         provider: 'openalex',
@@ -1134,5 +1167,7 @@ test('benchmark report renders concise markdown summary', () => {
   assert.match(markdown, /## Diagnostics/);
   assert.match(markdown, /Candidate pool recall: 1\.0000/);
   assert.match(markdown, /Average query duration: 12\.0000 ms/);
+  assert.match(markdown, /Missed gold papers: 1/);
+  assert.match(markdown, /\| weak_title_overlap \| 1 \| Gold Paper \| Near Candidate \|/);
   assert.match(markdown, /\| openalex \| timeout \| 1 \|/);
 });
