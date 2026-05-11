@@ -1824,6 +1824,84 @@ function aggregateMetrics(results = []) {
   return aggregates;
 }
 
+function summarizeDiscoveryFailures(queryResults = []) {
+  return asArray(queryResults)
+    .filter((entry) => entry && entry.ok === false)
+    .map((entry) => ({
+      provider: entry.provider || 'unknown',
+      queryId: entry.queryId || entry.id || '',
+      query: truncate(entry.query || '', 160),
+      reason: entry.reason || entry.error || 'provider-failed'
+    }));
+}
+
+function aggregateProviderFailures(results = []) {
+  const grouped = new Map();
+  for (const failure of results.flatMap((result) => result.discovery?.providerFailures || [])) {
+    const provider = failure.provider || 'unknown';
+    const reason = failure.reason || 'provider-failed';
+    const key = `${provider}\t${reason}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        provider,
+        reason,
+        count: 0
+      });
+    }
+    grouped.get(key).count += 1;
+  }
+  return [...grouped.values()].sort((left, right) => (
+    right.count - left.count
+    || left.provider.localeCompare(right.provider)
+    || left.reason.localeCompare(right.reason)
+  ));
+}
+
+function average(values = []) {
+  const numeric = values.map((value) => Number(value || 0)).filter(Number.isFinite);
+  return numeric.length ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : 0;
+}
+
+function summarizeBenchmarkDiagnostics(results = []) {
+  const evaluatedQueries = results.length;
+  const zeroMatchQueries = results.filter((result) => result.relevantCount > 0 && !result.firstRelevantRank).length;
+  const matchedQueries = results.filter((result) => result.firstRelevantRank > 0).length;
+  const resultsWithGold = results.filter((result) => result.relevantCount > 0);
+  const candidatePoolRecallValues = resultsWithGold.map((result) => (
+    Math.min(1, Number(result.matchedCount || 0) / result.relevantCount)
+  ));
+  const citationExpansion = results.reduce((summary, result) => {
+    const entry = result.discovery?.citationExpansion || {};
+    summary.seeds += Number(entry.seeds || 0);
+    summary.addedCandidates += Number(entry.addedCandidates || 0);
+    summary.failedSeeds += Number(entry.failedSeeds || 0);
+    return summary;
+  }, { seeds: 0, addedCandidates: 0, failedSeeds: 0 });
+  const providerFailures = aggregateProviderFailures(results);
+
+  return {
+    evaluatedQueries,
+    queriesWithGold: resultsWithGold.length,
+    matchedQueries,
+    zeroMatchQueries,
+    zeroMatchRate: evaluatedQueries ? zeroMatchQueries / evaluatedQueries : 0,
+    candidatePoolRecall: average(candidatePoolRecallValues),
+    averageRetrievedCount: average(results.map((result) => result.retrievedCount)),
+    averageRawCandidateCount: average(results.map((result) => result.discovery?.rawCandidateCount || 0)),
+    averageMergedPaperCount: average(results.map((result) => result.discovery?.mergedPaperCount || 0)),
+    averageDiscoveryQueryCount: average(results.map((result) => result.discovery?.plannedQueryCount || 0)),
+    averageProviderCallCount: average(results.map((result) => result.discovery?.providerQueryCount || 0)),
+    dedupMergeRate: average(results.map((result) => {
+      const raw = Number(result.discovery?.rawCandidateCount || 0);
+      const merged = Number(result.discovery?.mergedPaperCount || 0);
+      return raw > 0 ? Math.max(0, raw - merged) / raw : 0;
+    })),
+    providerFailuresTotal: providerFailures.reduce((sum, entry) => sum + entry.count, 0),
+    providerFailures,
+    citationExpansion
+  };
+}
+
 function selectQueries(benchmark = {}, options = {}) {
   const limit = Math.max(0, Math.floor(Number(options.limit || options.benchmarkLimit || 0)));
   const offset = Math.max(0, Math.floor(Number(options.offset || 0)));
@@ -2075,8 +2153,12 @@ export async function runRetrievalBenchmark(params = {}) {
         discovery: {
           runId: discoveryRun.runId || null,
           providerCount: (discoveryRun.providers || []).length,
+          plannedQueryCount: asArray(discoveryRun.plan?.queries).length,
+          providerQueryCount: asArray(discoveryRun.queryResults).length,
           rawCandidateCount: discoveryRun.rawCandidateCount || candidates.length,
           mergedPaperCount: candidates.length,
+          providerFailures: summarizeDiscoveryFailures(discoveryRun.queryResults || []),
+          citationExpansion: discoveryRun.citationExpansion || null,
           coverage: discoveryRun.coverage || null,
           artifacts: discoveryRun.artifacts || null
         }
@@ -2135,6 +2217,7 @@ export async function runRetrievalBenchmark(params = {}) {
     alignment: benchmarkAlignment(benchmark, { evaluationMode, taskEvaluationMode }),
     metrics: aggregateMetrics(results),
     taskEvaluation: aggregateTaskEvaluationMetrics(results),
+    diagnostics: summarizeBenchmarkDiagnostics(results),
     results
   };
 
@@ -2226,6 +2309,36 @@ export function renderRetrievalBenchmarkReport(report = {}) {
       lines.push(`| ${key} | ${formatMetric(report.taskEvaluation.metrics[key])} |`);
     }
     lines.push('');
+  }
+
+  if (report.diagnostics) {
+    const diagnostics = report.diagnostics;
+    lines.push(
+      '## Diagnostics',
+      '',
+      `Evaluated queries: ${diagnostics.evaluatedQueries || 0}`,
+      `Matched queries: ${diagnostics.matchedQueries || 0}`,
+      `Zero-match queries: ${diagnostics.zeroMatchQueries || 0} (${formatMetric(diagnostics.zeroMatchRate)})`,
+      `Candidate pool recall: ${formatMetric(diagnostics.candidatePoolRecall)} over ${diagnostics.queriesWithGold || 0} gold-labeled queries`,
+      `Average retrieved candidates: ${formatMetric(diagnostics.averageRetrievedCount)}`,
+      `Average raw candidates: ${formatMetric(diagnostics.averageRawCandidateCount)}`,
+      `Average merged papers: ${formatMetric(diagnostics.averageMergedPaperCount)}`,
+      `Average discovery queries: ${formatMetric(diagnostics.averageDiscoveryQueryCount)}`,
+      `Average provider calls: ${formatMetric(diagnostics.averageProviderCallCount)}`,
+      `Dedup merge rate: ${formatMetric(diagnostics.dedupMergeRate)}`,
+      `Provider failures: ${diagnostics.providerFailuresTotal || 0}`,
+      `Citation expansion: seeds=${diagnostics.citationExpansion?.seeds || 0}, added=${diagnostics.citationExpansion?.addedCandidates || 0}, failed=${diagnostics.citationExpansion?.failedSeeds || 0}`,
+      ''
+    );
+    if (Array.isArray(diagnostics.providerFailures) && diagnostics.providerFailures.length) {
+      lines.push('| Provider | Reason | Count |', '|---|---|---:|');
+      for (const failure of diagnostics.providerFailures.slice(0, 10)) {
+        const provider = String(failure.provider || 'unknown').replace(/\|/g, '\\|');
+        const reason = truncate(failure.reason || 'provider-failed', 120).replace(/\|/g, '\\|');
+        lines.push(`| ${provider} | ${reason} | ${failure.count || 0} |`);
+      }
+      lines.push('');
+    }
   }
 
   lines.push('## Worst Queries By Recall', '');

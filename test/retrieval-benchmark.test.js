@@ -42,6 +42,35 @@ test('custom retrieval benchmark runs discovery and computes macro metrics', asy
         if (topic.includes('graph augmented')) {
           return {
             runId: 'run-q1',
+            providers: ['openalex', 'semantic_scholar'],
+            plan: {
+              queries: [
+                { query: 'graph augmented literature mapping' },
+                { query: 'knowledge graph literature mapping' }
+              ]
+            },
+            queryResults: [
+              {
+                provider: 'openalex',
+                queryId: 'q1-openalex',
+                query: 'graph augmented literature mapping',
+                ok: true,
+                count: 2
+              },
+              {
+                provider: 'semantic_scholar',
+                queryId: 'q1-s2',
+                query: 'knowledge graph literature mapping',
+                ok: false,
+                reason: 'timeout'
+              }
+            ],
+            rawCandidateCount: 4,
+            citationExpansion: {
+              seeds: 1,
+              addedCandidates: 1,
+              failedSeeds: 1
+            },
             candidates: [
               { title: 'Unrelated Search Result' },
               { title: 'Graph-Augmented Literature Mapping', identifiers: { doi: '10.1234/graph.map' } }
@@ -50,6 +79,23 @@ test('custom retrieval benchmark runs discovery and computes macro metrics', asy
         }
         return {
           runId: 'run-q2',
+          providers: ['openalex'],
+          plan: {
+            queries: [{ query: 'retrieval augmented experiment planning' }]
+          },
+          queryResults: [{
+            provider: 'openalex',
+            queryId: 'q2-openalex',
+            query: 'retrieval augmented experiment planning',
+            ok: true,
+            count: 2
+          }],
+          rawCandidateCount: 2,
+          citationExpansion: {
+            seeds: 0,
+            addedCandidates: 0,
+            failedSeeds: 0
+          },
           candidates: [
             { title: 'Retrieval-Augmented Experiment Planning', identifiers: { arxivId: '2401.01234' } },
             { title: 'Another Result' }
@@ -64,6 +110,15 @@ test('custom retrieval benchmark runs discovery and computes macro metrics', asy
     assert.equal(report.metrics['recall@2'], 1);
     assert.equal(report.results[0].firstRelevantRank, 2);
     assert.equal(report.results[1].firstRelevantRank, 1);
+    assert.equal(report.results[0].discovery.providerFailures[0].provider, 'semantic_scholar');
+    assert.equal(report.diagnostics.evaluatedQueries, 2);
+    assert.equal(report.diagnostics.zeroMatchQueries, 0);
+    assert.equal(report.diagnostics.candidatePoolRecall, 1);
+    assert.equal(report.diagnostics.averageRawCandidateCount, 3);
+    assert.equal(report.diagnostics.averageMergedPaperCount, 2);
+    assert.equal(report.diagnostics.averageProviderCallCount, 1.5);
+    assert.equal(report.diagnostics.providerFailuresTotal, 1);
+    assert.equal(report.diagnostics.citationExpansion.addedCandidates, 1);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -971,6 +1026,31 @@ test('benchmark report renders concise markdown summary', () => {
       'map@1': 1,
       'ndcg@1': 1
     },
+    diagnostics: {
+      evaluatedQueries: 1,
+      queriesWithGold: 1,
+      matchedQueries: 1,
+      zeroMatchQueries: 0,
+      zeroMatchRate: 0,
+      candidatePoolRecall: 1,
+      averageRetrievedCount: 3,
+      averageRawCandidateCount: 5,
+      averageMergedPaperCount: 3,
+      averageDiscoveryQueryCount: 2,
+      averageProviderCallCount: 4,
+      dedupMergeRate: 0.4,
+      providerFailuresTotal: 1,
+      providerFailures: [{
+        provider: 'openalex',
+        reason: 'timeout',
+        count: 1
+      }],
+      citationExpansion: {
+        seeds: 1,
+        addedCandidates: 2,
+        failedSeeds: 0
+      }
+    },
     results: [{
       query: 'benchmark query',
       relevantCount: 1,
@@ -982,4 +1062,7 @@ test('benchmark report renders concise markdown summary', () => {
 
   assert.match(markdown, /Retrieval Benchmark: synthetic/);
   assert.match(markdown, /\| recall@1 \| 1\.0000 \|/);
+  assert.match(markdown, /## Diagnostics/);
+  assert.match(markdown, /Candidate pool recall: 1\.0000/);
+  assert.match(markdown, /\| openalex \| timeout \| 1 \|/);
 });
