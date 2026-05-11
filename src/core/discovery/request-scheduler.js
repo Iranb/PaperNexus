@@ -1,12 +1,21 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { stableHash } from '../../lib/utils.js';
 
 const DEFAULT_CACHE_TTL_MS = 0;
+const DEFAULT_FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
+const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS = 0;
 const DEFAULT_MAX_CONCURRENT = 4;
 const DEFAULT_SEMANTIC_SCHOLAR_MAX_CONCURRENT = 1;
+const DISK_CACHE_VERSION = 1;
+const RETRYABLE_FAILURE_STATUSES = new Set([0, 429, 500, 502, 503, 504]);
 
 const providerLimiters = new Map();
 const inFlightRequests = new Map();
 const memoryCache = new Map();
+const providerCircuitBreakers = new Map();
 
 function toNonNegativeInteger(value, fallback) {
   const parsed = Number(value);
@@ -18,6 +27,20 @@ function toPositiveInteger(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.max(1, Math.floor(parsed));
+}
+
+function resolvePathWithHome(value = '') {
+  const configured = String(value || '').trim();
+  if (configured === '~') return os.homedir();
+  if (configured.startsWith('~/') || configured.startsWith('~\\')) {
+    return path.join(os.homedir(), configured.slice(2));
+  }
+  return path.resolve(configured);
+}
+
+function resolvePapernexusHome() {
+  const configured = String(process.env.PAPERNEXUS_HOME || '').trim();
+  return configured ? resolvePathWithHome(configured) : path.join(os.homedir(), '.papernexus');
 }
 
 function normalizeProviderName(value = '') {
@@ -114,10 +137,59 @@ function resolveCacheTtlMs(provider, config = {}, options = {}) {
   return toNonNegativeInteger(process.env.PAPERNEXUS_DISCOVERY_CACHE_TTL_MS, DEFAULT_CACHE_TTL_MS);
 }
 
+function resolveFailureCacheTtlMs(provider, config = {}, options = {}, successTtlMs = 0) {
+  const configured = options.failureCacheTtlMs
+    ?? options.failure_cache_ttl_ms
+    ?? config.discoveryRequestFailureCacheTtlMs
+    ?? config.discovery_request_failure_cache_ttl_ms
+    ?? (provider === 'semantic_scholar' ? config.semanticScholarFailureCacheTtlMs : undefined)
+    ?? (provider === 'openalex' ? config.openAlexFailureCacheTtlMs : undefined)
+    ?? process.env.PAPERNEXUS_DISCOVERY_FAILURE_CACHE_TTL_MS;
+  if (configured !== undefined) return toNonNegativeInteger(configured, 0);
+  return successTtlMs > 0 ? Math.min(successTtlMs, DEFAULT_FAILURE_CACHE_TTL_MS) : 0;
+}
+
+function resolveDiscoveryCacheDir(config = {}, options = {}) {
+  const configured = String(
+    options.cacheDir
+    || options.discoveryRequestCacheDir
+    || options.discovery_request_cache_dir
+    || config.discoveryRequestCacheDir
+    || config.discovery_request_cache_dir
+    || process.env.PAPERNEXUS_DISCOVERY_CACHE_DIR
+    || ''
+  ).trim();
+  return configured
+    ? resolvePathWithHome(configured)
+    : path.join(resolvePapernexusHome(), 'cache', 'discovery-request-cache');
+}
+
 function cacheEnabled(config = {}, options = {}) {
   if (options.cache === false || config.discoveryRequestCache === false) return false;
   if (options.cache === true || config.discoveryRequestCache === true) return true;
   return resolveCacheTtlMs(options.provider || 'generic', config, options) > 0;
+}
+
+function resolveCircuitBreakerThreshold(config = {}, options = {}) {
+  return toPositiveInteger(
+    options.circuitBreakerFailureThreshold
+    ?? options.circuit_breaker_failure_threshold
+    ?? config.discoveryCircuitBreakerFailureThreshold
+    ?? config.discovery_circuit_breaker_failure_threshold
+    ?? process.env.PAPERNEXUS_DISCOVERY_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+    DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD
+  );
+}
+
+function resolveCircuitBreakerCooldownMs(config = {}, options = {}) {
+  return toNonNegativeInteger(
+    options.circuitBreakerCooldownMs
+    ?? options.circuit_breaker_cooldown_ms
+    ?? config.discoveryCircuitBreakerCooldownMs
+    ?? config.discovery_circuit_breaker_cooldown_ms
+    ?? process.env.PAPERNEXUS_DISCOVERY_CIRCUIT_BREAKER_COOLDOWN_MS,
+    DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS
+  );
 }
 
 function normalizeUrlForCache(input) {
@@ -265,12 +337,13 @@ async function snapshotResponse(response) {
 
 function cloneSnapshot(snapshot) {
   const body = Buffer.from(snapshot.body || []);
+  const headerEntries = Array.isArray(snapshot.headers) ? snapshot.headers : headersToEntries(snapshot.headers);
   return {
     ok: snapshot.ok,
     status: snapshot.status,
     statusText: snapshot.statusText,
     url: snapshot.url,
-    headers: createHeadersFacade(snapshot.headers),
+    headers: createHeadersFacade(headerEntries),
     async arrayBuffer() {
       return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
     },
@@ -282,6 +355,72 @@ function cloneSnapshot(snapshot) {
       return text ? JSON.parse(text) : {};
     }
   };
+}
+
+function serializeSnapshot(snapshot = {}) {
+  return {
+    ok: Boolean(snapshot.ok),
+    status: Number(snapshot.status || 0),
+    statusText: snapshot.statusText || '',
+    url: snapshot.url || '',
+    headers: headersToEntries(snapshot.headers),
+    bodyBase64: Buffer.from(snapshot.body || []).toString('base64')
+  };
+}
+
+function deserializeSnapshot(value = {}) {
+  return {
+    ok: Boolean(value.ok),
+    status: Number(value.status || 0),
+    statusText: value.statusText || '',
+    url: value.url || '',
+    headers: createHeadersFacade(Array.isArray(value.headers) ? value.headers : []),
+    body: Buffer.from(String(value.bodyBase64 || ''), 'base64')
+  };
+}
+
+function cacheFilePath(cacheDir, provider, requestKey) {
+  const hash = stableHash(requestKey, 32);
+  return path.join(cacheDir, normalizeProviderName(provider), hash.slice(0, 2), `${hash}.json`);
+}
+
+function cacheTtlForSnapshot(snapshot = {}, cacheConfig = {}) {
+  if (snapshot.ok) return cacheConfig.successTtlMs;
+  const status = Number(snapshot.status || 0);
+  return RETRYABLE_FAILURE_STATUSES.has(status) ? cacheConfig.failureTtlMs : 0;
+}
+
+async function readDiskCachedSnapshot(cacheConfig = {}) {
+  if (!cacheConfig.enabled || !cacheConfig.cacheDir) return null;
+  const filePath = cacheFilePath(cacheConfig.cacheDir, cacheConfig.provider, cacheConfig.requestKey);
+  try {
+    const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    if (!parsed || parsed.version !== DISK_CACHE_VERSION || parsed.expiresAt <= Date.now()) return null;
+    const snapshot = deserializeSnapshot(parsed.snapshot || {});
+    memoryCache.set(cacheConfig.requestKey, {
+      expiresAt: parsed.expiresAt,
+      snapshot
+    });
+    return snapshot;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    return null;
+  }
+}
+
+async function writeDiskCachedSnapshot(snapshot = {}, cacheConfig = {}, ttlMs = 0) {
+  if (!cacheConfig.enabled || !cacheConfig.cacheDir || ttlMs <= 0) return;
+  const filePath = cacheFilePath(cacheConfig.cacheDir, cacheConfig.provider, cacheConfig.requestKey);
+  const payload = {
+    version: DISK_CACHE_VERSION,
+    provider: cacheConfig.provider,
+    keyHash: stableHash(cacheConfig.requestKey, 32),
+    createdAt: Date.now(),
+    expiresAt: Date.now() + ttlMs,
+    snapshot: serializeSnapshot(snapshot)
+  };
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
 }
 
 async function runRawFetch(input, config = {}, headers = {}) {
@@ -300,22 +439,87 @@ async function runRawFetch(input, config = {}, headers = {}) {
   }
 }
 
-function getCachedSnapshot(key) {
+async function getCachedSnapshot(key, cacheConfig = {}) {
   const cached = memoryCache.get(key);
-  if (!cached) return null;
-  if (cached.expiresAt <= Date.now()) {
+  if (cached) {
+    if (cached.expiresAt > Date.now()) return cached.snapshot;
     memoryCache.delete(key);
-    return null;
   }
-  return cached.snapshot;
+  return readDiskCachedSnapshot(cacheConfig);
 }
 
-function setCachedSnapshot(key, snapshot, ttlMs) {
-  if (!ttlMs || ttlMs <= 0 || !snapshot.ok) return;
+async function setCachedSnapshot(key, snapshot, cacheConfig = {}) {
+  const ttlMs = cacheTtlForSnapshot(snapshot, cacheConfig);
+  if (!ttlMs || ttlMs <= 0) return;
   memoryCache.set(key, {
     expiresAt: Date.now() + ttlMs,
     snapshot
   });
+  try {
+    await writeDiskCachedSnapshot(snapshot, cacheConfig, ttlMs);
+  } catch {
+    // Cache writes must not break live discovery or batch ingestion.
+  }
+}
+
+function isRetryableFailureSnapshot(snapshot = {}) {
+  return RETRYABLE_FAILURE_STATUSES.has(Number(snapshot.status || 0));
+}
+
+function providerCircuitBreakerState(provider) {
+  const normalized = normalizeProviderName(provider);
+  if (!providerCircuitBreakers.has(normalized)) {
+    providerCircuitBreakers.set(normalized, {
+      failureCount: 0,
+      openedUntil: 0,
+      lastFailureAt: 0,
+      lastReason: ''
+    });
+  }
+  return providerCircuitBreakers.get(normalized);
+}
+
+function activeCircuitBreaker(provider) {
+  const state = providerCircuitBreakers.get(normalizeProviderName(provider));
+  if (!state || state.openedUntil <= Date.now()) return null;
+  return state;
+}
+
+function recordProviderSuccess(provider) {
+  providerCircuitBreakers.delete(normalizeProviderName(provider));
+}
+
+function recordProviderFailure(provider, config = {}, options = {}, reason = '') {
+  const threshold = resolveCircuitBreakerThreshold(config, options);
+  const cooldownMs = resolveCircuitBreakerCooldownMs(config, options);
+  if (cooldownMs <= 0) return null;
+  const state = providerCircuitBreakerState(provider);
+  state.failureCount += 1;
+  state.lastFailureAt = Date.now();
+  state.lastReason = reason;
+  if (state.failureCount >= threshold) {
+    state.openedUntil = Date.now() + cooldownMs;
+  }
+  return state;
+}
+
+function createCircuitBreakerSnapshot(provider, state = {}) {
+  return {
+    ok: false,
+    status: 503,
+    statusText: 'provider circuit breaker open',
+    url: '',
+    headers: createHeadersFacade([
+      ['content-type', 'application/json'],
+      ['x-papernexus-provider-circuit-open', 'true']
+    ]),
+    body: Buffer.from(JSON.stringify({
+      error: 'provider-circuit-breaker-open',
+      provider,
+      retryAfterMs: Math.max(0, Number(state.openedUntil || 0) - Date.now()),
+      reason: state.lastReason || 'provider failures exceeded threshold'
+    }))
+  };
 }
 
 export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, options = {}) {
@@ -323,11 +527,22 @@ export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, o
   const requestKey = options.cacheKey || buildRequestKey(input, headers, { ...options, provider });
   const ttlMs = resolveCacheTtlMs(provider, config, { ...options, provider });
   const shouldCache = cacheEnabled(config, { ...options, provider, cacheTtlMs: ttlMs });
+  const cacheConfig = {
+    enabled: shouldCache,
+    provider,
+    requestKey,
+    cacheDir: resolveDiscoveryCacheDir(config, options),
+    successTtlMs: ttlMs,
+    failureTtlMs: shouldCache ? resolveFailureCacheTtlMs(provider, config, options, ttlMs) : 0
+  };
 
   if (shouldCache) {
-    const cached = getCachedSnapshot(requestKey);
+    const cached = await getCachedSnapshot(requestKey, cacheConfig);
     if (cached) return cloneSnapshot(cached);
   }
+
+  const circuitState = activeCircuitBreaker(provider);
+  if (circuitState) return cloneSnapshot(createCircuitBreakerSnapshot(provider, circuitState));
 
   if (inFlightRequests.has(requestKey)) {
     return cloneSnapshot(await inFlightRequests.get(requestKey));
@@ -342,8 +557,16 @@ export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, o
       await waitForProviderStart(limiter, delayMs);
       const response = await runRawFetch(input, config, headers);
       const snapshot = await snapshotResponse(response);
-      setCachedSnapshot(requestKey, snapshot, ttlMs);
+      if (snapshot.ok) {
+        recordProviderSuccess(provider);
+      } else if (isRetryableFailureSnapshot(snapshot)) {
+        recordProviderFailure(provider, config, options, `http-${snapshot.status}`);
+      }
+      await setCachedSnapshot(requestKey, snapshot, cacheConfig);
       return snapshot;
+    } catch (error) {
+      recordProviderFailure(provider, config, options, error?.name || error?.message || 'fetch-error');
+      throw error;
     } finally {
       releaseSlot(limiter);
     }
@@ -361,12 +584,21 @@ export function resetDiscoveryRequestSchedulerForTests() {
   providerLimiters.clear();
   inFlightRequests.clear();
   memoryCache.clear();
+  providerCircuitBreakers.clear();
 }
 
 export function readDiscoveryRequestSchedulerState() {
   return {
     providers: [...providerLimiters.keys()],
     inFlightCount: inFlightRequests.size,
-    cacheEntries: memoryCache.size
+    cacheEntries: memoryCache.size,
+    circuitBreakers: [...providerCircuitBreakers.entries()].map(([provider, state]) => ({
+      provider,
+      failureCount: state.failureCount,
+      openedUntil: state.openedUntil,
+      lastFailureAt: state.lastFailureAt,
+      lastReason: state.lastReason,
+      open: state.openedUntil > Date.now()
+    }))
   };
 }

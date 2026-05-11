@@ -9,6 +9,7 @@ import { expandDiscoveryCitations } from '../src/core/discovery/citation-expansi
 import { DEFAULT_DISCOVERY_PROVIDERS, KNOWN_DISCOVERY_PROVIDERS, executeProviderQueries } from '../src/core/discovery/providers.js';
 import { resetSemanticScholarRateLimitForTests } from '../src/core/discovery/s2-rate-limit.js';
 import {
+  readDiscoveryRequestSchedulerState,
   resetDiscoveryRequestSchedulerForTests,
   scheduleDiscoveryFetch
 } from '../src/core/discovery/request-scheduler.js';
@@ -26,8 +27,24 @@ function createJsonResponse(payload) {
   return {
     ok: true,
     status: 200,
+    headers: new Map([['content-type', 'application/json']]),
     async json() {
       return payload;
+    }
+  };
+}
+
+function createJsonStatusResponse(status, payload = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: String(status),
+    headers: new Map([['content-type', 'application/json']]),
+    async json() {
+      return payload;
+    },
+    async text() {
+      return JSON.stringify(payload);
     }
   };
 }
@@ -205,6 +222,80 @@ test('scheduleDiscoveryFetch uses opt-in memory cache for repeated successful re
     assert.equal(calls, 1);
     assert.deepEqual(await first.json(), { calls: 1 });
     assert.deepEqual(await second.json(), { calls: 1 });
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scheduleDiscoveryFetch persists cached responses across scheduler resets', async () => {
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-discovery-cache-'));
+  let calls = 0;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      return createJsonResponse({ calls, source: 'network' });
+    };
+
+    const first = await scheduleDiscoveryFetch('https://api.openalex.org/works?search=persistent-cache', {
+      timeoutMs: 500,
+      discoveryRequestCache: true,
+      discoveryRequestCacheTtlMs: 1000,
+      discoveryRequestCacheDir: cacheDir
+    });
+
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      return createJsonResponse({ calls, source: 'should-not-run' });
+    };
+
+    const second = await scheduleDiscoveryFetch('https://api.openalex.org/works?search=persistent-cache', {
+      timeoutMs: 500,
+      discoveryRequestCache: true,
+      discoveryRequestCacheTtlMs: 1000,
+      discoveryRequestCacheDir: cacheDir
+    });
+
+    assert.equal(calls, 1);
+    assert.deepEqual(await first.json(), { calls: 1, source: 'network' });
+    assert.deepEqual(await second.json(), { calls: 1, source: 'network' });
+    assert.ok(readDiscoveryRequestSchedulerState().cacheEntries > 0);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scheduleDiscoveryFetch opens a provider circuit breaker after repeated retryable failures', async () => {
+  let calls = 0;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      return createJsonStatusResponse(503, { error: 'upstream unavailable' });
+    };
+
+    const first = await scheduleDiscoveryFetch('https://api.openalex.org/works?search=circuit-breaker-1', {
+      timeoutMs: 500,
+      discoveryCircuitBreakerFailureThreshold: 1,
+      discoveryCircuitBreakerCooldownMs: 1000
+    });
+
+    const second = await scheduleDiscoveryFetch('https://api.openalex.org/works?search=circuit-breaker-2', {
+      timeoutMs: 500,
+      discoveryCircuitBreakerFailureThreshold: 1,
+      discoveryCircuitBreakerCooldownMs: 1000
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(first.status, 503);
+    assert.equal(second.status, 503);
+    assert.match(second.statusText, /provider circuit breaker open/i);
+    assert.equal(readDiscoveryRequestSchedulerState().circuitBreakers[0].open, true);
   } finally {
     resetDiscoveryRequestSchedulerForTests();
     globalThis.fetch = originalFetch;

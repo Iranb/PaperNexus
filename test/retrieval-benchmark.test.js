@@ -942,6 +942,7 @@ test('fixed-corpus evaluation ranks benchmark corpus without live providers', as
   });
 
   assert.equal(report.config.evaluationMode, 'fixed-corpus');
+  assert.equal(report.config.fixedCorpusScorer, 'hybrid-bm25-v1');
   assert.equal(report.metrics['hit@1'], 1);
   assert.equal(report.alignment.officialComparable, true);
   assert.equal(report.results[0].discovery.providerCount, 1);

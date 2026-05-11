@@ -118,6 +118,61 @@ function benchmarkProfile(format = 'custom') {
   return BENCHMARK_PROFILES[canonicalBenchmarkFormat(format)] || BENCHMARK_PROFILES.custom;
 }
 
+function toTokenCounts(tokens = []) {
+  const counts = new Map();
+  for (const token of tokens || []) {
+    counts.set(token, (counts.get(token) || 0) + 1);
+  }
+  return counts;
+}
+
+function buildDocumentFrequency(paperTokens = []) {
+  const documentFrequency = new Map();
+  for (const tokens of paperTokens) {
+    for (const token of new Set(tokens || [])) {
+      documentFrequency.set(token, (documentFrequency.get(token) || 0) + 1);
+    }
+  }
+  return documentFrequency;
+}
+
+function bm25FieldScore(queryTokens = [], docTokens = [], documentFrequency = new Map(), totalDocuments = 0, averageLength = 0) {
+  if (!queryTokens.length || !docTokens.length || !totalDocuments) return 0;
+  const counts = toTokenCounts(docTokens);
+  const uniqueQueryTokens = new Set(queryTokens);
+  const k1 = 1.2;
+  const b = 0.75;
+  const docLength = docTokens.length;
+  const lengthNorm = averageLength > 0 ? (1 - b) + (b * (docLength / averageLength)) : 1;
+  let score = 0;
+
+  for (const token of uniqueQueryTokens) {
+    const tf = counts.get(token) || 0;
+    if (!tf) continue;
+    const df = documentFrequency.get(token) || 0;
+    if (!df) continue;
+    const idf = Math.log(1 + ((totalDocuments - df + 0.5) / (df + 0.5)));
+    score += idf * ((tf * (k1 + 1)) / (tf + (k1 * lengthNorm)));
+  }
+
+  return score;
+}
+
+function scoreFacetAwareBoost(facet = '', paper = {}) {
+  const normalizedFacet = compactText(facet).toLowerCase();
+  if (!normalizedFacet) return 0;
+
+  const text = compactText([paper.title, paper.abstract].filter(Boolean).join(' ')).toLowerCase();
+  const facetTerms = {
+    background: ['problem', 'task', 'domain', 'motivation', 'challenge', 'survey'],
+    method: ['method', 'model', 'algorithm', 'architecture', 'approach', 'framework'],
+    result: ['result', 'dataset', 'benchmark', 'metric', 'evaluation', 'performance', 'finding']
+  }[normalizedFacet] || [normalizedFacet];
+
+  const hits = facetTerms.reduce((count, term) => count + (text.includes(term) ? 1 : 0), 0);
+  return hits ? Math.min(2, hits / Math.max(1, facetTerms.length)) : 0;
+}
+
 function inferTaskType(format = 'custom', entry = {}, fallback = '') {
   const explicit = compactText(pickFirst(
     fallback,
@@ -1816,17 +1871,45 @@ function buildDiscoveryParams(queryCase = {}, options = {}) {
   };
 }
 
-function scoreFixedCorpusCandidate(queryCase = {}, paper = {}) {
+function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}) {
   const queryTokens = tokenizeWithoutStopwords(queryCase.query);
   const titleTokens = tokenizeWithoutStopwords(paper.title);
   const abstractTokens = tokenizeWithoutStopwords(paper.abstract);
   const combinedTokens = unique([...titleTokens, ...abstractTokens]);
+  const queryIdentifiers = normalizePaperIdentifiers({
+    ...asObject(queryCase.metadata?.identifiers),
+    ...asObject(queryCase.metadata?.sourceIdentifiers),
+    ...asObject(queryCase.metadata?.native?.identifiers)
+  });
   const titleOverlap = scoreTokenOverlap(queryTokens, titleTokens);
+  const abstractOverlap = scoreTokenOverlap(queryTokens, abstractTokens);
   const combinedOverlap = scoreTokenOverlap(queryTokens, combinedTokens);
   const titleSimilarityScore = jaccardSimilarity(queryCase.query, paper.title);
+  const bm25Title = bm25FieldScore(queryTokens, titleTokens, stats.titleDf, stats.totalDocuments, stats.avgTitleLength);
+  const bm25Abstract = bm25FieldScore(queryTokens, abstractTokens, stats.abstractDf, stats.totalDocuments, stats.avgAbstractLength);
+  const bm25Combined = bm25FieldScore(queryTokens, combinedTokens, stats.combinedDf, stats.totalDocuments, stats.avgCombinedLength);
+  const exactTitleMatch = compactText(queryCase.query).toLowerCase() === compactText(paper.title).toLowerCase() ? 2.5 : 0;
+  const phraseMatch = compactText(queryCase.query)
+    && compactText(paper.title)
+    && compactText(paper.title).toLowerCase().includes(compactText(queryCase.query).toLowerCase())
+      ? 1.5
+      : 0;
   const facet = queryCase.metadata?.facet || '';
-  const facetBoost = facet ? jaccardSimilarity(facet, `${paper.title} ${paper.abstract}`) : 0;
-  return (titleOverlap * 3) + (combinedOverlap * 2) + titleSimilarityScore + facetBoost;
+  const facetBoost = facet ? scoreFacetAwareBoost(facet, paper) : 0;
+  const identifierBoost = paperIdentifiersOverlap(queryIdentifiers, paper.identifiers) ? 2.5 : 0;
+  return (
+    (titleOverlap * 2.5)
+    + (abstractOverlap * 1.25)
+    + (combinedOverlap * 1.5)
+    + titleSimilarityScore
+    + (bm25Title * 2.25)
+    + (bm25Abstract * 1.5)
+    + (bm25Combined * 1)
+    + exactTitleMatch
+    + phraseMatch
+    + facetBoost
+    + identifierBoost
+  );
 }
 
 function buildFixedCorpusCandidates(benchmark = {}, queryCase = {}, options = {}) {
@@ -1842,15 +1925,26 @@ function buildFixedCorpusCandidates(benchmark = {}, queryCase = {}, options = {}
     || options.maxCandidates
     || DEFAULT_FIXED_CORPUS_LIMIT
   )));
+  const normalizedCorpus = corpus.map((paper, index) => normalizePaperRecord(paper, `fixed:${index}`));
+  const titleTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.title));
+  const abstractTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.abstract));
+  const combinedTokenSets = normalizedCorpus.map((paper, index) => unique([...titleTokenSets[index], ...abstractTokenSets[index]]));
+  const totalDocuments = normalizedCorpus.length;
+  const stats = {
+    totalDocuments,
+    titleDf: buildDocumentFrequency(titleTokenSets),
+    abstractDf: buildDocumentFrequency(abstractTokenSets),
+    combinedDf: buildDocumentFrequency(combinedTokenSets),
+    avgTitleLength: titleTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
+    avgAbstractLength: abstractTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
+    avgCombinedLength: combinedTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments)
+  };
   return corpus
-    .map((paper, index) => {
-      const normalized = normalizePaperRecord(paper, `fixed:${index}`);
-      return {
-        ...normalized,
-        score: scoreFixedCorpusCandidate(queryCase, normalized),
-        sourceProvider: 'fixed_corpus'
-      };
-    })
+    .map((paper, index) => ({
+      ...normalizedCorpus[index],
+      score: scoreFixedCorpusCandidate(queryCase, normalizedCorpus[index], stats),
+      sourceProvider: 'fixed_corpus'
+    }))
     .filter((paper) => !sourcePaperId || ![paper.id, paper.canonicalId].includes(sourcePaperId))
     .sort((left, right) => right.score - left.score)
     .slice(0, limit);
@@ -2008,6 +2102,32 @@ export async function runRetrievalBenchmark(params = {}) {
       generateTaskAnswers: params.generateTaskAnswers === true || params.generate_task_answers === true,
       maxTaskContext: params.maxTaskContext || params.max_task_context || null,
       fixedCorpusLimit: params.fixedCorpusLimit || params.maxFixedCorpusResults || params.max_fixed_corpus_results || null,
+      fixedCorpusScorer: evaluationMode === 'fixed-corpus' ? 'hybrid-bm25-v1' : null,
+      discoveryCacheTtlMs: toNumber(pickFirst(
+        params.discoveryRequestCacheTtlMs,
+        params.discovery_request_cache_ttl_ms,
+        process.env.PAPERNEXUS_DISCOVERY_CACHE_TTL_MS
+      ), 0),
+      discoveryFailureCacheTtlMs: toNumber(pickFirst(
+        params.discoveryRequestFailureCacheTtlMs,
+        params.discovery_request_failure_cache_ttl_ms,
+        process.env.PAPERNEXUS_DISCOVERY_FAILURE_CACHE_TTL_MS
+      ), 0),
+      discoveryCacheDir: pickFirst(
+        params.discoveryRequestCacheDir,
+        params.discovery_request_cache_dir,
+        process.env.PAPERNEXUS_DISCOVERY_CACHE_DIR
+      ) || null,
+      discoveryCircuitBreakerFailureThreshold: toNumber(pickFirst(
+        params.discoveryCircuitBreakerFailureThreshold,
+        params.discovery_circuit_breaker_failure_threshold,
+        process.env.PAPERNEXUS_DISCOVERY_CIRCUIT_BREAKER_FAILURE_THRESHOLD
+      ), null),
+      discoveryCircuitBreakerCooldownMs: toNumber(pickFirst(
+        params.discoveryCircuitBreakerCooldownMs,
+        params.discovery_circuit_breaker_cooldown_ms,
+        process.env.PAPERNEXUS_DISCOVERY_CIRCUIT_BREAKER_COOLDOWN_MS
+      ), 0),
       resolveSources: params.resolveSources === true,
       persistDiscoveryRuns: params.persistDiscoveryRuns === true,
       titleMatchThreshold: Number(params.titleMatchThreshold || params.title_match_threshold || DEFAULT_TITLE_MATCH_THRESHOLD)
@@ -2078,6 +2198,10 @@ export function renderRetrievalBenchmarkReport(report = {}) {
     `Evaluation mode: ${alignment.evaluationMode || config.evaluationMode || 'live'}`,
     `Discovery depth: ${config.depth || 'quick'}`,
     `Providers: ${Array.isArray(config.providers) ? config.providers.join(', ') : (config.providers || 'default')}`,
+    `Fixed-corpus scorer: ${config.fixedCorpusScorer || 'n/a'}`,
+    `Discovery cache TTL: ${config.discoveryCacheTtlMs || 0} ms`,
+    `Discovery failure cache TTL: ${config.discoveryFailureCacheTtlMs || 0} ms`,
+    `Discovery circuit breaker: threshold=${config.discoveryCircuitBreakerFailureThreshold || 'default'}, cooldown=${config.discoveryCircuitBreakerCooldownMs || 0} ms`,
     `Source resolution: ${config.resolveSources ? 'enabled' : 'disabled'}`,
     `Official-style comparable: ${alignment.officialComparable ? 'yes' : 'no'}`,
     '',
