@@ -613,6 +613,206 @@ This report was generated from the local \papernexus{} working tree and project 
 
 \appendix
 
+\section{Experiment Run Records}
+
+This appendix records the concrete run artifacts behind the measurements in the main text. It is intentionally operational: the entries preserve paths, limits, failure modes, and caveats so that later reruns can distinguish measurement drift from implementation changes. All rows in this appendix remain single observed executions unless explicitly stated. They are therefore audit records rather than repeated-run statistical estimates.
+
+\subsection{Execution Environments and Artifact Roots}
+
+\Cref{tab:appendix-run-environments} records the two environments used for the local pipeline and public benchmark measurements. The local workstation was used for authenticated upload, queue, and qwen/CPA LLM checks. The 41 server was used for sub-5GB public benchmark runs and the scratch Kuzu import.
+
+\begin{table}[t]
+\centering
+\caption{Execution environments used by the reported audits.}
+\label{tab:appendix-run-environments}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l Y Y@{}}
+\toprule
+Environment & Recorded machine context & Workload role \\
+\midrule
+Local workstation & macOS 15.1 on \code{arm64}; 10 logical CPUs; 16GB RAM; Node \code{v25.4.0}. & Authenticated PDF upload, import queue recovery, heuristic-only import stress, and qwen/CPA LLM batching. \\
+41 server & Host \code{jin-Super-Server}; Linux 6.8.0-90-generic; AMD EPYC 7542 32-Core Processor; 64 logical CPUs; 125GiB RAM; Python 3.10.16; Node \code{v22.16.0}. & BEIR, LitSearch, ScholarGym, live-provider diagnostics, and STaRK-MAG/Kuzu scratch runs. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The server-side experiment root was:
+
+\begin{lstlisting}[style=pncode]
+/data1/hyq/papernexus-sub5g-benchmarks/runs/20260512-fixed-corpus-cache
+\end{lstlisting}
+
+The server repo and runtime were:
+
+\begin{lstlisting}[style=pncode]
+/data1/hyq/PaperNexus
+PATH=/data1/hyq/papernexus-runtime/node-v22.16.0-linux-x64/bin:$PATH
+\end{lstlisting}
+
+The long-running production service on the same host was left untouched during the benchmark runs:
+
+\begin{lstlisting}[style=pncode]
+/data2/hyq/papernexus-runtime/node-current/bin/node ./src/cli/index.js serve --host 0.0.0.0 --port 4821
+\end{lstlisting}
+
+\subsection{Local Pipeline and LLM Audit Records}
+
+\Cref{tab:appendix-local-run-records} expands the local upload, queue, and pipeline measurements from the main text. \Cref{tab:appendix-qwen-batch-records} separately records the qwen batch checks, which used the local OpenAI-compatible \code{cliproxyapi} configuration with thinking disabled.
+
+\begin{table}[t]
+\centering
+\caption{Detailed local audit records for upload, import, queue recovery, and LLM-enhanced pipeline timing.}
+\label{tab:appendix-local-run-records}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l Y Y@{}}
+\toprule
+Run & Scale and setting & Observed record \\
+\midrule
+1-PDF upload/import & 1 uploaded PDF; 182,972-byte request payload; one seed Markdown source in the temporary corpus. & Enqueue latency 14ms; end-to-end time 2.026s; materialization 1.443s; PDF parse 1.417s; committed graph contained 2 papers, 25 nodes, and 55 edges. This was a single heuristic-only import trace and excluded external LLM enrichment. \\
+100-PDF upload/import & 100 uploaded PDFs; 18,292,646-byte request payload; same seed-source convention. & Enqueue latency 60ms; end-to-end time 30.289s; cumulative materialization 113.589s; cumulative PDF parse 110.907s; committed graph contained 101 papers, 223 nodes, and 1,837 edges. Four-way analysis concurrency explains why cumulative parse time exceeds wall time. \\
+Queue recovery audit & Historical import queue with stale failed tasks and completed replacements. & Before recovery: 117 completed and 33 failed tasks. All 33 source files still existed; 24 were PDF uploads and 9 were Markdown uploads. After reconciliation: 117 completed, 0 failed, 0 pending, 0 running, and progress 100\%. \\
+10-paper pipeline log & 10 real papers with LLM-enhanced pipeline stages. & Fast graph commit 0.084s within-run mean; sync 0.59s within-run mean; LLM optimize 113.7s within-run mean; active sync window 120.4s. This shows provider-side LLM latency dominated the observed local LLM-enhanced path. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Detailed qwen/CPA batch extraction records. Each condition was executed once.}
+\label{tab:appendix-qwen-batch-records}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}r l Y@{}}
+\toprule
+Papers per prompt & Completion time & Outcome \\
+\midrule
+1 & 4.992s & HTTP 200 with parseable structured output. This is only a smoke trace. \\
+10 & 45.561s & HTTP 200 with parseable structured output. The result shows that small multi-paper batches are feasible in this local CPA/qwen configuration. \\
+100 & 256.409s & HTTP 200, but the response was truncated at 60,848 characters and JSON parsing failed. The result shows that a single giant prompt is not production-safe. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The local batch experiment therefore motivates bounded LLM batches with schema validation, output-size budgets, batch-level checkpoints, and split retry/continue. It does not justify a one-prompt-per-corpus strategy.
+
+\subsection{Sub-5GB Fixed-Corpus Benchmark Records}
+
+\Cref{tab:appendix-fixed-corpus-runtime-records} records the fixed-corpus runtime artifacts executed on the 41 server, and \Cref{tab:appendix-fixed-corpus-metric-records} records the full-precision metrics. All runs used \code{--evaluation-mode fixed-corpus}, \code{--max-candidates 1000}, \code{--k 1,5,10,20,50,100}, and \code{PAPERNEXUS_FIXED_CORPUS_SCAN_LIMIT=5000}. ScholarGym additionally required \code{NODE_OPTIONS=--max-old-space-size=16384}.
+
+\begin{table}[t]
+\centering
+\caption{Detailed fixed-corpus runtime records from the 41 server.}
+\label{tab:appendix-fixed-corpus-runtime-records}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l l l Y@{}}
+\toprule
+Dataset & Scale & Wall / peak RSS & Artifact and caveat \\
+\midrule
+BEIR TREC-COVID & 50 queries; 171,332 papers. & 8:54.15 / 2.56GB. & Artifact directory \code{trec-covid-fixed-scan5k}. Large-qrels biomedical regression trace, not a repeated BEIR leaderboard run. \\
+BEIR SciDocs & 1,000 queries; 25,657 papers. & 6:38.92 / 1.19GB. & Artifact directory \code{scidocs-fixed-scan5k}. Citation-oriented paper-retrieval regression trace. \\
+LitSearch full & 597 queries; 64,183 papers. & 2:44.21 / 1.47GB. & Artifact directory \code{litsearch-full-fixed-scan5k}. Full 597-query run, but not yet the official LitSearch broad/specific metric slices. \\
+ScholarGym & 2,458 queries; 570,204 papers. & 29:32.76 / 10.25GB. & Static deep-research regression trace; full artifact path is listed below. Not the official ScholarGym leaderboard protocol. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Full-precision fixed-corpus metric records. Pool is candidate-pool recall and Zero is zero-match rate.}
+\label{tab:appendix-fixed-corpus-metric-records}
+\scriptsize
+\begin{tabular}{@{}l r r r r r r r r@{}}
+\toprule
+Dataset & nDCG10 & R10 & MRR10 & Hit100 & R100 & nDCG100 & Pool & Zero \\
+\midrule
+TREC-COVID & 0.556899 & 0.014152 & 0.870357 & 1.000000 & 0.089556 & 0.380887 & 0.336728 & 0.000000 \\
+SciDocs & 0.152665 & 0.156750 & 0.273923 & 0.763000 & 0.336283 & 0.214137 & 0.541100 & 0.073000 \\
+LitSearch full & 0.373935 & 0.510497 & 0.333934 & 0.730318 & 0.718760 & 0.416863 & 0.853099 & 0.139028 \\
+ScholarGym & 0.141889 & 0.188557 & 0.147330 & 0.427990 & 0.330203 & 0.173783 & 0.466350 & 0.420667 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The corresponding report paths were:
+
+\begin{lstlisting}[style=pncode]
+trec-covid-fixed-scan5k/2026-05-12T06-37-46-928Z-trec-covid/report.json
+scidocs-fixed-scan5k/2026-05-12T06-45-11-069Z-scidocs/report.json
+litsearch-full-fixed-scan5k/2026-05-12T06-49-17-665Z-litsearch/report.json
+scholargym-fixed-scan5k-heap16g/2026-05-12T07-49-11-354Z-sage/report.json
+\end{lstlisting}
+
+\subsection{Live Provider Diagnostic Records}
+
+\Cref{tab:appendix-live-diagnostic-records} records the live-provider checks. These runs were intentionally treated as diagnostics because provider throttling, query shape, missing gold identifiers, and date-stamped API behavior are part of what they measure.
+
+\begin{table}[t]
+\centering
+\caption{Detailed live-provider diagnostic records from the 41 server.}
+\label{tab:appendix-live-diagnostic-records}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}l Y Y@{}}
+\toprule
+Diagnostic & Runtime record & Observed failure mode \\
+\midrule
+AutoResearchBench sample & 40 queries; 175 relevant papers; artifact directory \code{autoresearchbench-live40}; wall 5:24.77; average query latency 8,110.7ms; peak RSS 100,232KB. & Hit@10, R@10, and all retrieval metrics were 0; zero-match rate was 1.000. Provider failures included 58 OpenAlex HTTP 400 responses and 5 Semantic Scholar HTTP 429 responses. The run shows that clue-style tasks need query rewriting/decomposition before retrieval quality can be judged. \\
+ScholarSearch diagnostic & Intended max-10 live run, but the CLI evaluated 50 queries; artifact directory \code{scholarsearch-live10}; wall 4:14.39; peak RSS 90,300KB. & No usable gold-paper set was available, so ranking metrics are not meaningful. Average retrieved count was 0.26, and the run recorded one Semantic Scholar HTTP 429 response. The run remains a live trace diagnostic only. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The report paths were:
+
+\begin{lstlisting}[style=pncode]
+autoresearchbench-live40/2026-05-12T08-02-34-833Z-sage/report.json
+scholarsearch-live10/2026-05-12T08-14-45-762Z-sage/report.json
+\end{lstlisting}
+
+\subsection{STaRK-MAG and Kuzu Diagnostic Records}
+
+\Cref{tab:appendix-stark-import-records} records the STaRK-MAG scratch import, and \Cref{tab:appendix-stark-retrieval-records} records the retrieval diagnostic. The dataset copy lived under \code{/data1/hyq/papernexus-sub5g-benchmarks/datasets/stark-mag}. Its raw plus extracted footprint was approximately 3.5GB. The extracted graph contained 1,872,968 nodes and 19,919,698 edges.
+
+\begin{table}[t]
+\centering
+\caption{Detailed STaRK-MAG/Kuzu scratch import records.}
+\label{tab:appendix-stark-import-records}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l l Y@{}}
+\toprule
+Stage & Wall / peak RSS & Observed record \\
+\midrule
+CSV preparation & 1:02.87 / 6.91GB. & Wrote import files for 1,872,968 nodes and 19,919,698 edges plus seed lists for 84 human-eval queries. The manifest was saved as \code{prep-manifest.json}. \\
+Kuzu import & 0:10.24 / 2.35GB. & Imported all nodes and edges into a scratch Kuzu database. The scratch artifact footprint was 1.4GB. Pipe-delimited import files were used after comma/quote CSV issues appeared. Summary saved as \code{kuzu-import-summary.json}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Detailed STaRK-MAG/Kuzu retrieval metric records over 84 human-eval queries.}
+\label{tab:appendix-stark-retrieval-records}
+\footnotesize
+\begin{tabular}{@{}l r r r r r@{}}
+\toprule
+Method & Hit10 & Hit100 & R100 & nDCG100 & MRR \\
+\midrule
+Lexical-only seeds & 0.202381 & 0.345238 & 0.201853 & 0.135616 & 0.153344 \\
+Kuzu graph-expanded & 0.202381 & 0.392857 & 0.255424 & 0.145688 & 0.154524 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The STaRK-MAG diagnostic took 400,994ms in total, with average latency 4,773.68ms/query, p50 5,018ms, p95 6,865ms, max 8,135ms, and peak RSS 5.06GB. The report was saved as \code{stark-mag-kuzu-diagnostic-report.json}. The lexical-only row is a seed baseline, and the graph-expanded row is a one-to-two-hop diagnostic rather than the official STaRK protocol. The graph step improved top-100 candidate coverage but did not improve Hit@10, so ranking still needs relation-aware scoring and high-degree penalties.
+
+The scratch run directory was:
+
+\begin{lstlisting}[style=pncode]
+/data1/hyq/papernexus-sub5g-benchmarks/runs/20260512-fixed-corpus-cache/stark-mag-kuzu-full
+\end{lstlisting}
+
+\subsection{Detailed-Record Caveats}
+
+The appendix records enough detail to rerun or audit the experiments, but the evidence level is still limited. The fixed-corpus runs use a 5,000-document candidate scan limit and an in-memory per-run index; changing either parameter can change both runtime and recall. The live runs measure provider behavior as much as retrieval logic. The Kuzu diagnostic uses lexical seeds followed by bounded undirected expansion, not an official STaRK-MAG retrieval system. The local LLM experiments use a CPA/qwen deployment whose provider-side hardware, queueing, and batching internals were not visible in local logs. For publication-grade claims, the next version should pin dataset checksums, emit official metric adapters, run at least three independent executions per condition, and report per-query paired tests against fixed baselines.
+
 \section{Functional Command Sketch}
 
 The most common operator path is:
