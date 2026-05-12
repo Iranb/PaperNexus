@@ -19,3 +19,8 @@ __pycache__/
 docs/.vitepress/dist/
 .omx/
 .gitnexus
+
+# Paper artifacts/sources are local by default; keep PDFs trackable.
+papers/**/*
+!papers/**/
+!papers/**/*.pdf

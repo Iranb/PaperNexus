@@ -70,7 +70,7 @@ Commands:
   papernexus graph-v2 tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
   papernexus graph-v2 continue [<corpus>] [--run-id <id|latest>] [--json]
   papernexus graph-v2 report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
-  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
+  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--fixed-corpus-scan-limit <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -740,6 +740,7 @@ function buildRetrievalBenchmarkOptions(flags, config) {
     maxResultsPerQuery: toNumber(firstDefined(flags['max-results-per-query'], commandConfig.maxResultsPerQuery), 10),
     maxCandidates: toNumber(firstDefined(flags['max-candidates'], commandConfig.maxCandidates), 50),
     fixedCorpusLimit: toNumber(firstDefined(flags['fixed-corpus-limit'], flags['max-fixed-corpus-results'], commandConfig.fixedCorpusLimit), undefined),
+    fixedCorpusScanLimit: toNumber(firstDefined(flags['fixed-corpus-scan-limit'], commandConfig.fixedCorpusScanLimit), undefined),
     providerConcurrency: toNumber(firstDefined(flags['provider-concurrency'], commandConfig.providerConcurrency), undefined),
     benchmarkConcurrency: toNumber(firstDefined(flags['benchmark-concurrency'], commandConfig.benchmarkConcurrency), 1),
     timeoutMs: toNumber(firstDefined(flags['timeout-ms'], commandConfig.timeoutMs), undefined),

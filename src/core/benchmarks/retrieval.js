@@ -1,5 +1,7 @@
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import { ensureDir, fileExists, readJson, writeJson, writeText } from '../../lib/fs.js';
 import { resolveOpenAlexApiKey } from '../../lib/api-keys.js';
 import { createPaperIdentity, normalizePaperIdentifiers, paperIdentifiersOverlap } from '../../lib/paper-identifiers.js';
@@ -24,6 +26,7 @@ import {
 const DEFAULT_CUTOFFS = [1, 5, 10, 20];
 const DEFAULT_TITLE_MATCH_THRESHOLD = 0.96;
 const DEFAULT_FIXED_CORPUS_LIMIT = 1000;
+const DEFAULT_FIXED_CORPUS_SCAN_LIMIT = 50000;
 
 const BENCHMARK_FORMAT_ALIASES = {
   beir: 'beir',
@@ -138,9 +141,31 @@ function buildDocumentFrequency(paperTokens = []) {
   return documentFrequency;
 }
 
-function bm25FieldScore(queryTokens = [], docTokens = [], documentFrequency = new Map(), totalDocuments = 0, averageLength = 0) {
+function buildTokenInvertedIndex(tokenSets = []) {
+  const invertedIndex = new Map();
+  tokenSets.forEach((tokens, index) => {
+    for (const token of new Set(tokens || [])) {
+      const postings = invertedIndex.get(token);
+      if (postings) {
+        postings.push(index);
+      } else {
+        invertedIndex.set(token, [index]);
+      }
+    }
+  });
+  return invertedIndex;
+}
+
+function countTokenInField(tokens = [], target = '') {
+  let count = 0;
+  for (const token of tokens || []) {
+    if (token === target) count += 1;
+  }
+  return count;
+}
+
+function bm25FieldScore(queryTokens = [], docTokens = [], documentFrequency = new Map(), totalDocuments = 0, averageLength = 0, tokenCounts = null) {
   if (!queryTokens.length || !docTokens.length || !totalDocuments) return 0;
-  const counts = toTokenCounts(docTokens);
   const uniqueQueryTokens = new Set(queryTokens);
   const k1 = 1.2;
   const b = 0.75;
@@ -149,7 +174,7 @@ function bm25FieldScore(queryTokens = [], docTokens = [], documentFrequency = ne
   let score = 0;
 
   for (const token of uniqueQueryTokens) {
-    const tf = counts.get(token) || 0;
+    const tf = tokenCounts ? (tokenCounts.get(token) || 0) : countTokenInField(docTokens, token);
     if (!tf) continue;
     const df = documentFrequency.get(token) || 0;
     if (!df) continue;
@@ -331,18 +356,25 @@ function normalizePaperRecord(value, fallbackId = '') {
 }
 
 async function readJsonl(filePath) {
-  const content = await fs.readFile(filePath, 'utf8');
-  return content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        throw new Error(`Invalid JSONL at ${filePath}:${index + 1}: ${error.message}`);
-      }
-    });
+  const entries = [];
+  const lines = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf8' }),
+    crlfDelay: Infinity
+  });
+  let lineNumber = 0;
+
+  for await (const rawLine of lines) {
+    lineNumber += 1;
+    const line = rawLine.trim();
+    if (!line) continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch (error) {
+      throw new Error(`Invalid JSONL at ${filePath}:${lineNumber}: ${error.message}`);
+    }
+  }
+
+  return entries;
 }
 
 async function readJsonOrJsonl(filePath) {
@@ -1664,6 +1696,34 @@ function collectMatchAliases(paper = {}) {
   ].map((entry) => compactText(entry)).filter(Boolean));
 }
 
+function collectIdentifierMatchKeys(paper = {}) {
+  const identifiers = normalizePaperIdentifiers({
+    ...asObject(paper.identifiers),
+    ...paper
+  });
+  return Object.entries(identifiers)
+    .filter(([, value]) => compactText(value))
+    .map(([field, value]) => `${field}:${compactText(value).toLowerCase()}`);
+}
+
+function buildRelevantMatchIndex(relevant = []) {
+  const aliasToIndex = new Map();
+  const identifierToIndex = new Map();
+  relevant.forEach((paper, index) => {
+    for (const alias of collectMatchAliases(paper)) {
+      const key = alias.toLowerCase();
+      if (!aliasToIndex.has(key)) aliasToIndex.set(key, index);
+    }
+    for (const key of collectIdentifierMatchKeys(paper)) {
+      if (!identifierToIndex.has(key)) identifierToIndex.set(key, index);
+    }
+  });
+  return {
+    aliasToIndex,
+    identifierToIndex
+  };
+}
+
 function titleSimilarity(left = {}, right = {}) {
   const leftTitle = compactText(left.normalizedTitle || left.title);
   const rightTitle = compactText(right.normalizedTitle || right.title);
@@ -1674,7 +1734,27 @@ function titleSimilarity(left = {}, right = {}) {
 
 function findRelevantMatch(candidate = {}, relevant = [], options = {}) {
   const titleThreshold = Number(options.titleMatchThreshold || DEFAULT_TITLE_MATCH_THRESHOLD);
-  const candidateAliases = new Set(collectMatchAliases(candidate));
+  const relevantMatchIndex = options.relevantMatchIndex || buildRelevantMatchIndex(relevant);
+  for (const key of collectIdentifierMatchKeys(candidate)) {
+    const index = relevantMatchIndex.identifierToIndex.get(key);
+    if (index !== undefined) {
+      return {
+        index,
+        reason: 'identifier'
+      };
+    }
+  }
+
+  const candidateAliases = collectMatchAliases(candidate);
+  for (const alias of candidateAliases) {
+    const index = relevantMatchIndex.aliasToIndex.get(alias.toLowerCase());
+    if (index !== undefined) {
+      return {
+        index,
+        reason: 'alias'
+      };
+    }
+  }
 
   for (let index = 0; index < relevant.length; index += 1) {
     const gold = relevant[index];
@@ -1682,13 +1762,6 @@ function findRelevantMatch(candidate = {}, relevant = [], options = {}) {
       return {
         index,
         reason: 'identifier'
-      };
-    }
-
-    if (collectMatchAliases(gold).some((alias) => candidateAliases.has(alias))) {
-      return {
-        index,
-        reason: 'alias'
       };
     }
 
@@ -1707,8 +1780,12 @@ function findRelevantMatch(candidate = {}, relevant = [], options = {}) {
 
 function buildRankEvents(candidates = [], relevant = [], options = {}) {
   const matchedRelevant = new Set();
+  const relevantMatchIndex = buildRelevantMatchIndex(relevant);
   return candidates.map((candidate, index) => {
-    const match = findRelevantMatch(candidate, relevant, options);
+    const match = findRelevantMatch(candidate, relevant, {
+      ...options,
+      relevantMatchIndex
+    });
     const duplicate = match ? matchedRelevant.has(match.index) : false;
     if (match && !duplicate) matchedRelevant.add(match.index);
     const relevanceScore = match && !duplicate
@@ -2198,27 +2275,136 @@ function buildDiscoveryParams(queryCase = {}, options = {}) {
   };
 }
 
-function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}) {
-  const queryTokens = tokenizeWithoutStopwords(queryCase.query);
-  const titleTokens = tokenizeWithoutStopwords(paper.title);
-  const abstractTokens = tokenizeWithoutStopwords(paper.abstract);
-  const combinedTokens = unique([...titleTokens, ...abstractTokens]);
-  const queryIdentifiers = normalizePaperIdentifiers({
+function resolveFixedCorpusLimit(options = {}) {
+  const limit = Math.floor(Number(pickFirst(
+    options.fixedCorpusLimit,
+    options.maxFixedCorpusResults,
+    options.max_fixed_corpus_results,
+    options.maxCandidates,
+    DEFAULT_FIXED_CORPUS_LIMIT
+  )));
+  return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_FIXED_CORPUS_LIMIT;
+}
+
+function resolveFixedCorpusScanLimit(options = {}, resultLimit = DEFAULT_FIXED_CORPUS_LIMIT) {
+  const fallback = Math.max(DEFAULT_FIXED_CORPUS_SCAN_LIMIT, resultLimit * 50);
+  const limit = Math.floor(Number(pickFirst(
+    options.fixedCorpusScanLimit,
+    options.fixed_corpus_scan_limit,
+    process.env.PAPERNEXUS_FIXED_CORPUS_SCAN_LIMIT,
+    fallback
+  )));
+  return Number.isFinite(limit) && limit > 0 ? limit : fallback;
+}
+
+function buildFixedCorpusIndex(benchmark = {}, options = {}) {
+  const corpus = asArray(options.fixedCorpus || benchmark.corpus);
+  if (!corpus.length) {
+    throw new Error(`Benchmark ${benchmark.name || benchmark.format || ''} does not include a local corpus. Use live mode or provide a corpus file.`);
+  }
+
+  const normalizedCorpus = corpus.map((paper, index) => normalizePaperRecord(paper, `fixed:${index}`));
+  const titleTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.title));
+  const abstractTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.abstract));
+  const combinedTokenSets = normalizedCorpus.map((paper, index) => unique([...titleTokenSets[index], ...abstractTokenSets[index]]));
+  const combinedInvertedIndex = buildTokenInvertedIndex(combinedTokenSets);
+  const compactTitles = normalizedCorpus.map((paper) => compactText(paper.title));
+  const compactTitleLowers = compactTitles.map((title) => title.toLowerCase());
+  const totalDocuments = normalizedCorpus.length;
+  const stats = {
+    totalDocuments,
+    titleDf: buildDocumentFrequency(titleTokenSets),
+    abstractDf: buildDocumentFrequency(abstractTokenSets),
+    combinedDf: buildDocumentFrequency(combinedTokenSets),
+    avgTitleLength: titleTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
+    avgAbstractLength: abstractTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
+    avgCombinedLength: combinedTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments)
+  };
+
+  return {
+    corpus,
+    normalizedCorpus,
+    titleTokenSets,
+    abstractTokenSets,
+    combinedTokenSets,
+    combinedInvertedIndex,
+    compactTitles,
+    compactTitleLowers,
+    stats
+  };
+}
+
+function summarizeFixedCorpusIndex(fixedCorpusIndex = null) {
+  if (!fixedCorpusIndex) return null;
+  return {
+    enabled: true,
+    mode: 'in-memory-per-run',
+    corpusSize: fixedCorpusIndex.normalizedCorpus.length,
+    titleDfTerms: fixedCorpusIndex.stats.titleDf.size,
+    abstractDfTerms: fixedCorpusIndex.stats.abstractDf.size,
+    combinedDfTerms: fixedCorpusIndex.stats.combinedDf.size,
+    invertedTerms: fixedCorpusIndex.combinedInvertedIndex.size,
+    avgTitleLength: fixedCorpusIndex.stats.avgTitleLength,
+    avgAbstractLength: fixedCorpusIndex.stats.avgAbstractLength,
+    avgCombinedLength: fixedCorpusIndex.stats.avgCombinedLength
+  };
+}
+
+function resolveFixedCorpusCandidateIndexes(fixedCorpusIndex = {}, queryTokens = [], limit = DEFAULT_FIXED_CORPUS_LIMIT, scanLimit = DEFAULT_FIXED_CORPUS_SCAN_LIMIT) {
+  const normalizedCorpus = fixedCorpusIndex.normalizedCorpus || [];
+  const invertedIndex = fixedCorpusIndex.combinedInvertedIndex || new Map();
+  const combinedDf = fixedCorpusIndex.stats?.combinedDf || new Map();
+  const candidateIndexes = new Set();
+  const sortedQueryTokens = [...new Set(queryTokens || [])]
+    .sort((left, right) => (combinedDf.get(left) || Number.MAX_SAFE_INTEGER) - (combinedDf.get(right) || Number.MAX_SAFE_INTEGER));
+  for (const token of sortedQueryTokens) {
+    const postings = invertedIndex.get(token);
+    if (!postings) continue;
+    for (const index of postings) {
+      candidateIndexes.add(index);
+      if (scanLimit && candidateIndexes.size >= scanLimit) break;
+    }
+    if (scanLimit && candidateIndexes.size >= scanLimit) break;
+  }
+
+  if (!candidateIndexes.size) {
+    return normalizedCorpus.map((_, index) => index);
+  }
+
+  if (candidateIndexes.size < limit) {
+    for (let index = 0; index < normalizedCorpus.length && candidateIndexes.size < limit; index += 1) {
+      candidateIndexes.add(index);
+    }
+  }
+
+  return [...candidateIndexes];
+}
+
+function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}, prepared = {}) {
+  const queryTokens = prepared.queryTokens || tokenizeWithoutStopwords(queryCase.query);
+  const titleTokens = prepared.titleTokens || tokenizeWithoutStopwords(paper.title);
+  const abstractTokens = prepared.abstractTokens || tokenizeWithoutStopwords(paper.abstract);
+  const combinedTokens = prepared.combinedTokens || unique([...titleTokens, ...abstractTokens]);
+  const queryIdentifiers = prepared.queryIdentifiers || normalizePaperIdentifiers({
     ...asObject(queryCase.metadata?.identifiers),
     ...asObject(queryCase.metadata?.sourceIdentifiers),
     ...asObject(queryCase.metadata?.native?.identifiers)
   });
+  const compactQuery = prepared.compactQuery ?? compactText(queryCase.query);
+  const compactTitle = prepared.compactTitle ?? compactText(paper.title);
+  const compactQueryLower = prepared.compactQueryLower ?? compactQuery.toLowerCase();
+  const compactTitleLower = prepared.compactTitleLower ?? compactTitle.toLowerCase();
   const titleOverlap = scoreTokenOverlap(queryTokens, titleTokens);
   const abstractOverlap = scoreTokenOverlap(queryTokens, abstractTokens);
   const combinedOverlap = scoreTokenOverlap(queryTokens, combinedTokens);
   const titleSimilarityScore = jaccardSimilarity(queryCase.query, paper.title);
-  const bm25Title = bm25FieldScore(queryTokens, titleTokens, stats.titleDf, stats.totalDocuments, stats.avgTitleLength);
-  const bm25Abstract = bm25FieldScore(queryTokens, abstractTokens, stats.abstractDf, stats.totalDocuments, stats.avgAbstractLength);
-  const bm25Combined = bm25FieldScore(queryTokens, combinedTokens, stats.combinedDf, stats.totalDocuments, stats.avgCombinedLength);
-  const exactTitleMatch = compactText(queryCase.query).toLowerCase() === compactText(paper.title).toLowerCase() ? 2.5 : 0;
-  const phraseMatch = compactText(queryCase.query)
-    && compactText(paper.title)
-    && compactText(paper.title).toLowerCase().includes(compactText(queryCase.query).toLowerCase())
+  const bm25Title = bm25FieldScore(queryTokens, titleTokens, stats.titleDf, stats.totalDocuments, stats.avgTitleLength, prepared.titleTokenCounts);
+  const bm25Abstract = bm25FieldScore(queryTokens, abstractTokens, stats.abstractDf, stats.totalDocuments, stats.avgAbstractLength, prepared.abstractTokenCounts);
+  const bm25Combined = bm25FieldScore(queryTokens, combinedTokens, stats.combinedDf, stats.totalDocuments, stats.avgCombinedLength, prepared.combinedTokenCounts);
+  const exactTitleMatch = compactQueryLower === compactTitleLower ? 2.5 : 0;
+  const phraseMatch = compactQuery
+    && compactTitle
+    && compactTitleLower.includes(compactQueryLower)
       ? 1.5
       : 0;
   const facet = queryCase.metadata?.facet || '';
@@ -2240,38 +2426,47 @@ function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}) {
 }
 
 function buildFixedCorpusCandidates(benchmark = {}, queryCase = {}, options = {}) {
-  const corpus = asArray(options.fixedCorpus || benchmark.corpus);
-  if (!corpus.length) {
-    throw new Error(`Benchmark ${benchmark.name || benchmark.format || ''} does not include a local corpus. Use live mode or provide a corpus file.`);
-  }
+  const fixedCorpusIndex = options.fixedCorpusIndex || buildFixedCorpusIndex(benchmark, options);
   const sourcePaperId = queryCase.metadata?.sourcePaperId || '';
-  const limit = Math.max(1, Math.floor(Number(
-    options.fixedCorpusLimit
-    || options.maxFixedCorpusResults
-    || options.max_fixed_corpus_results
-    || options.maxCandidates
-    || DEFAULT_FIXED_CORPUS_LIMIT
-  )));
-  const normalizedCorpus = corpus.map((paper, index) => normalizePaperRecord(paper, `fixed:${index}`));
-  const titleTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.title));
-  const abstractTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.abstract));
-  const combinedTokenSets = normalizedCorpus.map((paper, index) => unique([...titleTokenSets[index], ...abstractTokenSets[index]]));
-  const totalDocuments = normalizedCorpus.length;
-  const stats = {
-    totalDocuments,
-    titleDf: buildDocumentFrequency(titleTokenSets),
-    abstractDf: buildDocumentFrequency(abstractTokenSets),
-    combinedDf: buildDocumentFrequency(combinedTokenSets),
-    avgTitleLength: titleTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
-    avgAbstractLength: abstractTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
-    avgCombinedLength: combinedTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments)
-  };
-  return corpus
-    .map((paper, index) => ({
-      ...normalizedCorpus[index],
-      score: scoreFixedCorpusCandidate(queryCase, normalizedCorpus[index], stats),
-      sourceProvider: 'fixed_corpus'
-    }))
+  const limit = resolveFixedCorpusLimit(options);
+  const scanLimit = resolveFixedCorpusScanLimit(options, limit);
+  const queryTokens = tokenizeWithoutStopwords(queryCase.query);
+  const queryIdentifiers = normalizePaperIdentifiers({
+    ...asObject(queryCase.metadata?.identifiers),
+    ...asObject(queryCase.metadata?.sourceIdentifiers),
+    ...asObject(queryCase.metadata?.native?.identifiers)
+  });
+  const compactQuery = compactText(queryCase.query);
+  const compactQueryLower = compactQuery.toLowerCase();
+  const {
+    normalizedCorpus,
+    titleTokenSets,
+    abstractTokenSets,
+    combinedTokenSets,
+    compactTitles,
+    compactTitleLowers,
+    stats
+  } = fixedCorpusIndex;
+  const candidateIndexes = resolveFixedCorpusCandidateIndexes(fixedCorpusIndex, queryTokens, limit, scanLimit);
+  return candidateIndexes
+    .map((index) => {
+      const paper = normalizedCorpus[index];
+      return {
+        ...paper,
+        score: scoreFixedCorpusCandidate(queryCase, paper, stats, {
+          queryTokens,
+          queryIdentifiers,
+          compactQuery,
+          compactQueryLower,
+          compactTitle: compactTitles[index],
+        compactTitleLower: compactTitleLowers[index],
+        titleTokens: titleTokenSets[index],
+        abstractTokens: abstractTokenSets[index],
+        combinedTokens: combinedTokenSets[index]
+      }),
+        sourceProvider: 'fixed_corpus'
+      };
+    })
     .filter((paper) => !sourcePaperId || ![paper.id, paper.canonicalId].includes(sourcePaperId))
     .sort((left, right) => right.score - left.score)
     .slice(0, limit);
@@ -2356,6 +2551,9 @@ export async function runRetrievalBenchmark(params = {}) {
   const startedAt = new Date().toISOString();
   const onProgress = typeof params.onProgress === 'function' ? params.onProgress : null;
   const discoveryRequestStateBefore = readDiscoveryRequestSchedulerState();
+  const fixedCorpusIndex = evaluationMode === 'fixed-corpus'
+    ? buildFixedCorpusIndex(benchmark, params)
+    : null;
 
   const results = await runWithConcurrency(
     selectedQueries,
@@ -2374,7 +2572,10 @@ export async function runRetrievalBenchmark(params = {}) {
           runId: null,
           providers: ['fixed_corpus'],
           rawCandidateCount: benchmark.corpusSize || asArray(benchmark.corpus).length,
-          candidates: buildFixedCorpusCandidates(benchmark, queryCase, params),
+          candidates: buildFixedCorpusCandidates(benchmark, queryCase, {
+            ...params,
+            fixedCorpusIndex
+          }),
           coverage: null,
           artifacts: null
         }
@@ -2439,8 +2640,10 @@ export async function runRetrievalBenchmark(params = {}) {
   ) || null;
   const discoveryCacheEnabled = resolveDiscoveryCacheEnabled(params, discoveryCacheTtlMs);
   const discoveryCacheMode = inferDiscoveryCacheMode(discoveryRequestCacheStats, discoveryCacheEnabled);
+  const fixedCorpusIndexSummary = summarizeFixedCorpusIndex(fixedCorpusIndex);
   const diagnostics = {
     ...summarizeBenchmarkDiagnostics(results),
+    fixedCorpusIndex: fixedCorpusIndexSummary,
     discoveryRequestCache: {
       enabled: discoveryCacheEnabled,
       mode: discoveryCacheMode,
@@ -2465,7 +2668,11 @@ export async function runRetrievalBenchmark(params = {}) {
       generateTaskAnswers: params.generateTaskAnswers === true || params.generate_task_answers === true,
       maxTaskContext: params.maxTaskContext || params.max_task_context || null,
       fixedCorpusLimit: params.fixedCorpusLimit || params.maxFixedCorpusResults || params.max_fixed_corpus_results || null,
+      fixedCorpusScanLimit: evaluationMode === 'fixed-corpus'
+        ? resolveFixedCorpusScanLimit(params, resolveFixedCorpusLimit(params))
+        : null,
       fixedCorpusScorer: evaluationMode === 'fixed-corpus' ? 'hybrid-bm25-v1' : null,
+      fixedCorpusIndexCache: fixedCorpusIndexSummary?.mode || null,
       discoveryCacheEnabled,
       discoveryCacheMode,
       discoveryCacheTtlMs,
@@ -2554,6 +2761,8 @@ export function renderRetrievalBenchmarkReport(report = {}) {
     `Discovery depth: ${config.depth || 'quick'}`,
     `Providers: ${Array.isArray(config.providers) ? config.providers.join(', ') : (config.providers || 'default')}`,
     `Fixed-corpus scorer: ${config.fixedCorpusScorer || 'n/a'}`,
+    `Fixed-corpus index cache: ${config.fixedCorpusIndexCache || 'n/a'}`,
+    `Fixed-corpus scan limit: ${config.fixedCorpusScanLimit || 'n/a'}`,
     `Discovery cache mode: ${config.discoveryCacheMode || 'unknown'}`,
     `Discovery cache TTL: ${config.discoveryCacheTtlMs || 0} ms`,
     `Discovery failure cache TTL: ${config.discoveryFailureCacheTtlMs || 0} ms`,
