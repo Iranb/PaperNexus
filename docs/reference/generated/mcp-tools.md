@@ -22,8 +22,8 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. |
 | [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
-| [`mutate_graph`](#tool-mutate_graph) | Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk. |
-| [`refresh_corpus`](#tool-refresh_corpus) | Trigger incremental re-analysis of a corpus to pick up new or changed papers. Returns the updated corpus status after refresh. |
+| [`mutate_graph`](#tool-mutate_graph) | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
+| [`refresh_corpus`](#tool-refresh_corpus) | Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots. |
 | [`refresh_paper_graph`](#tool-refresh_paper_graph) | Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus. |
 
 ## Tool: list_corpora
@@ -428,7 +428,7 @@ Run a challenge-aware interdisciplinary ideation pass over the graph and return 
 
 <a id="tool-mutate_graph"></a>
 
-Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk.
+Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk.
 
 ### Input Schema
 
@@ -443,15 +443,21 @@ Create, update, or delete graph nodes and relationships with schema-aware valida
 
 <a id="tool-refresh_corpus"></a>
 
-Trigger incremental re-analysis of a corpus to pick up new or changed papers. Returns the updated corpus status after refresh.
+Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots.
 
 ### Input Schema
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
 | `corpus` | optional | string | Corpus name or root path. Omit to use the default corpus. |
-| `incremental` | optional | boolean | When true (default), only process papers added since last analysis. When false, rebuild the entire graph. |
-| `force` | optional | boolean | Force re-analysis even if no changes detected. |
+| `mode` | optional | string (analyze, materialize, llm_optimize, optimize) | Maintenance mode. analyze commits an updated graph, materialize writes Stage 1 snapshots only, llm_optimize runs Stage 2 batch LLM optimization over cached snapshots, and optimize resumes from cached snapshots to commit stages 2-5. |
+| `incremental` | optional | boolean | Analyze mode only. When true (default), reuse unchanged sources and only refresh detected deltas. When false, force-refresh all tracked sources before recommitting the graph. |
+| `force` | optional | boolean | Force the selected maintenance mode even when cached state looks reusable. |
+| `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction override for analyze, llm_optimize, optimize, or refresh-materialize compatibility flows. |
+| `rebuildPdfMarkdown` | optional | boolean | When true, force PDF markdown regeneration before re-materialization for affected PDF sources. |
+| `llmBatchSize` | optional | number | Optional Stage 2 batch size override for llm_optimize or optimize. |
+| `batchSize` | optional | number | Alias for llmBatchSize. |
+| `changedSourceKeys` | optional | array | Optional sourceKey scope for llm_optimize or optimize. When provided, only those manifest sources are refreshed during Stage 2 before the rest of the corpus state is reused. |
 
 ## Tool: refresh_paper_graph
 

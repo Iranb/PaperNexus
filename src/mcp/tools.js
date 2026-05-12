@@ -1256,7 +1256,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'mutate_graph',
-    description: 'Create, update, or delete graph nodes and relationships with schema-aware validation. Supports dry-run previews before writing to disk.',
+    description: 'Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1363,7 +1363,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'refresh_corpus',
-    description: 'Trigger incremental re-analysis of a corpus to pick up new or changed papers. Returns the updated corpus status after refresh.',
+    description: 'Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1371,15 +1371,45 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Corpus name or root path. Omit to use the default corpus.'
         },
+        mode: {
+          type: 'string',
+          enum: ['analyze', 'materialize', 'llm_optimize', 'optimize'],
+          description: 'Maintenance mode. analyze commits an updated graph, materialize writes Stage 1 snapshots only, llm_optimize runs Stage 2 batch LLM optimization over cached snapshots, and optimize resumes from cached snapshots to commit stages 2-5.',
+          default: 'analyze'
+        },
         incremental: {
           type: 'boolean',
-          description: 'When true (default), only process papers added since last analysis. When false, rebuild the entire graph.',
+          description: 'Analyze mode only. When true (default), reuse unchanged sources and only refresh detected deltas. When false, force-refresh all tracked sources before recommitting the graph.',
           default: true
         },
         force: {
           type: 'boolean',
-          description: 'Force re-analysis even if no changes detected.',
+          description: 'Force the selected maintenance mode even when cached state looks reusable.',
           default: false
+        },
+        semanticExtraction: {
+          type: 'string',
+          enum: ['auto', 'heuristic-only', 'llm-assisted', 'llm-primary'],
+          description: 'Optional semantic extraction override for analyze, llm_optimize, optimize, or refresh-materialize compatibility flows.'
+        },
+        rebuildPdfMarkdown: {
+          type: 'boolean',
+          description: 'When true, force PDF markdown regeneration before re-materialization for affected PDF sources.'
+        },
+        llmBatchSize: {
+          type: 'number',
+          description: 'Optional Stage 2 batch size override for llm_optimize or optimize.'
+        },
+        batchSize: {
+          type: 'number',
+          description: 'Alias for llmBatchSize.'
+        },
+        changedSourceKeys: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description: 'Optional sourceKey scope for llm_optimize or optimize. When provided, only those manifest sources are refreshed during Stage 2 before the rest of the corpus state is reused.'
         }
       }
     }

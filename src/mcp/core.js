@@ -3,7 +3,7 @@ import { deriveDomainTaxonomyFromGraph, normalizeFieldOfStudy } from '../core/gr
 import { buildInterdisciplinaryPotentialReport } from '../core/graph/interdisciplinary-potential.js';
 import { extractTakeawaysFromBridgeNodes } from '../core/graph/takeaway-extraction.js';
 import { renderBrainstormResult, renderContextResult, renderCorpusList, renderIdeasResult, renderImpactResult, renderMutationResult, renderQueryResult, renderStatus } from '../lib/render.js';
-import { applyCorpusMutations, loadCorpus, loadCorpusLite, resolveCorpus } from '../storage/corpus-store.js';
+import { applyCorpusMutations, loadCorpus, loadCorpusLite, loadSourceManifest, resolveCorpus } from '../storage/corpus-store.js';
 import { loadRegistry } from '../storage/registry.js';
 import { PAPERNEXUS_PROMPTS, getPrompt } from './prompts.js';
 import { listResources, readResourcePayload } from './resources.js';
@@ -182,15 +182,90 @@ export async function executeTool(name, args, options = {}) {
 
   if (name === 'refresh_corpus') {
     const rootPath = await resolveCorpus(args.corpus);
-    const { analyzeCorpus } = await import('../core/ingestion/pipeline.js');
-    const inputRoot = rootPath.replace(/[/\\]\.papernexus$/, '');
-    await analyzeCorpus(inputRoot, {
+    const {
+      analyzeCorpus,
+      llmOptimizeCorpus,
+      materializeCorpus,
+      optimizeCorpus
+    } = await import('../core/ingestion/pipeline.js');
+    const manifest = await loadSourceManifest(rootPath);
+    const inputRoot = Array.isArray(manifest?.inputPaths) && manifest.inputPaths.length
+      ? manifest.inputPaths
+      : (manifest?.inputPath || rootPath.replace(/[/\\]\.papernexus$/, ''));
+    const mode = String(args.mode || 'analyze').trim().toLowerCase().replace(/-/g, '_') || 'analyze';
+    const rawBatchSize = (
+      args.llmBatchSize
+      ?? args.llm_batch_size
+      ?? args.batchSize
+      ?? args.batch_size
+    );
+    const parsedBatchSize = Number(rawBatchSize);
+    const llmBatchSize = Number.isFinite(parsedBatchSize) && parsedBatchSize > 0
+      ? parsedBatchSize
+      : undefined;
+    const changedSourceKeys = (
+      Array.isArray(args.changedSourceKeys)
+        ? args.changedSourceKeys
+        : (Array.isArray(args.changed_source_keys) ? args.changed_source_keys : [])
+    ).map((value) => String(value || '').trim()).filter(Boolean);
+    const semanticExtraction = typeof (args.semanticExtraction ?? args.semantic_extraction) === 'string'
+      && String(args.semanticExtraction ?? args.semantic_extraction).trim()
+      ? String(args.semanticExtraction ?? args.semantic_extraction).trim()
+      : undefined;
+    const rebuildPdfMarkdown = args.rebuildPdfMarkdown ?? args.rebuild_pdf_markdown;
+    const incremental = args.incremental !== false;
+    const force = args.force === true || (mode === 'analyze' && incremental === false);
+    const executionArgs = {
       rootPath,
-      incremental: args.incremental !== false,
-      force: args.force === true
-    });
-    const { meta } = await loadCorpus(rootPath);
-    return renderStatus(meta);
+      force,
+      ...(semanticExtraction ? { semanticExtraction } : {}),
+      ...(rebuildPdfMarkdown === undefined ? {} : { rebuildPdfMarkdown: rebuildPdfMarkdown === true }),
+      ...(llmBatchSize === undefined ? {} : { llmBatchSize, batchSize: llmBatchSize }),
+      ...(changedSourceKeys.length ? { changedSourceKeys } : {})
+    };
+
+    let result;
+    if (mode === 'materialize') {
+      result = await materializeCorpus(inputRoot, executionArgs);
+    } else if (mode === 'llm_optimize') {
+      result = await llmOptimizeCorpus(inputRoot, executionArgs);
+    } else if (mode === 'optimize') {
+      result = await optimizeCorpus(inputRoot, executionArgs);
+    } else if (mode === 'analyze') {
+      result = await analyzeCorpus(inputRoot, executionArgs);
+    } else {
+      throw new Error(`Unknown refresh_corpus mode: ${args.mode || '<missing>'}`);
+    }
+
+    return JSON.stringify({
+      contractVersion: 'papernexus-corpus-refresh-v1',
+      corpus: result.meta?.name || '',
+      rootPath: result.rootPath || rootPath,
+      inputPath: result.inputPath || inputRoot,
+      mode,
+      stage: result.stage || result.meta?.stage || (
+        mode === 'materialize'
+          ? 'materialized'
+          : (mode === 'llm_optimize' ? 'llm-optimized' : 'completed')
+      ),
+      graphCommitted: mode === 'analyze' || mode === 'optimize',
+      reused: Boolean(result.reused),
+      changes: result.changes || result.meta?.lastChangeSummary || null,
+      options: {
+        incremental: mode === 'analyze' ? incremental : null,
+        force,
+        semanticExtraction: semanticExtraction || null,
+        rebuildPdfMarkdown: rebuildPdfMarkdown === undefined ? null : rebuildPdfMarkdown === true,
+        llmBatchSize: llmBatchSize ?? null,
+        changedSourceKeys
+      },
+      meta: result.meta
+        ? {
+            ...result.meta,
+            rootPath: result.rootPath || rootPath
+          }
+        : null
+    }, null, 2);
   }
 
   if (name === 'refresh_paper_graph') {

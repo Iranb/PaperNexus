@@ -184,6 +184,11 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(tools.tools.some((tool) => tool.name === 'research_briefing'));
   assert.ok(tools.tools.some((tool) => tool.name === 'import_workflow'));
   assert.ok(tools.tools.some((tool) => tool.name === 'idea_catalyst'));
+  const refreshCorpusTool = tools.tools.find((tool) => tool.name === 'refresh_corpus');
+  assert.ok(refreshCorpusTool);
+  assert.ok(refreshCorpusTool.inputSchema.properties.mode.enum.includes('llm_optimize'));
+  assert.ok(Object.hasOwn(refreshCorpusTool.inputSchema.properties, 'llmBatchSize'));
+  assert.ok(Object.hasOwn(refreshCorpusTool.inputSchema.properties, 'changedSourceKeys'));
   assert.ok(tools.tools.some((tool) => tool.name === 'refresh_paper_graph'));
 
   const prompts = await pending.request('prompts/list', {});
@@ -505,6 +510,27 @@ test('refresh_paper_graph force-refreshes one paper over MCP without rebuilding 
     await fs.rm(localCorpusRoot, { recursive: true, force: true });
     await fs.rm(localHome, { recursive: true, force: true });
   }
+});
+
+test('refresh_corpus exposes staged corpus maintenance modes over MCP', async () => {
+  const refreshResult = await pending.request('tools/call', {
+    name: 'refresh_corpus',
+    arguments: {
+      corpus: tempCorpusRoot,
+      mode: 'llm_optimize',
+      semanticExtraction: 'heuristic-only',
+      force: true,
+      llmBatchSize: 4
+    }
+  }, { timeoutMs: 15000 });
+  const refreshPayload = JSON.parse(refreshResult.content[0].text);
+  assert.equal(refreshPayload.contractVersion, 'papernexus-corpus-refresh-v1');
+  assert.equal(refreshPayload.mode, 'llm_optimize');
+  assert.equal(refreshPayload.stage, 'llm-optimized');
+  assert.equal(refreshPayload.graphCommitted, false);
+  assert.equal(refreshPayload.options.llmBatchSize, 4);
+  assert.equal(refreshPayload.options.semanticExtraction, 'heuristic-only');
+  assert.equal(refreshPayload.rootPath.length > 0, true);
 });
 
 test('MCP mutate_graph previews and applies validated graph edits', async () => {

@@ -1,6 +1,6 @@
 ---
 name: papernexus
-description: Use when working in PaperNexus and the task touches a live corpus, remote graph build, queued import, or authenticated remote query flow. Skills must use remote HTTP MCP, not the legacy HTTP API.
+description: Use when working in PaperNexus and the task touches a live corpus, corpus-scale refresh or optimization, remote graph build, queued import, or authenticated remote query flow. Skills must use remote HTTP MCP, not the legacy HTTP API.
 ---
 
 # PaperNexus
@@ -31,12 +31,15 @@ Preferred MCP tools:
 - `research_briefing`
 - `idea_catalyst`
 - `import_workflow`
+- `mutate_graph`
+- `refresh_corpus`
 - `refresh_paper_graph`
 
 Shell fallback wrappers:
 
 - `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`
 - `python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py`
+- `python3 SKILL/PaperNexusCorpusRefresh/scripts/pn_corpus_refresh.py`
 - `python3 SKILL/PaperNexus/scripts/pn_paper_index.py`
 - `python3 SKILL/PaperNexus/scripts/pn_batch_import.py`
 - `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
@@ -75,6 +78,11 @@ For OpenClaw-native use, call these tools on the configured `papernexus-remote` 
   Important operations: `submit`, `status`, `progress`, `queue_progress`, `log`, `wait`
 - `idea_catalyst`
   Use for cross-domain ideation
+- `mutate_graph`
+  Use for ordered batch graph edits with one dry-run preview before apply
+- `refresh_corpus`
+  Use for corpus-scale batch refresh and staged maintenance.
+  Important modes: `analyze`, `materialize`, `llm_optimize`, `optimize`
 - `refresh_paper_graph`
   Use to force-refresh one already-indexed paper or one duplicate group
 - `list_corpora`
@@ -200,6 +208,36 @@ python3 SKILL/PaperNexus/scripts/pn_graph_query.py \
 
 Only call a paper synchronized when the returned task state says it is completed.
 
+## Corpus-Scale Refresh And LLM Optimization
+
+When the task is not one-paper repair but corpus-scale maintenance, prefer `refresh_corpus` over ad-hoc command sequences.
+
+Use this mapping:
+
+- `refresh_corpus mode=analyze` for dirty-only or full corpus recommit after many sources changed
+- `refresh_corpus mode=materialize` for Stage 1 only when you want refreshed snapshots but no graph commit yet
+- `refresh_corpus mode=llm_optimize` for Stage 2 batch semantic/relation refresh over cached snapshots
+- `refresh_corpus mode=optimize` for Stage 2-5 from cached snapshots with graph commit
+
+Key rules:
+
+- `incremental=false` only matters for `mode=analyze`; it means force-refresh all tracked sources
+- `changedSourceKeys` only makes sense for `mode=llm_optimize` or `mode=optimize`
+- `semanticExtraction`, `llmBatchSize`, and `rebuildPdfMarkdown` are the main control knobs
+- after `mode=materialize` or `mode=llm_optimize`, do not claim the graph was recommitted
+- after `mode=analyze` or `mode=optimize`, the tool returns only after the selected maintenance path finishes
+
+Shell-only fallback example:
+
+```bash
+python3 SKILL/PaperNexusCorpusRefresh/scripts/pn_corpus_refresh.py \
+  --corpus "<corpus>" \
+  --mode llm_optimize \
+  --semantic-extraction llm-primary \
+  --llm-batch-size 16 \
+  --json
+```
+
 ## Single-Paper Graph Repair
 
 If one already-indexed paper has stale graph content, a bad title, or a parser-correctable snapshot issue, prefer the `refresh_paper_graph` MCP tool.
@@ -215,6 +253,7 @@ python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py \
 Rules:
 
 - use this only for already-indexed papers
+- if many papers changed or the caller wants corpus-wide batch optimization, use `refresh_corpus` instead
 - do not use it as an upload path
 - it refreshes one paper or one duplicate group, not the entire corpus
 - `--source` may be a server PDF path or a server Markdown path; a PDF source reruns the parser path

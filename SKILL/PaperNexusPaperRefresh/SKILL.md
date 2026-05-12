@@ -13,6 +13,7 @@ Assume OpenClaw already has a configured PaperNexus MCP server named `papernexus
 - use remote HTTP MCP only
 - do not call raw `/api/*`
 - do not run whole-corpus `refresh_corpus` when the task is to repair one paper
+- if the task is corpus-scale batch refresh or batch LLM optimization, use `refresh_corpus` or the `PaperNexusCorpusRefresh` skill instead
 - do not guess source paths from local folders; reuse the server-side source path or sourceKey already known to the graph
 - prefer the `refresh_paper_graph` MCP tool on `papernexus-remote`
 

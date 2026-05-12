@@ -6,6 +6,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | --- | --- |
 | [`SKILL/PaperNexus/scripts/pn_batch_import.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_batch_import.py) | Canonical skill wrapper for manifest-based batch imports. |
 | [`SKILL/PaperNexus/scripts/pn_common.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_common.py) | Pn Common implementation. |
+| [`SKILL/PaperNexus/scripts/pn_corpus_refresh.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_corpus_refresh.py) | Pn Corpus Refresh implementation. |
 | [`SKILL/PaperNexus/scripts/pn_graph_query.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_graph_query.py) | Canonical skill wrapper for remote query, context, impact, ideas, and brainstorming. |
 | [`SKILL/PaperNexus/scripts/pn_import_queue.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_import_queue.py) | Canonical skill wrapper for queue status, progress, logs, and wait operations. |
 | [`SKILL/PaperNexus/scripts/pn_import_submit.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_import_submit.py) | Canonical skill wrapper for remote import submission. |
@@ -18,6 +19,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusAgenticReasoning/scripts/pn_research_chains.py) | Pn Research Chains implementation. |
 | [`SKILL/PaperNexusAgenticReasoning/scripts/pn_stage_sync.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusAgenticReasoning/scripts/pn_stage_sync.py) | Pn Stage Sync implementation. |
 | [`SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusBatchImport/scripts/pn_batch_import.py) | Pn Batch Import implementation. |
+| [`SKILL/PaperNexusCorpusRefresh/scripts/pn_corpus_refresh.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusCorpusRefresh/scripts/pn_corpus_refresh.py) | Pn Corpus Refresh implementation. |
 | [`SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py) | Run one-shot cross-domain ideation through the remote MCP surface. |
 | [`SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py) | Resolve the current live corpus name through remote HTTP MCP. |
 | [`SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py) | Pn Paper Refresh implementation. |
@@ -50,4 +52,5 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/pn_research_chains.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/pn_research_chains.py) | Pn Research Chains implementation. |
 | [`scripts/pn_stage_sync.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/pn_stage_sync.py) | Pn Stage Sync implementation. |
 | [`scripts/reinstall.sh`](https://github.com/papernexus/PaperNexus/blob/main/scripts/reinstall.sh) | Reinstall implementation. |
+| [`scripts/run-small-public-benchmarks.sh`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-small-public-benchmarks.sh) | Run Small Public Benchmarks implementation. |
 | [`scripts/test-pdf-to-markdown.js`](https://github.com/papernexus/PaperNexus/blob/main/scripts/test-pdf-to-markdown.js) | Test Pdf To Markdown implementation. |

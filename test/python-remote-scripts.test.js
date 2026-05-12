@@ -40,8 +40,10 @@ function getSkillScriptPath(...segments) {
 test('PaperNexus skill scripts live under skill directories and skills do not point agents at top-level scripts', async () => {
   const canonicalSkillScripts = [
     ['PaperNexusMainGraphName', 'scripts', 'pn_main_graph_name.py'],
+    ['PaperNexusCorpusRefresh', 'scripts', 'pn_corpus_refresh.py'],
     ['PaperNexusPaperRefresh', 'scripts', 'pn_paper_refresh.py'],
     ['PaperNexus', 'scripts', 'pn_common.py'],
+    ['PaperNexus', 'scripts', 'pn_corpus_refresh.py'],
     ['PaperNexus', 'scripts', 'pn_stage_sync.py'],
     ['PaperNexus', 'scripts', 'pn_import_submit.py'],
     ['PaperNexus', 'scripts', 'pn_import_queue.py'],
@@ -73,6 +75,7 @@ test('PaperNexus skill scripts live under skill directories and skills do not po
 
   for (const skillDoc of [
     'PaperNexusMainGraphName/SKILL.md',
+    'PaperNexusCorpusRefresh/SKILL.md',
     'PaperNexusPaperRefresh/SKILL.md',
     'PaperNexus/SKILL.md',
     'PaperNexusPrecisePaperIndex/SKILL.md',
@@ -139,6 +142,38 @@ test('pn_paper_refresh.py force-refreshes one paper over remote HTTP MCP', async
       assert.ok(Array.isArray(payload.refreshedSourceKeys));
       assert.ok(payload.refreshedSourceKeys.includes(sourcePath));
       assert.equal(payload.fastCommit.reused, false);
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test('pn_corpus_refresh.py runs staged corpus maintenance over remote HTTP MCP', async () => {
+  const fixture = await createImportFixture();
+  const port = 56350 + Math.floor(Math.random() * 500);
+  const scriptPath = path.join(repoRoot, 'SKILL', 'PaperNexusCorpusRefresh', 'scripts', 'pn_corpus_refresh.py');
+
+  try {
+    const server = await startServer(fixture, port, { enableImports: false });
+    try {
+      const result = await runPythonPath(scriptPath, [
+        '--json',
+        '--mcp-url', `http://127.0.0.1:${port}/mcp`,
+        '--token', 'test',
+        '--corpus', 'python-remote-test',
+        '--mode', 'llm_optimize',
+        '--semantic-extraction', 'heuristic-only',
+        '--force',
+        '--llm-batch-size', '4'
+      ]);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.contractVersion, 'papernexus-corpus-refresh-v1');
+      assert.equal(payload.mode, 'llm_optimize');
+      assert.equal(payload.stage, 'llm-optimized');
+      assert.equal(payload.graphCommitted, false);
+      assert.equal(payload.options.llmBatchSize, 4);
     } finally {
       await server.stop();
     }
