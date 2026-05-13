@@ -932,6 +932,149 @@ test('batch LLM inference reports batch progress callbacks', async () => {
   assert.equal(batchEvents[1].completed, 3);
 });
 
+test('inferPaperSemanticObjectsBatch writes and resumes optional batch ledger', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-batch-ledger-'));
+  let fetchCount = 0;
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                papers: papers.map((paper) => ({ id: paper.id, problems: [], methods: [] }))
+              })
+            }
+          }]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} }
+  ];
+
+  try {
+    const first = await inferPaperSemanticObjectsBatch(entries, {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 2,
+      llmBatchLedgerDir: tempDir,
+      llmBatchRunId: 'ledger-test'
+    });
+    assert.equal(fetchCount, 1);
+    assert.equal(first.every((result) => result.participated), true);
+
+    const batches = await fs.readFile(path.join(tempDir, 'llm-batches.jsonl'), 'utf8');
+    const results = await fs.readFile(path.join(tempDir, 'llm-results.jsonl'), 'utf8');
+    assert.match(batches, /ledger-test/);
+    assert.match(results, /"status":"completed"/);
+
+    const second = await inferPaperSemanticObjectsBatch(entries, {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 2,
+      llmBatchLedgerDir: tempDir,
+      llmBatchRunId: 'ledger-test',
+      llmBatchResume: true
+    });
+    assert.equal(fetchCount, 1);
+    assert.equal(second.every((result) => result.participated), true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('inferPaperResearchSemanticsBatch writes and resumes optional batch ledger', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-relation-batch-ledger-'));
+  let fetchCount = 0;
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                papers: papers.map((paper) => ({
+                  id: paper.id,
+                  benchmarks: [],
+                  findings: [],
+                  researchGoals: [],
+                  relations: []
+                }))
+              })
+            }
+          }]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} }
+  ];
+
+  try {
+    const first = await inferPaperResearchSemanticsBatch(entries, {
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 2,
+      llmBatchLedgerDir: tempDir,
+      llmBatchRunId: 'relation-ledger-test'
+    });
+    assert.equal(fetchCount, 1);
+    assert.equal(first.every((result) => !result.error), true);
+
+    const batches = await fs.readFile(path.join(tempDir, 'llm-batches.jsonl'), 'utf8');
+    const results = await fs.readFile(path.join(tempDir, 'llm-results.jsonl'), 'utf8');
+    assert.match(batches, /relation-ledger-test/);
+    assert.match(results, /"phase":"relation-extraction"/);
+    assert.match(results, /"status":"completed"/);
+
+    const second = await inferPaperResearchSemanticsBatch(entries, {
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 2,
+      llmBatchLedgerDir: tempDir,
+      llmBatchRunId: 'relation-ledger-test',
+      llmBatchResume: true
+    });
+    assert.equal(fetchCount, 1);
+    assert.equal(second.every((result) => !result.error), true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('inferChunkSemanticObjectsBatch splits oversized prompts by prompt budget', async () => {
   let fetchCount = 0;
   const batchEvents = [];

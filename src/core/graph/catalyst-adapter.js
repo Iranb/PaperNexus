@@ -16,6 +16,39 @@ const CATALYST_QUERY_CONTRACT_VERSION = 'idea-catalyst-query-v1';
 const CATALYST_MECHANISM_TRAVERSAL_VERSION = 'idea-catalyst-mechanism-traversal-v1';
 const CATALYST_COVERAGE_VERSION = 'idea-catalyst-coverage-v1';
 const CATALYST_MECHANISM_BRIDGES_VERSION = 'idea-catalyst-mechanism-bridges-v1';
+const MAX_CATALYST_LIMIT = 50;
+const MAX_CATALYST_SOURCE_DOMAINS = 12;
+const MAX_CATALYST_RELEVANCE_THRESHOLD = 25;
+
+function boundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const integer = Math.floor(number);
+  if (integer < min) return fallback;
+  return Math.min(integer, max);
+}
+
+function normalizeCatalystResourceParams(params = {}) {
+  const normalized = { ...params };
+  if (params.limit !== undefined) {
+    normalized.limit = boundedInteger(params.limit, 8, { max: MAX_CATALYST_LIMIT });
+  }
+  if (params.numSourceDomains !== undefined || params.num_source_domains !== undefined) {
+    normalized.numSourceDomains = boundedInteger(
+      params.numSourceDomains || params.num_source_domains,
+      3,
+      { max: MAX_CATALYST_SOURCE_DOMAINS }
+    );
+  }
+  if (params.relevanceThreshold !== undefined || params.relevance_threshold !== undefined) {
+    normalized.relevanceThreshold = boundedInteger(
+      params.relevanceThreshold || params.relevance_threshold,
+      3,
+      { max: MAX_CATALYST_RELEVANCE_THRESHOLD }
+    );
+  }
+  return normalized;
+}
 
 function normalizeMechanismQuery(value) {
   if (Array.isArray(value)) return normalizeAbstractMechanismNames(value);
@@ -228,7 +261,7 @@ function buildDomainSupportEntries(entries, limit) {
 
 export function buildMechanismTraversal(graph, params = {}) {
   const queryMechanisms = normalizeMechanismQuery(params.mechanisms || params.mechanism);
-  const limit = Math.max(1, Number(params.limit || 8));
+  const limit = boundedInteger(params.limit, 8, { max: MAX_CATALYST_LIMIT });
 
   const matches = queryMechanisms.map((mechanism) => {
     const mechanismNode = graph.getNodesByType(NODE_TYPES.ABSTRACT_MECHANISM)
@@ -287,7 +320,7 @@ export function buildMechanismTraversal(graph, params = {}) {
 
 export function buildMechanismBridgeAnalysis(graph, params = {}) {
   const targetDomain = normalizeFieldOfStudy(params.targetDomain);
-  const limit = Math.max(1, Number(params.limit || 8));
+  const limit = boundedInteger(params.limit, 8, { max: MAX_CATALYST_LIMIT });
   const requestedMechanisms = normalizeMechanismQuery(params.mechanisms || params.mechanism);
 
   const targetMechanisms = requestedMechanisms.length
@@ -432,8 +465,9 @@ export function buildCoverageQuery(graph, params = {}) {
 }
 
 export function buildDomainRankedScoutingQuery(graph, params = {}) {
+  const normalizedParams = normalizeCatalystResourceParams(params);
   const requestedMechanisms = normalizeMechanismQuery(params.mechanisms || params.mechanism);
-  const bridgeResult = queryCrossDomainBridges(graph, params);
+  const bridgeResult = queryCrossDomainBridges(graph, normalizedParams);
   return {
     contractVersion: CATALYST_QUERY_CONTRACT_VERSION,
     targetDomain: bridgeResult.targetDomain,
@@ -449,16 +483,17 @@ export function buildDomainRankedScoutingQuery(graph, params = {}) {
 }
 
 export function buildCatalystQuery(graph, params = {}) {
+  const normalizedParams = normalizeCatalystResourceParams(params);
   const targetMechanisms = normalizeMechanismQuery(params.mechanisms || params.mechanism);
-  const bridgeResult = queryCrossDomainBridges(graph, params);
-  const fineGrainedDomain = normalizeCatalystDomainLabel(params.fineGrainedDomain, bridgeResult.targetDomain);
-  const coarseGrainedDomain = normalizeCatalystDomainLabel(params.coarseGrainedDomain, bridgeResult.targetDomain);
-  const scouting = buildDomainRankedScoutingQuery(graph, params);
+  const bridgeResult = queryCrossDomainBridges(graph, normalizedParams);
+  const fineGrainedDomain = normalizeCatalystDomainLabel(normalizedParams.fineGrainedDomain, bridgeResult.targetDomain);
+  const coarseGrainedDomain = normalizeCatalystDomainLabel(normalizedParams.coarseGrainedDomain, bridgeResult.targetDomain);
+  const scouting = buildDomainRankedScoutingQuery(graph, normalizedParams);
   const mechanismTraversal = buildMechanismTraversal(graph, {
     mechanisms: targetMechanisms.length
       ? targetMechanisms
       : bridgeResult.mechanismMatches.map((entry) => entry.mechanism),
-    limit: params.limit
+    limit: normalizedParams.limit
   });
   const analysisMechanisms = targetMechanisms.length
     ? targetMechanisms
@@ -466,20 +501,20 @@ export function buildCatalystQuery(graph, params = {}) {
   const mechanismBridgeAnalysis = buildMechanismBridgeAnalysis(graph, {
     targetDomain: bridgeResult.targetDomain,
     mechanisms: analysisMechanisms,
-    limit: params.limit
+    limit: normalizedParams.limit
   });
   const bridgeRetrieval = buildBridgeRetrieval(graph, {
     targetDomain: bridgeResult.targetDomain,
     abstractChallenge: bridgeResult.abstractChallenge,
     mechanisms: analysisMechanisms,
-    limit: params.limit,
+    limit: normalizedParams.limit,
     domainDistanceMatrix: bridgeResult.domainDistanceMatrix
   });
   const structuralAnalogy = buildStructuralAnalogy(graph, {
     targetDomain: bridgeResult.targetDomain,
     abstractChallenge: bridgeResult.abstractChallenge,
     mechanisms: analysisMechanisms,
-    limit: params.limit
+    limit: normalizedParams.limit
   }, bridgeRetrieval);
   const interdisciplinaryPotentialRanking = buildInterdisciplinaryPotentialRanking(
     bridgeRetrieval,
@@ -488,7 +523,7 @@ export function buildCatalystQuery(graph, params = {}) {
       targetDomain: bridgeResult.targetDomain,
       abstractChallenge: bridgeResult.abstractChallenge,
       mechanisms: analysisMechanisms,
-      limit: params.limit
+      limit: normalizedParams.limit
     }
   );
   const coverage = {
@@ -525,9 +560,9 @@ export function buildCatalystQuery(graph, params = {}) {
     coarseGrainedDomain,
     abstractChallenge: bridgeResult.abstractChallenge,
     mechanisms: targetMechanisms,
-    numSourceDomains: params.numSourceDomains,
-    relevanceThreshold: params.relevanceThreshold,
-    limit: params.limit
+    numSourceDomains: normalizedParams.numSourceDomains,
+    relevanceThreshold: normalizedParams.relevanceThreshold,
+    limit: normalizedParams.limit
   });
 
   return {

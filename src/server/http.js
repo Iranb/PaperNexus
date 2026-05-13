@@ -50,6 +50,8 @@ const MIME_TYPES = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml; charset=utf-8'
 };
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+const MAX_BACKGROUND_ERROR_LENGTH = 480;
 const mineruWarmupsInFlight = new Map();
 
 function getServeConfig(options = {}) {
@@ -76,6 +78,35 @@ function firstNumber(...values) {
   if (raw === undefined) return undefined;
   const normalized = Number(raw);
   return Number.isFinite(normalized) ? normalized : undefined;
+}
+
+function resolveJsonBodyLimitBytes(options = {}) {
+  const serveConfig = getServeConfig(options);
+  const raw = firstDefined(
+    options.maxJsonBodyBytes,
+    options.jsonBodyLimitBytes,
+    serveConfig.maxJsonBodyBytes,
+    serveConfig.jsonBodyLimitBytes
+  );
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_JSON_BODY_LIMIT_BYTES;
+  }
+  return Math.floor(parsed);
+}
+
+function formatBackgroundError(error) {
+  const raw = String(error?.message || error || 'unknown error').trim();
+  const compact = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(' | ');
+  if (compact.length <= MAX_BACKGROUND_ERROR_LENGTH) {
+    return compact;
+  }
+  return `${compact.slice(0, MAX_BACKGROUND_ERROR_LENGTH - 3)}...`;
 }
 
 async function getConfiguredRootPaths(options = {}) {
@@ -118,12 +149,9 @@ function readRequestApiToken(request) {
 }
 
 function timingSafeStringEqual(left = '', right = '') {
-  const leftBuffer = Buffer.from(String(left), 'utf8');
-  const rightBuffer = Buffer.from(String(right), 'utf8');
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+  const leftDigest = crypto.createHash('sha256').update(String(left), 'utf8').digest();
+  const rightDigest = crypto.createHash('sha256').update(String(right), 'utf8').digest();
+  return crypto.timingSafeEqual(leftDigest, rightDigest);
 }
 
 function requireApiToken(request, response, expectedToken) {
@@ -171,16 +199,30 @@ async function sendFile(response, filePath) {
   response.end(body);
 }
 
-async function readJsonBody(request) {
+async function readJsonBody(request, options = {}) {
+  const maxBytes = resolveJsonBodyLimitBytes(options);
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
+    totalBytes += Buffer.byteLength(chunk);
+    if (totalBytes > maxBytes) {
+      const error = new Error(`JSON request body exceeds the configured limit of ${maxBytes} bytes.`);
+      error.statusCode = 413;
+      throw error;
+    }
     chunks.push(chunk);
   }
 
   if (!chunks.length) return {};
   const raw = Buffer.concat(chunks).toString('utf8').trim();
   if (!raw) return {};
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const error = new Error('Invalid JSON request body.');
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 function buildWebRoot() {
@@ -730,7 +772,7 @@ export async function serveCommand(options = {}) {
         workerLogger.log?.('[serve] MinerU warmup finished (no MinerU HTTP backends configured)');
       })
       .catch((error) => {
-        workerLogger.warn?.(`[serve] MinerU warmup failed (${error.message || error})`);
+        workerLogger.warn?.(`[serve] MinerU warmup failed (${formatBackgroundError(error)})`);
       });
   }
   if (shouldWarmDocling) {
@@ -746,7 +788,7 @@ export async function serveCommand(options = {}) {
         workerLogger.log?.('[serve] Docling warmup finished');
       })
       .catch((error) => {
-        workerLogger.warn?.(`[serve] Docling warmup failed (${error.message || error})`);
+        workerLogger.warn?.(`[serve] Docling warmup failed (${formatBackgroundError(error)})`);
       });
   }
 
@@ -778,6 +820,8 @@ export async function serveCommand(options = {}) {
         const result = await handleMcpHttpRequest(request, response, {
           config: options.config || {},
           configBaseDir: options.configBaseDir || process.cwd(),
+          maxJsonBodyBytes: options.maxJsonBodyBytes,
+          jsonBodyLimitBytes: options.jsonBodyLimitBytes,
           portablePaths: true,
           logger: workerLogger,
           onImportTaskCreated() {
@@ -849,7 +893,7 @@ export async function serveCommand(options = {}) {
 
       if (request.method === 'POST' && url.pathname === '/api/imports') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         const payload = await createImportTaskPayload(name, body, apiOptions);
         sendJson(response, 202, payload);
         return;
@@ -857,112 +901,112 @@ export async function serveCommand(options = {}) {
 
       if (request.method === 'POST' && url.pathname === '/api/paper-index') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await paperIndexPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/query') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await queryGraphPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/context') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await contextGraphPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/impact') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await impactGraphPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/ideas') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await ideasGraphPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/brainstorm') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await brainstormGraphPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/catalyst') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await catalystGraphPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/path-trace') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await pathTraceGraphPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/evidence-chain') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await evidenceChainPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/method-lineage') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await methodLineagePayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/method-evidence') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await methodEvidencePayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/reflection-chain') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await reflectionChainPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/theory-brief') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await theoryBriefPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/storyline-brief') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await storylineBriefPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/research-brief') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await researchBriefPayload(name, body, apiOptions));
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/brainstorm-brief') {
         const name = url.searchParams.get('name') || undefined;
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         sendJson(response, 200, await brainstormBriefPayload(name, body, apiOptions));
         return;
       }
@@ -1008,7 +1052,7 @@ export async function serveCommand(options = {}) {
       }
 
       if (request.method === 'POST' && url.pathname === '/api/llm-config') {
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, options);
         const payload = await updateLlmConfigPayload(body?.llm || {}, {
           config: options.config || {},
           configBaseDir: options.configBaseDir || process.cwd(),

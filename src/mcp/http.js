@@ -1,6 +1,14 @@
 import { createJsonRpcError, createJsonRpcSuccess, handleMessage } from './core.js';
 
 const JSON_MIME_TYPE = 'application/json; charset=utf-8';
+const DEFAULT_MCP_JSON_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
 
 function normalizeMcpPath(value) {
   const raw = typeof value === 'string' ? value.trim() : '';
@@ -18,9 +26,39 @@ function sendJson(response, statusCode, payload) {
   response.end(body);
 }
 
-async function readRequestText(request) {
+function resolveMcpJsonBodyLimitBytes(options = {}) {
+  const serveConfig = options.config?.serve && typeof options.config.serve === 'object'
+    ? options.config.serve
+    : {};
+  const mcpConfig = serveConfig.mcp && typeof serveConfig.mcp === 'object' && !Array.isArray(serveConfig.mcp)
+    ? serveConfig.mcp
+    : {};
+  const raw = firstDefined(
+    options.maxJsonBodyBytes,
+    options.jsonBodyLimitBytes,
+    mcpConfig.maxJsonBodyBytes,
+    mcpConfig.jsonBodyLimitBytes,
+    serveConfig.maxJsonBodyBytes,
+    serveConfig.jsonBodyLimitBytes
+  );
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_MCP_JSON_BODY_LIMIT_BYTES;
+  }
+  return Math.floor(parsed);
+}
+
+async function readRequestText(request, options = {}) {
+  const maxBytes = resolveMcpJsonBodyLimitBytes(options);
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
+    totalBytes += Buffer.byteLength(chunk);
+    if (totalBytes > maxBytes) {
+      const error = new Error(`MCP request body exceeds the configured limit of ${maxBytes} bytes.`);
+      error.statusCode = 413;
+      throw error;
+    }
     chunks.push(chunk);
   }
 
@@ -62,13 +100,14 @@ export async function handleMcpHttpRequest(request, response, options = {}) {
 
   let message;
   try {
-    const rawBody = await readRequestText(request);
+    const rawBody = await readRequestText(request, options);
     message = rawBody.trim() ? JSON.parse(rawBody) : {};
-  } catch {
-    sendJson(response, 400, createJsonRpcError(null, -32700, 'Parse error'));
+  } catch (error) {
+    const statusCode = Number(error?.statusCode || 0) || 400;
+    sendJson(response, statusCode, createJsonRpcError(null, -32700, statusCode === 413 ? error.message : 'Parse error'));
     return {
       rpcMethod: 'parse',
-      statusCode: 400
+      statusCode
     };
   }
 

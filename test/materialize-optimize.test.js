@@ -733,6 +733,17 @@ We study cache-first stage reuse for paper B.
     assert.equal(firstStage2.stage, 'llm-optimized');
     assert.equal(semanticFetchCount, 1);
     assert.equal(relationFetchCount, 1);
+    const ledgerRoot = path.join(tempCorpusRoot, '.papernexus', 'llm-jobs', 'stage2-ledger');
+    const ledgerRuns = await fs.readdir(ledgerRoot);
+    assert.equal(ledgerRuns.length, 1);
+    assert.match(ledgerRuns[0], /^stage2-/);
+    const ledgerRows = (await fs.readFile(path.join(ledgerRoot, ledgerRuns[0], 'llm-results.jsonl'), 'utf8'))
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.ok(ledgerRows.some((row) => row.phase === 'semantic-extraction' || row.phase === 'chunk-semantic-extraction'));
+    assert.ok(ledgerRows.some((row) => row.phase === 'relation-extraction' || row.phase === 'chunk-relation-extraction'));
 
     const firstStage3 = await ingestion.buildGraphCorpus(tempCorpusRoot, {
       name: 'llm-stage-reuse-test'

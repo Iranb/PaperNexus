@@ -70,7 +70,7 @@ Commands:
   papernexus graph-v2 tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
   papernexus graph-v2 continue [<corpus>] [--run-id <id|latest>] [--json]
   papernexus graph-v2 report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
-  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--fixed-corpus-scan-limit <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
+  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--query-decomposition <auto|true|false>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--fixed-corpus-scan-limit <n>] [--fixed-corpus-cache-dir <dir>] [--k <1,5,10,20>] [--output <dir>] [--run-id <id>] [--resume] [--continue-on-error <true|false>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -108,6 +108,12 @@ LLM Fallback Options:
     Use chunk-level LLM map/reduce for Stage 2. Default: true.
   --llm-chunk-limit-per-paper <n>
     Maximum selected chunks per paper for chunk-level LLM extraction. Default: 12.
+  --llm-batch-ledger-dir <dir>
+    Directory for resumable LLM batch ledger JSONL files. Stage 2 uses a corpus-local default when omitted.
+  --llm-batch-run-id <id>
+    Stable run id recorded in LLM batch ledger rows.
+  --llm-batch-resume <true|false>
+    Reuse completed LLM batch rows from the ledger. Defaults to on for continue mode.
 
 MarkItDown Options:
   --markitdown-python <python>
@@ -483,6 +489,9 @@ function buildLlmOptions(flags, config) {
     llmBatchSize: toNumber(firstDefined(flags['batch-size'], flags['ollama-batch-size'], llmConfig.batchSize, ollamaConfig.batchSize), undefined),
     llmBatchPromptMaxChars: toNumber(firstDefined(flags['batch-prompt-max-chars'], llmConfig.batchPromptMaxChars), undefined),
     llmBatchFailureSplitRetryCount: toNumber(firstDefined(flags['batch-failure-split-retry-count'], llmConfig.batchFailureSplitRetryCount), undefined),
+    llmBatchLedgerDir: firstDefined(flags['llm-batch-ledger-dir'], flags['batch-ledger-dir'], llmConfig.llmBatchLedgerDir, llmConfig.batchLedgerDir),
+    llmBatchRunId: firstDefined(flags['llm-batch-run-id'], llmConfig.llmBatchRunId, llmConfig.batchRunId),
+    llmBatchResume: toBoolean(firstDefined(flags['llm-batch-resume'], llmConfig.llmBatchResume, llmConfig.batchResume), undefined),
     llmChunkPipeline: firstDefined(flags['llm-chunk-pipeline'], flags['chunk-llm-pipeline'], llmConfig.chunkPipeline),
     llmChunkLimitPerPaper: toNumber(firstDefined(flags['llm-chunk-limit-per-paper'], flags['chunk-limit-per-paper'], llmConfig.chunkLimitPerPaper), undefined),
     llmMaxTokens: toNumber(firstDefined(flags['max-tokens'], llmConfig.maxTokens), undefined),
@@ -734,6 +743,7 @@ function buildRetrievalBenchmarkOptions(flags, config) {
     maxTaskContext: toNumber(firstDefined(flags['max-task-context'], commandConfig.maxTaskContext), undefined),
     providers: providerList.length ? providerList : firstDefined(commandConfig.providers, undefined),
     depth: firstDefined(flags.depth, commandConfig.depth, 'quick'),
+    queryDecomposition: firstDefined(flags['query-decomposition'], commandConfig.queryDecomposition, undefined),
     benchmarkLimit: toNumber(firstDefined(flags['benchmark-limit'], flags.sample, commandConfig.benchmarkLimit), undefined),
     offset: toNumber(firstDefined(flags.offset, commandConfig.offset), 0),
     maxDiscoveryQueries: toNumber(firstDefined(flags['max-queries'], commandConfig.maxDiscoveryQueries), undefined),
@@ -741,6 +751,7 @@ function buildRetrievalBenchmarkOptions(flags, config) {
     maxCandidates: toNumber(firstDefined(flags['max-candidates'], commandConfig.maxCandidates), 50),
     fixedCorpusLimit: toNumber(firstDefined(flags['fixed-corpus-limit'], flags['max-fixed-corpus-results'], commandConfig.fixedCorpusLimit), undefined),
     fixedCorpusScanLimit: toNumber(firstDefined(flags['fixed-corpus-scan-limit'], commandConfig.fixedCorpusScanLimit), undefined),
+    fixedCorpusCacheDir: firstDefined(flags['fixed-corpus-cache-dir'], commandConfig.fixedCorpusCacheDir),
     providerConcurrency: toNumber(firstDefined(flags['provider-concurrency'], commandConfig.providerConcurrency), undefined),
     benchmarkConcurrency: toNumber(firstDefined(flags['benchmark-concurrency'], commandConfig.benchmarkConcurrency), 1),
     timeoutMs: toNumber(firstDefined(flags['timeout-ms'], commandConfig.timeoutMs), undefined),
@@ -754,6 +765,9 @@ function buildRetrievalBenchmarkOptions(flags, config) {
     allowDownloads: toBoolean(firstDefined(flags['allow-downloads'], commandConfig.allowDownloads), false),
     citationExpansion: toBoolean(firstDefined(flags['citation-expansion'], commandConfig.citationExpansion), false),
     persistDiscoveryRuns: toBoolean(firstDefined(flags['persist-discovery-runs'], commandConfig.persistDiscoveryRuns), false),
+    runId: firstDefined(flags['run-id'], flags.runId, commandConfig.runId),
+    resume: toBoolean(firstDefined(flags.resume, commandConfig.resume), false),
+    continueOnError: toBoolean(firstDefined(flags['continue-on-error'], commandConfig.continueOnError), undefined),
     outputDir: firstDefined(flags.output, flags['output-dir'], commandConfig.outputDir)
   };
 }

@@ -273,6 +273,36 @@ test('serveCommand rejects unauthorized, disabled, invalid, and unsupported HTTP
   }
 });
 
+test('serveCommand applies JSON body limits to HTTP MCP requests', async () => {
+  const port = 56500 + Math.floor(Math.random() * 500);
+  const serverHandle = await startHttpServer(port, {
+    apiToken: 'test',
+    mcp: {
+      enabled: true
+    }
+  }, {
+    maxJsonBodyBytes: 64
+  });
+
+  try {
+    const response = await postMcp(port, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        oversized: 'x'.repeat(128)
+      }
+    }, { token: 'test' });
+
+    assert.equal(response.status, 413);
+    const payload = await response.json();
+    assert.equal(payload.error.code, -32700);
+    assert.match(payload.error.message, /exceeds the configured limit/);
+  } finally {
+    await serverHandle.stop();
+  }
+});
+
 test('serveCommand fails closed for HTTP MCP when auth is not configured', async () => {
   const fixture = await createIndexedCorpus('papernexus-mcp-http-authless', 'mcp-http-authless-papers');
   const port = 57000 + Math.floor(Math.random() * 500);

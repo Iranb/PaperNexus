@@ -69,6 +69,24 @@ function getApiNodeLayer(node) {
   return node.properties?.layer || getNodeLayer(node.type);
 }
 
+const MAX_API_RESULT_LIMIT = 50;
+const MAX_API_CANDIDATE_LIMIT = 20;
+const MAX_API_PAPER_LIMIT = 25;
+const MAX_API_IMPACT_DEPTH = 8;
+const MAX_API_BRAINSTORM_HOPS = 4;
+const MAX_API_PATH_DEPTH = 6;
+const MAX_API_PATHS = 25;
+const MAX_API_CATALYST_DOMAINS = 12;
+const MAX_API_CATALYST_THRESHOLD = 25;
+
+function boundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const integer = Math.floor(number);
+  if (integer < min) return fallback;
+  return Math.min(integer, max);
+}
+
 const PORTABLE_PATH_FIELD_NAMES = new Set([
   'rootPath',
   'root_path',
@@ -512,7 +530,7 @@ function groupPaperIndexEntries(entries = []) {
 
 function normalizeQueryOptions(options = {}) {
   return {
-    limit: Number(options.limit || 5),
+    limit: boundedInteger(options.limit, 5, { max: MAX_API_RESULT_LIMIT }),
     layers: options.layers
   };
 }
@@ -528,7 +546,7 @@ function normalizeContextOptions(options = {}) {
 function normalizeImpactOptions(options = {}) {
   return {
     direction: options.direction || 'upstream',
-    maxDepth: Number(options.maxDepth || options.depth || 3),
+    maxDepth: boundedInteger(options.maxDepth || options.depth, 3, { max: MAX_API_IMPACT_DEPTH }),
     layers: options.layers,
     layerMode: options.layerMode || 'any',
     relationTypes: Array.isArray(options.relationTypes) ? options.relationTypes : undefined,
@@ -538,7 +556,7 @@ function normalizeImpactOptions(options = {}) {
 
 function normalizeIdeasOptions(options = {}) {
   return {
-    limit: Number(options.limit || 5),
+    limit: boundedInteger(options.limit, 5, { max: MAX_API_RESULT_LIMIT }),
     layers: options.layers
   };
 }
@@ -546,8 +564,8 @@ function normalizeIdeasOptions(options = {}) {
 function normalizeBrainstormOptions(options = {}) {
   return {
     mode: options.mode || 'diverge',
-    maxHops: Number(options.maxHops || options.hops || 2),
-    limit: Number(options.limit || 5),
+    maxHops: boundedInteger(options.maxHops || options.hops, 2, { max: MAX_API_BRAINSTORM_HOPS }),
+    limit: boundedInteger(options.limit, 5, { max: MAX_API_RESULT_LIMIT }),
     layers: options.layers,
     layerMode: options.layerMode || 'any'
   };
@@ -581,8 +599,8 @@ function normalizeCatalystRequestBody(body = {}) {
     coarseGrainedDomain: String(body?.coarseGrainedDomain || body?.coarse_grained_domain || '').trim(),
     abstractChallenge,
     mechanisms: normalizeMechanismList(body?.mechanisms || body?.mechanism || rawOptions.mechanisms),
-    numSourceDomains: Number(body?.numSourceDomains || body?.num_source_domains || rawOptions.numSourceDomains || 3),
-    relevanceThreshold: Number(body?.relevanceThreshold || body?.relevance_threshold || rawOptions.relevanceThreshold || 3),
+    numSourceDomains: boundedInteger(body?.numSourceDomains || body?.num_source_domains || rawOptions.numSourceDomains, 3, { max: MAX_API_CATALYST_DOMAINS }),
+    relevanceThreshold: boundedInteger(body?.relevanceThreshold || body?.relevance_threshold || rawOptions.relevanceThreshold, 3, { max: MAX_API_CATALYST_THRESHOLD }),
     options: rawOptions
   };
 }
@@ -746,7 +764,7 @@ export async function catalystGraphPayload(candidate, body = {}, options = {}) {
     mechanisms: request.mechanisms,
     numSourceDomains: request.numSourceDomains,
     relevanceThreshold: request.relevanceThreshold,
-    limit: Number(request.options.limit || 5)
+    limit: boundedInteger(request.options.limit, 5, { max: MAX_API_RESULT_LIMIT })
   });
 
   return presentPortablePayload({
@@ -872,7 +890,7 @@ function findNodeCandidates(graph, query, options = {}) {
 
   const lowered = text.toLowerCase();
   const search = searchGraph(graph, text, {
-    limit: Number(options.limit || 8),
+    limit: boundedInteger(options.limit, 8, { max: MAX_API_CANDIDATE_LIMIT }),
     layers: options.layers,
     nodeView: options.nodeView || 'all'
   });
@@ -942,7 +960,7 @@ function collectRelevantPaperNodes(graph, query, options = {}) {
   const relationIndex = buildApiRelationIndex(graph);
   const paperIds = new Set();
   const search = searchGraph(graph, query, {
-    limit: Number(options.limit || 6),
+    limit: boundedInteger(options.limit, 6, { max: MAX_API_PAPER_LIMIT }),
     layers: options.layers,
     nodeView: options.nodeView || 'all'
   });
@@ -975,13 +993,13 @@ function collectRelevantPaperNodes(graph, query, options = {}) {
   return [...paperIds]
     .map((paperId) => graph.getNode(paperId) || (graph.nodes || []).find((node) => node.type === NODE_TYPES.PAPER && node.properties?.paperId === paperId))
     .filter(Boolean)
-    .slice(0, Number(options.limit || 5));
+    .slice(0, boundedInteger(options.limit, 5, { max: MAX_API_PAPER_LIMIT }));
 }
 
 function resolvePathTraceOptions(options = {}) {
   return {
-    maxDepth: Number(options.maxDepth || 4),
-    maxPaths: Number(options.maxPaths || options.limit || 3),
+    maxDepth: boundedInteger(options.maxDepth, 4, { max: MAX_API_PATH_DEPTH }),
+    maxPaths: boundedInteger(options.maxPaths || options.limit, 3, { max: MAX_API_PATHS }),
     direction: options.direction || 'any',
     relationTypes: Array.isArray(options.relationTypes) ? new Set(options.relationTypes) : null,
     layers: normalizeLayerFilter(options.layers),
@@ -1160,7 +1178,7 @@ async function loadPaperOverlayIfPresent(rootPath, paperId) {
 
 async function collectOverlayPapers(rootPath, graph, query, options = {}) {
   const papers = collectRelevantPaperNodes(graph, query, options);
-  const limit = Number(options.limit || 5);
+  const limit = boundedInteger(options.limit, 5, { max: MAX_API_PAPER_LIMIT });
   const results = [];
 
   for (const paper of papers) {
@@ -1469,7 +1487,7 @@ export async function brainstormBriefPayload(candidate, body = {}, options = {})
       ...request,
       options: {
         ...request.options,
-        limit: Math.min(3, Number(request.options?.limit || 3))
+        limit: Math.min(3, boundedInteger(request.options?.limit, 3, { max: MAX_API_RESULT_LIMIT }))
       }
     }, options)
   ]);

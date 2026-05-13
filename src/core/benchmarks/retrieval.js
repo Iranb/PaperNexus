@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { ensureDir, fileExists, readJson, writeJson, writeText } from '../../lib/fs.js';
@@ -375,6 +376,190 @@ async function readJsonl(filePath) {
   }
 
   return entries;
+}
+
+async function tryReadJsonl(filePath) {
+  if (!filePath || !(await fileExists(filePath))) return [];
+  return readJsonl(filePath);
+}
+
+async function appendJsonl(filePath, entry = {}) {
+  if (!filePath) return;
+  await ensureDir(path.dirname(filePath));
+  await fs.appendFile(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
+}
+
+function benchmarkQueryKey(queryCase = {}, index = 0) {
+  return compactText(pickFirst(
+    queryCase.id,
+    queryCase.queryId,
+    queryCase.query_id,
+    queryCase.query,
+    `query-${index + 1}`
+  ));
+}
+
+function resolveBooleanOption(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function resolveBenchmarkRunId(params = {}, benchmark = {}) {
+  const explicit = compactText(pickFirst(
+    params.runId,
+    params.run_id,
+    params.benchmarkRunId,
+    params.benchmark_run_id
+  ));
+  if (explicit) return slugify(explicit);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${stamp}-${slugify(benchmark.name || benchmark.format || 'retrieval-benchmark')}`;
+}
+
+function summarizeBenchmarkMachine() {
+  return {
+    host: os.hostname(),
+    platform: process.platform,
+    arch: process.arch,
+    node: process.version,
+    pid: process.pid
+  };
+}
+
+function createRetrievalBenchmarkArtifactPaths(outputDir, runId) {
+  const absoluteOutputDir = path.resolve(process.cwd(), outputDir);
+  const runDir = path.join(absoluteOutputDir, runId);
+  return {
+    runDir,
+    runId,
+    manifestPath: path.join(runDir, 'run-manifest.json'),
+    queriesPath: path.join(runDir, 'queries.jsonl'),
+    perQueryResultsPath: path.join(runDir, 'per-query-results.jsonl'),
+    failuresPath: path.join(runDir, 'failures.jsonl'),
+    checkpointPath: path.join(runDir, 'checkpoint.json'),
+    timePath: path.join(runDir, 'time.txt'),
+    jsonPath: path.join(runDir, 'report.json'),
+    markdownPath: path.join(runDir, 'report.md')
+  };
+}
+
+async function resetRetrievalBenchmarkRunArtifacts(artifacts = {}) {
+  for (const filePath of [
+    artifacts.perQueryResultsPath,
+    artifacts.failuresPath,
+    artifacts.checkpointPath,
+    artifacts.timePath,
+    artifacts.jsonPath,
+    artifacts.markdownPath
+  ]) {
+    if (filePath) await fs.rm(filePath, { force: true }).catch(() => {});
+  }
+}
+
+async function prepareRetrievalBenchmarkArtifacts(params = {}, benchmark = {}, selectedQueries = [], startedAt = new Date().toISOString()) {
+  if (!params.outputDir) return null;
+  const runId = resolveBenchmarkRunId(params, benchmark);
+  const artifacts = createRetrievalBenchmarkArtifactPaths(params.outputDir, runId);
+  const resume = resolveBooleanOption(pickFirst(params.resume, params.continue, params.benchmarkResume, params.benchmark_resume), false);
+  await ensureDir(artifacts.runDir);
+  if (!resume) await resetRetrievalBenchmarkRunArtifacts(artifacts);
+
+  const manifest = {
+    contractVersion: 'retrieval-benchmark-run-v1',
+    runId,
+    status: 'running',
+    startedAt,
+    updatedAt: startedAt,
+    datasetPath: params.datasetPath ? path.resolve(process.cwd(), params.datasetPath) : null,
+    benchmark: {
+      name: benchmark.name || null,
+      format: benchmark.format || null,
+      queryCount: selectedQueries.length,
+      corpusSize: benchmark.corpusSize || asArray(benchmark.corpus).length || 0
+    },
+    config: {
+      evaluationMode: normalizeEvaluationMode(params.evaluationMode || params.evaluation_mode || params.mode),
+      cutoffs: normalizeCutoffs(params.cutoffs || params.k),
+      benchmarkConcurrency: params.benchmarkConcurrency || params.concurrency || 1,
+      fixedCorpusScanLimit: params.fixedCorpusScanLimit || params.fixed_corpus_scan_limit || null
+    },
+    machine: summarizeBenchmarkMachine()
+  };
+
+  await writeJson(artifacts.manifestPath, manifest);
+  await writeText(
+    artifacts.queriesPath,
+    `${selectedQueries.map((queryCase, index) => JSON.stringify({
+      queryKey: benchmarkQueryKey(queryCase, index),
+      id: queryCase.id || null,
+      query: queryCase.query || '',
+      relevantCount: asArray(queryCase.relevant).length,
+      metadata: queryCase.metadata || {}
+    })).join('\n')}\n`
+  );
+
+  return {
+    runId,
+    resume,
+    artifacts,
+    manifest
+  };
+}
+
+async function readCompletedRetrievalBenchmarkResults(artifactRun = null) {
+  if (!artifactRun?.resume) return new Map();
+  const rows = await tryReadJsonl(artifactRun.artifacts.perQueryResultsPath);
+  const completed = new Map();
+  for (const row of rows) {
+    const status = String(row.status || 'completed').toLowerCase();
+    const key = compactText(row.queryKey || row.id);
+    if (!key || status !== 'completed') continue;
+    completed.set(key, row);
+  }
+  return completed;
+}
+
+async function writeRetrievalBenchmarkCheckpoint(artifactRun = null, checkpoint = {}) {
+  if (!artifactRun?.artifacts?.checkpointPath) return null;
+  const payload = {
+    contractVersion: 'retrieval-benchmark-checkpoint-v1',
+    runId: artifactRun.runId,
+    updatedAt: new Date().toISOString(),
+    ...checkpoint
+  };
+  await writeJson(artifactRun.artifacts.checkpointPath, payload);
+  return payload;
+}
+
+async function finalizeRetrievalBenchmarkArtifacts(artifactRun = null, report = {}) {
+  if (!artifactRun?.artifacts) return null;
+  const endedAt = report.generatedAt || new Date().toISOString();
+  await writeJson(artifactRun.artifacts.manifestPath, {
+    ...(artifactRun.manifest || {}),
+    status: report.status || 'completed',
+    updatedAt: endedAt,
+    completedAt: endedAt,
+    reportPath: artifactRun.artifacts.jsonPath
+  });
+  await writeText(artifactRun.artifacts.timePath, [
+    `startedAt=${report.startedAt || ''}`,
+    `endedAt=${endedAt}`,
+    `durationMs=${report.durationMs || 0}`,
+    `status=${report.status || 'completed'}`,
+    `completedQueries=${report.diagnostics?.evaluatedQueries || 0}`,
+    `failedQueries=${report.diagnostics?.failedQueries || 0}`
+  ].join('\n') + '\n');
+  return writeRetrievalBenchmarkCheckpoint(artifactRun, {
+    status: report.status || 'completed',
+    completedQueries: report.diagnostics?.evaluatedQueries || 0,
+    failedQueries: report.diagnostics?.failedQueries || 0,
+    totalQueries: report.benchmark?.evaluatedQueries || 0,
+    reportPath: artifactRun.artifacts.jsonPath
+  });
 }
 
 async function readJsonOrJsonl(filePath) {
@@ -1968,6 +2153,24 @@ function aggregateMetrics(results = []) {
   return aggregates;
 }
 
+function classifyProviderFailure(reason = '', entry = {}) {
+  const text = compactText([
+    reason,
+    entry.reason,
+    entry.error,
+    entry.status,
+    entry.statusText
+  ].filter(Boolean).join(' ')).toLowerCase();
+  const status = Number(entry.status || entry.statusCode || entry.status_code || 0);
+  if ([401, 403].includes(status) || /\b(401|403|unauthori[sz]ed|forbidden|api key|apikey|credential|auth)\b/.test(text)) return 'auth';
+  if (status === 429 || /\b(429|rate.?limit|too many requests|quota|cooldown)\b/.test(text)) return 'rate_limit';
+  if (status === 400 || /\b(400|bad request|invalid query|parse|syntax|malformed)\b/.test(text)) return 'bad_query';
+  if (status === 404 || /\b(404|not found|no result|missing)\b/.test(text)) return 'not_found';
+  if (/\b(schema|json|parse error|invalid response|unexpected token)\b/.test(text)) return 'schema';
+  if (status >= 500 || /\b(timeout|timed out|econn|network|fetch|socket|reset|dns|503|502|500)\b/.test(text)) return 'network';
+  return 'unknown';
+}
+
 function summarizeDiscoveryFailures(queryResults = []) {
   return asArray(queryResults)
     .filter((entry) => entry && entry.ok === false)
@@ -1975,7 +2178,8 @@ function summarizeDiscoveryFailures(queryResults = []) {
       provider: entry.provider || 'unknown',
       queryId: entry.queryId || entry.id || '',
       query: truncate(entry.query || '', 160),
-      reason: entry.reason || entry.error || 'provider-failed'
+      reason: entry.reason || entry.error || 'provider-failed',
+      category: classifyProviderFailure(entry.reason || entry.error || 'provider-failed', entry)
     }));
 }
 
@@ -1984,10 +2188,12 @@ function aggregateProviderFailures(results = []) {
   for (const failure of results.flatMap((result) => result.discovery?.providerFailures || [])) {
     const provider = failure.provider || 'unknown';
     const reason = failure.reason || 'provider-failed';
-    const key = `${provider}\t${reason}`;
+    const category = failure.category || classifyProviderFailure(reason, failure);
+    const key = `${provider}\t${category}\t${reason}`;
     if (!grouped.has(key)) {
       grouped.set(key, {
         provider,
+        category,
         reason,
         count: 0
       });
@@ -1999,6 +2205,117 @@ function aggregateProviderFailures(results = []) {
     || left.provider.localeCompare(right.provider)
     || left.reason.localeCompare(right.reason)
   ));
+}
+
+function classifyOfficialBenchmarkSlice(benchmark = {}, queryCase = {}) {
+  const format = canonicalBenchmarkFormat(benchmark.format || queryCase.metadata?.benchmarkFormat || 'custom');
+  if (format !== 'litsearch') return null;
+  const metadata = queryCase.metadata || {};
+  const native = asObject(metadata.native);
+  const hint = compactText(pickFirst(
+    metadata.queryType,
+    metadata.specificity,
+    native.queryType,
+    native.query_type,
+    native.type,
+    native.specificity,
+    native.category
+  )).toLowerCase();
+  if (/\bbroad\b|general|explor/.test(hint)) return 'broad';
+  if (/\bspecific\b|focused|targeted|narrow/.test(hint)) return 'specific';
+  return 'uncategorized';
+}
+
+function aggregateOfficialBenchmarkMetrics(results = [], benchmark = {}) {
+  const format = canonicalBenchmarkFormat(benchmark.format || 'custom');
+  if (format !== 'litsearch') return null;
+  const broad = results.filter((result) => result.officialSlice === 'broad');
+  const specific = results.filter((result) => result.officialSlice === 'specific');
+  const uncategorized = results.filter((result) => !['broad', 'specific'].includes(result.officialSlice));
+  const metricAverage = (items, key) => average(items.map((result) => result.metrics?.[key] || 0));
+  return {
+    format: 'litsearch',
+    protocol: 'LitSearch official slice metrics',
+    metrics: {
+      'broad_recall@20': broad.length ? metricAverage(broad, 'recall@20') : null,
+      'specific_recall@5': specific.length ? metricAverage(specific, 'recall@5') : null,
+      'specific_recall@20': specific.length ? metricAverage(specific, 'recall@20') : null
+    },
+    queryCounts: {
+      broad: broad.length,
+      specific: specific.length,
+      uncategorized: uncategorized.length
+    },
+    note: uncategorized.length
+      ? 'Some LitSearch queries did not expose broad/specific metadata; those queries are excluded from slice metrics.'
+      : ''
+  };
+}
+
+function buildQueryDiagnosticTrace(queryCase = {}, evaluation = {}, discoveryRun = {}, candidates = []) {
+  const providerFailures = summarizeDiscoveryFailures(discoveryRun.queryResults || []);
+  const zeroMatch = Number(evaluation.relevantCount || 0) > 0 && !evaluation.firstRelevantRank;
+  return {
+    queryId: queryCase.id || null,
+    zeroMatch,
+    providerFailureCategories: unique(providerFailures.map((failure) => failure.category || 'unknown')).sort(),
+    providerFailureCount: providerFailures.length,
+    rawCandidateCount: discoveryRun.rawCandidateCount || candidates.length,
+    mergedPaperCount: candidates.length,
+    unmatchedRelevantReasons: unique(asArray(evaluation.unmatchedRelevant).map((miss) => miss.reason || 'unknown')).sort()
+  };
+}
+
+function createBenchmarkFailureResult(queryCase = {}, error, options = {}) {
+  const evaluation = evaluateRetrievalResults(queryCase, [], {
+    cutoffs: options.cutoffs,
+    titleMatchThreshold: options.titleMatchThreshold || options.title_match_threshold
+  });
+  const reason = error?.reason || error?.code || error?.message || 'query-failed';
+  const failure = {
+    provider: 'benchmark',
+    queryId: queryCase.id || '',
+    query: truncate(queryCase.query || '', 160),
+    reason,
+    category: classifyProviderFailure(reason, error || {})
+  };
+  return {
+    ...evaluation,
+    status: 'failed',
+    error: {
+      name: error?.name || 'Error',
+      message: error?.message || String(error || 'query failed'),
+      reason
+    },
+    durationMs: options.durationMs || 0,
+    evaluationMode: options.evaluationMode || null,
+    taskType: queryCase.metadata?.taskType || options.taskType || null,
+    queryType: queryCase.metadata?.queryType || null,
+    querySpecificity: queryCase.metadata?.specificity ?? null,
+    officialSlice: options.officialSlice || null,
+    taskEvaluation: null,
+    discovery: {
+      runId: null,
+      providerCount: 0,
+      plannedQueryCount: 0,
+      providerQueryCount: 0,
+      rawCandidateCount: 0,
+      mergedPaperCount: 0,
+      providerFailures: [failure],
+      citationExpansion: null,
+      coverage: null,
+      artifacts: null,
+      diagnosticTrace: {
+        queryId: queryCase.id || null,
+        zeroMatch: true,
+        providerFailureCategories: [failure.category],
+        providerFailureCount: 1,
+        rawCandidateCount: 0,
+        mergedPaperCount: 0,
+        unmatchedRelevantReasons: unique(asArray(evaluation.unmatchedRelevant).map((miss) => miss.reason || 'unknown')).sort()
+      }
+    }
+  };
 }
 
 function aggregateGoldMissReasons(results = []) {
@@ -2258,6 +2575,7 @@ function buildDiscoveryParams(queryCase = {}, options = {}) {
     topic: queryCase.query,
     depth: options.depth || 'quick',
     discipline: options.discipline,
+    queryDecomposition: options.queryDecomposition ?? options.query_decomposition,
     providers: options.providers,
     maxQueries: options.maxDiscoveryQueries || options.max_queries || options.discoveryQueries,
     maxResultsPerQuery: options.maxResultsPerQuery || options.max_results_per_query || 10,
@@ -2330,15 +2648,133 @@ function buildFixedCorpusIndex(benchmark = {}, options = {}) {
     combinedInvertedIndex,
     compactTitles,
     compactTitleLowers,
-    stats
+    stats,
+    cache: {
+      mode: 'in-memory-per-run',
+      hit: false,
+      key: null,
+      path: null
+    }
   };
+}
+
+function serializeMap(map = new Map()) {
+  return [...map.entries()];
+}
+
+function deserializeMap(entries = []) {
+  return new Map(Array.isArray(entries) ? entries : []);
+}
+
+function serializeFixedCorpusIndex(index = {}) {
+  return {
+    contractVersion: 'fixed-corpus-index-cache-v1',
+    corpus: index.corpus || [],
+    normalizedCorpus: index.normalizedCorpus || [],
+    titleTokenSets: index.titleTokenSets || [],
+    abstractTokenSets: index.abstractTokenSets || [],
+    combinedTokenSets: index.combinedTokenSets || [],
+    combinedInvertedIndex: serializeMap(index.combinedInvertedIndex),
+    compactTitles: index.compactTitles || [],
+    compactTitleLowers: index.compactTitleLowers || [],
+    stats: {
+      ...(index.stats || {}),
+      titleDf: serializeMap(index.stats?.titleDf),
+      abstractDf: serializeMap(index.stats?.abstractDf),
+      combinedDf: serializeMap(index.stats?.combinedDf)
+    }
+  };
+}
+
+function deserializeFixedCorpusIndex(payload = {}, cache = {}) {
+  return {
+    corpus: payload.corpus || [],
+    normalizedCorpus: payload.normalizedCorpus || [],
+    titleTokenSets: payload.titleTokenSets || [],
+    abstractTokenSets: payload.abstractTokenSets || [],
+    combinedTokenSets: payload.combinedTokenSets || [],
+    combinedInvertedIndex: deserializeMap(payload.combinedInvertedIndex),
+    compactTitles: payload.compactTitles || [],
+    compactTitleLowers: payload.compactTitleLowers || [],
+    stats: {
+      ...(payload.stats || {}),
+      titleDf: deserializeMap(payload.stats?.titleDf),
+      abstractDf: deserializeMap(payload.stats?.abstractDf),
+      combinedDf: deserializeMap(payload.stats?.combinedDf)
+    },
+    cache
+  };
+}
+
+async function fixedCorpusSourceFingerprint(benchmark = {}, options = {}) {
+  const sourcePath = compactText(pickFirst(options.corpusPath, benchmark.sourcePath));
+  if (!sourcePath) return { sourcePath: null, size: null, mtimeMs: null };
+  try {
+    const stat = await fs.stat(sourcePath);
+    return {
+      sourcePath: path.resolve(sourcePath),
+      size: stat.size,
+      mtimeMs: Math.floor(stat.mtimeMs)
+    };
+  } catch {
+    return {
+      sourcePath: path.resolve(sourcePath),
+      size: null,
+      mtimeMs: null
+    };
+  }
+}
+
+async function fixedCorpusCacheKey(benchmark = {}, options = {}) {
+  return stableHash(JSON.stringify({
+    version: 'fixed-corpus-index-cache-v1',
+    tokenizer: 'tokenizeWithoutStopwords-v1',
+    scorer: 'hybrid-bm25-v1',
+    corpusSize: benchmark.corpusSize || asArray(benchmark.corpus).length,
+    source: await fixedCorpusSourceFingerprint(benchmark, options)
+  }), 32);
+}
+
+async function loadOrBuildFixedCorpusIndex(benchmark = {}, options = {}) {
+  const cacheDir = compactText(pickFirst(
+    options.fixedCorpusCacheDir,
+    options.fixed_corpus_cache_dir,
+    process.env.PAPERNEXUS_FIXED_CORPUS_CACHE_DIR
+  ));
+  if (!cacheDir) return buildFixedCorpusIndex(benchmark, options);
+
+  const key = await fixedCorpusCacheKey(benchmark, options);
+  const cachePath = path.join(path.resolve(process.cwd(), cacheDir), `${key}.json`);
+  const cached = await readJson(cachePath, null);
+  if (cached?.contractVersion === 'fixed-corpus-index-cache-v1') {
+    return deserializeFixedCorpusIndex(cached, {
+      mode: 'persistent',
+      hit: true,
+      key,
+      path: cachePath
+    });
+  }
+
+  const built = buildFixedCorpusIndex(benchmark, options);
+  built.cache = {
+    mode: 'persistent',
+    hit: false,
+    key,
+    path: cachePath
+  };
+  await ensureDir(path.dirname(cachePath));
+  await writeJson(cachePath, serializeFixedCorpusIndex(built));
+  return built;
 }
 
 function summarizeFixedCorpusIndex(fixedCorpusIndex = null) {
   if (!fixedCorpusIndex) return null;
   return {
     enabled: true,
-    mode: 'in-memory-per-run',
+    mode: fixedCorpusIndex.cache?.mode || 'in-memory-per-run',
+    cacheHit: Boolean(fixedCorpusIndex.cache?.hit),
+    cacheKey: fixedCorpusIndex.cache?.key || null,
+    cachePath: fixedCorpusIndex.cache?.path || null,
     corpusSize: fixedCorpusIndex.normalizedCorpus.length,
     titleDfTerms: fixedCorpusIndex.stats.titleDf.size,
     abstractDfTerms: fixedCorpusIndex.stats.abstractDf.size,
@@ -2550,76 +2986,161 @@ export async function runRetrievalBenchmark(params = {}) {
   const taskEvaluationMode = String(params.taskEvaluation || params.task_evaluation || 'rules').trim().toLowerCase();
   const startedAt = new Date().toISOString();
   const onProgress = typeof params.onProgress === 'function' ? params.onProgress : null;
+  const artifactRun = await prepareRetrievalBenchmarkArtifacts(params, benchmark, selectedQueries, startedAt);
+  const resumedResultsByKey = await readCompletedRetrievalBenchmarkResults(artifactRun);
+  const completedBeforeRun = resumedResultsByKey.size;
+  const pendingQueries = selectedQueries.filter((queryCase, index) => (
+    !resumedResultsByKey.has(benchmarkQueryKey(queryCase, index))
+  ));
+  const continueOnError = resolveBooleanOption(
+    pickFirst(params.continueOnError, params.continue_on_error),
+    Boolean(artifactRun)
+  );
   const discoveryRequestStateBefore = readDiscoveryRequestSchedulerState();
   const fixedCorpusIndex = evaluationMode === 'fixed-corpus'
-    ? buildFixedCorpusIndex(benchmark, params)
+    ? await loadOrBuildFixedCorpusIndex(benchmark, params)
     : null;
 
-  const results = await runWithConcurrency(
-    selectedQueries,
+  await writeRetrievalBenchmarkCheckpoint(artifactRun, {
+    status: 'running',
+    totalQueries: selectedQueries.length,
+    completedQueries: completedBeforeRun,
+    pendingQueries: pendingQueries.length,
+    failedQueries: 0,
+    resumedFrom: artifactRun?.resume ? artifactRun.runId : null
+  });
+
+  const newResults = await runWithConcurrency(
+    pendingQueries,
     params.benchmarkConcurrency || params.concurrency || 1,
     async (queryCase, index) => {
       const queryStartedAt = Date.now();
+      const selectedIndex = selectedQueries.findIndex((candidate) => candidate === queryCase);
+      const queryKey = benchmarkQueryKey(queryCase, selectedIndex >= 0 ? selectedIndex : index);
+      const officialSlice = classifyOfficialBenchmarkSlice(benchmark, queryCase);
       onProgress?.({
-        completed: index,
+        completed: completedBeforeRun + index,
         total: selectedQueries.length,
         queryId: queryCase.id,
         query: queryCase.query,
         phase: 'running'
       });
-      const discoveryRun = evaluationMode === 'fixed-corpus'
-        ? {
-          runId: null,
-          providers: ['fixed_corpus'],
-          rawCandidateCount: benchmark.corpusSize || asArray(benchmark.corpus).length,
-          candidates: buildFixedCorpusCandidates(benchmark, queryCase, {
+      try {
+        const discoveryRun = evaluationMode === 'fixed-corpus'
+          ? {
+            runId: null,
+            providers: ['fixed_corpus'],
+            rawCandidateCount: benchmark.corpusSize || asArray(benchmark.corpus).length,
+            candidates: buildFixedCorpusCandidates(benchmark, queryCase, {
+              ...params,
+              fixedCorpusIndex
+            }),
+            coverage: null,
+            artifacts: null,
+            queryResults: []
+          }
+          : await runDiscovery(buildDiscoveryParams(queryCase, params));
+        const candidates = discoveryRun.candidates || [];
+        const evaluation = evaluateRetrievalResults(queryCase, candidates, {
+          cutoffs,
+          titleMatchThreshold: params.titleMatchThreshold || params.title_match_threshold
+        });
+        const taskEvaluation = await evaluateBenchmarkTaskCase(queryCase, candidates, {
+          ...params,
+          taskEvaluation: taskEvaluationMode
+        });
+        const queryDurationMs = Date.now() - queryStartedAt;
+        const providerFailures = summarizeDiscoveryFailures(discoveryRun.queryResults || []);
+        const result = {
+          ...evaluation,
+          status: 'completed',
+          queryKey,
+          durationMs: queryDurationMs,
+          evaluationMode,
+          taskType: queryCase.metadata?.taskType || benchmark.profile?.taskType || null,
+          queryType: queryCase.metadata?.queryType || null,
+          querySpecificity: queryCase.metadata?.specificity ?? null,
+          officialSlice,
+          taskEvaluation,
+          discovery: {
+            runId: discoveryRun.runId || null,
+            providerCount: (discoveryRun.providers || []).length,
+            plannedQueryCount: asArray(discoveryRun.plan?.queries).length,
+            providerQueryCount: asArray(discoveryRun.queryResults).length,
+            rawCandidateCount: discoveryRun.rawCandidateCount || candidates.length,
+            mergedPaperCount: candidates.length,
+            providerFailures,
+            citationExpansion: discoveryRun.citationExpansion || null,
+            coverage: discoveryRun.coverage || null,
+            artifacts: discoveryRun.artifacts || null,
+            diagnosticTrace: buildQueryDiagnosticTrace(queryCase, evaluation, discoveryRun, candidates)
+          }
+        };
+        await appendJsonl(artifactRun?.artifacts?.perQueryResultsPath, result);
+        await writeRetrievalBenchmarkCheckpoint(artifactRun, {
+          status: 'running',
+          totalQueries: selectedQueries.length,
+          completedQueries: completedBeforeRun + index + 1,
+          pendingQueries: Math.max(0, pendingQueries.length - index - 1),
+          failedQueries: 0,
+          lastQueryKey: queryKey
+        });
+        onProgress?.({
+          completed: completedBeforeRun + index + 1,
+          total: selectedQueries.length,
+          queryId: queryCase.id,
+          query: queryCase.query,
+          phase: 'completed',
+          firstRelevantRank: evaluation.firstRelevantRank,
+          durationMs: queryDurationMs
+        });
+        return result;
+      } catch (error) {
+        if (!continueOnError) throw error;
+        const queryDurationMs = Date.now() - queryStartedAt;
+        const result = {
+          ...createBenchmarkFailureResult(queryCase, error, {
             ...params,
-            fixedCorpusIndex
+            cutoffs,
+            durationMs: queryDurationMs,
+            evaluationMode,
+            taskType: benchmark.profile?.taskType,
+            officialSlice
           }),
-          coverage: null,
-          artifacts: null
-        }
-        : await runDiscovery(buildDiscoveryParams(queryCase, params));
-      const candidates = discoveryRun.candidates || [];
-      const evaluation = evaluateRetrievalResults(queryCase, candidates, {
-        cutoffs,
-        titleMatchThreshold: params.titleMatchThreshold || params.title_match_threshold
-      });
-      const taskEvaluation = await evaluateBenchmarkTaskCase(queryCase, candidates, {
-        ...params,
-        taskEvaluation: taskEvaluationMode
-      });
-      const queryDurationMs = Date.now() - queryStartedAt;
-      onProgress?.({
-        completed: index + 1,
-        total: selectedQueries.length,
-        queryId: queryCase.id,
-        query: queryCase.query,
-        phase: 'completed',
-        firstRelevantRank: evaluation.firstRelevantRank,
-        durationMs: queryDurationMs
-      });
-      return {
-        ...evaluation,
-        durationMs: queryDurationMs,
-        evaluationMode,
-        taskType: queryCase.metadata?.taskType || benchmark.profile?.taskType || null,
-        taskEvaluation,
-        discovery: {
-          runId: discoveryRun.runId || null,
-          providerCount: (discoveryRun.providers || []).length,
-          plannedQueryCount: asArray(discoveryRun.plan?.queries).length,
-          providerQueryCount: asArray(discoveryRun.queryResults).length,
-          rawCandidateCount: discoveryRun.rawCandidateCount || candidates.length,
-          mergedPaperCount: candidates.length,
-          providerFailures: summarizeDiscoveryFailures(discoveryRun.queryResults || []),
-          citationExpansion: discoveryRun.citationExpansion || null,
-          coverage: discoveryRun.coverage || null,
-          artifacts: discoveryRun.artifacts || null
-        }
-      };
+          queryKey
+        };
+        await appendJsonl(artifactRun?.artifacts?.perQueryResultsPath, result);
+        await appendJsonl(artifactRun?.artifacts?.failuresPath, {
+          runId: artifactRun?.runId || null,
+          queryKey,
+          queryId: queryCase.id || null,
+          query: queryCase.query || '',
+          status: 'failed',
+          error: result.error,
+          category: result.discovery?.providerFailures?.[0]?.category || 'unknown',
+          durationMs: queryDurationMs,
+          updatedAt: new Date().toISOString()
+        });
+        onProgress?.({
+          completed: completedBeforeRun + index + 1,
+          total: selectedQueries.length,
+          queryId: queryCase.id,
+          query: queryCase.query,
+          phase: 'failed',
+          durationMs: queryDurationMs,
+          error: result.error?.message
+        });
+        return result;
+      }
     }
   );
+  const newResultsByKey = new Map(newResults.map((result) => [compactText(result.queryKey || result.id), result]));
+  const results = selectedQueries
+    .map((queryCase, index) => {
+      const key = benchmarkQueryKey(queryCase, index);
+      return newResultsByKey.get(key) || resumedResultsByKey.get(key) || null;
+    })
+    .filter(Boolean);
   const endedAt = new Date().toISOString();
   const discoveryRequestStateAfter = readDiscoveryRequestSchedulerState();
   const discoveryRequestCacheStats = diffDiscoveryRequestStats(discoveryRequestStateAfter, discoveryRequestStateBefore);
@@ -2643,6 +3164,8 @@ export async function runRetrievalBenchmark(params = {}) {
   const fixedCorpusIndexSummary = summarizeFixedCorpusIndex(fixedCorpusIndex);
   const diagnostics = {
     ...summarizeBenchmarkDiagnostics(results),
+    resumedQueries: completedBeforeRun,
+    failedQueries: results.filter((result) => String(result.status || '').toLowerCase() === 'failed').length,
     fixedCorpusIndex: fixedCorpusIndexSummary,
     discoveryRequestCache: {
       enabled: discoveryCacheEnabled,
@@ -2650,9 +3173,13 @@ export async function runRetrievalBenchmark(params = {}) {
       ...discoveryRequestCacheStats
     }
   };
+  const status = diagnostics.failedQueries
+    ? (results.length >= selectedQueries.length ? 'completed_with_failures' : 'partial')
+    : (results.length >= selectedQueries.length ? 'completed' : 'partial');
   const report = {
     contractVersion: 'retrieval-benchmark-v1',
-      generatedAt: endedAt,
+    status,
+    generatedAt: endedAt,
     startedAt,
     durationMs: Date.parse(endedAt) - Date.parse(startedAt),
     benchmark: summarizeBenchmark(benchmark, selectedQueries),
@@ -2673,6 +3200,8 @@ export async function runRetrievalBenchmark(params = {}) {
         : null,
       fixedCorpusScorer: evaluationMode === 'fixed-corpus' ? 'hybrid-bm25-v1' : null,
       fixedCorpusIndexCache: fixedCorpusIndexSummary?.mode || null,
+      fixedCorpusCacheHit: fixedCorpusIndexSummary?.cacheHit ?? null,
+      fixedCorpusCachePath: fixedCorpusIndexSummary?.cachePath || null,
       discoveryCacheEnabled,
       discoveryCacheMode,
       discoveryCacheTtlMs,
@@ -2691,41 +3220,48 @@ export async function runRetrievalBenchmark(params = {}) {
       providerCredentials: summarizeProviderCredentials(params),
       resolveSources: params.resolveSources === true,
       persistDiscoveryRuns: params.persistDiscoveryRuns === true,
-      titleMatchThreshold: Number(params.titleMatchThreshold || params.title_match_threshold || DEFAULT_TITLE_MATCH_THRESHOLD)
+      titleMatchThreshold: Number(params.titleMatchThreshold || params.title_match_threshold || DEFAULT_TITLE_MATCH_THRESHOLD),
+      benchmarkRunId: artifactRun?.runId || null,
+      benchmarkResume: artifactRun?.resume || false,
+      continueOnError
     },
     alignment: benchmarkAlignment(benchmark, { evaluationMode, taskEvaluationMode }),
     metrics: aggregateMetrics(results),
+    officialMetrics: aggregateOfficialBenchmarkMetrics(results, benchmark),
     taskEvaluation: aggregateTaskEvaluationMetrics(results),
     diagnostics,
     results
   };
 
   if (params.outputDir) {
-    report.artifacts = await writeRetrievalBenchmarkArtifacts(params.outputDir, report);
+    report.artifacts = await writeRetrievalBenchmarkArtifacts(params.outputDir, report, {
+      artifacts: artifactRun?.artifacts
+    });
+    await finalizeRetrievalBenchmarkArtifacts(artifactRun, report);
   }
 
   return report;
 }
 
-export async function writeRetrievalBenchmarkArtifacts(outputDir, report = {}) {
-  const absoluteOutputDir = path.resolve(process.cwd(), outputDir);
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const benchmarkName = slugify(report.benchmark?.name || 'retrieval-benchmark');
-  const runDir = path.join(absoluteOutputDir, `${stamp}-${benchmarkName}`);
-  const jsonPath = path.join(runDir, 'report.json');
-  const markdownPath = path.join(runDir, 'report.md');
-  const artifacts = {
-    runDir,
-    jsonPath,
-    markdownPath
-  };
+export async function writeRetrievalBenchmarkArtifacts(outputDir, report = {}, options = {}) {
+  const artifacts = options.artifacts || report.artifacts || (() => {
+    const absoluteOutputDir = path.resolve(process.cwd(), outputDir);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const benchmarkName = slugify(report.benchmark?.name || 'retrieval-benchmark');
+    const runDir = path.join(absoluteOutputDir, `${stamp}-${benchmarkName}`);
+    return {
+      runDir,
+      jsonPath: path.join(runDir, 'report.json'),
+      markdownPath: path.join(runDir, 'report.md')
+    };
+  })();
   const reportWithArtifacts = {
     ...report,
     artifacts
   };
-  await ensureDir(runDir);
-  await writeJson(jsonPath, reportWithArtifacts);
-  await writeText(markdownPath, `${renderRetrievalBenchmarkReport(reportWithArtifacts)}\n`);
+  await ensureDir(artifacts.runDir);
+  await writeJson(artifacts.jsonPath, reportWithArtifacts);
+  await writeText(artifacts.markdownPath, `${renderRetrievalBenchmarkReport(reportWithArtifacts)}\n`);
   return artifacts;
 }
 
@@ -2794,6 +3330,28 @@ export function renderRetrievalBenchmarkReport(report = {}) {
     lines.push('');
   }
 
+  if (report.officialMetrics?.metrics) {
+    lines.push(
+      '## Official Metrics',
+      '',
+      `Protocol: ${report.officialMetrics.protocol || report.officialMetrics.format || 'benchmark official metrics'}`,
+      '',
+      '| Metric | Value |',
+      '|---|---:|'
+    );
+    for (const [key, value] of Object.entries(report.officialMetrics.metrics)) {
+      lines.push(`| ${key} | ${value === null || value === undefined ? 'n/a' : formatMetric(value)} |`);
+    }
+    const counts = report.officialMetrics.queryCounts || {};
+    if (Object.keys(counts).length) {
+      lines.push('', `Query slices: ${Object.entries(counts).map(([key, value]) => `${key}=${value}`).join(', ')}`);
+    }
+    if (report.officialMetrics.note) {
+      lines.push('', report.officialMetrics.note);
+    }
+    lines.push('');
+  }
+
   if (report.taskEvaluation?.evaluatedQueries) {
     lines.push(
       '## Task Evaluation',
@@ -2856,11 +3414,12 @@ export function renderRetrievalBenchmarkReport(report = {}) {
       lines.push('');
     }
     if (Array.isArray(diagnostics.providerFailures) && diagnostics.providerFailures.length) {
-      lines.push('| Provider | Reason | Count |', '|---|---|---:|');
+      lines.push('| Provider | Category | Reason | Count |', '|---|---|---|---:|');
       for (const failure of diagnostics.providerFailures.slice(0, 10)) {
         const provider = String(failure.provider || 'unknown').replace(/\|/g, '\\|');
+        const category = String(failure.category || classifyProviderFailure(failure.reason, failure)).replace(/\|/g, '\\|');
         const reason = truncate(failure.reason || 'provider-failed', 120).replace(/\|/g, '\\|');
-        lines.push(`| ${provider} | ${reason} | ${failure.count || 0} |`);
+        lines.push(`| ${provider} | ${category} | ${reason} | ${failure.count || 0} |`);
       }
       lines.push('');
     }

@@ -19,7 +19,7 @@
     "mcp": "node ./src/cli/index.js mcp"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.17.0"
   },
   "dependencies": {
     "jsonrepair": "^3.13.1",
@@ -30,5 +30,8 @@
   },
   "devDependencies": {
     "vitepress": "^1.6.4"
+  },
+  "overrides": {
+    "cmake-js": "^8.0.0"
   }
 }

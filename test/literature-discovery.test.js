@@ -282,6 +282,70 @@ test('scheduleDiscoveryFetch persists cached responses across scheduler resets',
   }
 });
 
+test('scheduleDiscoveryFetch rejects oversized provider responses before caching', async () => {
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Map([['content-length', '128']]),
+      async text() {
+        return 'x'.repeat(128);
+      }
+    });
+
+    await assert.rejects(
+      scheduleDiscoveryFetch('https://api.openalex.org/works?search=oversized', {
+        timeoutMs: 500
+      }, {}, {
+        maxResponseBytes: 64
+      }),
+      /response-too-large/
+    );
+
+    const state = readDiscoveryRequestSchedulerState();
+    assert.equal(state.inFlightCount, 0);
+    assert.equal(state.requestStats.networkErrors, 1);
+    assert.equal(state.requestStats.cacheWrites, 0);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scheduleDiscoveryFetch caps externally configured provider concurrency', async () => {
+  let active = 0;
+  let maxActive = 0;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return createJsonResponse({ ok: true });
+      } finally {
+        active -= 1;
+      }
+    };
+
+    await Promise.all(Array.from({ length: 20 }, (_, index) => (
+      scheduleDiscoveryFetch(`https://example.org/provider-cap?i=${index}`, {
+        timeoutMs: 500,
+        providerRequestMaxConcurrent: 999
+      }, {}, {
+        provider: 'provider-cap'
+      })
+    )));
+
+    assert.equal(maxActive, 16);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('scheduleDiscoveryFetch opens a provider circuit breaker after repeated retryable failures', async () => {
   let calls = 0;
 
@@ -419,6 +483,28 @@ test('buildLiteratureDiscoveryPlan deep plans add discovery-neighborhood expansi
     query.family === 'related_work_expansion'
     && query.query === 'generalized category discovery catastrophic forgetting'
   )));
+});
+
+test('buildLiteratureDiscoveryPlan decomposes clue-style live provider queries', () => {
+  const plan = buildLiteratureDiscoveryPlan({
+    topic: 'Find the paper published at NeurIPS 2024 that uses retrieval augmented generation with graph neural networks for scientific literature review and cites benchmark datasets.',
+    depth: 'default',
+    queryDecomposition: true
+  });
+
+  const families = new Set(plan.queries.map((query) => query.family));
+  assert.ok(families.has('clue_entity'));
+  assert.ok(families.has('clue_venue_year'));
+  assert.ok(families.has('clue_method_task'));
+  assert.ok(families.has('clue_citation'));
+  assert.ok(plan.queries.some((query) => (
+    query.family === 'clue_venue_year'
+    && query.decomposition.kind === 'venue_year'
+    && query.decomposition.venues.includes('NeurIPS')
+    && query.decomposition.years.includes('2024')
+    && query.providerAllowList.includes('openalex')
+  )));
+  assert.ok(plan.queries.every((query) => query.query.length <= 220));
 });
 
 test('buildLiteratureDiscoveryRunPlan inserts LLM-planned orthogonal queries before deterministic expansion', async () => {
@@ -1699,6 +1785,50 @@ test('resolveDiscoverySources falls back to PDF when Markdown is unavailable', a
     assert.ok(source.localPdfPath.endsWith('.pdf'));
     assert.deepEqual(requestedPaths, ['/pdf-fallback.md', '/pdf-fallback.pdf']);
     assert.ok(source.resolutionAttempts.some((attempt) => attempt.sourceKind === 'markdown' && attempt.status === 'failed'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('resolveDiscoverySources rejects oversized downloads without failing the run', async () => {
+  const rootPath = await createTempCorpus();
+
+  try {
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('.md')) {
+        return createMarkdownResponse('# Oversized Markdown\n\n## Abstract\n\nThis response should exceed the configured byte limit before it is accepted as a paper source.');
+      }
+      if (url.pathname.endsWith('.pdf')) {
+        return createPdfResponse();
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const result = await resolveDiscoverySources({
+      rootPath,
+      maxDownloads: 1,
+      maxMarkdownDownloadBytes: 96,
+      maxPdfDownloadBytes: 96,
+      candidates: [
+        createDiscoveryCandidate({
+          provider: 'openalex',
+          title: 'Oversized Download Paper',
+          identifiers: { doi: '10.7777/oversized.download' },
+          markdownUrl: 'https://example.org/oversized.md',
+          pdfUrl: 'https://example.org/oversized.pdf'
+        })
+      ]
+    });
+
+    const source = result.candidates[0].source;
+    assert.equal(source.resolutionStatus, 'metadata_only');
+    assert.equal(source.downloadStatus, 'failed');
+    assert.match(source.downloadError, /download-too-large/);
+    assert.equal(source.resolutionAttempts.length, 2);
+    assert.ok(source.resolutionAttempts.every((attempt) => attempt.status === 'failed'));
+    assert.ok(source.resolutionAttempts.every((attempt) => /download-too-large/.test(attempt.detail)));
   } finally {
     globalThis.fetch = originalFetch;
     await fs.rm(rootPath, { recursive: true, force: true });

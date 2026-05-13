@@ -281,6 +281,10 @@ test('graph-v2 migration builds a shadow DB, verifies it, cutovers, and rolls ba
 
     const verification = await verifyGraphV2(tempRoot);
     assert.equal(verification.report.ok, true);
+    assert.equal(verification.report.validation.schemaVersion, 'graph-v2-kuzu-v1');
+    assert.ok(verification.report.validation.diskBytes > 0);
+    assert.ok(verification.report.validation.rssBytes > 0);
+    assert.ok(verification.report.validation.summaryLatencyMs >= 0);
 
     const cutover = await cutoverGraphV2(tempRoot, {
       skipVerify: true

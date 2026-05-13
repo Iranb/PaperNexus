@@ -1976,6 +1976,7 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
 }
 
 async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources, options = {}) {
+  options = withStage2LlmBatchLedgerDefaults(rootPath, null, materializedSources, options);
   const records = materializedSources.filter((record) => record.semanticPaper);
   const useChunkPipeline = shouldUseStage2ChunkLlmPipeline(options);
   const chunkWorkRecords = records.filter((record) => (
@@ -2135,6 +2136,87 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
     applySemanticAdmissionPolicy(record.semanticPaper);
     await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
   }
+}
+
+function getExplicitLlmBatchLedgerDir(options = {}) {
+  return firstDefinedValue(
+    options.llmBatchLedgerDir,
+    options.llm_batch_ledger_dir,
+    options.batchLedgerDir,
+    options.batch_ledger_dir
+  );
+}
+
+function getExplicitLlmBatchRunId(options = {}) {
+  return firstDefinedValue(
+    options.llmBatchRunId,
+    options.llm_batch_run_id,
+    options.batchRunId,
+    options.batch_run_id
+  );
+}
+
+function getExplicitLlmBatchResume(options = {}) {
+  return firstDefinedValue(
+    options.llmBatchResume,
+    options.llm_batch_resume,
+    options.batchResume,
+    options.batch_resume
+  );
+}
+
+function createStage2LedgerSourceSignature(manifest = null, records = []) {
+  const manifestSources = Array.isArray(manifest?.sources) ? manifest.sources : [];
+  const sources = manifestSources.length
+    ? manifestSources.map((entry) => ({
+        sourceKey: entry.sourceKey || '',
+        fingerprint: entry.fingerprint || entry.sourceFingerprint || '',
+        snapshotStateSignature: entry.snapshotStateSignature || '',
+        activeInGraph: entry.activeInGraph !== false
+      }))
+    : (records || []).map((record) => ({
+        sourceKey: record?.sourceState?.sourceKey || record?.sourceKey || '',
+        fingerprint: record?.sourceState?.fingerprint || record?.fingerprint || '',
+        snapshotStateSignature: record?.sourceState?.snapshotStateSignature || record?.snapshotStateSignature || '',
+        activeInGraph: record?.sourceState?.activeInGraph !== false
+      }));
+
+  return sources
+    .filter((entry) => entry.sourceKey)
+    .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
+}
+
+function createStage2LlmBatchRunId(rootPath, manifest = null, records = [], options = {}) {
+  const explicitRunId = String(getExplicitLlmBatchRunId(options) || '').trim();
+  if (explicitRunId) return explicitRunId;
+
+  if (manifest) {
+    return `stage2-${createStage2JobToken(manifest, options)}`;
+  }
+
+  return `stage2-${stableHash(JSON.stringify({
+    version: 1,
+    rootPath: path.resolve(rootPath),
+    sources: createStage2LedgerSourceSignature(null, records),
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: createRelationConfigSignature(options),
+    chunkPipelineConfigSignature: createChunkPipelineConfigSignature(options),
+    promptVersions: createLlmPromptVersions()
+  }), 20)}`;
+}
+
+function withStage2LlmBatchLedgerDefaults(rootPath, manifest = null, records = [], options = {}) {
+  const runId = createStage2LlmBatchRunId(rootPath, manifest, records, options);
+  const explicitDir = String(getExplicitLlmBatchLedgerDir(options) || '').trim();
+  const explicitResume = getExplicitLlmBatchResume(options);
+  const defaultResume = !options.force && options.continueMode !== false;
+
+  return {
+    ...options,
+    llmBatchLedgerDir: explicitDir || path.join(getCorpusPaths(rootPath).llmJobsDir, 'stage2-ledger', runId),
+    llmBatchRunId: runId,
+    llmBatchResume: explicitResume === undefined ? defaultResume : !isDisabledFlag(explicitResume)
+  };
 }
 
 async function ensureParsedPaperForLlmRecord(record) {
@@ -3042,6 +3124,7 @@ function createStage2ManifestFromRecords(rootPath, manifest, records, options = 
 }
 
 async function runStage2LlmOptimization(rootPath, manifest, records, options = {}, existingJobState = null) {
+  options = withStage2LlmBatchLedgerDefaults(rootPath, manifest, records, options);
   const quiet = Boolean(options.quiet);
   const scopedToChangedSources = normalizeChangedSourceKeySet(options.changedSourceKeys).size > 0;
   const semanticExtractionPlan = resolveSemanticExtractionPlan(options);

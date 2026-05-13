@@ -37,6 +37,22 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+async function pathSizeBytes(targetPath) {
+  try {
+    const stat = await fs.stat(targetPath);
+    if (stat.isFile()) return stat.size;
+    if (!stat.isDirectory()) return 0;
+    const entries = await fs.readdir(targetPath, { withFileTypes: true });
+    let total = 0;
+    for (const entry of entries) {
+      total += await pathSizeBytes(path.join(targetPath, entry.name));
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
 export function getGraphV2Paths(rootPath) {
   const corpusDir = path.join(path.resolve(rootPath), '.papernexus');
   const migrationDir = path.join(corpusDir, 'graph-v2-migration');
@@ -406,7 +422,18 @@ export async function verifyGraphV2(rootPath, options = {}) {
   });
 
   const corpus = await loadCorpusLite(rootPath);
+  const summaryStartedAt = Date.now();
   const graphV2 = await loadKuzuV2Summary(graphV2Path);
+  const summaryLatencyMs = Date.now() - summaryStartedAt;
+  const validation = {
+    graphV2Path,
+    schemaVersion: graphV2.schemaVersion || null,
+    summaryLatencyMs,
+    diskBytes: await pathSizeBytes(graphV2Path),
+    rssBytes: process.memoryUsage().rss,
+    manifestToken,
+    checkedAt: nowIso()
+  };
   const expected = {
     nodeCount: meta?.nodeCount ?? corpus.graph.nodeCount,
     relationshipCount: meta?.relationshipCount ?? corpus.graph.relationshipCount,
@@ -432,6 +459,7 @@ export async function verifyGraphV2(rootPath, options = {}) {
     ok,
     expected,
     graphV2,
+    validation,
     warnings
   };
   await writeRunCheckpoint(rootPath, runId, 'verify/report', {

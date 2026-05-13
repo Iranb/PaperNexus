@@ -9,6 +9,9 @@ const DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS = 0;
 const DEFAULT_MAX_CONCURRENT = 4;
 const DEFAULT_SEMANTIC_SCHOLAR_MAX_CONCURRENT = 1;
+const MAX_PROVIDER_REQUEST_CONCURRENT = 16;
+const DEFAULT_RESPONSE_BODY_LIMIT_BYTES = 16 * 1024 * 1024;
+const MAX_RESPONSE_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 const DISK_CACHE_VERSION = 1;
 const RETRYABLE_FAILURE_STATUSES = new Set([0, 429, 500, 502, 503, 504]);
 
@@ -82,6 +85,12 @@ function toPositiveInteger(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.max(1, Math.floor(parsed));
+}
+
+function toBoundedPositiveInteger(value, fallback, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(parsed)));
 }
 
 function resolvePathWithHome(value = '') {
@@ -159,24 +168,48 @@ function resolveProviderDelayMs(provider, config = {}, headers = {}) {
 
 function resolveProviderMaxConcurrent(provider, config = {}) {
   if (provider === 'semantic_scholar') {
-    return toPositiveInteger(
+    return toBoundedPositiveInteger(
       config.semanticScholarMaxConcurrent
       ?? config.semantic_scholar_max_concurrent,
-      DEFAULT_SEMANTIC_SCHOLAR_MAX_CONCURRENT
+      DEFAULT_SEMANTIC_SCHOLAR_MAX_CONCURRENT,
+      MAX_PROVIDER_REQUEST_CONCURRENT
     );
   }
 
   if (provider === 'openalex') {
-    return toPositiveInteger(
+    return toBoundedPositiveInteger(
       config.openAlexMaxConcurrent
       ?? config.openalexMaxConcurrent
       ?? config.openalex_max_concurrent
       ?? process.env.PAPERNEXUS_OPENALEX_MAX_CONCURRENT,
-      DEFAULT_MAX_CONCURRENT
+      DEFAULT_MAX_CONCURRENT,
+      MAX_PROVIDER_REQUEST_CONCURRENT
     );
   }
 
-  return toPositiveInteger(config.providerRequestMaxConcurrent, DEFAULT_MAX_CONCURRENT);
+  return toBoundedPositiveInteger(
+    config.providerRequestMaxConcurrent,
+    DEFAULT_MAX_CONCURRENT,
+    MAX_PROVIDER_REQUEST_CONCURRENT
+  );
+}
+
+function resolveResponseBodyLimitBytes(config = {}, options = {}) {
+  return toBoundedPositiveInteger(
+    options.maxResponseBytes
+    ?? options.max_response_bytes
+    ?? config.discoveryRequestMaxResponseBytes
+    ?? config.discovery_request_max_response_bytes
+    ?? process.env.PAPERNEXUS_DISCOVERY_REQUEST_MAX_RESPONSE_BYTES,
+    DEFAULT_RESPONSE_BODY_LIMIT_BYTES,
+    MAX_RESPONSE_BODY_LIMIT_BYTES
+  );
+}
+
+function createResponseBodyLimitError(maxBytes) {
+  const error = new Error(`response-too-large: response exceeds the configured limit of ${maxBytes} bytes`);
+  error.name = 'ResponseTooLargeError';
+  return error;
 }
 
 function resolveCacheTtlMs(provider, config = {}, options = {}) {
@@ -369,16 +402,58 @@ function createHeadersFacade(entries = []) {
   };
 }
 
-async function snapshotResponse(response) {
-  let body = Buffer.alloc(0);
+async function readLimitedSnapshotBody(response, maxBytes) {
+  const contentLength = Number(getHeaderValue(response.headers, 'content-length') || 0);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw createResponseBodyLimitError(maxBytes);
+  }
+
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          throw createResponseBodyLimitError(maxBytes);
+        }
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      try {
+        await reader.cancel?.();
+      } catch {}
+      throw error;
+    }
+    return Buffer.concat(chunks);
+  }
+
   if (typeof response.arrayBuffer === 'function') {
     const arrayBuffer = await response.arrayBuffer();
-    body = Buffer.from(arrayBuffer);
-  } else if (typeof response.text === 'function') {
-    body = Buffer.from(await response.text());
-  } else if (typeof response.json === 'function') {
-    body = Buffer.from(JSON.stringify(await response.json()));
+    const body = Buffer.from(arrayBuffer);
+    if (body.length > maxBytes) throw createResponseBodyLimitError(maxBytes);
+    return body;
   }
+  if (typeof response.text === 'function') {
+    const body = Buffer.from(await response.text());
+    if (body.length > maxBytes) throw createResponseBodyLimitError(maxBytes);
+    return body;
+  }
+  if (typeof response.json === 'function') {
+    const body = Buffer.from(JSON.stringify(await response.json()));
+    if (body.length > maxBytes) throw createResponseBodyLimitError(maxBytes);
+    return body;
+  }
+
+  return Buffer.alloc(0);
+}
+
+async function snapshotResponse(response, options = {}) {
+  const body = await readLimitedSnapshotBody(response, options.maxBytes || DEFAULT_RESPONSE_BODY_LIMIT_BYTES);
 
   return {
     ok: Boolean(response.ok),
@@ -632,7 +707,9 @@ export async function scheduleDiscoveryFetch(input, config = {}, headers = {}, o
       await waitForProviderStart(limiter, delayMs);
       incrementRequestStat(provider, 'networkRequests');
       const response = await runRawFetch(input, config, headers);
-      const snapshot = await snapshotResponse(response);
+      const snapshot = await snapshotResponse(response, {
+        maxBytes: resolveResponseBodyLimitBytes(config, options)
+      });
       if (snapshot.ok) {
         recordProviderSuccess(provider);
       } else if (isRetryableFailureSnapshot(snapshot)) {

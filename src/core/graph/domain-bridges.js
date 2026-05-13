@@ -23,6 +23,15 @@ import {
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from './schema.js';
 
 const BRIDGE_CONTRACT_VERSION = 'idea-catalyst-bridge-query-v1';
+const MAX_BRIDGE_QUERY_LIMIT = 50;
+
+function boundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const integer = Math.floor(number);
+  if (integer < min) return fallback;
+  return Math.min(integer, max);
+}
 
 function createRelationship(sourceId, targetId, type, properties = {}) {
   return {
@@ -498,7 +507,7 @@ function buildMechanismSupportContract(graph, mechanism) {
 
 export function queryCrossDomainBridges(graph, params = {}) {
   const targetDomain = normalizeFieldOfStudy(params.targetDomain);
-  const limit = Math.max(1, Number(params.limit || 8));
+  const limit = boundedInteger(params.limit, 8, { max: MAX_BRIDGE_QUERY_LIMIT });
   const agnosticChallenges = (Array.isArray(params.agnosticChallenges) ? params.agnosticChallenges : [])
     .map((challenge) => String(challenge || '').trim())
     .filter(Boolean);

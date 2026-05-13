@@ -42,6 +42,10 @@ const DOWNLOAD_STATUS = Object.freeze({
   FAILED: 'failed',
   NOT_PDF: 'not_pdf'
 });
+const MAX_DISCOVERY_DOWNLOAD_ATTEMPTS = 50;
+const DEFAULT_MARKDOWN_DOWNLOAD_LIMIT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_PDF_DOWNLOAD_LIMIT_BYTES = 128 * 1024 * 1024;
+const MAX_DISCOVERY_DOWNLOAD_LIMIT_BYTES = 256 * 1024 * 1024;
 
 export const DISCOVERY_FULL_TEXT_STATUSES = Object.freeze(Object.values(FULL_TEXT_STATUS));
 export const MAX_DISCOVERY_DOWNLOAD_THREADS = 4;
@@ -50,6 +54,42 @@ function toPositiveInteger(value, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.max(1, Math.floor(parsed));
+}
+
+function toBoundedNonNegativeInteger(value, fallback, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.min(max, Math.floor(parsed));
+}
+
+function toBoundedPositiveInteger(value, fallback, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(parsed)));
+}
+
+function resolveMaxDownloadBytes(options = {}, kind = 'pdf') {
+  const fallback = kind === 'markdown'
+    ? DEFAULT_MARKDOWN_DOWNLOAD_LIMIT_BYTES
+    : DEFAULT_PDF_DOWNLOAD_LIMIT_BYTES;
+  const raw = kind === 'markdown'
+    ? (
+        options.maxMarkdownDownloadBytes
+        ?? options.max_markdown_download_bytes
+        ?? options.maxDownloadBytes
+        ?? options.max_download_bytes
+      )
+    : (
+        options.maxPdfDownloadBytes
+        ?? options.max_pdf_download_bytes
+        ?? options.maxDownloadBytes
+        ?? options.max_download_bytes
+      );
+  return toBoundedPositiveInteger(raw, fallback, MAX_DISCOVERY_DOWNLOAD_LIMIT_BYTES);
+}
+
+function createDownloadLimitError(maxBytes) {
+  return new Error(`download-too-large: response exceeds the configured limit of ${maxBytes} bytes`);
 }
 
 function resolveDownloadConcurrency(params = {}) {
@@ -248,6 +288,52 @@ async function fetchWithTimeout(url, options = {}) {
   }
 }
 
+async function readLimitedResponseBuffer(response, maxBytes, fallbackReader = 'arrayBuffer') {
+  const contentLength = Number(response.headers?.get?.('content-length') || 0);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw createDownloadLimitError(maxBytes);
+  }
+
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          throw createDownloadLimitError(maxBytes);
+        }
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      try {
+        await reader.cancel?.();
+      } catch {}
+      throw error;
+    }
+    return Buffer.concat(chunks);
+  }
+
+  if (fallbackReader === 'text' && typeof response.text === 'function') {
+    const text = await response.text();
+    const buffer = Buffer.from(text, 'utf8');
+    if (buffer.length > maxBytes) throw createDownloadLimitError(maxBytes);
+    return buffer;
+  }
+
+  if (typeof response.arrayBuffer === 'function') {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > maxBytes) throw createDownloadLimitError(maxBytes);
+    return buffer;
+  }
+
+  throw new Error('download-failed: response body is not readable');
+}
+
 function formatFetchFailure(error) {
   const message = String(error?.message || error || 'fetch failed').replace(/\s+/g, ' ').trim();
   return `fetch-failed: ${message || 'fetch failed'}`;
@@ -295,7 +381,13 @@ async function downloadMarkdown(url, outputPath, options = {}) {
       : `http-${response.status}`;
     return { ok: false, reason };
   }
-  const text = await response.text();
+  let buffer;
+  try {
+    buffer = await readLimitedResponseBuffer(response, resolveMaxDownloadBytes(options, 'markdown'), 'text');
+  } catch (error) {
+    return { ok: false, reason: formatFetchFailure(error) };
+  }
+  const text = buffer.toString('utf8');
   const validation = validateMarkdownText(text);
   if (!validation.valid) {
     return { ok: false, reason: validation.reason };
@@ -322,7 +414,12 @@ async function downloadPdf(url, outputPath, options = {}) {
       : `http-${response.status}`;
     return { ok: false, reason };
   }
-  const buffer = Buffer.from(await response.arrayBuffer());
+  let buffer;
+  try {
+    buffer = await readLimitedResponseBuffer(response, resolveMaxDownloadBytes(options, 'pdf'), 'arrayBuffer');
+  } catch (error) {
+    return { ok: false, reason: formatFetchFailure(error) };
+  }
   const validation = validatePdfBuffer(buffer);
   if (!validation.valid) {
     return { ok: false, reason: validation.reason };
@@ -538,7 +635,11 @@ export async function resolveDiscoverySources(params = {}) {
   const rootPath = params.rootPath;
   if (!rootPath) throw new Error('rootPath is required to resolve discovery sources.');
   const candidates = Array.isArray(params.candidates) ? params.candidates : [];
-  const maxDownloads = Math.max(0, Math.floor(Number(params.maxDownloads ?? params.maxResolutionAttempts ?? 12)));
+  const maxDownloads = toBoundedNonNegativeInteger(
+    params.maxDownloads ?? params.maxResolutionAttempts ?? 12,
+    12,
+    MAX_DISCOVERY_DOWNLOAD_ATTEMPTS
+  );
   const allowDownloads = params.allowDownloads !== false;
   const downloadConcurrency = resolveDownloadConcurrency(params);
   const pdfStagingRoot = params.pdfStagingRoot || params.pdf_staging_root || params.stagingRoot || path.join(rootPath, '.papernexus', 'discovery', 'staging', 'pdf');

@@ -61,6 +61,7 @@ Raw `/api/*` route usage is intentionally de-emphasized for live automation beca
 
 ## Read Next
 
+- [MCP And Skill Contract Guardrails](/interfaces/mcp-skill-contracts)
 - [Remote Import And Skills](/interfaces/remote-import-and-skills)
 - [Generated MCP Tool Reference](/reference/generated/mcp-tools)
 - [Generated HTTP Serve Reference](/reference/generated/http-serve)

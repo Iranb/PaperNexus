@@ -128,6 +128,7 @@ test('custom retrieval benchmark runs discovery and computes macro metrics', asy
     assert.equal(report.results[0].firstRelevantRank, 2);
     assert.equal(report.results[1].firstRelevantRank, 1);
     assert.equal(report.results[0].discovery.providerFailures[0].provider, 'semantic_scholar');
+    assert.equal(report.results[0].discovery.providerFailures[0].category, 'network');
     assert.equal(report.diagnostics.evaluatedQueries, 2);
     assert.equal(report.diagnostics.zeroMatchQueries, 0);
     assert.equal(report.diagnostics.candidatePoolRecall, 1);
@@ -198,6 +199,37 @@ test('benchmark credential preflight reports provider keys without leaking secre
       process.env.IEEE_XPLORE_API_KEY = previousIeee;
     }
   }
+});
+
+test('live retrieval benchmark passes query decomposition control to discovery', async () => {
+  const report = await runRetrievalBenchmark({
+    benchmark: {
+      name: 'query-decomposition-pass-through',
+      format: 'custom',
+      queries: [{
+        id: 'q1',
+        query: 'Find the NeurIPS 2024 paper using graph neural networks for retrieval augmented literature review.',
+        relevant: [{ title: 'Graph Neural Retrieval for Literature Review' }]
+      }]
+    },
+    queryDecomposition: true,
+    cutoffs: [1],
+    runDiscovery: async (params) => {
+      assert.equal(params.queryDecomposition, true);
+      return {
+        runId: 'run-q1',
+        providers: ['openalex'],
+        plan: { queries: [] },
+        queryResults: [],
+        rawCandidateCount: 1,
+        candidates: [
+          { title: 'Graph Neural Retrieval for Literature Review' }
+        ]
+      };
+    }
+  });
+
+  assert.equal(report.metrics['hit@1'], 1);
 });
 
 test('benchmark diagnostics record discovery request cache hit and miss stats', async () => {
@@ -1173,6 +1205,155 @@ test('fixed-corpus evaluation ranks benchmark corpus without live providers', as
   assert.equal(report.diagnostics.fixedCorpusIndex.corpusSize, 2);
 });
 
+test('benchmark artifacts checkpoint per-query results and resume completed queries', async () => {
+  const tempDir = await createTempDir();
+  const benchmark = {
+    name: 'resume-artifacts',
+    format: 'custom',
+    queryCount: 2,
+    queries: [
+      {
+        id: 'q1',
+        query: 'graph benchmark resume',
+        relevant: [{ title: 'Graph Benchmark Resume' }]
+      },
+      {
+        id: 'q2',
+        query: 'llm batch checkpoint',
+        relevant: [{ title: 'LLM Batch Checkpoint' }]
+      }
+    ]
+  };
+  const calls = [];
+  const runDiscovery = async ({ topic }) => {
+    calls.push(topic);
+    return {
+      providers: ['mock'],
+      queryResults: [{ provider: 'mock', query: topic, ok: true, count: 1 }],
+      candidates: [{ title: topic.includes('graph') ? 'Graph Benchmark Resume' : 'LLM Batch Checkpoint' }]
+    };
+  };
+
+  try {
+    await runRetrievalBenchmark({
+      benchmark,
+      benchmarkLimit: 1,
+      runId: 'resume-check',
+      outputDir: tempDir,
+      runDiscovery,
+      cutoffs: [1]
+    });
+    assert.deepEqual(calls, ['graph benchmark resume']);
+
+    calls.length = 0;
+    const report = await runRetrievalBenchmark({
+      benchmark,
+      runId: 'resume-check',
+      resume: true,
+      outputDir: tempDir,
+      runDiscovery,
+      cutoffs: [1]
+    });
+
+    assert.deepEqual(calls, ['llm batch checkpoint']);
+    assert.equal(report.diagnostics.resumedQueries, 1);
+    assert.equal(report.results.length, 2);
+    assert.equal(report.metrics['recall@1'], 1);
+    assert.equal(report.artifacts.runId, 'resume-check');
+
+    const manifest = JSON.parse(await fs.readFile(path.join(report.artifacts.runDir, 'run-manifest.json'), 'utf8'));
+    const checkpoint = JSON.parse(await fs.readFile(path.join(report.artifacts.runDir, 'checkpoint.json'), 'utf8'));
+    const perQuery = await fs.readFile(path.join(report.artifacts.runDir, 'per-query-results.jsonl'), 'utf8');
+    assert.equal(manifest.status, 'completed');
+    assert.equal(checkpoint.completedQueries, 2);
+    assert.equal(perQuery.trim().split('\n').length, 2);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('LitSearch official slice metrics report broad and specific recall', async () => {
+  const report = await runRetrievalBenchmark({
+    benchmark: {
+      name: 'litsearch-slices',
+      format: 'litsearch',
+      corpus: [
+        { id: 'd1', title: 'General graph retrieval survey', abstract: 'Broad overview.' },
+        { id: 'd2', title: 'Specific checkpointed batch parsing', abstract: 'Focused method.' }
+      ],
+      corpusSize: 2,
+      queryCount: 2,
+      queries: [
+        {
+          id: 'broad-1',
+          query: 'general graph retrieval survey',
+          metadata: { benchmarkFormat: 'litsearch', queryType: 'broad' },
+          relevant: [{ id: 'd1', title: 'General graph retrieval survey' }]
+        },
+        {
+          id: 'specific-1',
+          query: 'specific checkpointed batch parsing',
+          metadata: { benchmarkFormat: 'litsearch', queryType: 'specific' },
+          relevant: [{ id: 'd2', title: 'Specific checkpointed batch parsing' }]
+        }
+      ]
+    },
+    evaluationMode: 'fixed-corpus',
+    cutoffs: [5, 20]
+  });
+
+  assert.equal(report.officialMetrics.format, 'litsearch');
+  assert.equal(report.officialMetrics.queryCounts.broad, 1);
+  assert.equal(report.officialMetrics.queryCounts.specific, 1);
+  assert.equal(report.officialMetrics.metrics['broad_recall@20'], 1);
+  assert.equal(report.officialMetrics.metrics['specific_recall@5'], 1);
+  assert.equal(report.officialMetrics.metrics['specific_recall@20'], 1);
+});
+
+test('fixed-corpus evaluation can reuse a persistent index cache', async () => {
+  const tempDir = await createTempDir();
+  const cacheDir = path.join(tempDir, 'fixed-cache');
+  const benchmark = {
+    name: 'fixed-cache',
+    format: 'custom',
+    sourcePath: path.join(tempDir, 'corpus.jsonl'),
+    corpus: [
+      { id: 'd1', title: 'Cached corpus ranking', abstract: 'Cache test.' }
+    ],
+    corpusSize: 1,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'cached corpus ranking',
+      relevant: [{ id: 'd1', title: 'Cached corpus ranking' }]
+    }]
+  };
+
+  try {
+    await fs.writeFile(benchmark.sourcePath, `${JSON.stringify(benchmark.corpus[0])}\n`);
+    const first = await runRetrievalBenchmark({
+      benchmark,
+      evaluationMode: 'fixed-corpus',
+      fixedCorpusCacheDir: cacheDir,
+      cutoffs: [1]
+    });
+    const second = await runRetrievalBenchmark({
+      benchmark,
+      evaluationMode: 'fixed-corpus',
+      fixedCorpusCacheDir: cacheDir,
+      cutoffs: [1]
+    });
+
+    assert.equal(first.diagnostics.fixedCorpusIndex.mode, 'persistent');
+    assert.equal(first.diagnostics.fixedCorpusIndex.cacheHit, false);
+    assert.equal(second.diagnostics.fixedCorpusIndex.mode, 'persistent');
+    assert.equal(second.diagnostics.fixedCorpusIndex.cacheHit, true);
+    assert.equal(second.metrics['recall@1'], 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('benchmark report renders concise markdown summary', () => {
   const markdown = renderRetrievalBenchmarkReport({
     generatedAt: '2026-05-10T00:00:00.000Z',
@@ -1282,5 +1463,5 @@ test('benchmark report renders concise markdown summary', () => {
   assert.match(markdown, /\| openalex \| 4 \| 4 \| 3 \| 1 \| 0 \| 0 \| 0 \|/);
   assert.match(markdown, /Missed gold papers: 1/);
   assert.match(markdown, /\| weak_title_overlap \| 1 \| Gold Paper \| Near Candidate \|/);
-  assert.match(markdown, /\| openalex \| timeout \| 1 \|/);
+  assert.match(markdown, /\| openalex \| network \| timeout \| 1 \|/);
 });

@@ -4,6 +4,18 @@ import { normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
 import { buildBrainstormCommunityContext, deriveDomainCommunityProfile } from './brainstorm-communities.js';
 import { scoreTokenOverlap, tokenizeWithoutStopwords, truncate, jaccardSimilarity, unique } from '../../lib/utils.js';
 
+const MAX_SEARCH_RESULT_LIMIT = 50;
+const MAX_IMPACT_DEPTH = 8;
+const MAX_BRAINSTORM_HOPS = 4;
+
+function boundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const integer = Math.floor(number);
+  if (integer < min) return fallback;
+  return Math.min(integer, max);
+}
+
 function pushToMap(map, key, value) {
   if (!map.has(key)) map.set(key, []);
   map.get(key).push(value);
@@ -178,7 +190,7 @@ function scoreNode(node, queryTokens, queryText) {
 }
 
 export function searchGraph(graph, query, options = {}) {
-  const limit = Number(options.limit || 5);
+  const limit = boundedInteger(options.limit, 5, { max: MAX_SEARCH_RESULT_LIMIT });
   const queryText = String(query || '').trim().toLowerCase();
   const queryTokens = tokenizeWithoutStopwords(queryText);
   const allowedLayers = normalizeLayerFilter(options.layers);
@@ -315,7 +327,7 @@ function riskFromCount(count) {
 
 export function buildImpact(graph, query, options = {}) {
   const direction = options.direction || 'upstream';
-  const maxDepth = Number(options.maxDepth || 3);
+  const maxDepth = boundedInteger(options.maxDepth, 3, { max: MAX_IMPACT_DEPTH });
   const relationTypes = new Set(options.relationTypes?.length ? options.relationTypes : IMPACT_RELATION_TYPES);
   const allowedLayers = normalizeLayerFilter(options.layers);
   const layerMode = options.layerMode || 'any';
@@ -886,7 +898,7 @@ function buildCommunityLimitationIdea(graph, bridge, currentMethodIds) {
 }
 
 function traverseNeighborhood(graph, relationIndex, seedNodes, options = {}) {
-  const maxHops = Number(options.maxHops || 2);
+  const maxHops = boundedInteger(options.maxHops, 2, { max: MAX_BRAINSTORM_HOPS });
   const allowedLayers = normalizeLayerFilter(options.layers);
   const layerMode = options.layerMode || 'any';
   const visited = new Set(seedNodes.map((node) => node.id));
@@ -925,6 +937,7 @@ function traverseNeighborhood(graph, relationIndex, seedNodes, options = {}) {
 }
 
 function buildDivergence(graph, query, options = {}) {
+  const maxHops = boundedInteger(options.maxHops, 2, { max: MAX_BRAINSTORM_HOPS });
   const session = options.session || createBrainstormSession(graph, query, options);
   const { relationIndex, allowedLayers, seedPapers, seedNodes } = session;
 
@@ -960,7 +973,7 @@ function buildDivergence(graph, query, options = {}) {
         domainBoundaryCounts: {},
         topBridgeDomains: []
       },
-      exploredHops: Number(options.maxHops || 2)
+      exploredHops: maxHops
     };
   }
 
@@ -1213,7 +1226,7 @@ function buildDivergence(graph, query, options = {}) {
       }
     },
     domainProfile,
-    exploredHops: Number(options.maxHops || 2)
+    exploredHops: maxHops
   };
 }
 
@@ -1249,9 +1262,15 @@ function buildConvergedDirections(divergence, ideas, limit = 5) {
 
 export function buildBrainstorm(graph, query, options = {}) {
   const mode = options.mode === 'converge' ? 'converge' : 'diverge';
-  const session = createBrainstormSession(graph, query, options);
-  const divergence = buildDivergence(graph, query, {
+  const limit = boundedInteger(options.limit, 5, { max: MAX_SEARCH_RESULT_LIMIT });
+  const normalizedOptions = {
     ...options,
+    limit,
+    maxHops: boundedInteger(options.maxHops, 2, { max: MAX_BRAINSTORM_HOPS })
+  };
+  const session = createBrainstormSession(graph, query, normalizedOptions);
+  const divergence = buildDivergence(graph, query, {
+    ...normalizedOptions,
     session
   });
 
@@ -1260,8 +1279,7 @@ export function buildBrainstorm(graph, query, options = {}) {
   }
 
   const ideas = buildResearchIdeas(graph, query, {
-    ...options,
-    limit: Number(options.limit || 5),
+    ...normalizedOptions,
     layers: options.layers,
     session
   });
@@ -1270,13 +1288,16 @@ export function buildBrainstorm(graph, query, options = {}) {
     ...divergence,
     mode: 'converge',
     ideas: ideas.ideas,
-    convergedDirections: buildConvergedDirections(divergence, ideas.ideas, Number(options.limit || 5))
+    convergedDirections: buildConvergedDirections(divergence, ideas.ideas, limit)
   };
 }
 
 export function buildResearchIdeas(graph, query, options = {}) {
-  const limit = Number(options.limit || 5);
-  const session = options.session || createBrainstormSession(graph, query, options);
+  const limit = boundedInteger(options.limit, 5, { max: MAX_SEARCH_RESULT_LIMIT });
+  const session = options.session || createBrainstormSession(graph, query, {
+    ...options,
+    limit
+  });
   const { relationIndex, allowedLayers, seedPapers } = session;
 
   if (!seedPapers.length) {

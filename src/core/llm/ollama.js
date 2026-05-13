@@ -1,5 +1,7 @@
 import { execFile as nodeExecFile, spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { EDGE_TYPES, NODE_TYPES } from '../graph/schema.js';
 import {
@@ -1509,6 +1511,73 @@ function splitBatchForRetry(batch = []) {
   return [batch.slice(0, midpoint), batch.slice(midpoint)].filter((subBatch) => subBatch.length);
 }
 
+function resolveLlmBatchLedger(options = {}, phase = 'llm-batch') {
+  const dir = pickDefined(
+    options.llmBatchLedgerDir,
+    options.llm_batch_ledger_dir,
+    options.batchLedgerDir,
+    options.batch_ledger_dir
+  );
+  if (!dir) return null;
+  return {
+    dir: path.resolve(process.cwd(), String(dir)),
+    phase,
+    runId: String(pickDefined(options.llmBatchRunId, options.llm_batch_run_id, options.runId, 'llm-run')),
+    resume: isEnabledFlag(pickDefined(options.llmBatchResume, options.llm_batch_resume, options.batchResume, false))
+  };
+}
+
+function llmBatchId(ledger = {}, batch = [], prompt = '') {
+  return stableHash(JSON.stringify({
+    phase: ledger?.phase || 'llm-batch',
+    ids: batch.map((entry) => entry.id || entry.chunkId || entry.paperId || entry.sourceKey || entry.__batchIndex),
+    promptHash: stableHash(String(prompt), 16)
+  }), 20);
+}
+
+async function appendLlmBatchLedger(ledger = null, fileName = '', event = {}) {
+  if (!ledger?.dir || !fileName) return;
+  await fs.mkdir(ledger.dir, { recursive: true });
+  await fs.appendFile(path.join(ledger.dir, fileName), `${JSON.stringify({
+    contractVersion: 'papernexus-llm-batch-ledger-v1',
+    runId: ledger.runId,
+    phase: ledger.phase,
+    updatedAt: new Date().toISOString(),
+    ...event
+  })}\n`, 'utf8');
+}
+
+async function readLlmBatchJsonl(filePath) {
+  try {
+    const text = await fs.readFile(filePath, 'utf8');
+    return text.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function loadCompletedLlmBatchResults(ledger = null) {
+  if (!ledger?.resume) return new Map();
+  const rows = await readLlmBatchJsonl(path.join(ledger.dir, 'llm-results.jsonl'));
+  return new Map(rows
+    .filter((row) => row.phase === ledger.phase && row.status === 'completed' && row.batchId && Array.isArray(row.results))
+    .map((row) => [row.batchId, row]));
+}
+
+function copyCachedLlmBatchResults(results = [], batch = [], cached = {}) {
+  const cachedResults = cached.results || [];
+  if (cachedResults.length !== batch.length) return false;
+  for (let offset = 0; offset < batch.length; offset += 1) {
+    results[batch[offset].__batchIndex] = cachedResults[offset];
+  }
+  return true;
+}
+
+function collectLlmBatchResults(results = [], batch = []) {
+  return batch.map((entry) => results[entry.__batchIndex] || null);
+}
+
 function resolveLlmRetryConfig(config = {}) {
   const retryCount = toNonNegativeInteger(config.rateLimitRetryCount, DEFAULT_RATE_LIMIT_RETRY_COUNT);
   const retryDelayMs = toNonNegativeNumber(config.rateLimitRetryDelayMs, DEFAULT_RATE_LIMIT_RETRY_DELAY_MS);
@@ -2385,6 +2454,8 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
   const totalBatches = Math.max(1, batches.length);
   const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
   const promptMaxChars = resolveBatchPromptMaxChars(options);
+  const ledger = resolveLlmBatchLedger(options, 'semantic-extraction');
+  const completedLedgerBatches = await loadCompletedLlmBatchResults(ledger);
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     const batch = batches[batchIndex];
@@ -2392,6 +2463,34 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
     let stopAfterCurrentBatch = false;
     const prompt = buildSemanticExtractionBatchPrompt(batch);
     const promptChars = String(prompt).length;
+    const batchId = llmBatchId(ledger, batch, prompt);
+    const cachedBatch = completedLedgerBatches.get(batchId);
+
+    if (copyCachedLlmBatchResults(results, batch, cachedBatch)) {
+      options.onBatchComplete?.({
+        phase: 'semantic-extraction',
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        completed: completedAfterBatch,
+        total: entries.length,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        skipped: true
+      });
+      continue;
+    }
+
+    await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
+      status: 'running',
+      batchId,
+      batchNumber: batchIndex + 1,
+      totalBatches,
+      batchSize: batch.length,
+      promptChars,
+      promptMaxChars,
+      entryIds: batch.map((entry) => entry.id)
+    });
 
     try {
       const payload = await requestLlmGenerate(plan.config, prompt);
@@ -2558,6 +2657,38 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         }
       }
     } finally {
+      const batchResults = collectLlmBatchResults(results, batch);
+      const failedResults = batchResults.filter((result) => (
+        result?.reason === 'request-failed'
+        || result?.reason === 'rate-limited'
+        || result?.error
+      ));
+      const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
+        status,
+        batchId,
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        entryIds: batch.map((entry) => entry.id),
+        results: batchResults
+      });
+      if (failedResults.length) {
+        await appendLlmBatchLedger(ledger, 'llm-failures.jsonl', {
+          status: 'failed',
+          batchId,
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          promptChars,
+          promptMaxChars,
+          entryIds: batch.map((entry) => entry.id),
+          failedCount: failedResults.length,
+          errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
+        });
+      }
       options.onBatchComplete?.({
         phase: 'semantic-extraction',
         batchNumber: batchIndex + 1,
@@ -2750,6 +2881,8 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
   const totalBatches = Math.max(1, batches.length);
   const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
   const promptMaxChars = resolveBatchPromptMaxChars(options);
+  const ledger = resolveLlmBatchLedger(options, 'chunk-semantic-extraction');
+  const completedLedgerBatches = await loadCompletedLlmBatchResults(ledger);
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     const batch = batches[batchIndex];
@@ -2757,6 +2890,34 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
     let stopAfterCurrentBatch = false;
     const prompt = buildChunkSemanticExtractionBatchPrompt(batch);
     const promptChars = String(prompt).length;
+    const batchId = llmBatchId(ledger, batch, prompt);
+    const cachedBatch = completedLedgerBatches.get(batchId);
+
+    if (copyCachedLlmBatchResults(results, batch, cachedBatch)) {
+      options.onBatchComplete?.({
+        phase: 'chunk-semantic-extraction',
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        completed: completedAfterBatch,
+        total: entries.length,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        skipped: true
+      });
+      continue;
+    }
+
+    await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
+      status: 'running',
+      batchId,
+      batchNumber: batchIndex + 1,
+      totalBatches,
+      batchSize: batch.length,
+      promptChars,
+      promptMaxChars,
+      entryIds: batch.map((entry) => entry.id)
+    });
 
     try {
       const payload = await requestLlmGenerate(plan.config, prompt);
@@ -2959,6 +3120,38 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         }
       }
     } finally {
+      const batchResults = collectLlmBatchResults(results, batch);
+      const failedResults = batchResults.filter((result) => (
+        result?.reason === 'request-failed'
+        || result?.reason === 'rate-limited'
+        || result?.error
+      ));
+      const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
+        status,
+        batchId,
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        entryIds: batch.map((entry) => entry.id),
+        results: batchResults
+      });
+      if (failedResults.length) {
+        await appendLlmBatchLedger(ledger, 'llm-failures.jsonl', {
+          status: 'failed',
+          batchId,
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          promptChars,
+          promptMaxChars,
+          entryIds: batch.map((entry) => entry.id),
+          failedCount: failedResults.length,
+          errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
+        });
+      }
       options.onBatchComplete?.({
         phase: 'chunk-semantic-extraction',
         batchNumber: batchIndex + 1,
@@ -3067,6 +3260,8 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
   const totalBatches = Math.max(1, batches.length);
   const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
   const promptMaxChars = resolveBatchPromptMaxChars(options);
+  const ledger = resolveLlmBatchLedger(options, 'chunk-relation-extraction');
+  const completedLedgerBatches = await loadCompletedLlmBatchResults(ledger);
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     const batch = batches[batchIndex];
@@ -3074,6 +3269,34 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
     let stopAfterCurrentBatch = false;
     const prompt = buildChunkResearchSemanticsBatchPrompt(batch);
     const promptChars = String(prompt).length;
+    const batchId = llmBatchId(ledger, batch, prompt);
+    const cachedBatch = completedLedgerBatches.get(batchId);
+
+    if (copyCachedLlmBatchResults(results, batch, cachedBatch)) {
+      options.onBatchComplete?.({
+        phase: 'chunk-relation-extraction',
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        completed: completedAfterBatch,
+        total: entries.length,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        skipped: true
+      });
+      continue;
+    }
+
+    await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
+      status: 'running',
+      batchId,
+      batchNumber: batchIndex + 1,
+      totalBatches,
+      batchSize: batch.length,
+      promptChars,
+      promptMaxChars,
+      entryIds: batch.map((entry) => entry.id)
+    });
 
     try {
       const payload = await requestLlmGenerate(config, prompt);
@@ -3254,6 +3477,38 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         }
       }
     } finally {
+      const batchResults = collectLlmBatchResults(results, batch);
+      const failedResults = batchResults.filter((result) => (
+        result?.reason === 'request-failed'
+        || result?.reason === 'rate-limited'
+        || result?.error
+      ));
+      const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
+        status,
+        batchId,
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        entryIds: batch.map((entry) => entry.id),
+        results: batchResults
+      });
+      if (failedResults.length) {
+        await appendLlmBatchLedger(ledger, 'llm-failures.jsonl', {
+          status: 'failed',
+          batchId,
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          promptChars,
+          promptMaxChars,
+          entryIds: batch.map((entry) => entry.id),
+          failedCount: failedResults.length,
+          errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
+        });
+      }
       options.onBatchComplete?.({
         phase: 'chunk-relation-extraction',
         batchNumber: batchIndex + 1,
@@ -3381,6 +3636,8 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
   const totalBatches = Math.max(1, batches.length);
   const splitRetryCount = resolveBatchFailureSplitRetryCount(options);
   const promptMaxChars = resolveBatchPromptMaxChars(options);
+  const ledger = resolveLlmBatchLedger(options, 'relation-extraction');
+  const completedLedgerBatches = await loadCompletedLlmBatchResults(ledger);
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     const batch = batches[batchIndex];
@@ -3388,6 +3645,34 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
     let stopAfterCurrentBatch = false;
     const prompt = buildResearchSemanticsBatchPrompt(batch);
     const promptChars = String(prompt).length;
+    const batchId = llmBatchId(ledger, batch, prompt);
+    const cachedBatch = completedLedgerBatches.get(batchId);
+
+    if (copyCachedLlmBatchResults(results, batch, cachedBatch)) {
+      options.onBatchComplete?.({
+        phase: 'relation-extraction',
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        completed: completedAfterBatch,
+        total: entries.length,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        skipped: true
+      });
+      continue;
+    }
+
+    await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
+      status: 'running',
+      batchId,
+      batchNumber: batchIndex + 1,
+      totalBatches,
+      batchSize: batch.length,
+      promptChars,
+      promptMaxChars,
+      entryIds: batch.map((entry) => entry.id)
+    });
 
     try {
       const payload = await requestLlmGenerate(config, prompt);
@@ -3530,6 +3815,38 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         }
       }
     } finally {
+      const batchResults = collectLlmBatchResults(results, batch);
+      const failedResults = batchResults.filter((result) => (
+        result?.reason === 'request-failed'
+        || result?.reason === 'rate-limited'
+        || result?.error
+      ));
+      const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
+        status,
+        batchId,
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        entryIds: batch.map((entry) => entry.id),
+        results: batchResults
+      });
+      if (failedResults.length) {
+        await appendLlmBatchLedger(ledger, 'llm-failures.jsonl', {
+          status: 'failed',
+          batchId,
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          promptChars,
+          promptMaxChars,
+          entryIds: batch.map((entry) => entry.id),
+          failedCount: failedResults.length,
+          errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
+        });
+      }
       options.onBatchComplete?.({
         phase: 'relation-extraction',
         batchNumber: batchIndex + 1,

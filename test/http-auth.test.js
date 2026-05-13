@@ -40,6 +40,13 @@ test('serveCommand requires a token for all API routes while keeping static UI r
       });
       assert.equal(authorized.status, 200);
 
+      const wrongLengthToken = await fetch(`http://127.0.0.1:${port}/api/health`, {
+        headers: {
+          Authorization: 'Bearer test-extra'
+        }
+      });
+      assert.equal(wrongLengthToken.status, 401);
+
       const xHeaderAuthorized = await fetch(`http://127.0.0.1:${port}/api/corpora`, {
         headers: {
           'x-papernexus-token': 'test'
@@ -49,6 +56,58 @@ test('serveCommand requires a token for all API routes while keeping static UI r
 
       const staticIndex = await fetch(`http://127.0.0.1:${port}/`);
       assert.equal(staticIndex.status, 200);
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand returns client errors for malformed and oversized JSON API bodies', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-json-body-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 50500 + Math.floor(Math.random() * 1000);
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableEnhancements: false,
+      enableImports: false,
+      maxJsonBodyBytes: 64,
+      config: {
+        serve: {
+          apiToken: 'test'
+        }
+      }
+    });
+
+    try {
+      const headers = {
+        Authorization: 'Bearer test',
+        'content-type': 'application/json'
+      };
+      const malformed = await fetch(`http://127.0.0.1:${port}/api/query`, {
+        method: 'POST',
+        headers,
+        body: '{"query":'
+      });
+      assert.equal(malformed.status, 400);
+      assert.match((await malformed.json()).error, /Invalid JSON/);
+
+      const oversized = await fetch(`http://127.0.0.1:${port}/api/query`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ query: 'x'.repeat(128) })
+      });
+      assert.equal(oversized.status, 413);
+      assert.match((await oversized.json()).error, /exceeds the configured limit/);
     } finally {
       await serverHandle.stop();
     }
@@ -405,6 +464,66 @@ test('serveCommand warms Docling runtime in the background when imports are enab
       assert.equal(calls[0].doclingCudaVisibleDevices, '2');
       assert.ok(logs.some((line) => line.includes('[serve] Docling warmup started')));
       assert.ok(logs.some((line) => line.includes('[serve] Docling warmup finished')));
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand keeps background Docling warmup failure logs compact', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-docling-warmup-fail-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 53500 + Math.floor(Math.random() * 1000);
+  const logs = [];
+  const logger = {
+    log(message) {
+      logs.push(String(message));
+    },
+    warn(message) {
+      logs.push(String(message));
+    },
+    error(message) {
+      logs.push(String(message));
+    }
+  };
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      logger,
+      config: {
+        analyze: {
+          pdfParser: 'docling'
+        },
+        serve: {
+          apiToken: 'test'
+        }
+      },
+      warmDoclingRuntime: async () => {
+        throw new Error(`line one\nline two\nline three\nline four ${'x'.repeat(800)}`);
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const warning = logs.find((line) => line.includes('[serve] Docling warmup failed'));
+      assert.ok(warning);
+      assert.match(warning, /line one/);
+      assert.match(warning, /line two/);
+      assert.match(warning, /line three/);
+      assert.doesNotMatch(warning, /line four/);
+      assert.ok(warning.length < 560);
     } finally {
       await serverHandle.stop();
     }

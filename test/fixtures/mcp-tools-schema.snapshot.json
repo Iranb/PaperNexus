@@ -1,0 +1,1417 @@
+[
+  {
+    "name": "brainstorm",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "layerMode": {
+          "type": "string",
+          "default": "any",
+          "enum": [
+            "any",
+            "cross",
+            "intra"
+          ]
+        },
+        "layers": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "default": 5
+        },
+        "maxHops": {
+          "type": "number",
+          "default": 2
+        },
+        "mode": {
+          "type": "string",
+          "default": "diverge",
+          "enum": [
+            "converge",
+            "diverge"
+          ]
+        },
+        "query": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "context",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "layerMode": {
+          "type": "string",
+          "default": "any",
+          "enum": [
+            "any",
+            "cross",
+            "intra"
+          ]
+        },
+        "layers": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "corpus_sources",
+    "inputSchema": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "corpus_status",
+    "inputSchema": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "domain_distance",
+    "inputSchema": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "targetDomain": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "extract_takeaways",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "agnosticChallenges",
+        "targetDomain"
+      ],
+      "properties": {
+        "agnosticChallenges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "default": 8
+        },
+        "minDomainDistance": {
+          "type": "number",
+          "default": 0.3
+        },
+        "targetDomain": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "idea_catalyst",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "problem",
+        "targetDomain"
+      ],
+      "properties": {
+        "coarseGrainedDomain": {
+          "type": "string"
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "fineGrainedDomain": {
+          "type": "string"
+        },
+        "includeAnalysis": {
+          "type": "boolean",
+          "default": false
+        },
+        "insertedBefore": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "default": 8
+        },
+        "liveDiscovery": {
+          "type": "boolean",
+          "default": false
+        },
+        "maxPapersPerQuery": {
+          "type": "number",
+          "default": 20
+        },
+        "mechanisms": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "default": "graph",
+          "enum": [
+            "graph",
+            "hybrid",
+            "live_discovery"
+          ]
+        },
+        "numQuestions": {
+          "type": "number",
+          "default": 4
+        },
+        "numSourceDomains": {
+          "type": "number",
+          "default": 3
+        },
+        "outputMode": {
+          "type": "string",
+          "default": "idea_fragments",
+          "enum": [
+            "idea_fragments",
+            "packet_bundle"
+          ]
+        },
+        "problem": {
+          "type": "string"
+        },
+        "publicationDateOrYear": {
+          "type": "string"
+        },
+        "relevanceThreshold": {
+          "type": "number",
+          "default": 3
+        },
+        "sourceRelevanceThreshold": {
+          "type": "number",
+          "default": 0.5
+        },
+        "targetDomain": {
+          "type": "string"
+        },
+        "targetFieldOfStudy": {
+          "type": "string"
+        },
+        "year": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "ideas",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "layers": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "default": 5
+        },
+        "query": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "impact",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "default": "upstream",
+          "enum": [
+            "downstream",
+            "upstream"
+          ]
+        },
+        "layerMode": {
+          "type": "string",
+          "default": "any",
+          "enum": [
+            "any",
+            "cross",
+            "intra"
+          ]
+        },
+        "layers": {
+          "type": "string"
+        },
+        "maxDepth": {
+          "type": "number",
+          "default": 3
+        },
+        "query": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "import_workflow",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "properties": {
+        "arxivId": {
+          "type": "string"
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "doi": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "identifiers": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "interval": {
+          "type": "number",
+          "default": 2
+        },
+        "isbn": {
+          "type": "string"
+        },
+        "issn": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "list",
+            "log",
+            "progress",
+            "queue_progress",
+            "status",
+            "submit",
+            "wait"
+          ]
+        },
+        "paperId": {
+          "type": "string"
+        },
+        "pmcid": {
+          "type": "string"
+        },
+        "pmid": {
+          "type": "string"
+        },
+        "serverFilePath": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "sourceProvider": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "type": "number",
+          "default": 1800
+        },
+        "trigger": {
+          "type": "string",
+          "default": "mcp"
+        },
+        "waitForAuthoritativeSync": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  {
+    "name": "interdisciplinary_potential",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "query",
+        "targetDomain"
+      ],
+      "properties": {
+        "agnosticChallenges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "excludeProximalDomains": {
+          "type": "boolean",
+          "default": true
+        },
+        "limit": {
+          "type": "number",
+          "default": 5
+        },
+        "query": {
+          "type": "string"
+        },
+        "targetDomain": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "list_corpora",
+    "inputSchema": {
+      "type": "object",
+      "required": [],
+      "properties": {}
+    }
+  },
+  {
+    "name": "literature_discovery",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "properties": {
+        "allowDownloads": {
+          "type": "boolean",
+          "default": true
+        },
+        "benchmarkSeeds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "context": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sourceTitle": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "browserAuthHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "browserAuthPageTitles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "browserAuthUrlFragments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "browserChannel": {
+          "type": "string",
+          "default": "msedge"
+        },
+        "browserDownloadTimeoutMs": {
+          "type": "number",
+          "default": 12000
+        },
+        "browserExecutablePath": {
+          "type": "string"
+        },
+        "browserHeadless": {
+          "type": "boolean",
+          "default": true
+        },
+        "browserProfileDir": {
+          "type": "string"
+        },
+        "browserProfileName": {
+          "type": "string",
+          "default": "Default"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "canonicalId": {
+          "type": "string"
+        },
+        "citationExpansion": {
+          "type": "boolean",
+          "default": false
+        },
+        "coreApiKey": {
+          "type": "string"
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "datasetSeeds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "context": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sourceTitle": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "depth": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "deep",
+            "default",
+            "quick"
+          ]
+        },
+        "discipline": {
+          "type": "string"
+        },
+        "discoveryRequestCache": {
+          "type": "boolean",
+          "default": false
+        },
+        "discoveryRequestCacheTtlMs": {
+          "type": "number",
+          "default": 0
+        },
+        "doclingCommand": {
+          "type": "string"
+        },
+        "downloadConcurrency": {
+          "type": "number",
+          "default": 4
+        },
+        "entitySeeds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "context": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sourceTitle": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "generateArxivMarkdownSources": {
+          "type": "boolean",
+          "default": false
+        },
+        "importMaxPasses": {
+          "type": "number",
+          "default": 20
+        },
+        "importResolved": {
+          "type": "boolean",
+          "default": false
+        },
+        "institutionalAccessMode": {
+          "type": "string",
+          "default": "hints-only",
+          "enum": [
+            "browser",
+            "browser-session",
+            "headless-browser",
+            "hints-only"
+          ]
+        },
+        "institutionalResolverBaseUrl": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "llmBaseUrl": {
+          "type": "string"
+        },
+        "llmModel": {
+          "type": "string"
+        },
+        "llmProvider": {
+          "type": "string"
+        },
+        "llmQueryPlanner": {
+          "type": "boolean",
+          "default": true
+        },
+        "mailto": {
+          "type": "string"
+        },
+        "markdownStagingRoot": {
+          "type": "string"
+        },
+        "markdownUrl": {
+          "type": "string"
+        },
+        "maxCandidates": {
+          "type": "number"
+        },
+        "maxCitationSeeds": {
+          "type": "number",
+          "default": 3
+        },
+        "maxCitationsPerSeed": {
+          "type": "number",
+          "default": 5
+        },
+        "maxDownloads": {
+          "type": "number",
+          "default": 12
+        },
+        "maxEntityQueries": {
+          "type": "number",
+          "default": 40
+        },
+        "maxExtractedEntities": {
+          "type": "number",
+          "default": 80
+        },
+        "maxImported": {
+          "type": "number",
+          "default": 20
+        },
+        "maxLlmQueries": {
+          "type": "number",
+          "default": 4
+        },
+        "maxQueries": {
+          "type": "number"
+        },
+        "maxRelatedPerSeed": {
+          "type": "number",
+          "default": 5
+        },
+        "maxResultsPerQuery": {
+          "type": "number",
+          "default": 20
+        },
+        "maxRetryAfterMs": {
+          "type": "number",
+          "default": 10000
+        },
+        "maxSeedEntities": {
+          "type": "number",
+          "default": 80
+        },
+        "maxSeedPapers": {
+          "type": "number",
+          "default": 100
+        },
+        "maxSeedQueries": {
+          "type": "number",
+          "default": 40
+        },
+        "openAlexApiKey": {
+          "type": "string"
+        },
+        "openAlexApiKeyFile": {
+          "type": "string"
+        },
+        "openAlexMaxConcurrent": {
+          "type": "number",
+          "default": 4
+        },
+        "openAlexRelatedExpansion": {
+          "type": "boolean",
+          "default": true
+        },
+        "openAlexRequestDelayMs": {
+          "type": "number",
+          "default": 0
+        },
+        "operation": {
+          "type": "string",
+          "default": "run",
+          "enum": [
+            "import",
+            "import_and_process",
+            "ingest",
+            "list",
+            "plan",
+            "report",
+            "resolve",
+            "run",
+            "search",
+            "status",
+            "supplement"
+          ]
+        },
+        "paperMetadata": {
+          "type": "object"
+        },
+        "papersCoolBaseUrl": {
+          "type": "string"
+        },
+        "papersCoolMaxQueries": {
+          "type": "number",
+          "default": 4
+        },
+        "papersCoolSort": {
+          "type": "number",
+          "default": 0
+        },
+        "pasaApiBaseUrl": {
+          "type": "string"
+        },
+        "pasaMaxQueries": {
+          "type": "number",
+          "default": 2
+        },
+        "pasaPollIntervalSeconds": {
+          "type": "number",
+          "default": 1
+        },
+        "pasaRequestTimeoutMs": {
+          "type": "number",
+          "default": 20000
+        },
+        "pasaTimeoutSeconds": {
+          "type": "number",
+          "default": 30
+        },
+        "pdfCommand": {
+          "type": "string"
+        },
+        "pdfParser": {
+          "type": "string",
+          "enum": [
+            "docling",
+            "marker",
+            "markitdown",
+            "markpdfdown",
+            "mineru",
+            "opendataloader",
+            "paddleocr-vl"
+          ]
+        },
+        "pdfStagingRoot": {
+          "type": "string"
+        },
+        "pdfUrl": {
+          "type": "string"
+        },
+        "persist": {
+          "type": "boolean",
+          "default": true
+        },
+        "preferMarkdown": {
+          "type": "boolean",
+          "default": true
+        },
+        "processImports": {
+          "type": "boolean",
+          "default": false
+        },
+        "providerConcurrency": {
+          "type": "number",
+          "default": 4
+        },
+        "providerRequestDelayMs": {
+          "type": "number",
+          "default": 250
+        },
+        "providerRequestMaxConcurrent": {
+          "type": "number",
+          "default": 4
+        },
+        "providerRequestSchedulerDelayMs": {
+          "type": "number",
+          "default": 0
+        },
+        "providers": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "pythonCommand": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "retryBackoffMs": {
+          "type": "number",
+          "default": 250
+        },
+        "retryCount": {
+          "type": "number",
+          "default": 1
+        },
+        "runId": {
+          "type": "string"
+        },
+        "seedPapers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "arxivId": {
+                "type": "string"
+              },
+              "bestOaUrl": {
+                "type": "string"
+              },
+              "canonicalId": {
+                "type": "string"
+              },
+              "doi": {
+                "type": "string"
+              },
+              "markdownUrl": {
+                "type": "string"
+              },
+              "markdownUrls": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "pdfUrl": {
+                "type": "string"
+              },
+              "pmcid": {
+                "type": "string"
+              },
+              "pmid": {
+                "type": "string"
+              },
+              "sourceHints": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "title": {
+                "type": "string"
+              },
+              "venue": {
+                "type": "string"
+              },
+              "year": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "seedTexts": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "sourceTitle": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "semanticExtraction": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "heuristic-only",
+            "llm-assisted",
+            "llm-primary"
+          ]
+        },
+        "semanticScholarMaxConcurrent": {
+          "type": "number",
+          "default": 1
+        },
+        "semanticScholarRequestDelayMs": {
+          "type": "number",
+          "default": 1000
+        },
+        "sourceKind": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "pdf"
+          ]
+        },
+        "sourcePath": {
+          "type": "string"
+        },
+        "sourceProvider": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "number",
+          "default": 8000
+        },
+        "topic": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "mutate_graph",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "operations"
+      ],
+      "properties": {
+        "actor": {
+          "type": "string"
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "default": true
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "create",
+                  "create_edge",
+                  "create_node",
+                  "create_relationship",
+                  "delete_node",
+                  "delete_relationship",
+                  "update_node",
+                  "update_relationship",
+                  "upsert_node",
+                  "upsert_relationship"
+                ]
+              },
+              "bidirectional": {
+                "type": "boolean",
+                "default": false
+              },
+              "edgeType": {
+                "type": "string"
+              },
+              "from": {
+                "type": [
+                  "object",
+                  "string"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "match": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "name": {
+                "type": "string"
+              },
+              "nodeType": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "replaceProperties": {
+                "type": "boolean",
+                "default": false
+              },
+              "source": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "target": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "to": {
+                "type": [
+                  "object",
+                  "string"
+                ]
+              },
+              "type": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "query",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "layers": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "default": 5
+        },
+        "query": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "refresh_corpus",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "batchSize": {
+          "type": "number"
+        },
+        "changedSourceKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "force": {
+          "type": "boolean",
+          "default": false
+        },
+        "incremental": {
+          "type": "boolean",
+          "default": true
+        },
+        "llmBatchSize": {
+          "type": "number"
+        },
+        "mode": {
+          "type": "string",
+          "default": "analyze",
+          "enum": [
+            "analyze",
+            "llm_optimize",
+            "materialize",
+            "optimize"
+          ]
+        },
+        "rebuildPdfMarkdown": {
+          "type": "boolean"
+        },
+        "semanticExtraction": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "heuristic-only",
+            "llm-assisted",
+            "llm-primary"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "refresh_paper_graph",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "includeDuplicateGroup": {
+          "type": "boolean",
+          "default": true
+        },
+        "paperId": {
+          "type": "string"
+        },
+        "paperTitle": {
+          "type": "string"
+        },
+        "rebuildPdfMarkdown": {
+          "type": "boolean",
+          "default": true
+        },
+        "semanticExtraction": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "heuristic-only",
+            "llm-assisted",
+            "llm-primary"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "sourceKey": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "research_briefing",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "brainstorm_brief",
+            "evidence_chain",
+            "paper_enhancement",
+            "path_trace",
+            "reflection_chain",
+            "research_brief",
+            "storyline_brief",
+            "theory_brief"
+          ]
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "paperId": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "research_lookup",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "properties": {
+        "agnosticChallenges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "arxivId": {
+          "type": "string"
+        },
+        "candidateId": {
+          "type": "string"
+        },
+        "canonicalId": {
+          "type": "string"
+        },
+        "citationRelationshipId": {
+          "type": "string"
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "default": "backward",
+          "enum": [
+            "backward",
+            "both",
+            "forward"
+          ]
+        },
+        "doi": {
+          "type": "string"
+        },
+        "edgeId": {
+          "type": "string"
+        },
+        "excludeProximalDomains": {
+          "type": "boolean",
+          "default": true
+        },
+        "identifier": {
+          "type": "string"
+        },
+        "identifiers": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "identifierType": {
+          "type": "string",
+          "enum": [
+            "arxivId",
+            "doi",
+            "isbn",
+            "issn",
+            "pmcid",
+            "pmid"
+          ]
+        },
+        "includeCandidates": {
+          "type": "boolean",
+          "default": false
+        },
+        "includePacketBundle": {
+          "type": "boolean",
+          "default": false
+        },
+        "isbn": {
+          "type": "string"
+        },
+        "issn": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "maxDepth": {
+          "type": "number",
+          "default": 3
+        },
+        "mechanisms": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "method": {
+          "type": "string"
+        },
+        "methodName": {
+          "type": "string"
+        },
+        "minDomainDistance": {
+          "type": "number"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "both",
+            "cross_domain_evidence",
+            "method_lineage"
+          ]
+        },
+        "numSourceDomains": {
+          "type": "number",
+          "default": 3
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "brainstorm",
+            "context",
+            "cross_domain_evidence",
+            "domain_distance",
+            "extract_takeaways",
+            "ideas",
+            "impact",
+            "interdisciplinary_potential",
+            "method_evidence",
+            "method_lineage",
+            "method_registry",
+            "paper_index",
+            "query",
+            "research_answer"
+          ]
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "paperId": {
+          "type": "string"
+        },
+        "paperTitle": {
+          "type": "string"
+        },
+        "pmcid": {
+          "type": "string"
+        },
+        "pmid": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "relationshipId": {
+          "type": "string"
+        },
+        "relevanceThreshold": {
+          "type": "number",
+          "default": 3
+        },
+        "source": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "sourceKey": {
+          "type": "string"
+        },
+        "sourceMethod": {
+          "type": "string"
+        },
+        "strictDirection": {
+          "type": "boolean",
+          "default": false
+        },
+        "targetDomain": {
+          "type": "string"
+        },
+        "targetMethod": {
+          "type": "string"
+        }
+      }
+    }
+  }
+]
