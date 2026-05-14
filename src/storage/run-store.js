@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ensureDir, fileExists, readJson, readText, withFileLock, writeJson } from '../lib/fs.js';
 import { stableHash } from '../lib/utils.js';
+import { createTraceId, tryAppendTraceSpan } from './trace-store.js';
 
 const RUN_STORE_VERSION = 1;
 const RUN_EVENT_CONTRACT_VERSION = 'papernexus-run-event-v1';
@@ -95,6 +96,16 @@ function createRunId(kind, rootPath, options = {}) {
   return `${String(kind || 'run').trim() || 'run'}:${stableHash(rootPath, 8)}:${stableHash(manifestToken, 8)}:${timestamp}:${suffix}`;
 }
 
+async function appendRunTraceAlias(paths, span = null) {
+  if (!paths.tracePath || !span) return;
+  try {
+    await ensureDir(paths.runDir);
+    await fs.appendFile(paths.tracePath, `${JSON.stringify(span)}\n`, 'utf8');
+  } catch {
+    // Trace aliases are best-effort and must not block the run state machine.
+  }
+}
+
 export function getRunStorePaths(rootPath, runId = '') {
   const runsDir = path.join(path.resolve(rootPath), '.papernexus', 'runs');
   const runDir = runId ? path.join(runsDir, encodeRunDirName(runId)) : '';
@@ -108,6 +119,7 @@ export function getRunStorePaths(rootPath, runId = '') {
     runPath: runDir ? path.join(runDir, 'run.json') : '',
     statePath: runDir ? path.join(runDir, 'state.json') : '',
     eventsPath: runDir ? path.join(runDir, 'events.ndjson') : '',
+    tracePath: runDir ? path.join(runDir, 'trace.jsonl') : '',
     stagesDir: runDir ? path.join(runDir, 'stages') : '',
     checkpointsDir: runDir ? path.join(runDir, 'checkpoints') : '',
     workersDir: runDir ? path.join(runDir, 'workers') : ''
@@ -144,6 +156,9 @@ function createStateFromRun(run, patch = {}) {
     contractVersion: RUN_STATE_CONTRACT_VERSION,
     version: RUN_STORE_VERSION,
     runId: run.runId,
+    traceId: patch.traceId || run.traceId || null,
+    idempotencyKey: patch.idempotencyKey || run.idempotencyKey || null,
+    attemptId: patch.attemptId || run.attemptId || null,
     kind: run.kind,
     status: patch.status || run.status || 'running',
     currentStage: patch.currentStage || run.currentStage || null,
@@ -154,6 +169,8 @@ function createStateFromRun(run, patch = {}) {
     manifestToken: run.manifestToken || null,
     configSignature: run.configSignature || null,
     promptVersion: run.promptVersion || null,
+    paperIds: Array.isArray(patch.paperIds) ? patch.paperIds : (run.paperIds || []),
+    terminalReportPath: patch.terminalReportPath || run.terminalReportPath || null,
     overall,
     stages,
     warnings: Array.isArray(patch.warnings) ? patch.warnings : (run.warnings || []),
@@ -167,10 +184,18 @@ export async function startRun(rootPath, options = {}) {
   const runId = String(options.runId || '').trim() || createRunId(kind, rootPath, options);
   const paths = getRunStorePaths(rootPath, runId);
   const startedAt = nowIso();
+  const traceId = String(options.traceId || options.trace_id || '').trim()
+    || createTraceId(kind, `${rootPath}:${runId}`);
+  const idempotencyKey = String(options.idempotencyKey || options.idempotency_key || '').trim()
+    || stableHash(`${path.resolve(rootPath)}:${kind}:${options.manifestToken || ''}:${options.configSignature || ''}`, 24);
+  const attemptId = String(options.attemptId || options.attempt_id || 'attempt:1').trim() || 'attempt:1';
   const run = {
     contractVersion: RUN_STATE_CONTRACT_VERSION,
     version: RUN_STORE_VERSION,
     runId,
+    traceId,
+    idempotencyKey,
+    attemptId,
     kind,
     rootPath: path.resolve(rootPath),
     command: options.command || kind,
@@ -179,6 +204,8 @@ export async function startRun(rootPath, options = {}) {
     manifestToken: options.manifestToken || null,
     configSignature: options.configSignature || null,
     promptVersion: options.promptVersion || null,
+    paperIds: Array.isArray(options.paperIds || options.paper_ids) ? (options.paperIds || options.paper_ids) : [],
+    terminalReportPath: options.terminalReportPath || options.terminal_report_path || null,
     stageWeights: options.stageWeights || {},
     stages: {},
     warnings: [],
@@ -210,6 +237,7 @@ export async function startRun(rootPath, options = {}) {
       runPath: paths.runPath,
       statePath: paths.statePath,
       eventsPath: paths.eventsPath,
+      tracePath: paths.tracePath,
       updatedAt: startedAt
     });
   });
@@ -240,6 +268,7 @@ export async function appendRunEvent(rootPath, runId, event = {}) {
       time: timestamp,
       level: String(event.level || 'info').trim().toLowerCase() || 'info',
       runId,
+      traceId: event.traceId || event.trace_id || run.traceId || null,
       stage: event.stage || run.currentStage || null,
       shardId: event.shardId || null,
       workerId: event.workerId || null,
@@ -261,6 +290,25 @@ export async function appendRunEvent(rootPath, runId, event = {}) {
     await writeJson(paths.runPath, run);
     await ensureDir(paths.runDir);
     await fs.appendFile(paths.eventsPath, `${JSON.stringify(normalized)}\n`, 'utf8');
+    if (normalized.traceId) {
+      const traceResult = await tryAppendTraceSpan(rootPath, {
+        trace_id: normalized.traceId,
+        span_id: `run-event:${runId}:${seq}`,
+        run_id: runId,
+        paper_id: normalized.paperId,
+        stage: normalized.stage || normalized.event,
+        event: normalized.event,
+        status: normalized.event.endsWith('failed') ? 'failed' : normalized.event.endsWith('completed') ? 'completed' : 'started',
+        message: normalized.message,
+        artifact_paths: [paths.eventsPath],
+        error_class: normalized.error?.name || normalized.error?.code || null,
+        created_at: timestamp,
+        data: normalized.data
+      });
+      if (traceResult.ok) {
+        await appendRunTraceAlias(paths, traceResult.span);
+      }
+    }
     return normalized;
   });
 }
@@ -299,6 +347,7 @@ export async function updateRunState(rootPath, runId, patch = {}) {
       runPath: paths.runPath,
       statePath: paths.statePath,
       eventsPath: paths.eventsPath,
+      tracePath: paths.tracePath,
       updatedAt: nextRun.updatedAt
     });
     return state;
@@ -312,7 +361,16 @@ export async function updateRunStage(rootPath, runId, stage, patch = {}) {
   }
   const paths = getRunStorePaths(rootPath, runId);
   const timestamp = nowIso();
+  const run = await readJson(paths.runPath, null);
+  if (!run) {
+    throw new Error(`Unknown PaperNexus run "${runId}".`);
+  }
   const stageState = normalizeStagePatch(stageName, {
+    receiptVersion: 'papernexus-stage-receipt-v1',
+    runId,
+    traceId: patch.traceId || patch.trace_id || run.traceId || null,
+    idempotencyKey: patch.idempotencyKey || patch.idempotency_key || run.idempotencyKey || null,
+    attemptId: patch.attemptId || patch.attempt_id || run.attemptId || null,
     ...patch,
     updatedAt: patch.updatedAt || timestamp
   });
@@ -329,7 +387,36 @@ export async function updateRunStage(rootPath, runId, stage, patch = {}) {
   if (patch.runStatus) {
     statePatch.status = patch.runStatus;
   }
-  return updateRunState(rootPath, runId, statePatch);
+  const state = await updateRunState(rootPath, runId, statePatch);
+  if (stageState.traceId) {
+    const stageArtifactPaths = Array.isArray(stageState.artifactPaths)
+      ? stageState.artifactPaths
+      : Array.isArray(stageState.artifact_paths)
+        ? stageState.artifact_paths
+        : [];
+    const traceResult = await tryAppendTraceSpan(rootPath, {
+      trace_id: stageState.traceId,
+      span_id: `run-stage:${runId}:${sanitizePathSegment(stageName)}:${stableHash(timestamp, 8)}`,
+      run_id: runId,
+      paper_id: stageState.paperId || stageState.paper_id || null,
+      stage: stageName,
+      status: stageState.status,
+      message: stageState.message,
+      artifact_paths: [stagePath, ...stageArtifactPaths],
+      error_class: stageState.lastError?.name || stageState.lastError?.code || null,
+      created_at: timestamp,
+      data: {
+        processedUnits: stageState.processedUnits,
+        totalUnits: stageState.totalUnits,
+        percent: stageState.percent,
+        checkpointKey: stageState.checkpointKey
+      }
+    });
+    if (traceResult.ok) {
+      await appendRunTraceAlias(paths, traceResult.span);
+    }
+  }
+  return state;
 }
 
 export async function writeRunCheckpoint(rootPath, runId, checkpointKey, checkpoint = {}) {

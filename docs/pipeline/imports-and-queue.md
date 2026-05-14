@@ -94,17 +94,37 @@ In practice that means:
 - later queued PDFs can be pre-parsed in the background
 - per-task materialization is scoped to the uploaded task’s own `sources/` directory
 - Stage 2 receives `changedSourceKeys`, so imports do not rerun whole-corpus LLM optimization
-- final graph commit remains controlled and ordered through `fast-commit`
-- queue throughput improves without mixing multiple tasks into unsafe concurrent graph commits
+- when import batching is enabled, the worker may reserve several fresh `pending / queued` tasks under one worker lock, materialize them separately, then run one shared Stage 2 and one shared `fast-commit` over the union of their changed source keys
+- final graph commit remains controlled and ordered through `fast-commit`; batching does not introduce concurrent graph commits
 - parser-local state can survive restarts even when the queue task itself has not completed
 
 The important current performance rule is:
 
 ```text
-one uploaded paper should not trigger full-corpus Stage 2
+one uploaded paper, or one worker-selected import batch, should not trigger full-corpus Stage 2
 ```
 
-Instead, import tasks should only optimize and commit the changed source keys associated with the uploaded task.
+Instead, import tasks should only optimize and commit the changed source keys associated with the uploaded task or the current logical batch.
+
+Batching is intentionally logical, not physical:
+
+- task ids, task directories, logs, status, progress, and final results remain per task
+- a pre-existing `running` task is processed alone so resume semantics stay simple
+- if one task fails during materialization, only that task fails; successfully materialized tasks can continue through the shared stages
+- if the shared LLM optimization or fast commit fails, every task that entered that shared stage fails together and can be retried through the existing failed-task recovery path
+
+The import worker keeps batching opt-in. Configure it under `imports` or `import`:
+
+```json
+{
+  "imports": {
+    "batchEnabled": true,
+    "batchMaxTasks": 4,
+    "batchMaxFiles": 16,
+    "batchMaxBytes": 104857600
+  }
+}
+```
 
 ## Timeout And Recovery Policy
 
@@ -280,6 +300,13 @@ Batch imports are manifest-driven. Instead of asking an agent to loop manually o
 - query batch progress from a queue snapshot
 
 This avoids the common failure mode where agents guess status from elapsed time alone.
+
+The wrapper batch and the worker batch are different layers:
+
+- the wrapper batch is a control-plane convenience for submitting and tracking many task ids
+- the worker batch is a graph-commit optimization that can complete several queued task ids with one shared LLM optimization and one shared authoritative sync job
+
+Status and wait commands do not need new arguments for worker batching. They still read per-task queue state; tasks completed by one worker batch simply share `result.batch.batchId` and the same `result.authoritativeSync.jobId`.
 
 ## CLI Queue Inspection
 

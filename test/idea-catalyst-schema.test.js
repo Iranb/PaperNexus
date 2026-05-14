@@ -122,6 +122,11 @@ test('precomputePaperGraphFragment preserves domain and mechanism metadata on gr
         confidence: 0.91,
         domainTags: ['Computer Science'],
         abstractMechanisms: ['memory preservation']
+      },
+      {
+        name: 'paper-level metadata fallback',
+        text: 'paper-level metadata fallback',
+        confidence: 0.7
       }
     ],
     claims: [],
@@ -148,6 +153,13 @@ test('precomputePaperGraphFragment preserves domain and mechanism metadata on gr
     fragment.globalContributions[0].node.properties.abstractMechanisms,
     ['memory preservation']
   );
+  const fallbackMethod = fragment.globalContributions
+    .map((entry) => entry.node)
+    .find((node) => node.name === 'paper-level metadata fallback');
+  assert.equal(fallbackMethod.properties.fieldOfStudy, 'Computer Science');
+  assert.deepEqual(fallbackMethod.properties.fieldCandidates, ['Computer Science', 'Psychology']);
+  assert.deepEqual(fallbackMethod.properties.domainTags, ['Computer Science']);
+  assert.deepEqual(fallbackMethod.properties.abstractMechanisms, ['memory preservation']);
 });
 
 test('queryCrossDomainBridges returns a stable bridge contract with pruned and ranked domains', () => {

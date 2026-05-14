@@ -72,3 +72,75 @@ test('import_workflow wait includes downstream authoritative sync readiness', as
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
+
+test('import_workflow queue_progress reports individual tasks completed by one worker batch', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-batch-progress-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-batch-progress-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const firstTask = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'batch-progress-one.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Batch Progress One\n\n## Abstract\n\nFirst batch progress test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const secondTask = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'batch-progress-two.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Batch Progress Two\n\n## Abstract\n\nSecond batch progress test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const batchId = 'impbatch:test-progress';
+    const batchTaskIds = [firstTask.id, secondTask.id];
+
+    for (const task of [firstTask, secondTask]) {
+      await completeImportTask(rootPath, task.id, {
+        batch: {
+          batchId,
+          batchTaskIds,
+          completedTaskIds: batchTaskIds,
+          failedTaskIds: []
+        },
+        authoritativeSync: {
+          status: 'pending',
+          jobId: 'sync:test-progress'
+        }
+      });
+    }
+
+    const payload = await executeImportWorkflowTool({
+      operation: 'queue_progress',
+      corpus: rootPath,
+      taskIds: batchTaskIds
+    });
+
+    assert.equal(payload.summary.total, 2);
+    assert.equal(payload.summary.completed, 2);
+    assert.equal(payload.summary.remaining, 0);
+    assert.deepEqual(
+      payload.tasks.map((task) => task.id).sort(),
+      batchTaskIds.slice().sort()
+    );
+    assert.deepEqual(
+      payload.tasks.map((task) => task.result?.batch?.batchId),
+      [batchId, batchId]
+    );
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});

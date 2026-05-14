@@ -422,6 +422,22 @@ function buildGlobalNodePayload(type, name, properties = {}) {
 function createGlobalContribution(type, paper, record, paperRelationType, options = {}) {
   if (!record?.name) return null;
 
+  const recordDomainTags = normalizeDomainTags(record.domainTags || []);
+  const recordFieldCandidates = normalizeDomainTags(record.fieldCandidates || []);
+  const domainTags = recordDomainTags.length ? recordDomainTags : normalizeDomainTags(paper.domainTags || []);
+  const fieldCandidates = recordFieldCandidates.length ? recordFieldCandidates : normalizeDomainTags(paper.fieldCandidates || []);
+  const fieldOfStudy = normalizeFieldOfStudy(
+    firstDefinedValue(record.fieldOfStudy, paper.fieldOfStudy),
+    [...domainTags, ...fieldCandidates]
+  );
+  const recordMechanismObjects = normalizeAbstractMechanismRecords(
+    record.abstractMechanismObjects || record.abstractMechanisms || record.mechanismHints || []
+  );
+  const abstractMechanismObjects = recordMechanismObjects.length
+    ? recordMechanismObjects
+    : normalizeAbstractMechanismRecords(paper.abstractMechanismObjects || paper.abstractMechanisms || paper.mechanismHints || []);
+  const abstractMechanisms = normalizeAbstractMechanismNames(abstractMechanismObjects);
+
   const node = buildGlobalNodePayload(type, record.name, {
     paperTitle: paper.paperTitle,
     confidence: record.confidence,
@@ -439,15 +455,11 @@ function createGlobalContribution(type, paper, record, paperRelationType, option
     domainAgnosticText: options.domainAgnosticText,
     retrievalText: options.retrievalText,
     analogyText: options.analogyText,
-    fieldOfStudy: normalizeFieldOfStudy(record.fieldOfStudy, record.domainTags || []),
-    fieldCandidates: normalizeDomainTags(record.fieldCandidates || []),
-    domainTags: normalizeDomainTags(record.domainTags || []),
-    abstractMechanismObjects: normalizeAbstractMechanismRecords(
-      record.abstractMechanismObjects || record.abstractMechanisms || record.mechanismHints || []
-    ),
-    abstractMechanisms: normalizeAbstractMechanismNames(
-      record.abstractMechanismObjects || record.abstractMechanisms || record.mechanismHints || []
-    ),
+    fieldOfStudy,
+    fieldCandidates,
+    domainTags,
+    abstractMechanismObjects,
+    abstractMechanisms,
     brainstormEligible: record.brainstormEligible,
     brainstormScore: record.brainstormScore,
     brainstormTier: record.brainstormTier,

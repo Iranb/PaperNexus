@@ -20,7 +20,15 @@ import {
   unique
 } from '../src/lib/utils.js';
 
-const DEFAULT_MODES = ['text-only', 'graph-only', 'hybrid'];
+const DEFAULT_MODES = [
+  'text-only',
+  'graph-only',
+  'hybrid',
+  'hybrid+relation-aware-seeds',
+  'hybrid+hub-penalty',
+  'hybrid+evidence-boost',
+  'hybrid+all'
+];
 const DEFAULT_CUTOFFS = [1, 5, 10, 20, 100];
 const RELATION_WEIGHTS = {
   cites: 1,
@@ -35,6 +43,19 @@ const RELATION_WEIGHTS = {
   same_topic: 0.8,
   co_citation: 0.7,
   bibliographic_coupling: 0.7
+};
+const RELATION_QUERY_TERMS = {
+  cites: ['cite', 'cites', 'cited', 'citation'],
+  citation: ['cite', 'cites', 'cited', 'citation'],
+  references: ['reference', 'references', 'referenced'],
+  reference: ['reference', 'references', 'referenced'],
+  uses: ['use', 'uses', 'used', 'component', 'dependency'],
+  extends: ['extend', 'extends', 'extended', 'extension'],
+  improves: ['improve', 'improves', 'improved', 'improvement'],
+  adapts: ['adapt', 'adapts', 'adapted', 'adaptation'],
+  replaces: ['replace', 'replaces', 'replaced', 'replacement'],
+  compares: ['compare', 'compares', 'compared', 'comparison'],
+  same_topic: ['topic', 'same topic', 'related topic']
 };
 
 function compactText(value = '') {
@@ -141,6 +162,13 @@ function mean(values = []) {
   return numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
 }
 
+function percentile(values = [], percentileValue = 0.95) {
+  const numeric = values.map(Number).filter(Number.isFinite).sort((left, right) => left - right);
+  if (!numeric.length) return 0;
+  const index = Math.min(numeric.length - 1, Math.max(0, Math.ceil(numeric.length * percentileValue) - 1));
+  return numeric[index];
+}
+
 function formatNumber(value) {
   if (!Number.isFinite(Number(value))) return '';
   return Number(value).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
@@ -234,6 +262,14 @@ function relationWeight(type = '') {
   return RELATION_WEIGHTS[normalized] || 0.8;
 }
 
+function modeFeatures(mode = '') {
+  return {
+    relationAwareSeeds: mode.includes('relation-aware-seeds') || mode === 'hybrid+all',
+    hubPenalty: mode.includes('hub-penalty') || mode === 'hybrid+all',
+    evidenceBoost: mode.includes('evidence-boost') || mode === 'hybrid+all'
+  };
+}
+
 function addAdjacency(adjacency, leftIndex, rightIndex, type = 'related', directed = false) {
   if (leftIndex === null || rightIndex === null || leftIndex === rightIndex) return;
   const weight = relationWeight(type);
@@ -316,6 +352,65 @@ function querySourceAliases(queryCase = {}) {
   ].map((entry) => compactText(entry)).filter(Boolean));
 }
 
+function collectSeedAliasesFromValue(value, output = []) {
+  if (value === undefined || value === null || value === '') return output;
+  if (Array.isArray(value)) {
+    for (const entry of value) collectSeedAliasesFromValue(entry, output);
+    return output;
+  }
+  if (typeof value === 'object') {
+    for (const field of ['id', 'paperId', 'paper_id', 'canonicalId', 'canonical_id', 'title', 'name']) {
+      if (value[field]) output.push(value[field]);
+    }
+    return output;
+  }
+  output.push(value);
+  return output;
+}
+
+function querySeedAliases(queryCase = {}) {
+  const metadata = asObject(queryCase.metadata);
+  const aliases = [...querySourceAliases(queryCase)];
+  for (const value of [
+    queryCase.graphSeeds,
+    queryCase.seedPapers,
+    queryCase.seedPaperIds,
+    queryCase.seed_paper_ids,
+    queryCase.sourcePapers,
+    metadata.graphSeeds,
+    metadata.seedPapers,
+    metadata.seedPaperIds,
+    metadata.native?.graphSeeds,
+    metadata.native?.seedPaperIds
+  ]) {
+    collectSeedAliasesFromValue(value, aliases);
+  }
+  return unique(aliases.map((entry) => compactText(entry)).filter(Boolean));
+}
+
+function relationHints(queryCase = {}) {
+  const metadata = asObject(queryCase.metadata);
+  return unique([
+    queryCase.relationType,
+    queryCase.relation,
+    ...asArray(queryCase.relationTypes),
+    ...asArray(queryCase.relationHints),
+    metadata.relationType,
+    metadata.relation,
+    ...asArray(metadata.relationTypes),
+    ...asArray(metadata.relationHints)
+  ].map((entry) => compactText(entry).toLowerCase()).filter(Boolean));
+}
+
+function relationMatchesQuery(type = '', queryCase = {}) {
+  const normalized = compactText(type).toLowerCase().replace(/[\s-]+/g, '_');
+  const hints = relationHints(queryCase);
+  if (hints.includes(normalized)) return true;
+  const queryText = compactText(queryCase.query).toLowerCase();
+  const terms = RELATION_QUERY_TERMS[normalized] || normalized.split('_');
+  return terms.some((term) => queryText.includes(term));
+}
+
 function textScore(queryCase = {}, paper = {}) {
   const query = compactText(queryCase.query);
   const queryTokens = tokenizeWithoutStopwords(query);
@@ -337,11 +432,36 @@ function scoreAllText(queryCase = {}, papers = []) {
   }));
 }
 
-function resolveSeedIndexes(queryCase = {}, textScores = [], corpusIndex = {}, options = {}) {
+function resolveSeedIndexes(queryCase = {}, textScores = [], corpusIndex = {}, graphIndex = {}, options = {}) {
   const explicitSeeds = querySourceAliases(queryCase)
     .map((alias) => resolvePaperIndex(alias, corpusIndex))
     .filter((index) => index !== null);
-  if (explicitSeeds.length) return unique(explicitSeeds);
+  const relationSeeds = options.relationAwareSeeds
+    ? querySeedAliases(queryCase).map((alias) => resolvePaperIndex(alias, corpusIndex)).filter((index) => index !== null)
+    : [];
+  if (explicitSeeds.length || relationSeeds.length) return unique([...explicitSeeds, ...relationSeeds]);
+
+  if (options.relationAwareSeeds) {
+    const adjacency = graphIndex.adjacency || new Map();
+    const relationAware = textScores
+      .filter((entry) => entry.score > 0)
+      .map((entry) => ({
+        ...entry,
+        relationMatchCount: (adjacency.get(entry.index) || [])
+          .filter((edge) => relationMatchesQuery(edge.type, queryCase))
+          .length
+      }))
+      .filter((entry) => entry.relationMatchCount > 0)
+      .sort((left, right) => (
+        right.relationMatchCount - left.relationMatchCount
+        || right.score - left.score
+        || left.index - right.index
+      ))
+      .slice(0, Math.max(1, Number(options.textSeedLimit || 5)))
+      .map((entry) => entry.index);
+    if (relationAware.length) return unique(relationAware);
+  }
+
   return textScores
     .filter((entry) => entry.score > 0)
     .sort((left, right) => right.score - left.score || left.index - right.index)
@@ -352,11 +472,14 @@ function resolveSeedIndexes(queryCase = {}, textScores = [], corpusIndex = {}, o
 function scoreGraphNeighborhood(seedIndexes = [], graphIndex = {}, options = {}) {
   const hopLimit = Math.max(1, Number(options.graphHopLimit || 2));
   const neighborLimit = Math.max(1, Number(options.graphNeighborLimit || 100));
+  const hubPenaltyEnabled = Boolean(options.hubPenalty);
+  const hubDegreeThreshold = Math.max(2, Number(options.hubDegreeThreshold || 25));
   const adjacency = graphIndex.adjacency || new Map();
   const seedSet = new Set(seedIndexes);
   const scores = new Map();
   const queue = seedIndexes.map((index) => ({ index, depth: 0, seedWeight: 1 }));
   const visitedDepth = new Map(seedIndexes.map((index) => [index, 0]));
+  let hubSuppressedCount = 0;
 
   while (queue.length) {
     const current = queue.shift();
@@ -367,7 +490,11 @@ function scoreGraphNeighborhood(seedIndexes = [], graphIndex = {}, options = {})
     for (const edge of neighbors) {
       const nextDepth = current.depth + 1;
       const degree = Math.max(1, (adjacency.get(edge.target) || []).length);
-      const contribution = (edge.weight * current.seedWeight) / (nextDepth * Math.sqrt(degree));
+      const degreePenalty = hubPenaltyEnabled
+        ? Math.max(1, Math.log2(degree + 1)) * (degree >= hubDegreeThreshold ? Math.sqrt(degree / hubDegreeThreshold) : 1)
+        : Math.sqrt(degree);
+      if (hubPenaltyEnabled && degree >= hubDegreeThreshold) hubSuppressedCount += 1;
+      const contribution = (edge.weight * current.seedWeight) / (nextDepth * degreePenalty);
       if (!seedSet.has(edge.target) || options.includeSeedPapers) {
         scores.set(edge.target, (scores.get(edge.target) || 0) + contribution);
       }
@@ -378,7 +505,11 @@ function scoreGraphNeighborhood(seedIndexes = [], graphIndex = {}, options = {})
       }
     }
   }
-  return scores;
+  return {
+    scores,
+    expandedCount: scores.size,
+    hubSuppressedCount
+  };
 }
 
 function normalizedScoreMap(entries = []) {
@@ -391,31 +522,68 @@ function normalizedScoreMap(entries = []) {
   return map;
 }
 
+function evidenceBoostScore(paper = {}) {
+  const properties = asObject(paper.properties);
+  const sourceSpans = [
+    paper.sourceSpan,
+    ...asArray(paper.sourceSpans),
+    properties.sourceSpan,
+    ...asArray(properties.sourceSpans)
+  ].filter(Boolean);
+  const quotes = [
+    paper.exactQuote,
+    paper.evidenceQuote,
+    ...asArray(paper.exactQuotes),
+    properties.exactQuote,
+    properties.evidenceQuote,
+    ...asArray(properties.exactQuotes)
+  ].map(compactText).filter(Boolean);
+  const methodEvidence = [
+    paper.methodEvidence,
+    ...asArray(paper.methodEvidenceRecords),
+    properties.methodEvidence,
+    ...asArray(properties.methodEvidenceRecords),
+    ...asArray(paper.evidenceRefs),
+    ...asArray(properties.evidenceRefs)
+  ].filter(Boolean);
+  if (quotes.length && sourceSpans.length) return 1;
+  if (quotes.length || sourceSpans.length || methodEvidence.length) return 0.6;
+  return 0;
+}
+
 function rankedCandidatesForMode(queryCase = {}, corpusIndex = {}, graphIndex = {}, mode = 'hybrid', options = {}) {
+  const features = modeFeatures(mode);
+  const modeOptions = { ...options, ...features };
   const textScores = scoreAllText(queryCase, corpusIndex.papers);
-  const seedIndexes = resolveSeedIndexes(queryCase, textScores, corpusIndex, options);
+  const seedIndexes = resolveSeedIndexes(queryCase, textScores, corpusIndex, graphIndex, modeOptions);
   const seedSet = new Set(seedIndexes);
-  const graphScores = scoreGraphNeighborhood(seedIndexes, graphIndex, options);
+  const graphResult = scoreGraphNeighborhood(seedIndexes, graphIndex, modeOptions);
+  const graphScores = graphResult.scores;
   const sourceAliases = new Set(querySourceAliases(queryCase).map((entry) => entry.toLowerCase()));
   const textNorm = normalizedScoreMap(textScores);
   const graphNorm = normalizedScoreMap([...graphScores.entries()].map(([index, score]) => ({ index, score })));
   const maxCandidates = Math.max(1, Number(options.maxCandidates || 100));
+  let evidenceBoostedCount = 0;
 
   const rows = corpusIndex.papers.map((paper, index) => {
     const rawTextScore = textScores[index]?.score || 0;
     const rawGraphScore = graphScores.get(index) || 0;
-    const score = mode === 'text-only'
+    const boost = features.evidenceBoost ? evidenceBoostScore(paper) : 0;
+    if (boost > 0) evidenceBoostedCount += 1;
+    const baseScore = mode === 'text-only'
       ? rawTextScore
       : mode === 'graph-only'
         ? rawGraphScore
         : ((Number(options.hybridTextWeight ?? 0.55) * (textNorm.get(index) || 0))
           + (Number(options.hybridGraphWeight ?? 0.45) * (graphNorm.get(index) || 0)));
+    const score = baseScore + (features.evidenceBoost ? (Number(options.evidenceBoostWeight ?? 0.15) * boost) : 0);
     return {
       paper,
       index,
       score,
       textScore: rawTextScore,
-      graphScore: rawGraphScore
+      graphScore: rawGraphScore,
+      evidenceBoost: boost
     };
   }).filter((entry) => {
     if (!options.includeSeedPapers && seedSet.has(entry.index)) return false;
@@ -426,6 +594,11 @@ function rankedCandidatesForMode(queryCase = {}, corpusIndex = {}, graphIndex = 
 
   return {
     seedIndexes,
+    diagnostics: {
+      graphExpandedCount: graphResult.expandedCount,
+      hubSuppressedCount: graphResult.hubSuppressedCount,
+      evidenceBoostedCount
+    },
     candidates: rows
       .sort((left, right) => right.score - left.score || left.paper.title.localeCompare(right.paper.title))
       .slice(0, maxCandidates)
@@ -435,6 +608,7 @@ function rankedCandidatesForMode(queryCase = {}, corpusIndex = {}, graphIndex = 
         ablationMode: mode,
         ablationTextScore: entry.textScore,
         ablationGraphScore: entry.graphScore,
+        ablationEvidenceBoost: entry.evidenceBoost,
         sourceProvider: `graph_ablation_${mode}`
       }))
   };
@@ -461,6 +635,11 @@ function summarizeMode(mode = '', results = []) {
     zeroMatchQueries: withGold.filter((result) => !result.firstRelevantRank).length,
     averageRetrievedCount: mean(completed.map((result) => result.retrievedCount || 0)),
     averageSeedCount: mean(completed.map((result) => result.ablation?.seedCount || 0)),
+    averageLatencyMs: mean(completed.map((result) => result.durationMs || 0)),
+    p95LatencyMs: percentile(completed.map((result) => result.durationMs || 0), 0.95),
+    averageExpandedCandidateCount: mean(completed.map((result) => result.ablation?.graphExpandedCount || 0)),
+    averageHubSuppressedCount: mean(completed.map((result) => result.ablation?.hubSuppressedCount || 0)),
+    averageEvidenceBoostedCount: mean(completed.map((result) => result.ablation?.evidenceBoostedCount || 0)),
     metrics: aggregateMetrics(completed)
   };
 }
@@ -474,6 +653,11 @@ function renderSummaryTsv(modeSummaries = []) {
     'zero_match_queries',
     'average_retrieved_count',
     'average_seed_count',
+    'average_latency_ms',
+    'p95_latency_ms',
+    'average_expanded_candidates',
+    'average_hub_suppressed',
+    'average_evidence_boosted',
     ...metricKeys
   ].join('\t')];
   for (const summary of modeSummaries) {
@@ -484,6 +668,11 @@ function renderSummaryTsv(modeSummaries = []) {
       summary.zeroMatchQueries,
       formatNumber(summary.averageRetrievedCount),
       formatNumber(summary.averageSeedCount),
+      formatNumber(summary.averageLatencyMs),
+      formatNumber(summary.p95LatencyMs),
+      formatNumber(summary.averageExpandedCandidateCount),
+      formatNumber(summary.averageHubSuppressedCount),
+      formatNumber(summary.averageEvidenceBoostedCount),
       ...metricKeys.map((key) => formatNumber(summary.metrics?.[key]))
     ].join('\t'));
   }
@@ -504,14 +693,19 @@ function renderMarkdown(report = {}) {
     '',
     '## Mode Summary',
     '',
-    `| Mode | Queries | Zero-match | Avg candidates | Avg seeds | ${metricKeys.join(' | ')} |`,
-    `|---|---:|---:|---:|---:|${metricKeys.map(() => '---:').join('|')}|`,
+    `| Mode | Queries | Zero-match | Avg candidates | Avg seeds | Avg latency ms | P95 latency ms | Avg expanded | Avg hub suppressed | Avg evidence boosted | ${metricKeys.join(' | ')} |`,
+    `|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|${metricKeys.map(() => '---:').join('|')}|`,
     ...(report.modeSummaries || []).map((summary) => [
       summary.mode,
       summary.evaluatedQueries,
       summary.zeroMatchQueries,
       formatNumber(summary.averageRetrievedCount),
       formatNumber(summary.averageSeedCount),
+      formatNumber(summary.averageLatencyMs),
+      formatNumber(summary.p95LatencyMs),
+      formatNumber(summary.averageExpandedCandidateCount),
+      formatNumber(summary.averageHubSuppressedCount),
+      formatNumber(summary.averageEvidenceBoostedCount),
       ...metricKeys.map((key) => formatNumber(summary.metrics?.[key]))
     ].join(' | ').replace(/^/, '| ').replace(/$/, ' |')),
     '',
@@ -648,7 +842,10 @@ export async function runGraphRankingAblation(inputOptions = {}) {
             seedCount: ranked.seedIndexes.length,
             seedPaperIds: ranked.seedIndexes.map((index) => corpusIndex.papers[index]?.id).filter(Boolean),
             graphEdgeCount: graphIndex.edgeCount,
-            graphNodeCount: graphIndex.nodeCount
+            graphNodeCount: graphIndex.nodeCount,
+            graphExpandedCount: ranked.diagnostics.graphExpandedCount,
+            hubSuppressedCount: ranked.diagnostics.hubSuppressedCount,
+            evidenceBoostedCount: ranked.diagnostics.evidenceBoostedCount
           }
         };
         rows.push(row);

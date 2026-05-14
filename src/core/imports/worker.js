@@ -8,6 +8,7 @@ import {
   markImportTaskStage,
   quarantineImportTasks,
   recoverFailedImportTasks,
+  reserveImportTaskBatch,
   reserveNextImportTask,
   updateImportTaskProgress
 } from '../../storage/import-store.js';
@@ -25,6 +26,7 @@ const DEFAULT_IMPORT_WORKER_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_IMPORT_TASK_TIMEOUT_MS = 45 * 60 * 1000;
 const DEFAULT_IMPORT_PENDING_TIMEOUT_MS = 48 * 60 * 60 * 1000;
 const DEFAULT_IMPORT_PREPARSE_CONCURRENCY = 4;
+const DEFAULT_IMPORT_BATCH_MAX_TASKS = 1;
 const importPreparseInFlight = new Map();
 
 function isLockTimeout(error) {
@@ -63,6 +65,40 @@ function resolveImportPendingTimeoutMs(options = {}) {
     return DEFAULT_IMPORT_PENDING_TIMEOUT_MS;
   }
   return Math.max(60_000, Math.floor(raw));
+}
+
+function resolveBooleanOption(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function resolvePositiveIntegerOption(value, fallback, minimum = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < minimum) return fallback;
+  return Math.floor(numeric);
+}
+
+function resolveOptionalPositiveIntegerOption(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.floor(numeric);
+}
+
+function resolveImportBatchOptions(options = {}) {
+  const maxTasks = resolvePositiveIntegerOption(
+    options.importBatchMaxTasks ?? options.batchMaxTasks,
+    DEFAULT_IMPORT_BATCH_MAX_TASKS
+  );
+  return {
+    enabled: resolveBooleanOption(options.importBatchEnabled ?? options.batchEnabled, false),
+    maxTasks,
+    maxFiles: resolveOptionalPositiveIntegerOption(options.importBatchMaxFiles ?? options.batchMaxFiles),
+    maxBytes: resolveOptionalPositiveIntegerOption(options.importBatchMaxBytes ?? options.batchMaxBytes)
+  };
 }
 
 function getImportTaskHeartbeatMs(task = {}) {
@@ -171,6 +207,22 @@ function createTaskProgressReporter(rootPath, taskId, stage) {
     },
     async flush() {
       await chain;
+    }
+  };
+}
+
+function createBatchProgressReporter(rootPath, taskIds = [], stage, batchId) {
+  const reporters = taskIds.map((taskId) => createTaskProgressReporter(rootPath, taskId, stage));
+  return {
+    async report(event = {}) {
+      await Promise.all(reporters.map((reporter) => reporter.report({
+        ...event,
+        currentStep: event.currentStep || event.phase || `batch ${batchId}`,
+        message: event.message || event.label || `Running ${stage} as import batch ${batchId}`
+      })));
+    },
+    async flush() {
+      await Promise.all(reporters.map((reporter) => reporter.flush()));
     }
   };
 }
@@ -513,6 +565,250 @@ async function processImportTask(rootPath, task, options = {}) {
   return committed;
 }
 
+function uniqueSortedStrings(values = []) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )].sort();
+}
+
+async function materializeImportTaskForBatch(rootPath, task, options = {}, context = {}) {
+  await waitForImportTaskPreparse(rootPath, task.id);
+  let inputPath = await resolveTaskInputPath(rootPath, task);
+  const materializeInputPath = task?.sourcesDir || inputPath;
+  const sharedOptions = {
+    ...options,
+    rootPath,
+    quiet: true,
+    name: context.corpusName,
+    importTaskId: task.id,
+    importBatchId: context.batchId,
+    importBatchTaskIds: context.batchTaskIds
+  };
+  const result = {
+    ...(task.result || {})
+  };
+
+  await assertImportTaskStoredFilesExist(task);
+  await markImportTaskStage(rootPath, task.id, 'materialize', `stage materialize batch ${context.batchId}`);
+  const materializeProgress = createTaskProgressReporter(rootPath, task.id, 'materialize');
+  const materialized = await materializeCorpus(materializeInputPath, {
+    ...sharedOptions,
+    mergeWithExistingManifestSources: true,
+    includeActiveImportSources: false,
+    includePersistentImportSources: false,
+    onProgress(event = {}) {
+      void materializeProgress.report(event);
+    }
+  });
+  await materializeProgress.report({
+    stagePercent: 100,
+    currentStep: `batch ${context.batchId} materialization complete`,
+    message: 'Prepared paper snapshots',
+    processedUnits: materialized?.meta?.paperCount || materialized?.result?.paperCount || 0,
+    totalUnits: materialized?.meta?.paperCount || materialized?.result?.paperCount || 0
+  });
+  await materializeProgress.flush();
+  result.materialized = {
+    reused: Boolean(materialized?.reused),
+    paperCount: materialized?.meta?.paperCount || 0,
+    timings: materialized?.timings || null,
+    batchId: context.batchId
+  };
+
+  inputPath = await resolveTaskInputPath(rootPath, task);
+  const changedSourceKeys = await resolveTaskChangedSourceKeys(rootPath, task);
+  return {
+    task,
+    inputPath,
+    changedSourceKeys,
+    result
+  };
+}
+
+async function failBatchEntries(rootPath, entries = [], error) {
+  const failedTaskIds = [];
+  for (const entry of entries) {
+    const task = entry?.task || entry;
+    if (!task?.id) continue;
+    await failImportTask(rootPath, task.id, error);
+    failedTaskIds.push(task.id);
+  }
+  return failedTaskIds;
+}
+
+async function processImportTaskBatch(rootPath, batch, options = {}) {
+  const tasks = Array.isArray(batch?.tasks) ? batch.tasks.filter(Boolean) : [];
+  if (!tasks.length) {
+    return {
+      processed: false,
+      reason: 'idle'
+    };
+  }
+  if (tasks.length === 1) {
+    const result = await processImportTask(rootPath, tasks[0], options);
+    return {
+      processed: true,
+      failed: false,
+      taskId: tasks[0].id,
+      completedTaskIds: [tasks[0].id],
+      failedTaskIds: [],
+      batchId: batch?.batchId || null,
+      batchTaskIds: [tasks[0].id],
+      result
+    };
+  }
+
+  const batchId = batch.batchId;
+  const batchTaskIds = tasks.map((task) => task.id);
+  const corpusMeta = await loadCorpusMeta(rootPath);
+  const context = {
+    batchId,
+    batchTaskIds,
+    corpusName: corpusMeta.name
+  };
+  const materializedEntries = [];
+  const failedTaskIds = [];
+
+  for (const task of tasks) {
+    try {
+      materializedEntries.push(await materializeImportTaskForBatch(rootPath, task, options, context));
+    } catch (error) {
+      await failImportTask(rootPath, task.id, error);
+      failedTaskIds.push(task.id);
+    }
+  }
+
+  if (!materializedEntries.length) {
+    return {
+      processed: true,
+      failed: true,
+      batchId,
+      batchTaskIds,
+      taskId: batchTaskIds[0] || null,
+      completedTaskIds: [],
+      failedTaskIds,
+      error: 'All import batch tasks failed during materialize'
+    };
+  }
+
+  const completedTaskIds = materializedEntries.map((entry) => entry.task.id);
+  const batchChangedSourceKeys = uniqueSortedStrings(
+    materializedEntries.flatMap((entry) => entry.changedSourceKeys)
+  );
+  const inputPath = materializedEntries[0].inputPath;
+  const sharedOptions = {
+    ...options,
+    rootPath,
+    quiet: true,
+    name: corpusMeta.name,
+    importBatchId: batchId,
+    importBatchTaskIds: batchTaskIds
+  };
+  let optimized = null;
+  let committed = null;
+
+  try {
+    await Promise.all(materializedEntries.map((entry) => (
+      markImportTaskStage(rootPath, entry.task.id, 'llm-optimize', `stage llm-optimize batch ${batchId}`)
+    )));
+    const llmProgress = createBatchProgressReporter(rootPath, completedTaskIds, 'llm-optimize', batchId);
+    optimized = await llmOptimizeCorpus(inputPath, {
+      ...sharedOptions,
+      changedSourceKeys: batchChangedSourceKeys,
+      onProgress(event = {}) {
+        void llmProgress.report(event);
+      }
+    });
+    await llmProgress.report({
+      stagePercent: 100,
+      currentStep: `batch ${batchId} llm optimization complete`,
+      message: 'Completed LLM optimization'
+    });
+    await llmProgress.flush();
+
+    await Promise.all(materializedEntries.map((entry) => (
+      markImportTaskStage(rootPath, entry.task.id, 'fast-commit', `stage fast-commit batch ${batchId}`)
+    )));
+    const fastCommitProgress = createBatchProgressReporter(rootPath, completedTaskIds, 'fast-commit', batchId);
+    committed = await fastCommitCorpus(inputPath, {
+      ...sharedOptions,
+      changedSourceKeys: batchChangedSourceKeys,
+      mode: 'import-batch',
+      onProgress(event = {}) {
+        void fastCommitProgress.report(event);
+      }
+    });
+    await fastCommitProgress.report({
+      stagePercent: 100,
+      currentStep: `batch ${batchId} fast commit complete`,
+      message: 'Applied graph update'
+    });
+    await fastCommitProgress.flush();
+  } catch (error) {
+    const sharedStageFailedTaskIds = await failBatchEntries(rootPath, materializedEntries, error);
+    return {
+      processed: true,
+      failed: true,
+      batchId,
+      batchTaskIds,
+      taskId: batchTaskIds[0] || null,
+      completedTaskIds: [],
+      failedTaskIds: uniqueSortedStrings([...failedTaskIds, ...sharedStageFailedTaskIds]),
+      error: error.message
+    };
+  }
+
+  for (const entry of materializedEntries) {
+    const taskResult = {
+      ...entry.result,
+      optimized: {
+        reused: Boolean(optimized?.reused),
+        batchId,
+        batchChangedSourceKeys
+      },
+      fastCommitted: {
+        reused: Boolean(committed?.reused),
+        paperCount: committed?.meta?.paperCount || 0,
+        nodeCount: committed?.meta?.nodeCount || 0,
+        relationshipCount: committed?.meta?.relationshipCount || 0,
+        batchId,
+        batchTaskIds,
+        changedSourceKeys: entry.changedSourceKeys,
+        batchChangedSourceKeys
+      },
+      authoritativeSync: {
+        status: committed?.meta?.authoritativeSyncStatus || 'pending',
+        jobId: committed?.syncJob?.jobId || null
+      },
+      batch: {
+        batchId,
+        batchTaskIds,
+        completedTaskIds,
+        failedTaskIds,
+        changedSourceKeys: batchChangedSourceKeys
+      }
+    };
+    await completeImportTask(rootPath, entry.task.id, taskResult);
+    await appendImportTaskLog(rootPath, entry.task.id, {
+      level: 'info',
+      message: `completed import task in batch ${batchId}`
+    });
+  }
+
+  return {
+    processed: true,
+    failed: failedTaskIds.length > 0,
+    batchId,
+    batchTaskIds,
+    taskId: completedTaskIds[0] || batchTaskIds[0] || null,
+    completedTaskIds,
+    failedTaskIds,
+    result: committed
+  };
+}
+
 export async function runImportQueueOnce(rootPath, options = {}) {
   const { workerLockPath } = getImportPaths(rootPath);
   const lockTimeoutMs = Math.max(250, Number(options.lockTimeoutMs || DEFAULT_IMPORT_WORKER_LOCK_TIMEOUT_MS));
@@ -523,8 +819,15 @@ export async function runImportQueueOnce(rootPath, options = {}) {
       const timedOutTaskIds = await recoverTimedOutImportTasks(rootPath, options);
       const failedRecovery = await recoverFailedImportTasks(rootPath, options);
       const quarantineResult = await quarantineStalePendingImportTasks(rootPath, options);
-      const reserved = await reserveNextImportTask(rootPath);
-      if (!reserved?.task) {
+      const batchOptions = resolveImportBatchOptions(options);
+      const useBatchReserve = batchOptions.enabled && batchOptions.maxTasks > 1;
+      const reserved = useBatchReserve
+        ? await reserveImportTaskBatch(rootPath, batchOptions)
+        : await reserveNextImportTask(rootPath);
+      const reservedTasks = Array.isArray(reserved?.tasks)
+        ? reserved.tasks.filter(Boolean)
+        : (reserved?.task ? [reserved.task] : []);
+      if (!reservedTasks.length) {
         return {
           processed: false,
           reason: quarantineResult?.count
@@ -539,20 +842,32 @@ export async function runImportQueueOnce(rootPath, options = {}) {
       }
 
       try {
-        void startQueuedImportPreparse(rootPath, options, reserved.task.id).catch(() => {});
-        const result = await processImportTask(rootPath, reserved.task, options);
+        void startQueuedImportPreparse(rootPath, options, reservedTasks[0]?.id || '').catch(() => {});
+        if (useBatchReserve) {
+          return await processImportTaskBatch(rootPath, reserved, options);
+        }
+        const result = await processImportTask(rootPath, reservedTasks[0], options);
         return {
           processed: true,
           failed: false,
-          taskId: reserved.task.id,
+          taskId: reservedTasks[0].id,
+          completedTaskIds: [reservedTasks[0].id],
+          failedTaskIds: [],
           result
         };
       } catch (error) {
-        await failImportTask(rootPath, reserved.task.id, error);
+        for (const task of reservedTasks) {
+          await failImportTask(rootPath, task.id, error);
+        }
+        const failedTaskIds = reservedTasks.map((task) => task.id);
         return {
           processed: true,
           failed: true,
-          taskId: reserved.task.id,
+          taskId: reservedTasks[0]?.id || null,
+          batchId: reserved?.batchId || null,
+          batchTaskIds: reserved?.batchTaskIds || failedTaskIds,
+          completedTaskIds: [],
+          failedTaskIds,
           error: error.message
         };
       }
@@ -579,10 +894,16 @@ export async function runImportQueueUntilIdle(rootPath, options = {}) {
   for (let index = 0; index < maxPasses; index += 1) {
     const result = await runImportQueueOnce(rootPath, options);
     if (!result.processed) break;
-    if (result.failed) {
+    const resultCompletedTaskIds = Array.isArray(result.completedTaskIds) && result.completedTaskIds.length
+      ? result.completedTaskIds
+      : (!result.failed && result.taskId ? [result.taskId] : []);
+    const resultFailedTaskIds = Array.isArray(result.failedTaskIds) && result.failedTaskIds.length
+      ? result.failedTaskIds
+      : (result.failed ? [result.taskId].filter(Boolean) : []);
+    completedTaskIds.push(...resultCompletedTaskIds);
+    failedCount += resultFailedTaskIds.length;
+    if (result.failed && !resultFailedTaskIds.length) {
       failedCount += 1;
-    } else if (result.taskId) {
-      completedTaskIds.push(result.taskId);
     }
   }
 
@@ -649,9 +970,21 @@ export function startImportWorker(options = {}) {
           continue;
         }
         if (result.failed) {
-          logger.error?.(`[imports] ${result.corpusName || result.rootPath}: task ${result.taskId} failed (${result.error})`);
-        } else {
-          logger.log?.(`[imports] ${result.corpusName || result.rootPath}: completed task ${result.taskId}`);
+          const failedCount = Array.isArray(result.failedTaskIds) && result.failedTaskIds.length ? result.failedTaskIds.length : 1;
+          logger.error?.(
+            `[imports] ${result.corpusName || result.rootPath}: `
+            + `${result.batchId ? `batch ${result.batchId}` : `task ${result.taskId}`} failed ${failedCount} task(s)`
+            + (result.error ? ` (${result.error})` : '')
+          );
+        }
+        const completedCount = Array.isArray(result.completedTaskIds) && result.completedTaskIds.length
+          ? result.completedTaskIds.length
+          : (!result.failed && result.taskId ? 1 : 0);
+        if (completedCount) {
+          logger.log?.(
+            `[imports] ${result.corpusName || result.rootPath}: completed `
+            + (result.batchId ? `batch ${result.batchId} (${completedCount} task(s))` : `task ${result.taskId}`)
+          );
         }
       }
     } catch (error) {

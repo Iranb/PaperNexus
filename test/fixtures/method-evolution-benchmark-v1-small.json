@@ -1,0 +1,185 @@
+{
+  "benchmarkVersion": "method-evolution-benchmark-v1",
+  "field": "retrieval-augmented generation and dense retrieval",
+  "scope": "small gold fixture",
+  "source": {
+    "type": "local-gold-fixture",
+    "title": "Small RAG and dense retrieval method lineage fixture",
+    "url": "local-fixture"
+  },
+  "nodes": [
+    {
+      "goldId": "g:tfidf",
+      "canonicalName": "TF-IDF Retrieval",
+      "aliases": ["term frequency inverse document frequency retrieval"],
+      "year": 1972
+    },
+    {
+      "goldId": "g:bm25",
+      "canonicalName": "BM25",
+      "aliases": ["Okapi BM25"],
+      "year": 1994
+    },
+    {
+      "goldId": "g:bert",
+      "canonicalName": "BERT",
+      "aliases": ["Bidirectional Encoder Representations from Transformers"],
+      "year": 2018
+    },
+    {
+      "goldId": "g:dpr",
+      "canonicalName": "Dense Passage Retrieval",
+      "aliases": ["DPR"],
+      "year": 2020
+    },
+    {
+      "goldId": "g:rag",
+      "canonicalName": "Retrieval-Augmented Generation",
+      "aliases": ["RAG"],
+      "year": 2020
+    },
+    {
+      "goldId": "g:colbert",
+      "canonicalName": "ColBERT",
+      "aliases": ["Contextualized Late Interaction over BERT"],
+      "year": 2020
+    },
+    {
+      "goldId": "g:rerank",
+      "canonicalName": "Cross-Encoder Reranking",
+      "aliases": ["cross encoder reranker"],
+      "year": 2019
+    },
+    {
+      "goldId": "g:hybrid",
+      "canonicalName": "Hybrid Sparse-Dense Retrieval",
+      "aliases": ["hybrid retrieval"],
+      "year": 2021
+    },
+    {
+      "goldId": "g:realm",
+      "canonicalName": "REALM",
+      "aliases": ["Retrieval-Augmented Language Model Pre-Training"],
+      "year": 2020
+    },
+    {
+      "goldId": "g:atlas",
+      "canonicalName": "Atlas",
+      "aliases": ["few-shot learning with retrieval augmented language models"],
+      "year": 2022
+    },
+    {
+      "goldId": "g:replug",
+      "canonicalName": "REPLUG",
+      "aliases": ["retrieval plugged language model"],
+      "year": 2023
+    },
+    {
+      "goldId": "g:ambiguous",
+      "canonicalName": "Ambiguous Retrieval Adapter",
+      "aliases": ["retrieval adapter"],
+      "year": 2023
+    }
+  ],
+  "edges": [
+    {
+      "sourceGoldId": "g:bm25",
+      "targetGoldId": "g:tfidf",
+      "edgeType": "IMPROVES_METHOD",
+      "acceptedAlternativeTypes": ["EXTENDS_METHOD"],
+      "requiredBottleneckDimension": "lexical-matching"
+    },
+    {
+      "sourceGoldId": "g:dpr",
+      "targetGoldId": "g:bert",
+      "edgeType": "USES_COMPONENT_METHOD",
+      "acceptedAlternativeTypes": ["ADAPTS_METHOD"],
+      "requiredBottleneckDimension": "semantic-matching"
+    },
+    {
+      "sourceGoldId": "g:rag",
+      "targetGoldId": "g:dpr",
+      "edgeType": "USES_COMPONENT_METHOD",
+      "acceptedAlternativeTypes": ["ADAPTS_METHOD"],
+      "requiredBottleneckDimension": "knowledge-grounding"
+    },
+    {
+      "sourceGoldId": "g:colbert",
+      "targetGoldId": "g:bert",
+      "edgeType": "ADAPTS_METHOD",
+      "acceptedAlternativeTypes": ["USES_COMPONENT_METHOD"],
+      "requiredBottleneckDimension": "token-interaction"
+    },
+    {
+      "sourceGoldId": "g:rerank",
+      "targetGoldId": "g:bert",
+      "edgeType": "USES_COMPONENT_METHOD",
+      "acceptedAlternativeTypes": ["ADAPTS_METHOD"],
+      "requiredBottleneckDimension": "ranking-quality"
+    },
+    {
+      "sourceGoldId": "g:hybrid",
+      "targetGoldId": "g:bm25",
+      "edgeType": "ADAPTS_METHOD",
+      "acceptedAlternativeTypes": ["EXTENDS_METHOD"],
+      "requiredBottleneckDimension": "lexical-semantic-recall"
+    },
+    {
+      "sourceGoldId": "g:hybrid",
+      "targetGoldId": "g:dpr",
+      "edgeType": "ADAPTS_METHOD",
+      "acceptedAlternativeTypes": ["USES_COMPONENT_METHOD"],
+      "requiredBottleneckDimension": "lexical-semantic-recall"
+    },
+    {
+      "sourceGoldId": "g:realm",
+      "targetGoldId": "g:bert",
+      "edgeType": "ADAPTS_METHOD",
+      "acceptedAlternativeTypes": ["EXTENDS_METHOD"],
+      "requiredBottleneckDimension": "parametric-memory"
+    },
+    {
+      "sourceGoldId": "g:atlas",
+      "targetGoldId": "g:rag",
+      "edgeType": "EXTENDS_METHOD",
+      "acceptedAlternativeTypes": ["IMPROVES_METHOD"],
+      "requiredBottleneckDimension": "few-shot-knowledge"
+    },
+    {
+      "sourceGoldId": "g:replug",
+      "targetGoldId": "g:rag",
+      "edgeType": "ADAPTS_METHOD",
+      "acceptedAlternativeTypes": ["USES_COMPONENT_METHOD"],
+      "requiredBottleneckDimension": "black-box-lm"
+    },
+    {
+      "sourceGoldId": "g:ambiguous",
+      "targetGoldId": "g:rag",
+      "edgeType": "ADAPTS_METHOD",
+      "acceptedAlternativeTypes": ["COMPARES_METHOD", "BACKGROUND"],
+      "requiredBottleneckDimension": "ambiguous-relation"
+    }
+  ],
+  "chains": [
+    {
+      "chainId": "chain:rag-dpr-bert",
+      "goldNodeIds": ["g:rag", "g:dpr", "g:bert"],
+      "semanticDescription": "RAG uses dense retrieval, which builds on BERT encoders."
+    },
+    {
+      "chainId": "chain:atlas-rag-dpr-bert",
+      "goldNodeIds": ["g:atlas", "g:rag", "g:dpr", "g:bert"],
+      "semanticDescription": "Atlas extends RAG-style retrieval augmentation over dense retrievers and BERT-style encoders."
+    },
+    {
+      "chainId": "chain:hybrid-bm25-tfidf",
+      "goldNodeIds": ["g:hybrid", "g:bm25", "g:tfidf"],
+      "semanticDescription": "Hybrid retrieval preserves lexical retrieval lineage from BM25 and TF-IDF."
+    },
+    {
+      "chainId": "chain:replug-rag-dpr",
+      "goldNodeIds": ["g:replug", "g:rag", "g:dpr"],
+      "semanticDescription": "REPLUG adapts retrieval augmentation while retaining dense retrieval dependencies."
+    }
+  ]
+}

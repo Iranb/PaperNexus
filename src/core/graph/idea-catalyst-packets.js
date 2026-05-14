@@ -147,6 +147,45 @@ function buildCrossDomainQueries(candidateDomains, params = {}, potentialReport 
   });
 }
 
+function mergeEvidenceBearingBridgeDomains(crossDomainQueries, evidenceContext = {}, params = {}, maxDomains = crossDomainQueries.length) {
+  const seenDomains = new Set(crossDomainQueries.map((entry) => entry.domain).filter(Boolean));
+  const supplementalQueries = [];
+
+  for (const [domain, paths] of evidenceContext.pathsByDomain?.entries?.() || []) {
+    if (!domain || seenDomains.has(domain) || !asArray(paths).length) continue;
+    seenDomains.add(domain);
+    const sharedMechanisms = unique(
+      asArray(paths).flatMap((path) => asArray(path.matched_mechanisms || path.matchedMechanisms))
+    ).slice(0, 8);
+    const supportingPapers = unique(
+      asArray(paths)
+        .flatMap((path) => asArray(path.source_spans || path.sourceSpans))
+        .map((span) => span.paper_title || span.paperTitle)
+        .filter(Boolean)
+    ).slice(0, 8);
+    supplementalQueries.push({
+      domain,
+      domain_rationale: `Include ${domain} because bridge retrieval found ${paths.length} source-backed path(s) for ${params.targetDomain}.`,
+      queries: unique([
+        normalizeLabel(`${domain} ${params.abstractChallenge}`),
+        normalizeLabel(`${domain} ${params.fineGrainedDomain} ${params.abstractChallenge}`),
+        normalizeLabel(`${domain} ${params.coarseGrainedDomain} ${params.abstractChallenge}`),
+        ...sharedMechanisms.map((mechanism) => normalizeLabel(`${domain} ${mechanism} ${params.abstractChallenge}`))
+      ].filter(Boolean)).slice(0, 5),
+      shared_mechanisms: sharedMechanisms,
+      supporting_papers: supportingPapers
+    });
+  }
+
+  if (!supplementalQueries.length) return crossDomainQueries.slice(0, maxDomains);
+
+  const baseAllowance = Math.max(0, maxDomains - supplementalQueries.length);
+  return [
+    ...crossDomainQueries.slice(0, baseAllowance),
+    ...supplementalQueries
+  ].slice(0, maxDomains);
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -217,11 +256,21 @@ function buildEvidenceRefsFromPath(candidate = {}) {
 
   const snippetRefs = asArray(candidate.snippets)
     .map((snippet) => buildEvidenceRef({
-      ref_type: 'evidence-snippet',
+      ref_type: snippet.nodeType === 'RelationshipEvidence' || snippet.node_type === 'RelationshipEvidence'
+        ? 'relationship-evidence'
+        : 'evidence-snippet',
       node_id: snippet.nodeId || snippet.node_id,
+      node_type: snippet.nodeType || snippet.node_type || null,
       node_name: snippet.nodeName || snippet.node_name,
       role: 'evidence-snippet',
-      source: candidate.pathId || candidate.path_id || 'bridge-path'
+      source: snippet.relationshipId || snippet.relationship_id || candidate.pathId || candidate.path_id || 'bridge-path',
+      evidence_text: snippet.evidenceText
+        || snippet.evidence_text
+        || snippet.sourceSpan?.evidence_text
+        || snippet.sourceSpan?.evidenceText
+        || snippet.source_span?.evidence_text
+        || snippet.source_span?.evidenceText
+        || ''
     }))
     .filter((entry) => entry.node_id);
 
@@ -231,6 +280,7 @@ function buildEvidenceRefsFromPath(candidate = {}) {
 function normalizeExplicitSourceSpan(span, fallback = {}) {
   const nodeId = fallback.snippet_node_id || fallback.node_id || span?.nodeId || span?.node_id || null;
   const spanId = span?.span_id || span?.spanId || span?.id || (nodeId ? `span:${nodeId}` : null);
+  const sourceSpanAvailable = span?.source_span_available ?? span?.sourceSpanAvailable ?? fallback.source_span_available;
   return {
     span_id: spanId,
     source_type: span?.source_type || span?.sourceType || 'source_span',
@@ -240,7 +290,7 @@ function normalizeExplicitSourceSpan(span, fallback = {}) {
     section_heading: span?.section_heading || span?.sectionHeading || fallback.section_heading || '',
     section_role: span?.section_role || span?.sectionRole || fallback.section_role || '',
     evidence_text: span?.evidence_text || span?.evidenceText || span?.text || fallback.evidence_text || '',
-    source_span_available: true,
+    source_span_available: sourceSpanAvailable === undefined ? true : Boolean(sourceSpanAvailable),
     explicit_or_inferred: span?.explicit_or_inferred || span?.explicitOrInferred || fallback.explicit_or_inferred || 'explicit',
     confidence: Number(span?.confidence ?? fallback.confidence ?? 0)
   };
@@ -286,6 +336,47 @@ function buildSnippetSourceSpans(snippetNode) {
   ];
 }
 
+function buildInlineSnippetSourceSpans(snippet = {}) {
+  const fallback = {
+    snippet_node_id: snippet.nodeId || snippet.node_id || null,
+    paper_id: snippet.paperId || snippet.paper_id || null,
+    paper_title: snippet.paperTitle || snippet.paper_title || null,
+    section_heading: snippet.sectionHeading || snippet.section_heading || '',
+    section_role: snippet.sectionRole || snippet.section_role || '',
+    evidence_text: snippet.evidenceText || snippet.evidence_text || snippet.nodeName || snippet.node_name || '',
+    explicit_or_inferred: snippet.explicitOrInferred || snippet.explicit_or_inferred || 'explicit',
+    source_span_available: false,
+    confidence: Number(snippet.confidence || 0)
+  };
+  const explicitSpans = [
+    snippet.sourceSpan,
+    snippet.source_span,
+    ...asArray(snippet.sourceSpans),
+    ...asArray(snippet.source_spans)
+  ].filter(Boolean);
+
+  if (explicitSpans.length) {
+    return explicitSpans.map((span) => normalizeExplicitSourceSpan(span, fallback));
+  }
+  if (!fallback.evidence_text && !fallback.paper_title) return [];
+
+  return [
+    {
+      span_id: fallback.snippet_node_id ? `snippet:${fallback.snippet_node_id}` : null,
+      source_type: snippet.sourceType || snippet.source_type || 'inline_snippet',
+      snippet_node_id: fallback.snippet_node_id,
+      paper_id: fallback.paper_id,
+      paper_title: fallback.paper_title,
+      section_heading: fallback.section_heading,
+      section_role: fallback.section_role,
+      evidence_text: fallback.evidence_text,
+      source_span_available: false,
+      explicit_or_inferred: fallback.explicit_or_inferred,
+      confidence: fallback.confidence
+    }
+  ].filter((span) => span.span_id || span.evidence_text || span.paper_title);
+}
+
 function collectSourceSpansFromPath(graph, candidate = {}) {
   const snippetNodeIds = unique([
     ...normalizePathTrace(candidate.path)
@@ -295,9 +386,14 @@ function collectSourceSpansFromPath(graph, candidate = {}) {
       .map((snippet) => snippet.nodeId || snippet.node_id)
       .filter(Boolean)
   ]);
+  const inlineSnippetSpans = asArray(candidate.snippets)
+    .flatMap((snippet) => buildInlineSnippetSourceSpans(snippet));
 
   return uniqueBy(
-    snippetNodeIds.flatMap((nodeId) => buildSnippetSourceSpans(graph.getNode(nodeId))),
+    [
+      ...snippetNodeIds.flatMap((nodeId) => buildSnippetSourceSpans(graph.getNode(nodeId))),
+      ...inlineSnippetSpans
+    ],
     (span) => span.span_id || `${span.snippet_node_id}:${span.evidence_text}`
   );
 }
@@ -366,7 +462,10 @@ function normalizeCandidateBridgePath(graph, candidate = {}) {
     snippets: asArray(candidate.snippets).map((snippet) => ({
       ...snippet,
       node_id: snippet.nodeId || snippet.node_id || null,
-      node_name: snippet.nodeName || snippet.node_name || ''
+      node_name: snippet.nodeName || snippet.node_name || '',
+      node_type: snippet.nodeType || snippet.node_type || null,
+      relationship_id: snippet.relationshipId || snippet.relationship_id || null,
+      source_span: snippet.sourceSpan || snippet.source_span || null
     })),
     path_trace: normalizePathTrace(candidate.path),
     evidence_chain_refs: evidenceRefs,
@@ -570,7 +669,10 @@ function buildSourceDomainAnalyses(crossDomainQueries, takeaways, potentialRepor
       source_domain: entry.domain,
       domain_rationale: entry.domain_rationale,
       shared_mechanisms: entry.shared_mechanisms,
-      supporting_papers: unique(domainTakeaways.flatMap((takeaway) => takeaway.supporting_papers || [])).slice(0, 8),
+      supporting_papers: unique([
+        ...domainTakeaways.flatMap((takeaway) => takeaway.supporting_papers || []),
+        ...sourceSpans.map((span) => span.paper_title).filter(Boolean)
+      ]).slice(0, 8),
       takeaways: domainTakeaways,
       domain_distance: Number(ranking?.domainDistance || 0),
       interdisciplinary_potential: Number(ranking?.interdisciplinaryPotentialScore || 0),
@@ -604,7 +706,10 @@ function buildIdeaFragments(sourceDomainAnalyses, ranking, params = {}) {
     ));
 
   return rankedByDomain
-    .filter(({ analysis }) => analysis.takeaways.length > 0)
+    .filter(({ analysis }) => (
+      analysis.takeaways.length > 0
+      || (asArray(analysis.bridge_path_ids).length > 0 && asArray(analysis.source_spans).length > 0)
+    ))
     .slice(0, 3)
     .map(({ analysis, ranked }, index) => {
       const topTakeaway = analysis.takeaways[0];
@@ -687,7 +792,14 @@ function buildInterdisciplinaryRanking(report) {
 
 function buildRequisitionReport(crossDomainQueries, sourceDomainAnalyses, params = {}, ideaFragments = []) {
   const missingDomains = crossDomainQueries
-    .filter((entry) => !sourceDomainAnalyses.some((analysis) => analysis.source_domain === entry.domain && analysis.takeaways.length > 0))
+    .filter((entry) => !sourceDomainAnalyses.some((analysis) => (
+      analysis.source_domain === entry.domain
+      && (
+        analysis.takeaways.length > 0
+        || asArray(analysis.bridge_path_ids).length > 0
+        || asArray(analysis.source_spans).length > 0
+      )
+    )))
     .map((entry) => entry.domain);
   const missingEvidenceTypes = new Set();
 
@@ -741,7 +853,7 @@ export function buildIdeaCatalystPacketBundle(graph, catalystResult = {}, params
     ? params.mechanisms
     : (Array.isArray(catalystResult.targetMechanisms) ? catalystResult.targetMechanisms : []);
   const limit = Math.max(1, Number(params.limit || 5));
-  const numSourceDomains = Math.max(1, Number(params.numSourceDomains || 3));
+  const numSourceDomains = Math.max(1, Math.min(12, Number(params.numSourceDomains || 3)));
   const relevanceThreshold = Math.max(1, Number(params.relevanceThreshold || 3));
   const domainDistanceMatrix = catalystResult.domainDistanceMatrix
     || catalystResult.domain_distance_matrix
@@ -764,7 +876,7 @@ export function buildIdeaCatalystPacketBundle(graph, catalystResult = {}, params
     agnosticChallenges: [abstractChallenge],
     limit: Math.max(limit, numSourceDomains)
   });
-  const crossDomainQueries = buildCrossDomainQueries(
+  const baseCrossDomainQueries = buildCrossDomainQueries(
     (catalystResult.candidateDomains || []).slice(0, Math.max(limit, numSourceDomains)),
     {
       targetDomain,
@@ -775,6 +887,12 @@ export function buildIdeaCatalystPacketBundle(graph, catalystResult = {}, params
     },
     potentialReport
   ).slice(0, numSourceDomains);
+  const crossDomainQueries = mergeEvidenceBearingBridgeDomains(baseCrossDomainQueries, evidenceContext, {
+    targetDomain,
+    fineGrainedDomain,
+    coarseGrainedDomain,
+    abstractChallenge
+  }, numSourceDomains);
   const takeawayReport = extractTakeawaysFromBridgeNodes(graph, {
     targetDomain,
     agnosticChallenges: [abstractChallenge],

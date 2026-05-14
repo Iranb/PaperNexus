@@ -1,0 +1,54 @@
+{
+  "nodes": [
+    {
+      "id": "paper:a",
+      "type": "paper",
+      "title": "Shared Canonical Paper A",
+      "canonicalId": "paper:shared",
+      "identifiers": {
+        "doi": "10.1000/a"
+      }
+    },
+    {
+      "id": "paper:b",
+      "type": "paper",
+      "title": "Shared Canonical Paper B",
+      "canonicalId": "paper:shared",
+      "identifiers": {
+        "doi": "10.1000/b"
+      }
+    },
+    {
+      "id": "paper:title-only-1",
+      "type": "paper",
+      "title": "Title Only Merge Candidate"
+    },
+    {
+      "id": "paper:title-only-2",
+      "type": "paper",
+      "title": "Title Only Merge Candidate"
+    },
+    {
+      "id": "task:orphan",
+      "type": "task"
+    },
+    {
+      "id": "method:transformer",
+      "type": "method",
+      "name": "Transformer Block",
+      "canonicalId": "method:transformer",
+      "properties": {
+        "methodAliases": ["Attention"]
+      }
+    },
+    {
+      "id": "method:attention",
+      "type": "method",
+      "name": "Attention Mechanism",
+      "canonicalId": "method:attention",
+      "properties": {
+        "methodAliases": ["Attention"]
+      }
+    }
+  ]
+}

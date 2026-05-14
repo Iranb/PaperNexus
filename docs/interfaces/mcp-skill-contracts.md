@@ -60,6 +60,18 @@ The 2026-05-12 harness work is internal/additive:
 
 These changes do not add, remove, or rename public MCP tools or skill wrapper commands.
 
+## Internal Control Fields
+
+The 2026-05-14 engineering-control work is also additive:
+
+- Run registry records may include optional `traceId`, `idempotencyKey`, `attemptId`, `paperIds`, and `terminalReportPath`.
+- Run directories may include optional `trace.jsonl`, while global trace spans are written under `.papernexus/traces/`.
+- Active graph-v2 authoritative sync writes optional Kuzu commit receipts under `.papernexus/kuzu-receipts/`.
+- Idea-Catalyst responses may include optional `run_id`, `trace_id`, and `evidence_export`.
+- Live Idea-Catalyst LLM subtasks can write optional batch-ledger rows when `llmBatchLedgerDir` is supplied.
+
+These fields are not required for older clients. Callers that do not need provenance or trace observability can ignore them.
+
 ## Review Checklist For Future Changes
 
 Before changing MCP/SKILL behavior:

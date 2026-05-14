@@ -25,6 +25,7 @@ const IMPORT_QUEUE_PROGRESS_CONTRACT_VERSION = 'import-queue-progress-v1';
 const IMPORT_STAGE_TOTAL = 4;
 const DEFAULT_FAILED_IMPORT_RETRY_DELAY_MS = 5 * 60 * 1000;
 const DEFAULT_FAILED_IMPORT_RETRY_MAX = 3;
+const DEFAULT_IMPORT_BATCH_MAX_TASKS = 1;
 const IMPORT_STAGE_WEIGHTS = {
   queued: { index: 0, startPercent: 0, weight: 0 },
   materialize: { index: 1, startPercent: 0, weight: 50 },
@@ -228,6 +229,39 @@ function sanitizeUploadedFileName(fileName, index = 0) {
 
 function createTaskId(inputPaths = [], files = []) {
   return `imp:${stableHash(`${Date.now()}:${process.pid}:${inputPaths.join('|')}:${files.map((file) => file.name).join('|')}:${Math.random()}`, 18)}`;
+}
+
+function createImportBatchId(taskIds = [], timestamp = new Date()) {
+  return `impbatch:${stableHash(`${timestamp.toISOString()}:${taskIds.join('|')}:${Math.random()}`, 18)}`;
+}
+
+function resolvePositiveInteger(value, fallback, minimum = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < minimum) return fallback;
+  return Math.floor(numeric);
+}
+
+function resolveOptionalPositiveInteger(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.floor(numeric);
+}
+
+function resolveImportBatchReserveLimits(options = {}) {
+  return {
+    maxTasks: resolvePositiveInteger(options.maxTasks ?? options.batchMaxTasks, DEFAULT_IMPORT_BATCH_MAX_TASKS),
+    maxFiles: resolveOptionalPositiveInteger(options.maxFiles ?? options.batchMaxFiles),
+    maxBytes: resolveOptionalPositiveInteger(options.maxBytes ?? options.batchMaxBytes)
+  };
+}
+
+function getImportTaskFileCount(task = {}) {
+  return Array.isArray(task.files) ? task.files.length : 0;
+}
+
+function getImportTaskSizeBytes(task = {}) {
+  return (Array.isArray(task.files) ? task.files : [])
+    .reduce((total, file) => total + Math.max(0, Number(file?.sizeBytes || 0) || 0), 0);
 }
 
 function createContentFingerprint(content) {
@@ -1139,6 +1173,123 @@ export async function reserveNextImportTask(rootPath) {
 
     return {
       task
+    };
+  });
+}
+
+export async function reserveImportTaskBatch(rootPath, options = {}) {
+  const { queueLockPath } = getImportPaths(rootPath);
+  const limits = resolveImportBatchReserveLimits(options);
+
+  return withFileLock(queueLockPath, async () => {
+    const [queue, tasks] = await Promise.all([
+      loadImportQueue(rootPath),
+      loadImportTasksOnDisk(rootPath)
+    ]);
+    const reconciled = buildReconciledImportQueue(queue, tasks);
+    const activeQueue = reconciled.queue;
+    if (reconciled.changed) {
+      await saveImportQueue(rootPath, activeQueue);
+    }
+
+    const taskById = new Map(tasks.filter(Boolean).map((task) => [task.id, task]));
+    const jobsByReserveAge = [...activeQueue.jobs].sort((left, right) => {
+      const leftTime = Date.parse(left.updatedAt || left.createdAt || 0) || 0;
+      const rightTime = Date.parse(right.updatedAt || right.createdAt || 0) || 0;
+      return leftTime - rightTime;
+    });
+    const runningJob = jobsByReserveAge.find((job) => String(job?.status || '').trim().toLowerCase() === 'running');
+    const runningTask = runningJob ? taskById.get(runningJob.id) : null;
+
+    const pendingTasks = runningTask
+      ? [runningTask]
+      : activeQueue.jobs
+        .map((job) => taskById.get(job.id))
+        .filter((task) => {
+          const status = String(task?.status || '').trim().toLowerCase();
+          const stage = String(task?.stage || task?.progress?.stage || 'queued').trim().toLowerCase();
+          return status === 'pending' && (!stage || stage === 'queued');
+        });
+
+    if (!pendingTasks.length) {
+      return null;
+    }
+
+    const selectedTasks = [];
+    let selectedFileCount = 0;
+    let selectedSizeBytes = 0;
+
+    for (const task of pendingTasks) {
+      if (selectedTasks.length >= limits.maxTasks) break;
+      const fileCount = getImportTaskFileCount(task);
+      const sizeBytes = getImportTaskSizeBytes(task);
+      const wouldExceedFiles = limits.maxFiles !== null && selectedTasks.length > 0 && selectedFileCount + fileCount > limits.maxFiles;
+      const wouldExceedBytes = limits.maxBytes !== null && selectedTasks.length > 0 && selectedSizeBytes + sizeBytes > limits.maxBytes;
+      if (wouldExceedFiles || wouldExceedBytes) break;
+      selectedTasks.push(task);
+      selectedFileCount += fileCount;
+      selectedSizeBytes += sizeBytes;
+    }
+
+    if (!selectedTasks.length) {
+      return null;
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const isBatch = !runningTask && selectedTasks.length > 1;
+    const batchId = isBatch ? createImportBatchId(selectedTasks.map((task) => task.id), now) : null;
+    const batchTaskIds = selectedTasks.map((task) => task.id);
+    const reservedTasks = [];
+
+    for (const task of selectedTasks) {
+      const nextTask = {
+        ...task,
+        status: 'running',
+        stage: task.stage && task.stage !== 'queued' ? task.stage : 'materialize',
+        includeInGraph: true,
+        startedAt: task.startedAt || nowIso,
+        updatedAt: nowIso
+      };
+      nextTask.progress = createImportProgress(nextTask, {
+        stage: nextTask.stage,
+        status: 'running',
+        stagePercent: nextTask.stage === 'materialize' ? 0 : nextTask.progress?.stagePercent,
+        processedUnits: 0,
+        totalUnits: 0,
+        stageStartedAt: nextTask.progress?.stage === nextTask.stage ? nextTask.progress?.stageStartedAt : nowIso,
+        currentStep: isBatch ? `batch ${batchId}` : '',
+        message: isBatch
+          ? `Running ${nextTask.stage} as import batch ${batchId}`
+          : `Running ${nextTask.stage}`
+      });
+      await saveImportTask(rootPath, nextTask);
+      updateQueuedJob(activeQueue, nextTask);
+      reservedTasks.push(nextTask);
+    }
+
+    activeQueue.updatedAt = nowIso;
+    await saveImportQueue(rootPath, activeQueue);
+
+    for (const task of reservedTasks) {
+      await appendImportTaskLog(rootPath, task.id, {
+        level: 'info',
+        timestamp: nowIso,
+        message: isBatch
+          ? `reserved import task in batch ${batchId} (${batchTaskIds.length} task(s))`
+          : `reserved import task for stage ${task.stage}`
+      });
+    }
+
+    return {
+      batchId,
+      batchTaskIds,
+      task: reservedTasks[0],
+      tasks: reservedTasks,
+      singleTask: reservedTasks.length === 1,
+      limits,
+      fileCount: selectedFileCount,
+      sizeBytes: selectedSizeBytes
     };
   });
 }

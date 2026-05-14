@@ -11,6 +11,7 @@ import { EDGE_TYPES, NODE_TYPES } from './schema.js';
 
 export const BRIDGE_RETRIEVAL_CONTRACT_VERSION = 'idea-catalyst-bridge-retrieval-v1';
 export const BRIDGE_RETRIEVAL_BACKEND = 'graph-text-fallback-v1';
+const RELATIONSHIP_EVIDENCE_NODE_TYPE = 'RelationshipEvidence';
 
 function normalizeMechanismQuery(value) {
   if (Array.isArray(value)) return normalizeAbstractMechanismNames(value);
@@ -63,11 +64,76 @@ function collectNodeMechanisms(graph, node) {
   return normalizeAbstractMechanismNames([...direct, ...linked]);
 }
 
+function buildGraphSnippetRecord(snippet) {
+  return {
+    id: snippet.id,
+    name: snippet.name,
+    nodeId: snippet.id,
+    nodeName: snippet.name,
+    nodeType: snippet.type
+  };
+}
+
+function firstText(...values) {
+  return values.map((value) => String(value || '').trim()).find(Boolean) || '';
+}
+
+function normalizeConfidence(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Number(Math.max(0, Math.min(1, numeric)).toFixed(4));
+}
+
+function buildRelationshipEvidenceRecord(graph, node, relationship) {
+  const sourceNode = graph.getNode(relationship.sourceId);
+  if (sourceNode?.type !== NODE_TYPES.PAPER) return null;
+
+  const properties = relationship.properties || {};
+  const evidenceText = firstText(properties.evidenceText, properties.text, properties.description);
+  if (!evidenceText) return null;
+
+  const paperId = firstText(properties.sourcePaperId, sourceNode.id);
+  const paperTitle = firstText(properties.sourcePaperTitle, sourceNode.name, ...(node.properties?.paperTitles || []));
+  const snippetId = `relationship-evidence:${stableHash(`${relationship.id}:${node.id}:${evidenceText}`)}`;
+  const evidenceName = evidenceText.length > 140 ? `${evidenceText.slice(0, 137)}...` : evidenceText;
+
+  return {
+    id: snippetId,
+    name: evidenceName,
+    nodeId: snippetId,
+    nodeName: evidenceName,
+    nodeType: RELATIONSHIP_EVIDENCE_NODE_TYPE,
+    relationshipId: relationship.id,
+    sourceNodeId: relationship.sourceId,
+    targetNodeId: relationship.targetId,
+    sourceSpan: {
+      span_id: `span:${snippetId}`,
+      source_type: 'relationship_evidence',
+      snippet_node_id: snippetId,
+      paper_id: paperId || null,
+      paper_title: paperTitle || null,
+      section_heading: properties.sectionHeading || properties.section || '',
+      section_role: properties.sectionRole || '',
+      evidence_text: evidenceText,
+      source_span_available: false,
+      explicit_or_inferred: properties.explicitOrInferred || 'explicit',
+      confidence: normalizeConfidence(properties.confidence)
+    }
+  };
+}
+
 function collectSupportingSnippets(graph, node) {
-  return graph.getOutgoing(node.id)
+  const explicitSnippets = graph.getOutgoing(node.id)
     .filter((relationship) => relationship.type === EDGE_TYPES.SUPPORTED_BY_SNIPPET)
     .map((relationship) => graph.getNode(relationship.targetId))
-    .filter((candidate) => candidate?.type === NODE_TYPES.EVIDENCE_SNIPPET);
+    .filter((candidate) => candidate?.type === NODE_TYPES.EVIDENCE_SNIPPET)
+    .map((snippet) => buildGraphSnippetRecord(snippet));
+
+  const relationshipSnippets = graph.getIncoming(node.id)
+    .map((relationship) => buildRelationshipEvidenceRecord(graph, node, relationship))
+    .filter(Boolean);
+
+  return [...explicitSnippets, ...relationshipSnippets];
 }
 
 function collectSourceTakeaways(graph, node) {
@@ -130,6 +196,58 @@ function scoreTextSimilarity(queryText, candidateText) {
   return Number(Math.min(1, overlap + phraseBonus).toFixed(4));
 }
 
+function collectSnippetEvidenceTexts(snippets = []) {
+  return snippets
+    .flatMap((snippet) => [
+      snippet.sourceSpan?.evidence_text,
+      snippet.sourceSpan?.evidenceText,
+      snippet.nodeName,
+      snippet.name
+    ])
+    .map((value) => String(value || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+function scoreEvidenceTextQuality(value) {
+  const text = String(value || '').trim();
+  if (!text) return 0;
+
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const longCompressedToken = tokens.some((token) => /[A-Za-z]{32,}/.test(token));
+  const tableLike = (text.match(/\|/g) || []).length >= 4;
+  const cidNoise = /\(cid:\d+\)/i.test(text);
+  const letters = (text.match(/[A-Za-z]/g) || []).length;
+  const alphaRatio = letters / Math.max(1, text.length);
+  const tooShort = tokens.length < 4;
+
+  if (cidNoise || tableLike || longCompressedToken) return 0.45;
+  if (alphaRatio < 0.45) return 0.6;
+  if (tooShort) return 0.65;
+  return 1;
+}
+
+function scoreEvidenceQuality(snippets = []) {
+  const texts = collectSnippetEvidenceTexts(snippets);
+  if (!texts.length) return 0;
+  const scores = texts.slice(0, 6).map((text) => scoreEvidenceTextQuality(text));
+  return Number((scores.reduce((total, score) => total + score, 0) / scores.length).toFixed(4));
+}
+
+function scoreChallengeCoverage(params, node, challengeTexts, snippets) {
+  const challengeQuery = normalizeChallengeText(params.abstractChallenge);
+  const evidenceTexts = collectSnippetEvidenceTexts(snippets);
+  return Number(Math.max(
+    scoreTextSimilarity(challengeQuery, node.properties?.domainAgnosticText || ''),
+    scoreTextSimilarity(challengeQuery, node.properties?.domainSpecificText || ''),
+    scoreTextSimilarity(challengeQuery, node.properties?.retrievalText || ''),
+    scoreTextSimilarity(challengeQuery, node.properties?.analogyText || ''),
+    scoreTextSimilarity(challengeQuery, node.name || ''),
+    ...challengeTexts.map((text) => scoreTextSimilarity(challengeQuery, text)),
+    ...evidenceTexts.map((text) => scoreTextSimilarity(challengeQuery, text)),
+    0
+  ).toFixed(4));
+}
+
 function resolveMechanismSupportDensity(graph, mechanisms = []) {
   if (!mechanisms.length) return 0;
 
@@ -144,6 +262,14 @@ function resolveMechanismSupportDensity(graph, mechanisms = []) {
   });
 
   return Number((supports.reduce((total, value) => total + value, 0) / supports.length).toFixed(4));
+}
+
+function resolveCandidateRole(node) {
+  if (node.type === NODE_TYPES.IDEA_FRAGMENT) return 'idea-fragment';
+  if (node.type === NODE_TYPES.METHOD) return 'source-method';
+  if (node.type === NODE_TYPES.PROBLEM) return 'source-problem';
+  if (node.type === NODE_TYPES.LIMITATION) return 'source-limitation';
+  return 'candidate';
 }
 
 function buildPathSteps(graph, node, params, matchedMechanisms, connectedChallenges, snippets) {
@@ -185,7 +311,7 @@ function buildPathSteps(graph, node, params, matchedMechanisms, connectedChallen
   }
 
   steps.push({
-    role: node.type === NODE_TYPES.IDEA_FRAGMENT ? 'idea-fragment' : 'candidate',
+    role: resolveCandidateRole(node),
     nodeId: node.id,
     nodeType: node.type,
     nodeName: node.name
@@ -194,9 +320,9 @@ function buildPathSteps(graph, node, params, matchedMechanisms, connectedChallen
   for (const snippet of snippets.slice(0, 2)) {
     steps.push({
       role: 'evidence-snippet',
-      nodeId: snippet.id,
-      nodeType: snippet.type,
-      nodeName: snippet.name
+      nodeId: snippet.nodeId || snippet.id,
+      nodeType: snippet.nodeType || snippet.type || NODE_TYPES.EVIDENCE_SNIPPET,
+      nodeName: snippet.nodeName || snippet.name
     });
   }
 
@@ -234,15 +360,12 @@ function buildCandidateRecord(graph, node, params, targetDomain, requestedMechan
     getSearchText(node),
     ...challengeTexts
   ].join(' '));
-  const challengeCoverageScore = Number(Math.max(
-    scoreTextSimilarity(params.abstractChallenge, node.properties?.domainAgnosticText || ''),
-    ...challengeTexts.map((text) => scoreTextSimilarity(params.abstractChallenge, text)),
-    0
-  ).toFixed(4));
+  const challengeCoverageScore = scoreChallengeCoverage(params, node, challengeTexts, snippets);
   const mechanismCoverageScore = requestedMechanisms.length
     ? Number((matchedMechanisms.length / requestedMechanisms.length).toFixed(4))
     : Number(Math.min(1, nodeMechanisms.length / 3).toFixed(4));
-  const evidenceDensity = Number(Math.min(1, snippets.length / 2).toFixed(4));
+  const evidenceQualityScore = scoreEvidenceQuality(snippets);
+  const evidenceDensity = Number((Math.min(1, snippets.length / 2) * evidenceQualityScore).toFixed(4));
   const mechanismSupportDensity = resolveMechanismSupportDensity(graph, matchedMechanisms.length ? matchedMechanisms : nodeMechanisms);
   const graphScore = Number((
     mechanismCoverageScore * 0.35
@@ -253,15 +376,21 @@ function buildCandidateRecord(graph, node, params, targetDomain, requestedMechan
   const pathSteps = buildPathSteps(graph, node, params, matchedMechanisms, connectedChallenges, snippets);
   const pathRoleSet = new Set(pathSteps.map((step) => step.role));
   const pathCompleteness = Number(([
-    pathRoleSet.has('source-challenge'),
-    pathRoleSet.has('source-takeaway'),
-    pathRoleSet.has('idea-fragment'),
+    pathRoleSet.has('shared-mechanism'),
+    pathRoleSet.has('source-challenge') || pathRoleSet.has('source-takeaway'),
+    pathRoleSet.has('idea-fragment')
+      || pathRoleSet.has('source-method')
+      || pathRoleSet.has('source-problem')
+      || pathRoleSet.has('source-limitation'),
     pathRoleSet.has('evidence-snippet')
   ].filter(Boolean).length / 4).toFixed(4));
   const combinedScore = Number((
-    retrievalScore * 0.45
-    + graphScore * 0.35
-    + domainNovelty * 0.20
+    (
+      retrievalScore * 0.40
+      + graphScore * 0.40
+      + domainNovelty * 0.20
+    )
+    * (challengeCoverageScore > 0 ? 1 : 0.65)
   ).toFixed(4));
 
   return {
@@ -281,13 +410,19 @@ function buildCandidateRecord(graph, node, params, targetDomain, requestedMechan
     mechanismCoverageScore,
     mechanismSupportDensity,
     evidenceDensity,
+    evidenceQualityScore,
     pathCompleteness,
     matchedMechanisms,
     matchedChallenges: challengeTexts,
     evidenceSnippetCount: snippets.length,
     snippets: snippets.map((snippet) => ({
-      nodeId: snippet.id,
-      nodeName: snippet.name
+      nodeId: snippet.nodeId || snippet.id,
+      nodeName: snippet.nodeName || snippet.name,
+      nodeType: snippet.nodeType || snippet.type || NODE_TYPES.EVIDENCE_SNIPPET,
+      relationshipId: snippet.relationshipId || null,
+      sourceNodeId: snippet.sourceNodeId || null,
+      targetNodeId: snippet.targetNodeId || null,
+      sourceSpan: snippet.sourceSpan || null
     })),
     path: pathSteps
   };
@@ -299,6 +434,9 @@ export function buildBridgeRetrieval(graph, params = {}) {
   const requestedMechanisms = normalizeMechanismQuery(params.mechanisms || params.mechanism);
   const candidateTypes = new Set([
     NODE_TYPES.CHALLENGE,
+    NODE_TYPES.PROBLEM,
+    NODE_TYPES.METHOD,
+    NODE_TYPES.LIMITATION,
     NODE_TYPES.TAKEAWAY,
     NODE_TYPES.IDEA_FRAGMENT
   ]);

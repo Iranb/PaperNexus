@@ -1,0 +1,44 @@
+{
+  "sources": [
+    {
+      "sourceId": "source:one",
+      "text": "The method uses typed graph evidence to recover relevant papers. A second claim is also supported."
+    }
+  ],
+  "records": [
+    {
+      "id": "record:pass",
+      "sourceId": "source:one",
+      "sourceSpan": {
+        "sourceId": "source:one",
+        "start": 16,
+        "end": 36
+      },
+      "exactQuote": "typed graph evidence"
+    },
+    {
+      "id": "record:missing-span",
+      "sourceId": "source:one",
+      "exactQuote": "A second claim is also supported."
+    },
+    {
+      "id": "record:dangling",
+      "sourceId": "source:missing",
+      "sourceSpan": {
+        "sourceId": "source:missing",
+        "start": 0,
+        "end": 12
+      }
+    },
+    {
+      "id": "record:quote-mismatch",
+      "sourceId": "source:one",
+      "sourceSpan": {
+        "sourceId": "source:one",
+        "start": 0,
+        "end": 20
+      },
+      "exactQuote": "this quote is not present"
+    }
+  ]
+}

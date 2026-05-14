@@ -2,6 +2,7 @@ import {
   catalystGraphPayload
 } from '../server/api.js';
 import { runLiveIdeaCatalyst } from '../core/graph/idea-catalyst-live.js';
+import { buildIdeaCatalystEvidenceExport } from '../core/graph/idea-catalyst-evidence-export.js';
 
 function clampScore(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -170,11 +171,22 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       buildLiveCatalystParams(args, problem, targetDomain, options),
       options
     );
+    const evidenceExport = live.evidence_export || buildIdeaCatalystEvidenceExport({
+      mode,
+      problem,
+      targetDomain,
+      live,
+      runId: args.runId || args.run_id || null,
+      traceId: args.traceId || args.trace_id || null
+    });
 
     if (outputMode === 'packet_bundle') {
       return {
         mode,
         packet_bundle: live.packetBundle,
+        evidence_export: evidenceExport,
+        run_id: evidenceExport.run_id,
+        trace_id: evidenceExport.trace_id,
         live_discovery: includeAnalysis ? live : undefined,
         generatedAt: live.generatedAt
       };
@@ -184,6 +196,9 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       mode,
       idea_fragments: live.idea_fragments || [],
       faithfulness_report: live.faithfulness_report,
+      evidence_export: evidenceExport,
+      run_id: evidenceExport.run_id,
+      trace_id: evidenceExport.trace_id,
       ...(includeAnalysis ? { analysis: live } : {}),
       generatedAt: live.generatedAt
     };
@@ -204,9 +219,20 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
   }, options);
 
   if (outputMode === 'packet_bundle') {
+    const graphEvidenceExport = buildIdeaCatalystEvidenceExport({
+      mode,
+      problem,
+      targetDomain,
+      graphPayload: payload,
+      runId: args.runId || args.run_id || null,
+      traceId: args.traceId || args.trace_id || null
+    });
     const graphResponse = {
       rootPath: payload.rootPath,
       packet_bundle: payload.packetBundle,
+      evidence_export: graphEvidenceExport,
+      run_id: graphEvidenceExport.run_id,
+      trace_id: graphEvidenceExport.trace_id,
       ...(includeAnalysis ? {
         analysis: {
           target_domain: payload.result?.targetDomain || '',
@@ -221,9 +247,21 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       buildLiveCatalystParams(args, problem, targetDomain, options),
       options
     );
+    const hybridEvidenceExport = buildIdeaCatalystEvidenceExport({
+      mode,
+      problem,
+      targetDomain,
+      graphPayload: payload,
+      live,
+      runId: args.runId || args.run_id || null,
+      traceId: args.traceId || args.trace_id || null
+    });
     return {
       ...graphResponse,
       mode,
+      evidence_export: hybridEvidenceExport,
+      run_id: hybridEvidenceExport.run_id,
+      trace_id: hybridEvidenceExport.trace_id,
       live_packet_bundle: live.packetBundle,
       live_discovery: includeAnalysis ? live : undefined
     };
@@ -231,6 +269,16 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
 
   const legacy = buildLegacyIdeaCatalystResponse(payload, problem, relevanceThreshold);
   legacy.mode = mode;
+  legacy.evidence_export = buildIdeaCatalystEvidenceExport({
+    mode,
+    problem,
+    targetDomain,
+    graphPayload: payload,
+    runId: args.runId || args.run_id || null,
+    traceId: args.traceId || args.trace_id || null
+  });
+  legacy.run_id = legacy.evidence_export.run_id;
+  legacy.trace_id = legacy.evidence_export.trace_id;
   if (mode === 'hybrid') {
     const live = await runLiveIdeaCatalyst(
       buildLiveCatalystParams(args, problem, targetDomain, options),
@@ -238,6 +286,17 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
     );
     legacy.live_idea_fragments = live.idea_fragments || [];
     legacy.faithfulness_report = live.faithfulness_report;
+    legacy.evidence_export = buildIdeaCatalystEvidenceExport({
+      mode,
+      problem,
+      targetDomain,
+      graphPayload: payload,
+      live,
+      runId: args.runId || args.run_id || null,
+      traceId: args.traceId || args.trace_id || null
+    });
+    legacy.run_id = legacy.evidence_export.run_id;
+    legacy.trace_id = legacy.evidence_export.trace_id;
     if (includeAnalysis) legacy.live_analysis = live;
   }
   if (!includeAnalysis) {

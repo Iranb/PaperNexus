@@ -85,6 +85,155 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
   }
 });
 
+test('reserveImportTaskBatch reserves oldest pending tasks as one running batch', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-batch-'));
+
+  try {
+    const {
+      createImportTask,
+      listActiveImportSourceDirs,
+      listImportTasks,
+      loadImportTask,
+      loadImportTaskLog,
+      reserveImportTaskBatch
+    } = await import('../src/storage/import-store.js');
+
+    const firstTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'batch-one.md',
+          contentBase64: Buffer.from('# Batch One\n\n## Abstract\n\nFirst queued paper.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const secondTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'batch-two.md',
+          contentBase64: Buffer.from('# Batch Two\n\n## Abstract\n\nSecond queued paper.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const thirdTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'batch-three.md',
+          contentBase64: Buffer.from('# Batch Three\n\n## Abstract\n\nThird queued paper.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const reserved = await reserveImportTaskBatch(rootPath, {
+      maxTasks: 2
+    });
+
+    assert.match(reserved.batchId, /^impbatch:/);
+    assert.equal(reserved.singleTask, false);
+    assert.deepEqual(reserved.batchTaskIds, [firstTask.id, secondTask.id]);
+    assert.deepEqual(reserved.tasks.map((task) => task.id), [firstTask.id, secondTask.id]);
+
+    const loadedFirst = await loadImportTask(rootPath, firstTask.id);
+    const loadedSecond = await loadImportTask(rootPath, secondTask.id);
+    const loadedThird = await loadImportTask(rootPath, thirdTask.id);
+    assert.equal(loadedFirst.status, 'running');
+    assert.equal(loadedSecond.status, 'running');
+    assert.equal(loadedFirst.stage, 'materialize');
+    assert.equal(loadedSecond.stage, 'materialize');
+    assert.equal(loadedFirst.progress.message.includes(reserved.batchId), true);
+    assert.equal(loadedThird.status, 'pending');
+
+    const activeDirs = new Set(await listActiveImportSourceDirs(rootPath));
+    assert.deepEqual(activeDirs, new Set([firstTask.sourcesDir, secondTask.sourcesDir]));
+
+    const listed = await listImportTasks(rootPath);
+    assert.equal(listed.summary.running, 2);
+    assert.equal(listed.summary.pending, 1);
+
+    const firstLog = await loadImportTaskLog(rootPath, firstTask.id);
+    const secondLog = await loadImportTaskLog(rootPath, secondTask.id);
+    assert.match(firstLog, new RegExp(reserved.batchId));
+    assert.match(secondLog, new RegExp(reserved.batchId));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('reserveImportTaskBatch respects expansion limits and resumes running tasks alone', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-batch-limits-'));
+
+  try {
+    const {
+      createImportTask,
+      loadImportTask,
+      reserveImportTaskBatch
+    } = await import('../src/storage/import-store.js');
+
+    const firstTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'limit-one.md',
+          contentBase64: Buffer.from('# Limit One\n\n## Abstract\n\nSmall first paper.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const secondTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'limit-two-a.md',
+          contentBase64: Buffer.from('# Limit Two A\n\n## Abstract\n\nLarger paper A.\n'.repeat(4), 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        },
+        {
+          name: 'limit-two-b.md',
+          contentBase64: Buffer.from('# Limit Two B\n\n## Abstract\n\nLarger paper B.\n'.repeat(4), 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const thirdTask = await createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'limit-three.md',
+          contentBase64: Buffer.from('# Limit Three\n\n## Abstract\n\nSmall third paper.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const limited = await reserveImportTaskBatch(rootPath, {
+      maxTasks: 3,
+      maxFiles: 2,
+      maxBytes: firstTask.files[0].sizeBytes + 1
+    });
+
+    assert.equal(limited.batchId, null);
+    assert.equal(limited.singleTask, true);
+    assert.deepEqual(limited.batchTaskIds, [firstTask.id]);
+    assert.equal((await loadImportTask(rootPath, firstTask.id)).status, 'running');
+    assert.equal((await loadImportTask(rootPath, secondTask.id)).status, 'pending');
+    assert.equal((await loadImportTask(rootPath, thirdTask.id)).status, 'pending');
+
+    const runningOnly = await reserveImportTaskBatch(rootPath, {
+      maxTasks: 3
+    });
+
+    assert.equal(runningOnly.singleTask, true);
+    assert.deepEqual(runningOnly.batchTaskIds, [firstTask.id]);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('createImportTask ignores uploaded metadata files and keeps only real paper files', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-meta-'));
 

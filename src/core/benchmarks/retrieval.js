@@ -1710,24 +1710,70 @@ async function loadTrecBenchmark(datasetPath, options = {}) {
   };
 }
 
+function isCsfcubeCandidateAnnotationSet(value = {}) {
+  const entry = asObject(value);
+  return Array.isArray(entry.cands) || Array.isArray(entry.candidates);
+}
+
+function pickCsfcubeRelevanceArray(value = {}) {
+  const entry = asObject(value);
+  const preferredKeys = ['relevance_adju', 'relevance', 'relevance_max', 'score', 'scores', 'grade', 'grades', 'label', 'labels'];
+  for (const key of preferredKeys) {
+    if (Array.isArray(entry[key])) return entry[key];
+  }
+  const fallbackKey = Object.keys(entry).find((key) => /^relevance_/i.test(key) && Array.isArray(entry[key]));
+  return fallbackKey ? entry[fallbackKey] : [];
+}
+
+function normalizeCsfcubePaperReference(entry, relevance = 1, index = 0, corpusById = new Map()) {
+  const raw = typeof entry === 'object' && entry !== null ? entry : { id: entry };
+  const paperId = compactText(pickFirst(
+    raw.id,
+    raw.paperId,
+    raw.paper_id,
+    raw.pid,
+    raw.corpusid,
+    raw.corpusId,
+    entry
+  ));
+  const corpusPaper = corpusById.get(paperId);
+  return normalizePaperRecord({
+    ...(corpusPaper || {}),
+    ...raw,
+    id: paperId || corpusPaper?.id,
+    title: pickFirst(raw.title, raw.paperTitle, raw.paper_title, corpusPaper?.title, paperId),
+    abstract: pickFirst(raw.abstract, raw.text, raw.summary, corpusPaper?.abstract),
+    relevance
+  }, `csfcube:${index}`);
+}
+
 function normalizeCsfcubeAnnotationSet(value, corpusById = new Map()) {
   if (!value) return [];
+  if (isCsfcubeCandidateAnnotationSet(value)) {
+    const candidates = asArray(value.cands || value.candidates);
+    const relevanceValues = pickCsfcubeRelevanceArray(value);
+    const hasExplicitRelevance = relevanceValues.length > 0;
+    return candidates
+      .map((entry, index) => {
+        const relevance = hasExplicitRelevance ? toNumber(relevanceValues[index], 0) : 1;
+        if (relevance <= 0) return null;
+        return normalizeCsfcubePaperReference(entry, relevance, index, corpusById);
+      })
+      .filter(Boolean);
+  }
   if (Array.isArray(value)) {
-    return value.map((entry, index) => normalizePaperRecord({
-      ...(typeof entry === 'object' ? entry : { id: entry }),
-      id: pickFirst(entry?.id, entry?.paperId, entry?.paper_id, entry?.pid, entry?.corpusid, entry?.corpusId, entry),
-      relevance: pickFirst(entry?.relevance, entry?.score, entry?.grade, entry?.label, 1)
-    }, `csfcube:${index}`));
+    return value
+      .map((entry, index) => {
+        const relevance = toNumber(pickFirst(entry?.relevance, entry?.score, entry?.grade, entry?.label, 1), 1);
+        if (relevance <= 0) return null;
+        return normalizeCsfcubePaperReference(entry, relevance, index, corpusById);
+      })
+      .filter(Boolean);
   }
   if (typeof value === 'object') {
     return Object.entries(value)
       .filter(([, relevance]) => Number(relevance) > 0)
-      .map(([paperId, relevance]) => normalizePaperRecord({
-        ...(corpusById.get(paperId) || {}),
-        id: paperId,
-        title: corpusById.get(paperId)?.title || paperId,
-        relevance
-      }));
+      .map(([paperId, relevance], index) => normalizeCsfcubePaperReference({ id: paperId }, relevance, index, corpusById));
   }
   return [];
 }
@@ -1773,7 +1819,7 @@ async function loadCsfcubeBenchmark(datasetPath, options = {}) {
     const fileFacet = inferCsfcubeFacetFromPath(annotationPath);
     Object.entries(asObject(annotations)).forEach(([queryPaperId, facetMap]) => {
       const queryPaper = corpusById.get(queryPaperId) || normalizePaperRecord({ id: queryPaperId, title: queryPaperId });
-      if (Array.isArray(facetMap) || Number.isFinite(Number(Object.values(asObject(facetMap))[0]))) {
+      if (Array.isArray(facetMap) || isCsfcubeCandidateAnnotationSet(facetMap) || Number.isFinite(Number(Object.values(asObject(facetMap))[0]))) {
         const relevant = normalizeCsfcubeAnnotationSet(facetMap, corpusById);
         if (relevant.length) {
           const facet = fileFacet || 'all';

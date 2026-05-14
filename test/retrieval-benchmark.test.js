@@ -458,6 +458,38 @@ test('CSFCube official split facet files are loaded together', async () => {
   }
 });
 
+test('CSFCube official candidate arrays hydrate numeric paper ids from corpus', async () => {
+  const tempDir = await createTempDir();
+
+  try {
+    await fs.writeFile(path.join(tempDir, 'abstracts-csfcube-preds.jsonl'), [
+      JSON.stringify({ paper_id: '1587', title: 'Query by example for science', abstract: ['Faceted retrieval query paper.'] }),
+      JSON.stringify({ paper_id: '2731141', title: 'Irrelevant candidate', abstract: ['Not a positive label.'] }),
+      JSON.stringify({ paper_id: '146628687', title: 'Semi-Supervised Learning Literature Survey', abstract: ['Survey methods for learning.'] })
+    ].join('\n'));
+    await fs.writeFile(path.join(tempDir, 'test-pid2anns-csfcube-method.json'), `${JSON.stringify({
+      1587: {
+        cands: ['2731141', '146628687'],
+        relevance_max: [1, 2],
+        relevance_adju: [0, 2]
+      }
+    })}\n`);
+
+    const benchmark = await loadRetrievalBenchmark(tempDir, { format: 'csfcube' });
+    const query = benchmark.queries[0];
+
+    assert.equal(benchmark.queryCount, 1);
+    assert.equal(query.metadata.facet, 'method');
+    assert.match(query.query, /Query by example for science/);
+    assert.equal(query.relevant.length, 1);
+    assert.equal(query.relevant[0].id, '146628687');
+    assert.equal(query.relevant[0].title, 'Semi-Supervised Learning Literature Survey');
+    assert.equal(query.relevant[0].relevance, 2);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('SAGE-style flexible schema loads query, corpus, and weighted gold ids', async () => {
   const tempDir = await createTempDir();
 

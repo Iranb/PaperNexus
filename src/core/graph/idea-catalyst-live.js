@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import {
   getDefaultLlmApiKeyEnv,
@@ -17,6 +19,7 @@ import {
   truncate,
   unique
 } from '../../lib/utils.js';
+import { buildIdeaCatalystEvidenceExport } from './idea-catalyst-evidence-export.js';
 
 const require = createRequire(import.meta.url);
 let jsonrepair = null;
@@ -66,6 +69,12 @@ function asArray(value) {
 
 function firstDefined(...values) {
   return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '') ?? '';
+}
+
+function enabledFlag(value) {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
 }
 
 function clampScore(value, fallback = 0) {
@@ -301,15 +310,186 @@ async function callConfiguredLlmJson(prompt, config = {}) {
   return parseJsonText(payload.response || '');
 }
 
+function resolveIdeaCatalystLlmLedger(params = {}, options = {}, task = 'idea-catalyst') {
+  const dir = firstDefined(
+    params.llmBatchLedgerDir,
+    params.llm_batch_ledger_dir,
+    params.batchLedgerDir,
+    params.batch_ledger_dir,
+    options.llmBatchLedgerDir,
+    options.llm_batch_ledger_dir,
+    options.batchLedgerDir,
+    options.batch_ledger_dir
+  );
+  if (!dir) return null;
+  return {
+    dir: path.resolve(process.cwd(), String(dir)),
+    phase: `idea-catalyst:${task}`,
+    task,
+    runId: String(firstDefined(
+      params.llmBatchRunId,
+      params.llm_batch_run_id,
+      params.runId,
+      params.run_id,
+      options.runId,
+      options.run_id,
+      'idea-catalyst-run'
+    )),
+    traceId: firstDefined(params.traceId, params.trace_id, options.traceId, options.trace_id),
+    resume: enabledFlag(firstDefined(
+      params.llmBatchResume,
+      params.llm_batch_resume,
+      params.batchResume,
+      params.batch_resume,
+      options.llmBatchResume,
+      options.llm_batch_resume,
+      false
+    ))
+  };
+}
+
+function createIdeaCatalystLlmBatchId(ledger = null, task = '', prompt = '') {
+  return `idea:${stableHash(JSON.stringify({
+    phase: ledger?.phase || `idea-catalyst:${task}`,
+    task,
+    promptHash: stableHash(prompt, 24)
+  }), 20)}`;
+}
+
+async function appendIdeaCatalystLlmLedger(ledger = null, fileName = '', event = {}) {
+  if (!ledger?.dir || !fileName) return;
+  await fs.mkdir(ledger.dir, { recursive: true });
+  await fs.appendFile(path.join(ledger.dir, fileName), `${JSON.stringify({
+    contractVersion: 'papernexus-llm-batch-ledger-v1',
+    ledger_schema: 'papernexus-llm-ledger-v1',
+    runId: ledger.runId,
+    run_id: ledger.runId,
+    trace_id: ledger.traceId || null,
+    phase: ledger.phase,
+    task: ledger.task,
+    updatedAt: new Date().toISOString(),
+    ...event
+  })}\n`, 'utf8');
+}
+
+async function readIdeaCatalystLlmJsonl(filePath) {
+  try {
+    const text = await fs.readFile(filePath, 'utf8');
+    return text.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function loadCompletedIdeaCatalystLlmResult(ledger = null, batchId = '') {
+  if (!ledger?.resume || !batchId) return null;
+  const rows = await readIdeaCatalystLlmJsonl(path.join(ledger.dir, 'llm-results.jsonl'));
+  return rows.find((row) => (
+    row.phase === ledger.phase
+    && row.status === 'completed'
+    && (row.batchId === batchId || row.batch_id === batchId)
+  )) || null;
+}
+
+function buildIdeaCatalystLlmLedgerRefs(params = {}, options = {}) {
+  const dir = firstDefined(
+    params.llmBatchLedgerDir,
+    params.llm_batch_ledger_dir,
+    params.batchLedgerDir,
+    params.batch_ledger_dir,
+    options.llmBatchLedgerDir,
+    options.llm_batch_ledger_dir,
+    options.batchLedgerDir,
+    options.batch_ledger_dir
+  );
+  if (!dir) return [];
+  return [{
+    ledger_version: 'papernexus-llm-ledger-v1',
+    contractVersion: 'papernexus-llm-batch-ledger-v1',
+    run_id: String(firstDefined(
+      params.llmBatchRunId,
+      params.llm_batch_run_id,
+      params.runId,
+      params.run_id,
+      options.runId,
+      options.run_id,
+      'idea-catalyst-run'
+    )),
+    trace_id: firstDefined(params.traceId, params.trace_id, options.traceId, options.trace_id) || null,
+    ledger_dir: path.resolve(process.cwd(), String(dir)),
+    tasks: [
+      'decompose',
+      'target_assessment',
+      'source_domains',
+      'source_relevance',
+      'source_takeaways',
+      'idea_fragments',
+      'pairwise_ranking'
+    ]
+  }];
+}
+
 async function callWorkflowLlmJson(task, prompt, params = {}, options = {}) {
+  const ledger = resolveIdeaCatalystLlmLedger(params, options, task);
+  const batchId = createIdeaCatalystLlmBatchId(ledger, task, prompt);
+  const cached = await loadCompletedIdeaCatalystLlmResult(ledger, batchId);
+  if (cached) {
+    return normalizeObject(cached.result || cached.output || cached.payload);
+  }
+
+  await appendIdeaCatalystLlmLedger(ledger, 'llm-batches.jsonl', {
+    status: 'running',
+    task,
+    batchId,
+    batch_id: batchId,
+    input_hash: stableHash(prompt, 24),
+    prompt_chars: String(prompt || '').length,
+    model: firstDefined(params.llmModel, params.llm_model, options.config?.llm?.model, options.config?.ollama?.model),
+    trace_id: ledger?.traceId || null
+  });
+
+  try {
+    let result;
+    let provider = null;
   if (typeof params.llmJson === 'function') {
     const payload = await params.llmJson({ task, prompt, params, options });
-    return typeof payload === 'string' ? parseJsonText(payload) : normalizeObject(payload);
+      result = typeof payload === 'string' ? parseJsonText(payload) : normalizeObject(payload);
+      provider = 'custom-llm-json';
+    } else {
+      if (params.disableLlm === true || params.disable_llm === true) {
+        throw new Error('LLM disabled for live Idea Catalyst.');
+      }
+      const config = resolveLiveLlmConfig(params, options);
+      result = await callConfiguredLlmJson(prompt, config);
+      provider = config.provider;
+    }
+    await appendIdeaCatalystLlmLedger(ledger, 'llm-results.jsonl', {
+      status: 'completed',
+      task,
+      batchId,
+      batch_id: batchId,
+      input_hash: stableHash(prompt, 24),
+      output_hash: stableHash(JSON.stringify(result), 24),
+      provider,
+      model: firstDefined(params.llmModel, params.llm_model, options.config?.llm?.model, options.config?.ollama?.model),
+      result,
+      trace_id: ledger?.traceId || null
+    });
+    return result;
+  } catch (error) {
+    await appendIdeaCatalystLlmLedger(ledger, 'llm-failures.jsonl', {
+      status: 'failed',
+      task,
+      batchId,
+      batch_id: batchId,
+      input_hash: stableHash(prompt, 24),
+      error_class: error?.name || 'Error',
+      error: error?.message || String(error),
+      trace_id: ledger?.traceId || null
+    });
+    throw error;
   }
-  if (params.disableLlm === true || params.disable_llm === true) {
-    throw new Error('LLM disabled for live Idea Catalyst.');
-  }
-  return callConfiguredLlmJson(prompt, resolveLiveLlmConfig(params, options));
 }
 
 function buildDecompositionPrompt(problem, targetDomain, targetField, numQuestions) {
@@ -1187,6 +1367,8 @@ export async function runLiveIdeaCatalyst(params = {}, options = {}) {
   const result = {
     contractVersion: LIVE_IDEA_CATALYST_CONTRACT_VERSION,
     mode: 'live_discovery',
+    run_id: params.runId || params.run_id || null,
+    trace_id: params.traceId || params.trace_id || null,
     problem,
     targetDomain,
     target_domain: targetDomain,
@@ -1228,9 +1410,19 @@ export async function runLiveIdeaCatalyst(params = {}, options = {}) {
       source_domain_majority_relevance_pruning: true,
       pairwise_llm_interdisciplinary_ranking: ranking.ranking_backend === 'llm-pairwise-v1',
       pairwise_ranking_backend: ranking.ranking_backend
-    }
+    },
+    llm_ledger_refs: buildIdeaCatalystLlmLedgerRefs(params, options)
   };
   result.packetBundle = buildPacketBundle(result);
   result.packet_bundle = result.packetBundle;
+  result.evidence_export = buildIdeaCatalystEvidenceExport({
+    mode: 'live_discovery',
+    problem,
+    targetDomain,
+    live: result,
+    runId: result.run_id,
+    traceId: result.trace_id,
+    llm_ledger_refs: result.llm_ledger_refs
+  });
   return result;
 }

@@ -376,6 +376,12 @@ test('serveCommand forwards analyze parser config into the import worker', async
           relations: true,
           batchSize: 8
         },
+        imports: {
+          batchEnabled: true,
+          batchMaxTasks: 4,
+          batchMaxFiles: 12,
+          batchMaxBytes: 1048576
+        },
         serve: {
           apiToken: 'test'
         }
@@ -401,6 +407,10 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].semanticExtraction, 'llm-primary');
       assert.equal(calls[0].llmRelations, false);
       assert.equal(calls[0].llmBatchSize, 12);
+      assert.equal(calls[0].batchEnabled, true);
+      assert.equal(calls[0].batchMaxTasks, 4);
+      assert.equal(calls[0].batchMaxFiles, 12);
+      assert.equal(calls[0].batchMaxBytes, 1048576);
     } finally {
       await serverHandle.stop();
     }

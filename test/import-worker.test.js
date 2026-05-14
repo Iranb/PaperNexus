@@ -108,6 +108,287 @@ test('import worker processes queued uploads and merges them into the single gra
   }
 });
 
+test('import worker batches queued markdown uploads into one graph commit when enabled', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-batch-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-batch-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      corpusStore,
+      importStore,
+      importWorker,
+      authoritativeSyncStore
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js'),
+      import('../src/storage/authoritative-sync-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-batch-test',
+      force: true
+    });
+
+    const firstTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'batch-upload-one.md',
+          contentBase64: Buffer.from('# Batch Upload One\n\n## Abstract\n\nThe first batch upload should enter the graph.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const secondTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'batch-upload-two.md',
+          contentBase64: Buffer.from('# Batch Upload Two\n\n## Abstract\n\nThe second batch upload should enter the graph.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const result = await importWorker.runImportQueueOnce(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      batchEnabled: true,
+      batchMaxTasks: 4
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.failed, false);
+    assert.match(result.batchId, /^impbatch:/);
+    assert.deepEqual(result.batchTaskIds, [firstTask.id, secondTask.id]);
+    assert.deepEqual(result.completedTaskIds, [firstTask.id, secondTask.id]);
+
+    const loadedFirstTask = await importStore.loadImportTask(indexRoot, firstTask.id);
+    const loadedSecondTask = await importStore.loadImportTask(indexRoot, secondTask.id);
+    assert.equal(loadedFirstTask.status, 'completed');
+    assert.equal(loadedSecondTask.status, 'completed');
+    assert.equal(loadedFirstTask.result.batch.batchId, result.batchId);
+    assert.equal(loadedSecondTask.result.batch.batchId, result.batchId);
+    assert.equal(
+      loadedFirstTask.result.authoritativeSync.jobId,
+      loadedSecondTask.result.authoritativeSync.jobId
+    );
+    assert.deepEqual(
+      loadedFirstTask.result.fastCommitted.batchTaskIds,
+      [firstTask.id, secondTask.id]
+    );
+    assert.equal(loadedFirstTask.result.fastCommitted.batchChangedSourceKeys.length, 2);
+    assert.equal(loadedSecondTask.result.fastCommitted.batchChangedSourceKeys.length, 2);
+
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
+    assert.equal(corpus.meta.paperCount, 3);
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Batch Upload One'));
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Batch Upload Two'));
+
+    const manifest = await corpusStore.loadSourceManifest(indexRoot);
+    assert.equal(manifest.sources.length, 3);
+
+    const queuedJobs = await authoritativeSyncStore.listAuthoritativeSyncJobs(indexRoot);
+    assert.equal(queuedJobs.length, 1);
+    assert.equal(queuedJobs[0].jobId, loadedFirstTask.result.authoritativeSync.jobId);
+
+    const firstLog = await importStore.loadImportTaskLog(indexRoot, firstTask.id);
+    const secondLog = await importStore.loadImportTaskLog(indexRoot, secondTask.id);
+    assert.match(firstLog, new RegExp(result.batchId));
+    assert.match(secondLog, new RegExp(result.batchId));
+    assert.match(firstLog, /stage llm-optimize batch/i);
+    assert.match(secondLog, /stage fast-commit batch/i);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker keeps successful batch tasks moving when one task fails materialize', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-batch-partial-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-batch-partial-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      corpusStore,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-batch-partial-test',
+      force: true
+    });
+
+    const failedTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'missing-batch-upload.md',
+          contentBase64: Buffer.from('# Missing Batch Upload\n\n## Abstract\n\nThis upload will disappear before materialize.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const successfulTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'surviving-batch-upload.md',
+          contentBase64: Buffer.from('# Surviving Batch Upload\n\n## Abstract\n\nThis upload should still enter the graph.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    await fs.rm(failedTask.files[0].storedPath, { force: true });
+
+    const result = await importWorker.runImportQueueOnce(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      batchEnabled: true,
+      batchMaxTasks: 4
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.failed, true);
+    assert.match(result.batchId, /^impbatch:/);
+    assert.deepEqual(result.completedTaskIds, [successfulTask.id]);
+    assert.deepEqual(result.failedTaskIds, [failedTask.id]);
+
+    const loadedFailedTask = await importStore.loadImportTask(indexRoot, failedTask.id);
+    const loadedSuccessfulTask = await importStore.loadImportTask(indexRoot, successfulTask.id);
+    assert.equal(loadedFailedTask.status, 'failed');
+    assert.equal(loadedSuccessfulTask.status, 'completed');
+    assert.equal(loadedSuccessfulTask.result.batch.batchId, result.batchId);
+
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
+    assert.equal(corpus.meta.paperCount, 2);
+    assert.equal(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Missing Batch Upload'), false);
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Surviving Batch Upload'));
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker processes a pre-existing running task alone when batch reserve is enabled', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-running-batch-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-running-batch-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      corpusStore,
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-running-batch-test',
+      force: true
+    });
+
+    const runningTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'running-batch-upload.md',
+          contentBase64: Buffer.from('# Running Batch Upload\n\n## Abstract\n\nThis running task should be processed alone.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const pendingTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'pending-batch-upload.md',
+          contentBase64: Buffer.from('# Pending Batch Upload\n\n## Abstract\n\nThis pending task should wait for the next pass.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    await importStore.reserveNextImportTask(indexRoot);
+
+    const result = await importWorker.runImportQueueOnce(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      batchEnabled: true,
+      batchMaxTasks: 4
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.failed, false);
+    assert.equal(result.batchId, null);
+    assert.deepEqual(result.completedTaskIds, [runningTask.id]);
+
+    const loadedRunningTask = await importStore.loadImportTask(indexRoot, runningTask.id);
+    const loadedPendingTask = await importStore.loadImportTask(indexRoot, pendingTask.id);
+    assert.equal(loadedRunningTask.status, 'completed');
+    assert.equal(loadedPendingTask.status, 'pending');
+
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
+    assert.equal(corpus.meta.paperCount, 2);
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Running Batch Upload'));
+    assert.equal(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Pending Batch Upload'), false);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('import worker pre-parses the next queued PDF without pulling it into the graph early', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-preparse-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-preparse-workspace-'));

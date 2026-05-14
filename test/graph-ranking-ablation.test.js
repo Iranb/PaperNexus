@@ -64,6 +64,52 @@ function graphBenchmarkFixture() {
   };
 }
 
+function graphRankerQualityFixture() {
+  const decoys = Array.from({ length: 20 }, (_, index) => ({
+    id: `decoy-${index + 1}`,
+    title: `Retrieval methods source evidence decoy ${index + 1}`,
+    abstract: 'A lexical match about retrieval methods, source evidence, and graph search.',
+    references: []
+  }));
+  return {
+    name: 'graph-ranker-quality-fixture',
+    format: 'custom',
+    corpus: [
+      {
+        id: 'anchor',
+        title: 'Sparse anchor study',
+        abstract: 'Anchor paper with typed method evidence.'
+      },
+      {
+        id: 'target',
+        title: 'Neighborhood reranking for scholarly discovery',
+        abstract: 'Typed graph evidence recovers the relevant method paper.',
+        exactQuote: 'Typed graph evidence recovers the relevant method paper.',
+        sourceSpan: { sourceId: 'source:target', start: 0, end: 58 }
+      },
+      ...decoys
+    ],
+    graph: {
+      edges: [
+        { source: 'anchor', target: 'target', type: 'uses' },
+        ...decoys.flatMap((paper, index) => [
+          { source: 'anchor', target: paper.id, type: 'related' },
+          { source: paper.id, target: `decoy-${((index + 1) % decoys.length) + 1}`, type: 'same_topic' }
+        ])
+      ]
+    },
+    queries: [
+      {
+        id: 'q-quality',
+        query: 'retrieval methods that use source evidence',
+        graphSeeds: ['anchor'],
+        relationTypes: ['uses'],
+        relevant: [{ id: 'target', title: 'Neighborhood reranking for scholarly discovery' }]
+      }
+    ]
+  };
+}
+
 test('graph ranking ablation writes mode artifacts and resumes without duplicate rows', async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-graph-ranking-ablation-'));
 
@@ -91,6 +137,7 @@ test('graph ranking ablation writes mode artifacts and resumes without duplicate
 
     const summaryTsv = await fs.readFile(report.artifacts.summaryTsvPath, 'utf8');
     assert.match(summaryTsv, /mode\tevaluated_queries/);
+    assert.match(summaryTsv, /p95_latency_ms/);
     assert.match(summaryTsv, /graph-only/);
 
     const beforeResumeRows = await fs.readFile(report.artifacts.perQueryResultsPath, 'utf8');
@@ -109,6 +156,38 @@ test('graph ranking ablation writes mode artifacts and resumes without duplicate
     assert.equal(resumed.status, 'completed');
     assert.equal(resumed.rows.length, 3);
     assert.equal(afterResumeRows, beforeResumeRows);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('graph ranking all-improvements mode promotes evidence-backed graph expansion into top ten', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-graph-ranker-quality-'));
+
+  try {
+    const report = await runGraphRankingAblation({
+      runId: 'test-graph-ranker-quality',
+      outputDir: tempRoot,
+      benchmark: graphRankerQualityFixture(),
+      modes: ['hybrid', 'hybrid+all'],
+      cutoffs: [10, 100],
+      maxCandidates: 30,
+      graphHopLimit: 1,
+      hubDegreeThreshold: 2,
+      hybridTextWeight: 0.25,
+      hybridGraphWeight: 0.75,
+      evidenceBoostWeight: 0.3
+    });
+
+    const summaries = Object.fromEntries(report.modeSummaries.map((summary) => [summary.mode, summary]));
+    assert.equal(summaries.hybrid.metrics['hit@10'], 0);
+    assert.equal(summaries['hybrid+all'].metrics['hit@10'], 1);
+    assert.ok(summaries['hybrid+all'].averageHubSuppressedCount > 0);
+    assert.ok(summaries['hybrid+all'].averageEvidenceBoostedCount > 0);
+
+    const allRow = report.rows.find((row) => row.mode === 'hybrid+all');
+    assert.equal(allRow.firstRelevantRank <= 10, true);
+    assert.equal(allRow.ablation.seedPaperIds.includes('anchor'), true);
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }

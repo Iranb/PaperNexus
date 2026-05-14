@@ -9,7 +9,8 @@ const DEFAULT_THRESHOLDS = {
   edgeReachableRatio: 0.6,
   pathSemanticCorrectness: 0.7,
   quoteValidationPassRate: 0.9,
-  evidenceCompleteness: 0.75
+  evidenceCompleteness: 0.75,
+  chainAccuracyScore: 0.7
 };
 
 const METHOD_EVOLUTION_EDGE_TYPES = new Set([
@@ -382,25 +383,58 @@ export function evaluateMethodEvolutionBenchmark(graph, benchmark = {}, options 
   const acceptedEvidenceGroups = buildAcceptedEvidenceGroups(graph);
   const chainTransitionCount = chainMatches.reduce((total, chain) => total + chain.totalTransitions, 0);
   const chainReachableCount = chainMatches.reduce((total, chain) => total + chain.reachableTransitions, 0);
+  const chainScores = chainMatches.map((chain) => chain.score).filter((score) => score !== null);
+  const nodeMatchMetric = metric(
+    nodeMatches.filter((match) => match.predictedMethodId).length,
+    asArray(benchmark.nodes).length,
+    thresholds.nodeMatchRatio
+  );
+  const edgeReachableMetric = metric(
+    edgeMatches.filter((match) => match.reachable).length,
+    asArray(benchmark.edges).length,
+    thresholds.edgeReachableRatio
+  );
+  const pathSemanticMetric = metric(
+    chainReachableCount,
+    chainTransitionCount,
+    thresholds.pathSemanticCorrectness
+  );
+  const chainAccuracyMetric = metric(
+    chainScores.reduce((sum, score) => sum + score, 0),
+    chainScores.length,
+    thresholds.chainAccuracyScore
+  );
   const quotePassCount = acceptedEvidenceGroups.filter((group) => group.quotePass).length;
   const evidenceCompleteCount = acceptedEvidenceGroups.filter((group) => group.evidenceComplete).length;
 
   const metrics = {
-    nodeMatchRatio: metric(
-      nodeMatches.filter((match) => match.predictedMethodId).length,
-      asArray(benchmark.nodes).length,
-      thresholds.nodeMatchRatio
-    ),
-    edgeReachableRatio: metric(
-      edgeMatches.filter((match) => match.reachable).length,
-      asArray(benchmark.edges).length,
-      thresholds.edgeReachableRatio
-    ),
-    pathSemanticCorrectness: metric(
-      chainReachableCount,
-      chainTransitionCount,
-      thresholds.pathSemanticCorrectness
-    ),
+    nodeMatchRatio: nodeMatchMetric,
+    edgeReachableRatio: edgeReachableMetric,
+    pathSemanticCorrectness: pathSemanticMetric,
+    nmr: {
+      ...nodeMatchMetric,
+      label: 'Node Match Ratio'
+    },
+    err: {
+      ...edgeReachableMetric,
+      label: 'Edge Reachability Ratio'
+    },
+    psc: {
+      ...pathSemanticMetric,
+      label: 'Path Semantic Correctness'
+    },
+    nr: {
+      ...nodeMatchMetric,
+      label: 'Node Recall'
+    },
+    er: {
+      ...edgeReachableMetric,
+      label: 'Edge Recall'
+    },
+    cas: {
+      ...chainAccuracyMetric,
+      label: 'Chain Accuracy Score'
+    },
     quoteValidationPassRate: metric(
       quotePassCount,
       acceptedEvidenceGroups.length,

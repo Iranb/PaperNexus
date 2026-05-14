@@ -43,6 +43,12 @@
   "global": {
     "corpus": "demo-corpus"
   },
+  "imports": {
+    "batchEnabled": false,
+    "batchMaxTasks": 4,
+    "batchMaxFiles": 16,
+    "batchMaxBytes": 104857600
+  },
   "serve": {
     "host": "0.0.0.0",
     "port": 4821,

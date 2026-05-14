@@ -297,6 +297,38 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     rootPaths,
     intervalMs: options.importIntervalMs,
     logger,
+    batchEnabled: firstDefined(
+      options.importBatchEnabled,
+      options.batchEnabled,
+      importsConfig.batchEnabled,
+      importConfig.batchEnabled,
+      false
+    ),
+    batchMaxTasks: firstNumber(
+      options.importBatchMaxTasks,
+      options.batchMaxTasks,
+      importsConfig.batchMaxTasks,
+      importsConfig.maxTasks,
+      importConfig.batchMaxTasks,
+      importConfig.maxTasks,
+      1
+    ),
+    batchMaxFiles: firstNumber(
+      options.importBatchMaxFiles,
+      options.batchMaxFiles,
+      importsConfig.batchMaxFiles,
+      importsConfig.maxFiles,
+      importConfig.batchMaxFiles,
+      importConfig.maxFiles
+    ),
+    batchMaxBytes: firstNumber(
+      options.importBatchMaxBytes,
+      options.batchMaxBytes,
+      importsConfig.batchMaxBytes,
+      importsConfig.maxBytes,
+      importConfig.batchMaxBytes,
+      importConfig.maxBytes
+    ),
     name: firstDefined(options.name, analyzeConfig.name, materializeConfig.name, watchConfig.name),
     force: firstDefined(options.force, analyzeConfig.force, materializeConfig.force, watchConfig.force),
     quiet: Boolean(firstDefined(options.quiet, analyzeConfig.quiet, materializeConfig.quiet, watchConfig.quiet, true)),

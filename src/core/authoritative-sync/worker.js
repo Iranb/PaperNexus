@@ -13,6 +13,7 @@ import {
   saveCorpus
 } from '../../storage/corpus-store.js';
 import { saveGraphDeltaToKuzu } from '../../storage/kuzu-store.js';
+import { writeKuzuCommitReceipt } from '../../storage/kuzu-commit-receipt-store.js';
 import { loadRegistry } from '../../storage/registry.js';
 import { applyGraphDeltaPayload } from '../graph/delta-commit.js';
 import { summarizeCorpusGraph } from '../graph/summary.js';
@@ -64,16 +65,43 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
   };
   const graphV2Active = String(corpus?.meta?.graphV2Status || '').trim().toLowerCase() === 'active';
   const graphV2ShadowSync = !graphV2Active && shouldRunGraphV2ShadowSync(corpus?.meta, options);
+  const graphGeneration = Number.isFinite(Number(nextMeta.graphGeneration ?? nextMeta.graph_generation))
+    ? Number(nextMeta.graphGeneration ?? nextMeta.graph_generation)
+    : Date.parse(nextMeta.indexedAt);
+  let kuzuCommitReceipt = null;
+  let kuzuCommitReceiptPath = null;
   let graphV2ShadowSyncResult = null;
   let graphV2ShadowSyncError = null;
+  let graphV2ShadowCommitReceipt = null;
+  let graphV2ShadowCommitReceiptPath = null;
   let graphV2ShadowSyncSkipped = false;
   if (graphV2Active) {
-    await saveGraphDeltaToKuzu(paths.kuzuGraphPath, job.deltaPayload, {
+    const kuzuCommitResult = await saveGraphDeltaToKuzu(paths.kuzuGraphPath, job.deltaPayload, {
       jobId: job.jobId,
       baseManifestToken: job.baseManifestToken || null,
       targetManifestToken: job.targetManifestToken || null,
       onProgress: options.onProgress
     });
+    const receiptResult = await writeKuzuCommitReceipt(rootPath, {
+      runId: options.runId || job.runId || job.jobId,
+      traceId: options.traceId || job.traceId || null,
+      jobId: job.jobId,
+      graphGeneration,
+      baseManifestToken: job.baseManifestToken || null,
+      targetManifestToken: job.targetManifestToken || null,
+      deltaHash: kuzuCommitResult.deltaHash,
+      dbPath: paths.kuzuGraphPath,
+      changedSourceKeys: job.deltaPayload.changedSourceKeys || [],
+      upsertedNodeCount: kuzuCommitResult.upsertedNodeCount,
+      upsertedRelationshipCount: kuzuCommitResult.upsertedRelationshipCount,
+      sourceFragmentCount: kuzuCommitResult.sourceFragmentCount,
+      status: 'committed'
+    });
+    kuzuCommitReceipt = receiptResult.receipt;
+    kuzuCommitReceiptPath = receiptResult.receiptPath;
+    if (kuzuCommitReceipt.status !== 'committed') {
+      throw new Error(`Kuzu commit receipt ${kuzuCommitReceipt.receipt_id} verification status is ${kuzuCommitReceipt.status}.`);
+    }
   } else {
     await saveCorpus(rootPath, nextGraph, nextMeta, {
       liteViewMode: 'incremental',
@@ -90,6 +118,23 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
           targetManifestToken: job.targetManifestToken || null,
           onProgress: options.onProgress
         });
+        const receiptResult = await writeKuzuCommitReceipt(rootPath, {
+          runId: options.runId || job.runId || `shadow:${job.jobId}`,
+          traceId: options.traceId || job.traceId || null,
+          jobId: `shadow:${job.jobId}`,
+          graphGeneration,
+          baseManifestToken: job.baseManifestToken || null,
+          targetManifestToken: job.targetManifestToken || null,
+          deltaHash: graphV2ShadowSyncResult.deltaHash,
+          dbPath: graphV2ShadowPath,
+          changedSourceKeys: job.deltaPayload.changedSourceKeys || [],
+          upsertedNodeCount: graphV2ShadowSyncResult.upsertedNodeCount,
+          upsertedRelationshipCount: graphV2ShadowSyncResult.upsertedRelationshipCount,
+          sourceFragmentCount: graphV2ShadowSyncResult.sourceFragmentCount,
+          status: 'committed'
+        });
+        graphV2ShadowCommitReceipt = receiptResult.receipt;
+        graphV2ShadowCommitReceiptPath = receiptResult.receiptPath;
       } catch (error) {
         graphV2ShadowSyncError = error;
         options.onProgress?.({
@@ -113,7 +158,9 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
       : {
           graphV2ShadowSyncStatus: graphV2ShadowSyncSkipped ? 'skipped' : 'synced',
           graphV2ShadowSyncedAt: completedAt,
-          graphV2ShadowSyncError: null
+          graphV2ShadowSyncError: null,
+          graphV2ShadowCommitReceiptPath,
+          graphV2ShadowCommitReceiptStatus: graphV2ShadowCommitReceipt?.status || null
         }
     : {};
   const syncedMeta = {
@@ -123,6 +170,9 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
     authoritativeSyncFailedAt: null,
     authoritativeSyncError: null,
     lastAuthoritativeSyncJobId: job.jobId,
+    graphGeneration,
+    lastKuzuCommitReceiptPath: kuzuCommitReceiptPath,
+    lastKuzuCommitReceiptStatus: kuzuCommitReceipt?.status || null,
     graphV2Status: graphV2Active ? 'active' : nextMeta.graphV2Status || corpus?.meta?.graphV2Status || null,
     ...graphV2ShadowSyncMeta
   };
@@ -138,7 +188,9 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
   return {
     rootPath,
     jobId: job.jobId,
-    meta: syncedMeta
+    meta: syncedMeta,
+    kuzuCommitReceipt,
+    kuzuCommitReceiptPath
   };
 }
 
