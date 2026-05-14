@@ -540,7 +540,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'import_workflow',
-    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed.',
+    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -643,7 +643,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'literature_discovery',
-    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers.',
+    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1008,6 +1008,16 @@ export const PAPERNEXUS_TOOLS = [
           type: 'boolean',
           description: 'After submitting resolved sources, synchronously run the import worker so downloaded PDFs are parsed and fast-committed into the graph. Use this only when the caller intentionally wants to wait for graph visibility; it can be long-running.',
           default: false
+        },
+        importBatchEnabled: {
+          type: 'boolean',
+          description: 'Enable worker-side logical batching for inline import processing triggered by ingest, import_and_process, or processImports. Defaults to true for MCP so multiple submitted tasks can share one LLM optimization and fast commit. Server background workers use the same default unless imports.batchEnabled is explicitly set.',
+          default: true
+        },
+        importBatchMaxTasks: {
+          type: 'number',
+          description: 'Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 4.',
+          default: 4
         },
         importMaxPasses: {
           type: 'number',

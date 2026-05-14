@@ -17,7 +17,7 @@ For two or more files, prefer:
 
 Do not write ad-hoc shell loops. The batch wrapper is the default control plane because it keeps one manifest format, one task registry, and one `summary/items` response shape.
 It also uses one remote `queue_progress` snapshot for status reads, so agents do not need to infer progress from elapsed time.
-When the PaperNexus import worker has logical batching enabled, several submitted task ids may complete from one shared graph commit and authoritative sync job; keep tracking by task id as usual.
+PaperNexus MCP/serve defaults logical import batching on (`imports.batchEnabled=true`, `batchMaxTasks=4`), so several submitted task ids may complete from one shared graph commit and authoritative sync job; keep tracking by task id as usual. Server config can still disable or retune batching.
 For live graph status reads on already-staged files, `import_workflow` on `papernexus-remote` remains the authoritative MCP surface.
 
 ## Manifest Format
@@ -113,5 +113,5 @@ Only graph tools such as `research_lookup`, `research_briefing`, and `idea_catal
 - Use `wait` when you need a terminal batch result; it polls all tasks round-robin instead of waiting one paper at a time.
 - Prefer `paperId` in the manifest so registry matching stays stable across retries.
 - During uploads, read `summary.remaining`, `summary.overallPercent`, and each paper's `progress.percent`.
-- Worker-side import batching does not change wrapper arguments; it only makes multiple task ids finish together when the server chooses a logical batch.
+- Worker-side import batching does not change wrapper arguments; MCP/serve workers default it on, so multiple task ids may finish together when the server chooses a logical batch.
 - If one paper is stuck, inspect it with `python3 SKILL/PaperNexusBatchImport/scripts/pn_import_queue.py status --paper-id "<paperId>"` or `log --paper-id "<paperId>"`.

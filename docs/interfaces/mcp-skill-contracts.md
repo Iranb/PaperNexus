@@ -48,6 +48,7 @@ Stable wrapper expectations:
 - `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py` own remote import submission and tracking.
 - Skill wrappers should not call private `/api/*` routes for live graph control.
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.
+- MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true` and `batchMaxTasks=4`; wrappers continue tracking per-task ids.
 
 ## Current Harness Changes
 

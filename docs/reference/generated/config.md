@@ -54,6 +54,12 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
   "global": {
     "corpus": "demo-corpus"
   },
+  "imports": {
+    "batchEnabled": true,
+    "batchMaxTasks": 4,
+    "batchMaxFiles": 16,
+    "batchMaxBytes": 104857600
+  },
   "serve": {
     "host": "0.0.0.0",
     "port": 4821,
@@ -129,6 +135,11 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `analyze.identifierResolution.mailto` | string | `replace-with-contact@example.com` |
 | `global` | object | section |
 | `global.corpus` | string | `demo-corpus` |
+| `imports` | object | section |
+| `imports.batchEnabled` | boolean | `true` |
+| `imports.batchMaxTasks` | number | `4` |
+| `imports.batchMaxFiles` | number | `16` |
+| `imports.batchMaxBytes` | number | `104857600` |
 | `serve` | object | section |
 | `serve.host` | string | `0.0.0.0` |
 | `serve.port` | number | `4821` |

@@ -19,8 +19,8 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`interdisciplinary_potential`](#tool-interdisciplinary_potential) | Rank source domains by interdisciplinary potential using community structure, cross-domain bridges, and structured takeaways. |
 | [`research_lookup`](#tool-research_lookup) | Run high-level lookup operations over already committed graph state using one remote HTTP MCP surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups. Use literature_discovery first for fresh keyword literature search; graph lookup only sees imported papers after import tasks reach status=completed and stage=completed. |
 | [`research_briefing`](#tool-research_briefing) | Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP MCP tool surface. |
-| [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. |
-| [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. |
+| [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it. |
+| [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
 | [`mutate_graph`](#tool-mutate_graph) | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots. |
@@ -260,7 +260,7 @@ Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP 
 
 <a id="tool-import_workflow"></a>
 
-Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed.
+Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it.
 
 ### Input Schema
 
@@ -292,7 +292,7 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 <a id="tool-literature_discovery"></a>
 
-Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers.
+Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4.
 
 ### Input Schema
 
@@ -362,6 +362,8 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `maxRelatedPerSeed` | optional | number | Maximum OpenAlex related_works retained per seed during citation expansion. |
 | `importResolved` | optional | boolean | Submit resolved local full-text sources to the import queue after discovery. This accepts work into the queue; use processImports or import_workflow wait/status before treating papers as graph-visible. |
 | `processImports` | optional | boolean | After submitting resolved sources, synchronously run the import worker so downloaded PDFs are parsed and fast-committed into the graph. Use this only when the caller intentionally wants to wait for graph visibility; it can be long-running. |
+| `importBatchEnabled` | optional | boolean | Enable worker-side logical batching for inline import processing triggered by ingest, import_and_process, or processImports. Defaults to true for MCP so multiple submitted tasks can share one LLM optimization and fast commit. Server background workers use the same default unless imports.batchEnabled is explicitly set. |
+| `importBatchMaxTasks` | optional | number | Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 4. |
 | `importMaxPasses` | optional | number | Maximum import queue tasks to process inline when processImports is true. Defaults to the number of newly submitted tasks. |
 | `maxImported` | optional | number | Maximum resolved full-text sources to submit when importResolved is true. Metadata-only candidates remain in discovery artifacts but are not graph-visible until materialized through import. |
 | `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction mode for inline import processing. |

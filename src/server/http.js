@@ -302,7 +302,7 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       options.batchEnabled,
       importsConfig.batchEnabled,
       importConfig.batchEnabled,
-      false
+      true
     ),
     batchMaxTasks: firstNumber(
       options.importBatchMaxTasks,
@@ -311,7 +311,7 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       importsConfig.maxTasks,
       importConfig.batchMaxTasks,
       importConfig.maxTasks,
-      1
+      4
     ),
     batchMaxFiles: firstNumber(
       options.importBatchMaxFiles,

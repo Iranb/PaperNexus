@@ -2669,6 +2669,112 @@ test('literature_discovery ingest processes downloaded Markdown into the graph',
   }
 });
 
+test('literature_discovery inline import processing batches multiple imports by default', async () => {
+  const rootPath = await createTempCorpus();
+  const inputRoot = path.join(rootPath, 'seed-input');
+
+  try {
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(inputRoot, 'seed.md'),
+      '# Default Batch Seed\n\n## Abstract\n\nSeed corpus used to validate default MCP import batching.\n',
+      'utf8'
+    );
+    const { analyzeCorpus } = await import('../src/core/ingestion/pipeline.js');
+    await analyzeCorpus(inputRoot, {
+      rootPath,
+      name: 'literature-discovery-default-batch-test',
+      force: true,
+      quiet: true,
+      semanticExtraction: 'heuristic-only'
+    });
+
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'dblp.org') {
+        return createJsonResponse({
+          result: {
+            hits: {
+              hit: []
+            }
+          }
+        });
+      }
+      if (url.hostname === 'example.org' && url.pathname.endsWith('/one.md')) {
+        return createMarkdownResponse([
+          '# Default Batch Import One',
+          '',
+          '## Abstract',
+          '',
+          'The first Markdown paper should be imported through the default MCP batch path.',
+          '',
+          '## Introduction',
+          '',
+          'This body gives the importer enough text to build a paper node.'
+        ].join('\n'));
+      }
+      if (url.hostname === 'example.org' && url.pathname.endsWith('/two.md')) {
+        return createMarkdownResponse([
+          '# Default Batch Import Two',
+          '',
+          '## Abstract',
+          '',
+          'The second Markdown paper should share a logical import batch with the first paper.',
+          '',
+          '## Introduction',
+          '',
+          'This body gives the importer enough text to build another paper node.'
+        ].join('\n'));
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const run = JSON.parse(await executeLiteratureDiscoveryTool({
+      operation: 'ingest',
+      corpus: rootPath,
+      topic: 'default import batch test',
+      providers: ['dblp'],
+      llmQueryPlanner: false,
+      seedPapers: [
+        {
+          title: 'Default Batch Import One',
+          doi: '10.5555/default-batch-one',
+          markdownUrl: 'https://example.org/one.md'
+        },
+        {
+          title: 'Default Batch Import Two',
+          doi: '10.5555/default-batch-two',
+          markdownUrl: 'https://example.org/two.md'
+        }
+      ],
+      maxResultsPerQuery: 1,
+      maxDownloads: 2,
+      maxImported: 2,
+      semanticExtraction: 'heuristic-only'
+    }));
+
+    assert.equal(run.importSummary.completed, 2);
+    assert.equal(run.importSummary.processing.completedTaskIds.length, 2);
+
+    const taskIds = run.candidates.map((candidate) => candidate.import?.taskId).filter(Boolean);
+    assert.equal(taskIds.length, 2);
+
+    const { loadImportTask } = await import('../src/storage/import-store.js');
+    const tasks = await Promise.all(taskIds.map((taskId) => loadImportTask(rootPath, taskId)));
+    assert.deepEqual(tasks.map((task) => task.status), ['completed', 'completed']);
+
+    const batchIds = new Set(tasks.map((task) => task.result?.batch?.batchId).filter(Boolean));
+    assert.equal(batchIds.size, 1);
+    assert.match([...batchIds][0], /^impbatch:/);
+
+    const batchTaskIds = new Set(tasks[0].result.fastCommitted.batchTaskIds);
+    assert.equal(taskIds.every((taskId) => batchTaskIds.has(taskId)), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('literature_discovery supplement attaches a later Markdown source to a metadata-only candidate', async () => {
   const rootPath = await createTempCorpus();
   const supplementalMarkdownPath = path.join(rootPath, 'supplemental-source.md');

@@ -421,6 +421,54 @@ test('serveCommand forwards analyze parser config into the import worker', async
   }
 });
 
+test('serveCommand enables import batching by default for MCP serve workers', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-import-worker-batch-default-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = 53200 + Math.floor(Math.random() * 1000);
+  const calls = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      config: {
+        serve: {
+          apiToken: 'test'
+        }
+      },
+      startImportWorker(workerOptions) {
+        calls.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      },
+      warmDoclingRuntime() {
+        return Promise.resolve({ warmed: true });
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].batchEnabled, true);
+      assert.equal(calls[0].batchMaxTasks, 4);
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('serveCommand warms Docling runtime in the background when imports are enabled', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-docling-warmup-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;

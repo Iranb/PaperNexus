@@ -44,7 +44,7 @@
     "corpus": "demo-corpus"
   },
   "imports": {
-    "batchEnabled": false,
+    "batchEnabled": true,
     "batchMaxTasks": 4,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600

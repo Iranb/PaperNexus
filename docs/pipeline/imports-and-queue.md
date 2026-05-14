@@ -113,7 +113,7 @@ Batching is intentionally logical, not physical:
 - if one task fails during materialization, only that task fails; successfully materialized tasks can continue through the shared stages
 - if the shared LLM optimization or fast commit fails, every task that entered that shared stage fails together and can be retried through the existing failed-task recovery path
 
-The import worker keeps batching opt-in. Configure it under `imports` or `import`:
+For MCP/serve workloads, import batching is enabled by default. Configure it under `imports` or `import` when you want to tune limits or explicitly disable batching:
 
 ```json
 {
@@ -125,6 +125,8 @@ The import worker keeps batching opt-in. Configure it under `imports` or `import
   }
 }
 ```
+
+Set `"batchEnabled": false` if a deployment needs strictly one import task per graph commit.
 
 ## Timeout And Recovery Policy
 

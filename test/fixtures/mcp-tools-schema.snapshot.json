@@ -600,6 +600,14 @@
           "type": "boolean",
           "default": false
         },
+        "importBatchEnabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "importBatchMaxTasks": {
+          "type": "number",
+          "default": 4
+        },
         "importMaxPasses": {
           "type": "number",
           "default": 20

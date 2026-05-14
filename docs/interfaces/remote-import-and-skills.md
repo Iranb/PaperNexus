@@ -69,7 +69,8 @@ The important boundary is that discovery and graph ingestion are intentionally a
 - `literature_discovery plan` and `search` produce query plans and metadata candidates; they do not mutate the graph.
 - `literature_discovery run` / `resolve` can persist discovery artifacts and legal source-resolution results; the graph still may not contain those papers.
 - `literature_discovery import` or `importResolved=true` submits resolved full text to the import queue.
-- `literature_discovery ingest`, `import_and_process`, or `processImports=true` asks PaperNexus to process imports inline, but this can be long-running because parsing, semantic extraction, fast commit, and authoritative graph sync can lag behind discovery.
+- `literature_discovery ingest`, `import_and_process`, or `processImports=true` asks PaperNexus to process imports inline, defaulting to worker-side logical batching with `importBatchEnabled=true` and `importBatchMaxTasks=4`; this can still be long-running because parsing, semantic extraction, fast commit, and authoritative graph sync can lag behind discovery.
+- `import_workflow submit` only accepts tasks into the queue; the MCP serve import worker defaults to `imports.batchEnabled=true` and `batchMaxTasks=4`, so multiple pending tasks can share one graph commit unless server config explicitly disables batching.
 - `research_lookup`, `research_briefing`, and `idea_catalyst mode=graph` only see papers safely after the corresponding `import_workflow wait` has returned `status=completed`, `stage=completed`, and an authoritative sync status of `completed` or `superseded`.
 
 Agents should therefore report interim results precisely:

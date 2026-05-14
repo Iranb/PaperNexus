@@ -142,7 +142,7 @@ Latency rule:
 7. Batch progress:
    `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> status`
    because it uses one remote `queue_progress` snapshot instead of guessing by time
-8. If worker-side import batching is enabled on the server, multiple task ids may complete from one shared graph commit; keep waiting on each task id and do not change wrapper arguments.
+8. MCP/serve import workers default to worker-side logical batching (`imports.batchEnabled=true`, `batchMaxTasks=4`), so multiple task ids may complete from one shared graph commit; keep waiting on each task id and do not change wrapper arguments.
 9. Only claim graph sync or graph visibility succeeded when the task is `status=completed` and `stage=completed`.
 
 Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging and `serverFilePath`.

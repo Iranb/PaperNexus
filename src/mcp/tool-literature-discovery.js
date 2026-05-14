@@ -117,6 +117,51 @@ function buildImportProcessingOptions(args = {}, options = {}, importResult = {}
       args.importPendingTimeoutMs,
       args.import_pending_timeout_ms,
       importConfig.importPendingTimeoutMs
+    ),
+    importBatchEnabled: firstDefined(
+      args.importBatchEnabled,
+      args.import_batch_enabled,
+      args.batchEnabled,
+      args.batch_enabled,
+      options.importBatchEnabled,
+      options.batchEnabled,
+      importConfig.importBatchEnabled,
+      importConfig.batchEnabled,
+      true
+    ),
+    importBatchMaxTasks: firstDefined(
+      args.importBatchMaxTasks,
+      args.import_batch_max_tasks,
+      args.batchMaxTasks,
+      args.batch_max_tasks,
+      options.importBatchMaxTasks,
+      options.batchMaxTasks,
+      importConfig.importBatchMaxTasks,
+      importConfig.batchMaxTasks,
+      importConfig.maxTasks,
+      4
+    ),
+    importBatchMaxFiles: firstDefined(
+      args.importBatchMaxFiles,
+      args.import_batch_max_files,
+      args.batchMaxFiles,
+      args.batch_max_files,
+      options.importBatchMaxFiles,
+      options.batchMaxFiles,
+      importConfig.importBatchMaxFiles,
+      importConfig.batchMaxFiles,
+      importConfig.maxFiles
+    ),
+    importBatchMaxBytes: firstDefined(
+      args.importBatchMaxBytes,
+      args.import_batch_max_bytes,
+      args.batchMaxBytes,
+      args.batch_max_bytes,
+      options.importBatchMaxBytes,
+      options.batchMaxBytes,
+      importConfig.importBatchMaxBytes,
+      importConfig.batchMaxBytes,
+      importConfig.maxBytes
     )
   };
 }
