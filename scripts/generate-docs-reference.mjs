@@ -298,6 +298,7 @@ function modulePurpose(relativePath) {
     'src/mcp/stdio.js': 'Local stdio MCP transport entrypoint.',
     'src/mcp/resources.js': 'MCP resource definitions, including domain-taxonomy style resource payloads.',
     'src/mcp/tool-idea-catalyst.js': 'Handler for the one-shot idea-catalyst MCP tool.',
+    'src/mcp/tool-agent-materials.js': 'Handler for the Agent-facing material backend MCP tool.',
     'src/mcp/tool-import-workflow.js': 'Handler for submit, progress, queue, and wait operations over the import queue.',
     'src/mcp/tool-research-briefing.js': 'Typed chain and brief retrieval surface for remote callers.',
     'src/mcp/tool-research-lookup.js': 'Lookup and brainstorming surface for remote callers.',
@@ -314,6 +315,7 @@ function modulePurpose(relativePath) {
     'src/core/enhancements/worker.js': 'Background enhancement worker and metadata backfill loop.',
     'src/core/authoritative-sync/worker.js': 'Authoritative sync queue processor for full graph state.',
     'src/core/search/search.js': 'Query, context, impact, idea, and brainstorming retrieval logic.',
+    'src/core/materials/agent-materials.js': 'Agent-facing material pack, paper material view, source discovery plan, and import requisition assembly.',
     'src/core/graph/catalyst-adapter.js': 'Idea-Catalyst graph adapter and higher-order ideation contract.',
     'src/core/graph/bridge-retrieval.js': 'Challenge-aware cross-domain bridge retrieval.',
     'src/core/graph/analogy.js': 'Structural analogy and motif matching over graph-native concepts.',
@@ -338,6 +340,7 @@ function modulePurpose(relativePath) {
     'SKILL/PaperNexus/scripts/pn_batch_import.py': 'Canonical skill wrapper for manifest-based batch imports.',
     'SKILL/PaperNexus/scripts/pn_graph_query.py': 'Canonical skill wrapper for remote query, context, impact, ideas, and brainstorming.',
     'SKILL/PaperNexus/scripts/pn_research_chains.py': 'Canonical skill wrapper for evidence, reflection, and research brief retrieval.',
+    'SKILL/PaperNexus/scripts/pn_agent_materials.py': 'Canonical skill wrapper for read-only Agent material packs and paper material views.',
     'SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py': 'Resolve the current live corpus name through remote HTTP MCP.',
     'SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py': 'Run one-shot cross-domain ideation through the remote MCP surface.'
   };

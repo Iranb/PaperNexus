@@ -18,6 +18,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/mcp/resources.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/resources.js) | MCP resource definitions, including domain-taxonomy style resource payloads. |
 | [`src/mcp/server.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/server.js) | MCP server assembly for stdio and streamable HTTP transports. |
 | [`src/mcp/stdio.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/stdio.js) | Local stdio MCP transport entrypoint. |
+| [`src/mcp/tool-agent-materials.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-agent-materials.js) | Handler for the Agent-facing material backend MCP tool. |
 | [`src/mcp/tool-idea-catalyst.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-idea-catalyst.js) | Handler for the one-shot idea-catalyst MCP tool. |
 | [`src/mcp/tool-import-workflow.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-import-workflow.js) | Handler for submit, progress, queue, and wait operations over the import queue. |
 | [`src/mcp/tool-literature-discovery.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-literature-discovery.js) | Tool Literature Discovery implementation. |
@@ -42,12 +43,15 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/storage/corpus-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/corpus-store.js) | Persistent corpus graph, meta, manifest, and mutation write path. |
 | [`src/storage/enhancement-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/enhancement-store.js) | Persistent enhancement queue and overlay job state. |
 | [`src/storage/import-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/import-store.js) | Queued import task persistence, logs, progress, and queue snapshots. |
+| [`src/storage/kuzu-commit-receipt-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/kuzu-commit-receipt-store.js) | Kuzu Commit Receipt Store implementation. |
 | [`src/storage/kuzu-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/kuzu-store.js) | Kuzu Store implementation. |
 | [`src/storage/lite-view.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/lite-view.js) | Incremental lite-graph materialized view and token index maintenance. |
 | [`src/storage/llm-rate-limit-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/llm-rate-limit-store.js) | LLM Rate Limit Store implementation. |
 | [`src/storage/pdf-parse-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/pdf-parse-store.js) | Pdf Parse Store implementation. |
+| [`src/storage/provenance-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/provenance-store.js) | Provenance Store implementation. |
 | [`src/storage/registry.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/registry.js) | Global registry of indexed corpora. |
 | [`src/storage/run-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/run-store.js) | Run Store implementation. |
+| [`src/storage/trace-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/trace-store.js) | Trace Store implementation. |
 
 ## Core
 
@@ -56,6 +60,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/authoritative-sync/worker.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/authoritative-sync/worker.js) | Authoritative sync queue processor for full graph state. |
 | [`src/core/benchmarks/retrieval.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/benchmarks/retrieval.js) | Retrieval implementation. |
 | [`src/core/benchmarks/task-evaluation.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/benchmarks/task-evaluation.js) | Task Evaluation implementation. |
+| [`src/core/control/pipeline-invariants.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/control/pipeline-invariants.js) | Pipeline Invariants implementation. |
 | [`src/core/discovery/browser-session-download.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/browser-session-download.js) | Browser Session Download implementation. |
 | [`src/core/discovery/citation-expansion.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/citation-expansion.js) | Citation Expansion implementation. |
 | [`src/core/discovery/download-manifest.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/discovery/download-manifest.js) | Download Manifest implementation. |
@@ -84,6 +89,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/domain-bridges.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/domain-bridges.js) | Cross-domain bridge construction, takeaways, and transferable edge enrichment. |
 | [`src/core/graph/domain-taxonomy.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/domain-taxonomy.js) | Graph-derived domain taxonomy and distance computation. |
 | [`src/core/graph/graph.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/graph.js) | Graph implementation. |
+| [`src/core/graph/idea-catalyst-evidence-export.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-evidence-export.js) | Idea Catalyst Evidence Export implementation. |
 | [`src/core/graph/idea-catalyst-live.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-live.js) | Idea Catalyst Live implementation. |
 | [`src/core/graph/idea-catalyst-packets.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-packets.js) | Idea Catalyst Packets implementation. |
 | [`src/core/graph/interdisciplinary-potential.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/interdisciplinary-potential.js) | Interdisciplinary Potential implementation. |
@@ -112,6 +118,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/llm/ollama.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/llm/ollama.js) | Ollama implementation. |
 | [`src/core/llm/prompts/research-relations-v1.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/llm/prompts/research-relations-v1.js) | Research Relations V1 implementation. |
 | [`src/core/llm/prompts/semantic-objects-v2.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/llm/prompts/semantic-objects-v2.js) | Semantic Objects V2 implementation. |
+| [`src/core/materials/agent-materials.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/agent-materials.js) | Agent-facing material pack, paper material view, source discovery plan, and import requisition assembly. |
 | [`src/core/search/brainstorm-communities.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/search/brainstorm-communities.js) | Brainstorm Communities implementation. |
 | [`src/core/search/search.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/search/search.js) | Query, context, impact, idea, and brainstorming retrieval logic. |
 

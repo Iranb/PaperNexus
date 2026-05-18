@@ -1265,6 +1265,123 @@ export const PAPERNEXUS_TOOLS = [
     }
   },
   {
+    name: 'agent_materials',
+    description: 'Assemble Agent-facing research materials from committed graph/source state. MVP operations are read-only and return role-grouped material packs, single-paper material views, source discovery plans, and import requisitions without making novelty judgments.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operation: {
+          type: 'string',
+          enum: ['research_material_pack', 'source_discovery_plan', 'paper_material_view', 'import_requisition_pack'],
+          description: 'Read-only material backend operation to run.'
+        },
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        project: {
+          type: 'string',
+          description: 'Optional research project id used to label exported packs. MVP does not write project overlay state.'
+        },
+        targetDomain: {
+          type: 'string',
+          description: 'Target research domain for source discovery and material pack grouping.'
+        },
+        targetProblem: {
+          type: 'string',
+          description: 'Research problem statement used to generate target, near-source, and far-source material queries.'
+        },
+        query: {
+          type: 'string',
+          description: 'Alias or fallback query for operations that accept targetProblem or paper lookup text.'
+        },
+        constraints: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Venue, compute, data, task, or application constraints used when generating material queries.'
+        },
+        roles: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Requested material roles, for example target_prior, near_source_method, far_source_story, novelty_risk, or baseline_candidate.'
+        },
+        role: {
+          type: 'string',
+          description: 'Single-role alias for roles.'
+        },
+        paperId: {
+          type: 'string',
+          description: 'Paper id for paper_material_view.'
+        },
+        paperTitle: {
+          type: 'string',
+          description: 'Paper title for paper_material_view or seed matching.'
+        },
+        title: {
+          type: 'string',
+          description: 'Alias for paperTitle.'
+        },
+        sourceKey: {
+          type: 'string',
+          description: 'Manifest sourceKey for paper_material_view.'
+        },
+        identifier: {
+          type: 'string',
+          description: 'Generic DOI, arXiv id, PMID, or other identifier for paper lookup.'
+        },
+        doi: {
+          type: 'string',
+          description: 'DOI for paper lookup or seed matching.'
+        },
+        arxivId: {
+          type: 'string',
+          description: 'arXiv id for paper lookup or seed matching.'
+        },
+        pmid: {
+          type: 'string',
+          description: 'PMID for paper lookup or seed matching.'
+        },
+        pmcid: {
+          type: 'string',
+          description: 'PMCID for paper lookup or seed matching.'
+        },
+        seedPapers: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: true
+          },
+          description: 'Optional user- or Agent-provided candidate papers. Missing seeds become import requisitions in the MVP.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum candidates per role or generated query group.',
+          default: 5
+        },
+        chunkLimit: {
+          type: 'number',
+          description: 'Maximum chunk records returned by paper_material_view.',
+          default: 8
+        },
+        outputDir: {
+          type: 'string',
+          description: 'Optional server-local directory for JSON/Markdown exports. Omit for pure read-only response.'
+        }
+      },
+      required: ['operation']
+    }
+  },
+  {
     name: 'mutate_graph',
     description: 'Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk.',
     inputSchema: {

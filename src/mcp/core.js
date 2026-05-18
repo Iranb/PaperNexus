@@ -9,6 +9,7 @@ import { PAPERNEXUS_PROMPTS, getPrompt } from './prompts.js';
 import { listResources, readResourcePayload } from './resources.js';
 import { corpusSourcesPayload } from '../server/api.js';
 import { executeIdeaCatalystTool } from './tool-idea-catalyst.js';
+import { executeAgentMaterialsTool } from './tool-agent-materials.js';
 import { executeImportWorkflowTool } from './tool-import-workflow.js';
 import { executeLiteratureDiscoveryTool } from './tool-literature-discovery.js';
 import { executeResearchBriefingTool } from './tool-research-briefing.js';
@@ -301,6 +302,10 @@ export async function executeTool(name, args, options = {}) {
 
   if (name === 'idea_catalyst') {
     return executeIdeaCatalystTool(args, options);
+  }
+
+  if (name === 'agent_materials') {
+    return executeAgentMaterialsTool(args, options);
   }
 
   throw new Error(`Unknown tool: ${name}`);

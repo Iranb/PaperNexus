@@ -32,6 +32,7 @@ The generated reference in `docs/reference/generated/mcp-tools.md` is the source
 | `import_workflow` | Stable remote import queue control surface. |
 | `literature_discovery` | Stable fresh literature discovery and optional import surface. |
 | `idea_catalyst` | Stable high-level idea-catalyst surface. |
+| `agent_materials` | Additive Agent-facing material backend surface. MVP operations are read-only: `research_material_pack`, `source_discovery_plan`, `paper_material_view`, and `import_requisition_pack`. |
 | `mutate_graph` | Write-capable graph mutation surface; keep dry-run semantics stable. |
 | `refresh_corpus` | Write-capable corpus maintenance surface; keep mode names stable. |
 | `refresh_paper_graph` | Write-capable per-paper refresh surface. |
@@ -45,6 +46,7 @@ Stable wrapper expectations:
 - `pn_common.py` owns MCP URL/token handling and JSON-RPC transport.
 - `pn_graph_query.py` owns read-only graph query/context/idea workflows.
 - `pn_research_chains.py` owns chain and briefing workflows.
+- `pn_agent_materials.py` owns read-only Agent material pack, source discovery plan, paper material view, and import requisition workflows.
 - `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py` own remote import submission and tracking.
 - Skill wrappers should not call private `/api/*` routes for live graph control.
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.

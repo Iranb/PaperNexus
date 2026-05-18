@@ -22,6 +22,7 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it. |
 | [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
+| [`agent_materials`](#tool-agent_materials) | Assemble Agent-facing research materials from committed graph/source state. MVP operations are read-only and return role-grouped material packs, single-paper material views, source discovery plans, and import requisitions without making novelty judgments. |
 | [`mutate_graph`](#tool-mutate_graph) | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots. |
 | [`refresh_paper_graph`](#tool-refresh_paper_graph) | Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus. |
@@ -425,6 +426,39 @@ Run a challenge-aware interdisciplinary ideation pass over the graph and return 
 | `limit` | optional | number |  |
 | `outputMode` | optional | string (idea_fragments, packet_bundle) |  |
 | `includeAnalysis` | optional | boolean |  |
+
+## Tool: agent_materials
+
+<a id="tool-agent_materials"></a>
+
+Assemble Agent-facing research materials from committed graph/source state. MVP operations are read-only and return role-grouped material packs, single-paper material views, source discovery plans, and import requisitions without making novelty judgments.
+
+### Input Schema
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `operation` | required | string (research_material_pack, source_discovery_plan, paper_material_view, import_requisition_pack) | Read-only material backend operation to run. |
+| `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
+| `project` | optional | string | Optional research project id used to label exported packs. MVP does not write project overlay state. |
+| `targetDomain` | optional | string | Target research domain for source discovery and material pack grouping. |
+| `targetProblem` | optional | string | Research problem statement used to generate target, near-source, and far-source material queries. |
+| `query` | optional | string | Alias or fallback query for operations that accept targetProblem or paper lookup text. |
+| `constraints` | optional | string \| array | Venue, compute, data, task, or application constraints used when generating material queries. |
+| `roles` | optional | string \| array | Requested material roles, for example target_prior, near_source_method, far_source_story, novelty_risk, or baseline_candidate. |
+| `role` | optional | string | Single-role alias for roles. |
+| `paperId` | optional | string | Paper id for paper_material_view. |
+| `paperTitle` | optional | string | Paper title for paper_material_view or seed matching. |
+| `title` | optional | string | Alias for paperTitle. |
+| `sourceKey` | optional | string | Manifest sourceKey for paper_material_view. |
+| `identifier` | optional | string | Generic DOI, arXiv id, PMID, or other identifier for paper lookup. |
+| `doi` | optional | string | DOI for paper lookup or seed matching. |
+| `arxivId` | optional | string | arXiv id for paper lookup or seed matching. |
+| `pmid` | optional | string | PMID for paper lookup or seed matching. |
+| `pmcid` | optional | string | PMCID for paper lookup or seed matching. |
+| `seedPapers` | optional | array | Optional user- or Agent-provided candidate papers. Missing seeds become import requisitions in the MVP. |
+| `limit` | optional | number | Maximum candidates per role or generated query group. |
+| `chunkLimit` | optional | number | Maximum chunk records returned by paper_material_view. |
+| `outputDir` | optional | string | Optional server-local directory for JSON/Markdown exports. Omit for pure read-only response. |
 
 ## Tool: mutate_graph
 

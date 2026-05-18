@@ -1,5 +1,114 @@
 [
   {
+    "name": "agent_materials",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "properties": {
+        "arxivId": {
+          "type": "string"
+        },
+        "chunkLimit": {
+          "type": "number",
+          "default": 8
+        },
+        "constraints": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "doi": {
+          "type": "string"
+        },
+        "identifier": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "default": 5
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "import_requisition_pack",
+            "paper_material_view",
+            "research_material_pack",
+            "source_discovery_plan"
+          ]
+        },
+        "outputDir": {
+          "type": "string"
+        },
+        "paperId": {
+          "type": "string"
+        },
+        "paperTitle": {
+          "type": "string"
+        },
+        "pmcid": {
+          "type": "string"
+        },
+        "pmid": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "roles": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "seedPapers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "sourceKey": {
+          "type": "string"
+        },
+        "targetDomain": {
+          "type": "string"
+        },
+        "targetProblem": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
     "name": "brainstorm",
     "inputSchema": {
       "type": "object",

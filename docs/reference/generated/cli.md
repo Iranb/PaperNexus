@@ -54,7 +54,7 @@ Commands:
   papernexus graph-v2 tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
   papernexus graph-v2 continue [<corpus>] [--run-id <id|latest>] [--json]
   papernexus graph-v2 report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
-  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--k <1,5,10,20>] [--output <dir>] [--json]
+  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scholargym|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--fixed-corpus-retrieval-mode <lexical|dense|hybrid|rerank|hybrid-rerank>] [--fixed-corpus-dense-scores <path>] [--fixed-corpus-rerank-scores <path>] [--fixed-corpus-rrf-k <n>] [--fixed-corpus-query-analysis <off|heuristic|llm>] [--fixed-corpus-query-analysis-extra-limit <n>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--query-decomposition <auto|true|false>] [--benchmark-limit <n>] [--max-queries <n>] [--max-discovery-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--fixed-corpus-scan-limit <n>] [--fixed-corpus-cache-dir <dir>] [--k <1,5,10,20>] [--output <dir>] [--run-id <id>] [--resume] [--continue-on-error <true|false>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -92,6 +92,12 @@ LLM Fallback Options:
     Use chunk-level LLM map/reduce for Stage 2. Default: true.
   --llm-chunk-limit-per-paper <n>
     Maximum selected chunks per paper for chunk-level LLM extraction. Default: 12.
+  --llm-batch-ledger-dir <dir>
+    Directory for resumable LLM batch ledger JSONL files. Stage 2 uses a corpus-local default when omitted.
+  --llm-batch-run-id <id>
+    Stable run id recorded in LLM batch ledger rows.
+  --llm-batch-resume <true|false>
+    Reuse completed LLM batch rows from the ledger. Defaults to on for continue mode.
 
 MarkItDown Options:
   --markitdown-python <python>
@@ -252,7 +258,7 @@ Examples:
 | `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 tail [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--tail &lt;n&gt;] [--json]` |
 | `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 continue [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--json]` |
 | `graph-v2` | See synopsis and in-command help. | `papernexus graph-v2 report [&lt;corpus&gt;] [--run-id &lt;id\|latest&gt;] [--tail &lt;n&gt;] [--json]` |
-| `benchmark-retrieval` | See synopsis and in-command help. | `papernexus benchmark-retrieval &lt;benchmark-path&gt; [--format &lt;auto\|custom\|beir\|litsearch\|bioasq\|trec\|sage\|scholarqa\|paperask\|sparbench\|scinetbench\|csfcube&gt;] [--evaluation-mode &lt;live\|fixed-corpus&gt;] [--task-evaluation &lt;off\|rules\|llm&gt;] [--generate-task-answers &lt;true\|false&gt;] [--max-task-context &lt;n&gt;] [--corpus &lt;name\|path&gt;] [--providers &lt;name[,name...]&gt;] [--depth &lt;quick\|default\|deep&gt;] [--benchmark-limit &lt;n&gt;] [--max-queries &lt;n&gt;] [--max-results-per-query &lt;n&gt;] [--max-candidates &lt;n&gt;] [--k &lt;1,5,10,20&gt;] [--output &lt;dir&gt;] [--json]` |
+| `benchmark-retrieval` | See synopsis and in-command help. | `papernexus benchmark-retrieval &lt;benchmark-path&gt; [--format &lt;auto\|custom\|beir\|litsearch\|bioasq\|trec\|sage\|scholarqa\|paperask\|sparbench\|scholargym\|scinetbench\|csfcube&gt;] [--evaluation-mode &lt;live\|fixed-corpus&gt;] [--fixed-corpus-retrieval-mode &lt;lexical\|dense\|hybrid\|rerank\|hybrid-rerank&gt;] [--fixed-corpus-dense-scores &lt;path&gt;] [--fixed-corpus-rerank-scores &lt;path&gt;] [--fixed-corpus-rrf-k &lt;n&gt;] [--fixed-corpus-query-analysis &lt;off\|heuristic\|llm&gt;] [--fixed-corpus-query-analysis-extra-limit &lt;n&gt;] [--task-evaluation &lt;off\|rules\|llm&gt;] [--generate-task-answers &lt;true\|false&gt;] [--max-task-context &lt;n&gt;] [--corpus &lt;name\|path&gt;] [--providers &lt;name[,name...]&gt;] [--depth &lt;quick\|default\|deep&gt;] [--query-decomposition &lt;auto\|true\|false&gt;] [--benchmark-limit &lt;n&gt;] [--max-queries &lt;n&gt;] [--max-discovery-queries &lt;n&gt;] [--max-results-per-query &lt;n&gt;] [--max-candidates &lt;n&gt;] [--fixed-corpus-scan-limit &lt;n&gt;] [--fixed-corpus-cache-dir &lt;dir&gt;] [--k &lt;1,5,10,20&gt;] [--output &lt;dir&gt;] [--run-id &lt;id&gt;] [--resume] [--continue-on-error &lt;true\|false&gt;] [--json]` |
 | `test-pdf-config` | See synopsis and in-command help. | `papernexus test-pdf-config &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
 | `test-pdf-to-markdown` | See synopsis and in-command help. | `papernexus test-pdf-to-markdown &lt;pdf-path&gt; [--json] [--verify-docling-fallback]` |
 | `secure-env` | See synopsis and in-command help. | `papernexus secure-env set\|delete\|list\|path [NAME] [--stdin]` |
