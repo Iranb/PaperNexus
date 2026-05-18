@@ -7,12 +7,39 @@
         "operation"
       ],
       "properties": {
+        "acceptedDirections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "add",
+            "export",
+            "get",
+            "list",
+            "remove",
+            "update"
+          ]
+        },
+        "actor": {
+          "type": "string"
+        },
         "arxivId": {
           "type": "string"
+        },
+        "autoDiscoverSources": {
+          "type": "boolean",
+          "default": true
         },
         "chunkLimit": {
           "type": "number",
           "default": 8
+        },
+        "confidence": {
+          "type": "string"
         },
         "constraints": {
           "oneOf": [
@@ -30,23 +57,116 @@
         "corpus": {
           "type": "string"
         },
+        "currentStage": {
+          "type": "string"
+        },
         "doi": {
           "type": "string"
         },
+        "dryRun": {
+          "type": "boolean",
+          "default": false
+        },
+        "evidenceId": {
+          "type": "string"
+        },
+        "excludeDomains": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "farSourceDomains": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "hypothesis": {
+          "type": "string"
+        },
         "identifier": {
+          "type": "string"
+        },
+        "includeProviderEvidence": {
+          "type": "boolean",
+          "default": false
+        },
+        "itemType": {
+          "type": "string"
+        },
+        "judgmentType": {
+          "type": "string"
+        },
+        "layer": {
           "type": "string"
         },
         "limit": {
           "type": "number",
           "default": 5
         },
+        "maxProximalResults": {
+          "type": "number",
+          "default": 2
+        },
+        "minDomainDistance": {
+          "type": "number",
+          "default": 0
+        },
+        "nearSourceDomains": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "neededMaterials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        },
+        "openQuestions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "operation": {
           "type": "string",
           "enum": [
+            "evidence_cart",
+            "experiment_cost_materials",
             "import_requisition_pack",
+            "negative_evidence_pack",
             "paper_material_view",
+            "paper_role_overlay",
             "research_material_pack",
-            "source_discovery_plan"
+            "source_discovery_plan",
+            "workflow_state"
           ]
         },
         "outputDir": {
@@ -58,19 +178,72 @@
         "paperTitle": {
           "type": "string"
         },
+        "persistProviderEvidence": {
+          "type": "boolean",
+          "default": false
+        },
         "pmcid": {
           "type": "string"
         },
         "pmid": {
           "type": "string"
         },
+        "preferDomains": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
         "project": {
           "type": "string"
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "providerEvidenceFallbackToAbstract": {
+          "type": "boolean",
+          "default": false
+        },
+        "providerEvidenceLimit": {
+          "type": "number",
+          "default": 3
+        },
+        "providerEvidencePersistLimit": {
+          "type": "number",
+          "default": 20
+        },
+        "providerEvidenceQueryLimit": {
+          "type": "number",
+          "default": 6
+        },
+        "providerEvidenceTimeoutMs": {
+          "type": "number",
+          "default": 12000
         },
         "query": {
           "type": "string"
         },
+        "rejectedDirections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "role": {
+          "type": "string"
+        },
+        "roleId": {
           "type": "string"
         },
         "roles": {
@@ -93,8 +266,37 @@
             "additionalProperties": true
           }
         },
+        "sourceDomainLimit": {
+          "type": "number",
+          "default": 8
+        },
+        "sourceId": {
+          "type": "string"
+        },
         "sourceKey": {
           "type": "string"
+        },
+        "sourceType": {
+          "type": "string"
+        },
+        "supportingEvidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         },
         "targetDomain": {
           "type": "string"
@@ -102,8 +304,18 @@
         "targetProblem": {
           "type": "string"
         },
+        "text": {
+          "type": "string"
+        },
+        "timeWindow": {
+          "type": "string"
+        },
         "title": {
           "type": "string"
+        },
+        "workflowState": {
+          "type": "object",
+          "additionalProperties": true
         }
       }
     }

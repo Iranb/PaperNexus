@@ -316,6 +316,7 @@ function modulePurpose(relativePath) {
     'src/core/authoritative-sync/worker.js': 'Authoritative sync queue processor for full graph state.',
     'src/core/search/search.js': 'Query, context, impact, idea, and brainstorming retrieval logic.',
     'src/core/materials/agent-materials.js': 'Agent-facing material pack, paper material view, source discovery plan, and import requisition assembly.',
+    'src/core/materials/project-overlay.js': 'Project-level Agent overlay storage for paper roles, evidence carts, and workflow state.',
     'src/core/graph/catalyst-adapter.js': 'Idea-Catalyst graph adapter and higher-order ideation contract.',
     'src/core/graph/bridge-retrieval.js': 'Challenge-aware cross-domain bridge retrieval.',
     'src/core/graph/analogy.js': 'Structural analogy and motif matching over graph-native concepts.',

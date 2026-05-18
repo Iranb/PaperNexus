@@ -22,7 +22,7 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it. |
 | [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
-| [`agent_materials`](#tool-agent_materials) | Assemble Agent-facing research materials from committed graph/source state. MVP operations are read-only and return role-grouped material packs, single-paper material views, source discovery plans, and import requisitions without making novelty judgments. |
+| [`agent_materials`](#tool-agent_materials) | Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, and import requisitions without making novelty judgments; overlay operations store paper roles, evidence carts, and workflow state outside the raw corpus graph. |
 | [`mutate_graph`](#tool-mutate_graph) | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots. |
 | [`refresh_paper_graph`](#tool-refresh_paper_graph) | Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus. |
@@ -431,25 +431,64 @@ Run a challenge-aware interdisciplinary ideation pass over the graph and return 
 
 <a id="tool-agent_materials"></a>
 
-Assemble Agent-facing research materials from committed graph/source state. MVP operations are read-only and return role-grouped material packs, single-paper material views, source discovery plans, and import requisitions without making novelty judgments.
+Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, and import requisitions without making novelty judgments; overlay operations store paper roles, evidence carts, and workflow state outside the raw corpus graph.
 
 ### Input Schema
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (research_material_pack, source_discovery_plan, paper_material_view, import_requisition_pack) | Read-only material backend operation to run. |
+| `operation` | required | string (research_material_pack, source_discovery_plan, paper_material_view, paper_role_overlay, evidence_cart, workflow_state, negative_evidence_pack, experiment_cost_materials, import_requisition_pack) | Material backend operation to run. Overlay operations write only project overlay files, never the raw corpus graph. |
+| `action` | optional | string (add, update, list, remove, get, export) | Sub-action for paper_role_overlay, evidence_cart, or workflow_state. Defaults: list for role/evidence operations, get for workflow_state. |
+| `dryRun` | optional | boolean | Preview write-capable overlay operations without writing files. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
-| `project` | optional | string | Optional research project id used to label exported packs. MVP does not write project overlay state. |
+| `project` | optional | string | Research project id used to label material packs and isolate project overlay memory. |
 | `targetDomain` | optional | string | Target research domain for source discovery and material pack grouping. |
 | `targetProblem` | optional | string | Research problem statement used to generate target, near-source, and far-source material queries. |
 | `query` | optional | string | Alias or fallback query for operations that accept targetProblem or paper lookup text. |
 | `constraints` | optional | string \| array | Venue, compute, data, task, or application constraints used when generating material queries. |
+| `autoDiscoverSources` | optional | boolean | Compatibility flag for material-pack workflows. Source discovery is generated by default and remains read-only unless routed to import tools. |
+| `preferDomains` | optional | string \| array | Preferred source domains for source_discovery_plan and research_material_pack. |
+| `excludeDomains` | optional | string \| array | Source domains to exclude from the graph-native near/far source router. |
+| `nearSourceDomains` | optional | string \| array | Explicit domains to treat as near-source method domains. |
+| `farSourceDomains` | optional | string \| array | Explicit domains to treat as far-source story domains. |
+| `minDomainDistance` | optional | number | Minimum domain distance for source-router candidates before they are marked as proximal leakage. |
+| `maxProximalResults` | optional | number | Maximum number of below-minDomainDistance source domains kept with proximal_leakage=true. |
+| `sourceDomainLimit` | optional | number | Maximum source domains returned by the graph-native source router. |
+| `includeProviderEvidence` | optional | boolean | Opt in to bounded read-only Semantic Scholar snippet evidence for source_discovery_plan, research_material_pack, import_requisition_pack, and negative_evidence_pack. Default false to avoid implicit network calls. |
+| `providerEvidenceLimit` | optional | number | Maximum Semantic Scholar snippet hits retained per provider-evidence query. |
+| `persistProviderEvidence` | optional | boolean | When includeProviderEvidence is true, persist returned provider snippets into the project evidence cart. Requires project; default false. |
+| `providerEvidencePersistLimit` | optional | number | Maximum provider evidence snippets persisted into the project evidence cart when persistProviderEvidence=true. |
+| `providerEvidenceQueryLimit` | optional | number | Maximum generated queries sent to the provider-evidence layer. |
+| `providerEvidenceTimeoutMs` | optional | number | Timeout in milliseconds for each provider-evidence request. |
+| `providerEvidenceFallbackToAbstract` | optional | boolean | When true, hydrate degenerate provider snippets with paper abstracts when available. |
+| `timeWindow` | optional | string | Optional time-window label recorded in negative_evidence_pack filters. |
 | `roles` | optional | string \| array | Requested material roles, for example target_prior, near_source_method, far_source_story, novelty_risk, or baseline_candidate. |
 | `role` | optional | string | Single-role alias for roles. |
+| `roleId` | optional | string | Stable project overlay role id for paper_role_overlay update/remove. |
+| `layer` | optional | string | Optional source layer for paper role overlay, for example target_domain, near_source, or far_source. |
+| `judgmentType` | optional | string | Optional Agent judgment type saved in project overlay, for example closest_prior or novelty_risk_note. |
+| `confidence` | optional | string | Optional Agent confidence label for project overlay entries. |
+| `supportingEvidenceIds` | optional | array | Evidence ids supporting a paper role overlay entry. |
 | `paperId` | optional | string | Paper id for paper_material_view. |
 | `paperTitle` | optional | string | Paper title for paper_material_view or seed matching. |
 | `title` | optional | string | Alias for paperTitle. |
 | `sourceKey` | optional | string | Manifest sourceKey for paper_material_view. |
+| `sourceType` | optional | string | Evidence-cart source type, for example chunk, graph_node, table, figure, query, or negative_evidence. |
+| `sourceId` | optional | string | Evidence-cart source id, such as a chunk id, graph node id, or external query id. |
+| `evidenceId` | optional | string | Stable evidence-cart id for remove or cross-linking from paper_role_overlay. |
+| `itemType` | optional | string | Evidence-cart item type, for example snippet, table, figure, mechanism, paper, or negative_evidence. |
+| `text` | optional | string | Evidence-cart text or short material excerpt. |
+| `tags` | optional | string \| array | Evidence-cart tags. |
+| `provenance` | optional | array | Evidence-cart provenance records. |
+| `notes` | optional | string | Human or Agent notes for overlay entries. |
+| `actor` | optional | string | Short label for the Agent or user writing overlay state. |
+| `workflowState` | optional | object | Workflow state patch for workflow_state action=update. |
+| `hypothesis` | optional | string | Current project hypothesis for workflow_state action=update. |
+| `currentStage` | optional | string | Current workflow stage label for workflow_state action=update. |
+| `acceptedDirections` | optional | array | Accepted research directions for workflow_state action=update. |
+| `rejectedDirections` | optional | array | Rejected research directions for workflow_state action=update. |
+| `openQuestions` | optional | array | Open questions for workflow_state action=update. |
+| `neededMaterials` | optional | array | Needed materials for workflow_state action=update. |
 | `identifier` | optional | string | Generic DOI, arXiv id, PMID, or other identifier for paper lookup. |
 | `doi` | optional | string | DOI for paper lookup or seed matching. |
 | `arxivId` | optional | string | arXiv id for paper lookup or seed matching. |
