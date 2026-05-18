@@ -7,8 +7,9 @@ import { ensureDir, fileExists, readJson, writeJson, writeText } from '../../lib
 import { resolveOpenAlexApiKey } from '../../lib/api-keys.js';
 import { createPaperIdentity, normalizePaperIdentifiers, paperIdentifiersOverlap } from '../../lib/paper-identifiers.js';
 import {
+  STOPWORDS,
   jaccardSimilarity,
-  scoreTokenOverlap,
+  normalizeText,
   slugify,
   stableHash,
   toNumber,
@@ -18,6 +19,7 @@ import {
 } from '../../lib/utils.js';
 import { runLiteratureDiscovery } from '../discovery/workflow.js';
 import { readDiscoveryRequestSchedulerState } from '../discovery/request-scheduler.js';
+import { getDefaultLlmApiKeyEnv, loadLlmApiKey, resolveLlmConfig } from '../llm/ollama.js';
 import {
   aggregateTaskEvaluationMetrics,
   evaluateBenchmarkTaskCase,
@@ -28,6 +30,7 @@ const DEFAULT_CUTOFFS = [1, 5, 10, 20];
 const DEFAULT_TITLE_MATCH_THRESHOLD = 0.96;
 const DEFAULT_FIXED_CORPUS_LIMIT = 1000;
 const DEFAULT_FIXED_CORPUS_SCAN_LIMIT = 50000;
+const FIXED_CORPUS_INDEX_CACHE_VERSION = 'fixed-corpus-index-cache-v5';
 
 const BENCHMARK_FORMAT_ALIASES = {
   beir: 'beir',
@@ -49,6 +52,9 @@ const BENCHMARK_FORMAT_ALIASES = {
   paperask: 'paperask',
   sparbench: 'sparbench',
   spar: 'sparbench',
+  scholargym: 'scholargym',
+  scholargymbench: 'scholargym',
+  'scholargym-bench': 'scholargym',
   scinetbench: 'scinetbench',
   csfcube: 'csfcube',
   custom: 'custom',
@@ -97,6 +103,11 @@ const BENCHMARK_PROFILES = {
     evaluationStyle: 'expert_annotated_academic_search',
     nativeMetrics: ['F1', 'Recall', 'Precision']
   },
+  scholargym: {
+    taskType: 'academic_literature_retrieval',
+    evaluationStyle: 'fixed_corpus_academic_search',
+    nativeMetrics: ['Recall@k', 'Hit@k', 'MRR@k', 'NDCG@k']
+  },
   scinetbench: {
     taskType: 'relation_aware_retrieval',
     evaluationStyle: 'scientific_network_retrieval',
@@ -132,31 +143,6 @@ function toTokenCounts(tokens = []) {
   return counts;
 }
 
-function buildDocumentFrequency(paperTokens = []) {
-  const documentFrequency = new Map();
-  for (const tokens of paperTokens) {
-    for (const token of new Set(tokens || [])) {
-      documentFrequency.set(token, (documentFrequency.get(token) || 0) + 1);
-    }
-  }
-  return documentFrequency;
-}
-
-function buildTokenInvertedIndex(tokenSets = []) {
-  const invertedIndex = new Map();
-  tokenSets.forEach((tokens, index) => {
-    for (const token of new Set(tokens || [])) {
-      const postings = invertedIndex.get(token);
-      if (postings) {
-        postings.push(index);
-      } else {
-        invertedIndex.set(token, [index]);
-      }
-    }
-  });
-  return invertedIndex;
-}
-
 function countTokenInField(tokens = [], target = '') {
   let count = 0;
   for (const token of tokens || []) {
@@ -165,13 +151,13 @@ function countTokenInField(tokens = [], target = '') {
   return count;
 }
 
-function bm25FieldScore(queryTokens = [], docTokens = [], documentFrequency = new Map(), totalDocuments = 0, averageLength = 0, tokenCounts = null) {
-  if (!queryTokens.length || !docTokens.length || !totalDocuments) return 0;
+function bm25FieldScore(queryTokens = [], docTokens = [], documentFrequency = new Map(), totalDocuments = 0, averageLength = 0, tokenCounts = null, docLength = null) {
+  const length = docLength ?? docTokens.length;
+  if (!queryTokens.length || !length || !totalDocuments) return 0;
   const uniqueQueryTokens = new Set(queryTokens);
   const k1 = 1.2;
   const b = 0.75;
-  const docLength = docTokens.length;
-  const lengthNorm = averageLength > 0 ? (1 - b) + (b * (docLength / averageLength)) : 1;
+  const lengthNorm = averageLength > 0 ? (1 - b) + (b * (length / averageLength)) : 1;
   let score = 0;
 
   for (const token of uniqueQueryTokens) {
@@ -184,6 +170,80 @@ function bm25FieldScore(queryTokens = [], docTokens = [], documentFrequency = ne
   }
 
   return score;
+}
+
+function resolveOptionalNumber(value, fallback = null) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function summarizeQueryTokenMatches(value = '', queryTokenSet = new Set(), fieldStats = {}) {
+  const counts = new Map();
+  const matched = new Set();
+  const knownLength = resolveOptionalNumber(fieldStats.length);
+  const knownUniqueCount = resolveOptionalNumber(fieldStats.uniqueCount);
+  const needsUniqueTokens = knownUniqueCount === null;
+  const uniqueTokens = needsUniqueTokens ? new Set() : null;
+  let length = 0;
+  for (const token of normalizeText(value).split(' ')) {
+    const normalized = token.trim();
+    if (!normalized || normalized.length <= 2 || STOPWORDS.has(normalized)) continue;
+    length += 1;
+    if (needsUniqueTokens) uniqueTokens.add(normalized);
+    if (queryTokenSet.has(normalized)) {
+      matched.add(normalized);
+      counts.set(normalized, (counts.get(normalized) || 0) + 1);
+    }
+  }
+  return {
+    counts,
+    matched,
+    uniqueTokens,
+    length: knownLength ?? length,
+    uniqueCount: knownUniqueCount ?? uniqueTokens.size
+  };
+}
+
+function scoreMatchedTokenOverlap(queryTokens = [], matchedTokens = new Set()) {
+  if (!queryTokens.length || !matchedTokens.size) return 0;
+  let matches = 0;
+  for (const token of queryTokens) {
+    if (matchedTokens.has(token)) matches += 1;
+  }
+  return matches / queryTokens.length;
+}
+
+function scorePreparedTitleSimilarity(queryTokenSet = new Set(), titleMatch = {}) {
+  if (!queryTokenSet.size || !titleMatch.uniqueCount) return 0;
+  let intersection = 0;
+  for (const token of queryTokenSet) {
+    if (titleMatch.matched.has(token)) intersection += 1;
+  }
+  return intersection / (queryTokenSet.size + titleMatch.uniqueCount - intersection);
+}
+
+function combineQueryTokenMatches(left = {}, right = {}, fieldStats = {}) {
+  const matched = new Set([
+    ...(left.matched ? [...left.matched] : []),
+    ...(right.matched ? [...right.matched] : [])
+  ]);
+  const knownLength = resolveOptionalNumber(fieldStats.length);
+  const knownUniqueCount = resolveOptionalNumber(fieldStats.uniqueCount);
+  const needsUniqueTokens = knownUniqueCount === null || knownLength === null;
+  const uniqueTokens = needsUniqueTokens
+    ? new Set([
+      ...(left.uniqueTokens ? [...left.uniqueTokens] : []),
+      ...(right.uniqueTokens ? [...right.uniqueTokens] : [])
+    ])
+    : null;
+  const derivedUniqueCount = uniqueTokens?.size || matched.size;
+  return {
+    counts: new Map([...matched].map((token) => [token, 1])),
+    matched,
+    uniqueTokens,
+    length: knownLength ?? derivedUniqueCount,
+    uniqueCount: knownUniqueCount ?? derivedUniqueCount
+  };
 }
 
 function scoreFacetAwareBoost(facet = '', paper = {}) {
@@ -199,6 +259,348 @@ function scoreFacetAwareBoost(facet = '', paper = {}) {
 
   const hits = facetTerms.reduce((count, term) => count + (text.includes(term) ? 1 : 0), 0);
   return hits ? Math.min(2, hits / Math.max(1, facetTerms.length)) : 0;
+}
+
+function normalizeFixedCorpusQueryAnalysisMode(options = {}) {
+  const raw = pickFirst(
+    options.fixedCorpusQueryAnalysis,
+    options.fixed_corpus_query_analysis,
+    options.queryAnalysis,
+    options.query_analysis,
+    'off'
+  );
+  if (raw === true) return 'heuristic';
+  const normalized = String(raw || 'off').trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (['1', 'true', 'yes', 'on', 'heuristic', 'rules'].includes(normalized)) return 'heuristic';
+  if (['llm', 'internal-llm', 'llm-assisted'].includes(normalized)) return 'llm';
+  return 'off';
+}
+
+function fixedCorpusQueryAnalysisTermsForQuery(query = '') {
+  const normalized = ` ${normalizeText(query)} `;
+  const groups = [];
+  const maybeAdd = (patterns, category, terms) => {
+    if (patterns.some((pattern) => pattern.test(normalized))) {
+      groups.push({ category, terms });
+    }
+  };
+
+  maybeAdd([
+    /\bchallenge(s)?\b/,
+    /\blimitation(s)?\b/,
+    /\bfailure mode(s)?\b/,
+    /\bopen problem(s)?\b/,
+    /\bissue(s)?\b/,
+    /\bbarrier(s)?\b/
+  ], 'challenge', [
+    'challenge', 'limitation', 'limitations', 'failure', 'failure modes',
+    'open problems', 'problem', 'robustness', 'risk', 'bottleneck'
+  ]);
+  maybeAdd([
+    /\bextension(s)?\b/,
+    /\bextend(s|ed|ing)?\b/,
+    /\bimprovement(s)?\b/,
+    /\benhancement(s)?\b/,
+    /\bvariant(s)?\b/
+  ], 'extension', [
+    'extension', 'improvement', 'enhancement', 'variant', 'adaptation',
+    'generalization', 'transfer', 'scaling', 'scalable'
+  ]);
+  maybeAdd([
+    /\bapplication(s)?\b/,
+    /\bapplied\b/,
+    /\bdeployment(s)?\b/,
+    /\bcase stud(y|ies)\b/,
+    /\breal world\b/
+  ], 'application', [
+    'application', 'applied', 'deployment', 'domain', 'case study',
+    'real-world', 'practical', 'use case'
+  ]);
+  maybeAdd([
+    /\bbenchmark(s)?\b/,
+    /\bevaluation(s)?\b/,
+    /\bmetric(s)?\b/,
+    /\bdataset(s)?\b/
+  ], 'evaluation', [
+    'benchmark', 'evaluation', 'metric', 'dataset', 'comparison',
+    'empirical', 'performance'
+  ]);
+  maybeAdd([
+    /\bsurvey(s)?\b/,
+    /\breview(s)?\b/,
+    /\btaxonom(y|ies)\b/,
+    /\boverview(s)?\b/
+  ], 'survey', [
+    'survey', 'review', 'taxonomy', 'overview', 'systematic',
+    'comparative'
+  ]);
+  maybeAdd([
+    /\bdomain shift\b/,
+    /\bdistribution shift\b/,
+    /\bout-of-distribution\b/,
+    /\bood\b/
+  ], 'domain_shift', [
+    'domain shift', 'distribution shift', 'out-of-distribution',
+    'ood', 'generalization', 'adaptation', 'transfer', 'robustness'
+  ]);
+  maybeAdd([
+    /\blarge language model(s)?\b/,
+    /\bllm(s)?\b/,
+    /\bfoundation model(s)?\b/
+  ], 'llm', [
+    'large language model', 'llm', 'foundation model', 'generative',
+    'instruction tuning', 'reasoning', 'agent'
+  ]);
+  maybeAdd([
+    /\bretrieval augmented\b/,
+    /\brag\b/,
+    /\binformation retrieval\b/
+  ], 'retrieval', [
+    'retrieval', 'search', 'indexing', 'ranking', 'reranking',
+    'query expansion', 'evidence'
+  ]);
+
+  return groups;
+}
+
+function normalizeQueryAnalysisTermList(values = []) {
+  return unique(asArray(values)
+    .flatMap((value) => {
+      if (typeof value === 'string') return [value];
+      const entry = asObject(value);
+      return [
+        entry.term,
+        entry.text,
+        entry.phrase,
+        entry.label,
+        entry.value
+      ];
+    })
+    .map(compactText)
+    .filter(Boolean));
+}
+
+function tokensForQueryAnalysisTerms(values = []) {
+  return unique(normalizeQueryAnalysisTermList(values).flatMap((value) => tokenizeWithoutStopwords(value)));
+}
+
+function normalizeFixedCorpusQueryAnalysisPayload(payload = {}, queryCase = {}, mode = 'heuristic', source = 'heuristic', error = null) {
+  const originalTokens = tokenizeWithoutStopwords(queryCase.query);
+  const negativeTerms = normalizeQueryAnalysisTermList(payload.negativeTerms || payload.negative_terms);
+  const negativeTokenSet = new Set(tokensForQueryAnalysisTerms(negativeTerms));
+  const coreConcepts = normalizeQueryAnalysisTermList(payload.coreConcepts || payload.core_concepts);
+  const facetTerms = normalizeQueryAnalysisTermList(payload.facetTerms || payload.facet_terms);
+  const synonyms = normalizeQueryAnalysisTermList(payload.synonyms);
+  const relatedTerms = normalizeQueryAnalysisTermList(payload.relatedTerms || payload.related_terms);
+  const expansionTokens = tokensForQueryAnalysisTerms([
+    ...coreConcepts,
+    ...facetTerms,
+    ...synonyms,
+    ...relatedTerms
+  ]).filter((token) => !negativeTokenSet.has(token));
+  const originalTokenSet = new Set(originalTokens);
+  const expandedTokens = unique([...originalTokens, ...expansionTokens]);
+  const addedTokens = expandedTokens.filter((token) => !originalTokenSet.has(token));
+
+  return {
+    enabled: true,
+    mode,
+    source,
+    coreConcepts,
+    facetTerms,
+    synonyms,
+    relatedTerms,
+    negativeTerms,
+    originalTokenCount: originalTokens.length,
+    expandedTokenCount: expandedTokens.length,
+    addedTokenCount: addedTokens.length,
+    addedTokens: addedTokens.slice(0, 50),
+    queryTokens: expandedTokens,
+    error: error ? truncate(error, 300) : null
+  };
+}
+
+function buildHeuristicFixedCorpusQueryAnalysis(queryCase = {}) {
+  const groups = fixedCorpusQueryAnalysisTermsForQuery(queryCase.query);
+  const facetTerms = groups.flatMap((group) => group.terms);
+  return normalizeFixedCorpusQueryAnalysisPayload({
+    coreConcepts: tokenizeWithoutStopwords(queryCase.query).slice(0, 12),
+    facetTerms,
+    relatedTerms: groups.map((group) => group.category),
+    negativeTerms: ['paper', 'papers', 'study', 'studies', 'studying', 'research', 'researching']
+  }, queryCase, 'heuristic', 'heuristic');
+}
+
+function parseJsonText(text = '') {
+  const raw = String(text || '').trim();
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return JSON.parse(raw.slice(start, end + 1));
+    }
+    throw new Error(`Expected JSON object, received: ${truncate(raw, 180)}`);
+  }
+}
+
+function extractOpenAiText(payload = {}) {
+  const content = payload.choices?.[0]?.message?.content ?? payload.choices?.[0]?.text ?? '';
+  if (Array.isArray(content)) return content.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('');
+  return String(content || '');
+}
+
+function extractAnthropicText(payload = {}) {
+  return asArray(payload.content).map((part) => (part?.type === 'text' ? part.text || '' : '')).join('');
+}
+
+async function postJson(url, body, headers = {}, timeoutMs = 45000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...headers
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Query-analysis LLM request failed (${response.status}): ${truncate(text, 300)}`);
+    }
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildFixedCorpusQueryAnalysisPrompt(queryCase = {}) {
+  return [
+    'You are helping an academic literature retrieval system analyze a natural-language query before lexical fixed-corpus search.',
+    'Return strict JSON with this shape:',
+    '{"coreConcepts":["..."],"facetTerms":["..."],"synonyms":["..."],"relatedTerms":["..."],"negativeTerms":["..."]}',
+    'Use short scientific search phrases. Expand intent words such as challenges, limitations, extensions, applications, benchmarks, and surveys into title/abstract terms that relevant papers may use.',
+    'Do not include paper, papers, study, studies, research, or researching unless they are part of a specific concept.',
+    '',
+    `Query: ${queryCase.query || ''}`,
+    `Task type: ${queryCase.metadata?.taskType || queryCase.metadata?.benchmarkFormat || 'academic_literature_retrieval'}`
+  ].join('\n');
+}
+
+async function callFixedCorpusQueryAnalysisLlm(queryCase = {}, options = {}) {
+  const prompt = buildFixedCorpusQueryAnalysisPrompt(queryCase);
+  if (typeof options.fixedCorpusQueryAnalyzer === 'function') {
+    return options.fixedCorpusQueryAnalyzer({ queryCase, prompt, options });
+  }
+  if (typeof options.fixed_corpus_query_analyzer === 'function') {
+    return options.fixed_corpus_query_analyzer({ queryCase, prompt, options });
+  }
+  if (typeof options.llmJson === 'function') {
+    return options.llmJson(prompt, {
+      ...options,
+      task: 'fixed_corpus_query_analysis',
+      queryCase
+    });
+  }
+
+  const config = resolveLlmConfig(options);
+  if (!config.enabled || !config.model) {
+    throw new Error('Fixed-corpus query analysis requires an LLM model or a fixedCorpusQueryAnalyzer hook.');
+  }
+
+  if (config.provider === 'openai') {
+    const apiKey = config.apiKey || await loadLlmApiKey(config);
+    if (!apiKey) {
+      throw new Error(`Missing API key for fixed-corpus query analysis. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv('openai')} or run papernexus auth llm set.`);
+    }
+    const payload = await postJson(`${config.baseUrl}/chat/completions`, {
+      model: config.model,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+      temperature: 0.1,
+      max_completion_tokens: config.maxTokens || 800
+    }, {
+      authorization: `Bearer ${apiKey}`
+    }, config.timeoutMs);
+    return parseJsonText(extractOpenAiText(payload));
+  }
+
+  if (config.provider === 'anthropic') {
+    const apiKey = config.apiKey || await loadLlmApiKey(config);
+    if (!apiKey) {
+      throw new Error(`Missing API key for fixed-corpus query analysis. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv('anthropic')} or run papernexus auth llm set.`);
+    }
+    const payload = await postJson(`${config.baseUrl}/messages`, {
+      model: config.model,
+      max_tokens: config.maxTokens || 800,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1
+    }, {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    }, config.timeoutMs);
+    return parseJsonText(extractAnthropicText(payload));
+  }
+
+  const payload = await postJson(`${config.baseUrl}/api/generate`, {
+    model: config.model,
+    prompt,
+    stream: false,
+    format: 'json',
+    options: { temperature: 0.1 }
+  }, {}, config.timeoutMs);
+  return parseJsonText(payload.response || '');
+}
+
+async function buildFixedCorpusQueryAnalysis(queryCase = {}, options = {}) {
+  const mode = normalizeFixedCorpusQueryAnalysisMode(options);
+  if (mode === 'off') {
+    const queryTokens = tokenizeWithoutStopwords(queryCase.query);
+    return {
+      enabled: false,
+      mode: 'off',
+      source: 'off',
+      originalTokenCount: queryTokens.length,
+      expandedTokenCount: queryTokens.length,
+      addedTokenCount: 0,
+      addedTokens: [],
+      queryTokens,
+      error: null
+    };
+  }
+
+  if (mode === 'heuristic') {
+    return buildHeuristicFixedCorpusQueryAnalysis(queryCase);
+  }
+
+  try {
+    const payload = await callFixedCorpusQueryAnalysisLlm(queryCase, options);
+    return normalizeFixedCorpusQueryAnalysisPayload(payload, queryCase, 'llm', 'llm');
+  } catch (error) {
+    const fallback = buildHeuristicFixedCorpusQueryAnalysis(queryCase);
+    return {
+      ...fallback,
+      mode: 'llm',
+      source: 'heuristic-fallback',
+      error: error?.message || String(error)
+    };
+  }
+}
+
+function scoreFixedCorpusQueryAnalysisBoost(queryAnalysis = {}, titleMatch = {}, abstractMatch = {}) {
+  if (!queryAnalysis?.enabled || !queryAnalysis.addedTokens?.length) return 0;
+  let titleHits = 0;
+  let abstractHits = 0;
+  for (const token of queryAnalysis.addedTokens) {
+    if (titleMatch.matched?.has(token)) titleHits += 1;
+    if (abstractMatch.matched?.has(token)) abstractHits += 1;
+  }
+  return Math.min(3, (titleHits * 0.75) + (abstractHits * 0.3));
 }
 
 function inferTaskType(format = 'custom', entry = {}, fallback = '') {
@@ -1335,6 +1737,252 @@ async function loadLitSearchBenchmark(datasetPath, options = {}) {
   };
 }
 
+function scholarGymCorpusLookupKeys(paper = {}) {
+  const arxivId = compactText(paper.identifiers?.arxivId || paper.arxivId || paper.arxiv_id);
+  return unique([
+    paper.id,
+    paper.canonicalId,
+    paper.normalizedTitle,
+    arxivId,
+    arxivId.replace(/v\d+$/i, '')
+  ].map(compactText).filter(Boolean));
+}
+
+function normalizeScholarGymPaperRecord(entry = {}, fallbackId = '') {
+  const raw = asObject(entry);
+  const arxivId = compactText(pickFirst(raw.arxiv_id, raw.arxivId, raw.arxiv, fallbackId));
+  return normalizePaperRecord({
+    ...raw,
+    id: pickFirst(raw.id, raw._id, arxivId, fallbackId),
+    arxivId,
+    arxiv_id: arxivId,
+    abstract: pickFirst(raw.abstract, raw.summary),
+    metadata: {
+      ...(asObject(raw.metadata)),
+      date: raw.date,
+      authors: raw.authors,
+      category: raw.category
+    }
+  }, fallbackId);
+}
+
+async function* streamTopLevelJsonObjectEntries(filePath) {
+  let state = 'start';
+  let keyRaw = '';
+  let key = '';
+  let valueRaw = '';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let done = false;
+
+  for await (const chunk of createReadStream(filePath, { encoding: 'utf8', highWaterMark: 1024 * 1024 })) {
+    for (const char of chunk) {
+      if (done) {
+        if (!/\s/.test(char)) throw new Error(`Unexpected trailing content in ${filePath}`);
+        continue;
+      }
+
+      if (state === 'start') {
+        if (/\s/.test(char)) continue;
+        if (char !== '{') throw new Error(`Expected top-level JSON object in ${filePath}`);
+        state = 'key-or-end';
+        continue;
+      }
+
+      if (state === 'key-or-end') {
+        if (/\s/.test(char) || char === ',') continue;
+        if (char === '}') {
+          done = true;
+          continue;
+        }
+        if (char !== '"') throw new Error(`Expected object key in ${filePath}`);
+        keyRaw = '"';
+        state = 'key';
+        escaped = false;
+        continue;
+      }
+
+      if (state === 'key') {
+        keyRaw += char;
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          key = JSON.parse(keyRaw);
+          state = 'colon';
+        }
+        continue;
+      }
+
+      if (state === 'colon') {
+        if (/\s/.test(char)) continue;
+        if (char !== ':') throw new Error(`Expected ':' after object key in ${filePath}`);
+        valueRaw = '';
+        depth = 0;
+        inString = false;
+        escaped = false;
+        state = 'value-start';
+        continue;
+      }
+
+      if (state === 'value-start') {
+        if (/\s/.test(char)) continue;
+        state = 'value';
+      }
+
+      if (state === 'value') {
+        valueRaw += char;
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === '\\') {
+            escaped = true;
+          } else if (char === '"') {
+            inString = false;
+          }
+          continue;
+        }
+
+        if (char === '"') {
+          inString = true;
+        } else if (char === '{' || char === '[') {
+          depth += 1;
+        } else if (char === '}' || char === ']') {
+          depth -= 1;
+          if (depth === 0) {
+            yield [key, JSON.parse(valueRaw)];
+            key = '';
+            valueRaw = '';
+            state = 'after-value';
+          }
+        }
+        continue;
+      }
+
+      if (state === 'after-value') {
+        if (/\s/.test(char)) continue;
+        if (char === ',') {
+          state = 'key-or-end';
+          continue;
+        }
+        if (char === '}') {
+          done = true;
+          continue;
+        }
+        throw new Error(`Expected ',' or '}' after object value in ${filePath}`);
+      }
+    }
+  }
+
+  if (!done) throw new Error(`Unexpected end of JSON object in ${filePath}`);
+}
+
+async function loadScholarGymCorpus(corpusPath) {
+  const stat = await fs.stat(corpusPath);
+  const largeJsonThreshold = 256 * 1024 * 1024;
+  if (stat.size <= largeJsonThreshold) {
+    const paperDb = await readJson(corpusPath, null);
+    const entries = Array.isArray(paperDb)
+      ? paperDb.map((paper, index) => [paper?.arxiv_id || paper?.arxivId || paper?.id || index, paper])
+      : Object.entries(asObject(paperDb));
+    return entries
+      .map(([paperId, paper]) => normalizeScholarGymPaperRecord(paper, paperId))
+      .filter((paper) => paper.title || paper.abstract || paper.identifiers?.arxivId);
+  }
+
+  const corpus = [];
+  for await (const [paperId, paper] of streamTopLevelJsonObjectEntries(corpusPath)) {
+    const normalized = normalizeScholarGymPaperRecord(paper, paperId);
+    if (normalized.title || normalized.abstract || normalized.identifiers?.arxivId) {
+      corpus.push(normalized);
+    }
+  }
+  return corpus;
+}
+
+function buildScholarGymCorpusById(corpus = []) {
+  const corpusById = new Map();
+  for (const paper of corpus) {
+    for (const key of scholarGymCorpusLookupKeys(paper)) {
+      if (!corpusById.has(key)) corpusById.set(key, paper);
+    }
+  }
+  return corpusById;
+}
+
+function extractScholarGymRelevantPapers(entry = {}, corpusById = new Map()) {
+  const papers = asArray(entry.cited_paper || entry.citedPaper || entry.citedPapers || entry.cited_papers);
+  const labels = asArray(entry.gt_label || entry.gtLabel || entry.labels);
+  const relevant = [];
+  papers.forEach((paper, index) => {
+    const label = Number(labels[index] ?? 0);
+    if (!(label > 0)) return;
+    const raw = asObject(paper);
+    const identifiers = normalizePaperIdentifiers(raw);
+    const arxivId = compactText(pickFirst(identifiers.arxivId, raw.arxiv_id, raw.arxivId, raw.arxiv));
+    const match = arxivId ? corpusById.get(arxivId) || corpusById.get(arxivId.replace(/v\d+$/i, '')) : null;
+    relevant.push({
+      ...(match || normalizeScholarGymPaperRecord(raw, arxivId || `${entry.qid || 'query'}:rel:${index}`)),
+      relevance: label
+    });
+  });
+  return dedupePapers(relevant);
+}
+
+async function loadScholarGymBenchmark(datasetPath, options = {}) {
+  const baseDir = path.resolve(options.cwd || process.cwd(), datasetPath);
+  const queryPath = options.queriesPath
+    ? path.resolve(options.cwd || process.cwd(), options.queriesPath)
+    : await findFirstExisting(baseDir, ['scholargym_bench.jsonl', 'scholargym_bench.json', 'bench.jsonl', 'benchmark.jsonl']);
+  const corpusPath = options.corpusPath
+    ? path.resolve(options.cwd || process.cwd(), options.corpusPath)
+    : await findFirstExisting(baseDir, ['scholargym_paper_db.json', 'paper_db.json', 'corpus.json']);
+
+  if (!queryPath || !corpusPath) {
+    throw new Error('ScholarGym format requires scholargym_bench.jsonl and scholargym_paper_db.json.');
+  }
+
+  const corpus = await loadScholarGymCorpus(corpusPath);
+  const corpusById = buildScholarGymCorpusById(corpus);
+  const queryEntries = await readJsonOrJsonl(queryPath);
+  const requestedFormat = canonicalBenchmarkFormat(options.formatName || options.format || 'scholargym');
+  const format = requestedFormat === 'auto' ? 'scholargym' : requestedFormat;
+  const queries = queryEntries
+    .filter((entry) => entry?.valid !== false)
+    .map((entry, index) => normalizeBenchmarkQuery({
+      id: pickFirst(entry.qid, entry.id, index + 1),
+      query: entry.query,
+      relevant: extractScholarGymRelevantPapers(entry, corpusById),
+      source: entry.source,
+      date: entry.date,
+      metadata: {
+        date: entry.date,
+        source: entry.source,
+        native: {
+          qid: entry.qid,
+          valid: entry.valid
+        }
+      }
+    }, index, corpusById, {
+      format,
+      taskType: options.taskType
+    }))
+    .filter((entry) => shouldKeepLoadedQuery(entry, format));
+
+  return {
+    name: options.name || 'ScholarGym',
+    format,
+    profile: benchmarkProfile(format),
+    sourcePath: baseDir,
+    queryCount: queries.length,
+    corpusSize: corpus.length,
+    corpus,
+    queries
+  };
+}
+
 async function listDirectoryFiles(baseDir) {
   const entries = await fs.readdir(baseDir, { withFileTypes: true }).catch(() => []);
   return entries
@@ -1869,6 +2517,7 @@ export async function loadRetrievalBenchmark(datasetPath, options = {}) {
 
   if (format === 'beir') return loadBeirBenchmark(absolutePath, options);
   if (format === 'litsearch') return loadLitSearchBenchmark(absolutePath, options);
+  if (format === 'scholargym') return loadScholarGymBenchmark(absolutePath, options);
   if (format === 'bioasq') return loadBioAsqBenchmark(absolutePath, options);
   if (format === 'trec') return loadTrecBenchmark(absolutePath, options);
   if (format === 'csfcube') return loadCsfcubeBenchmark(absolutePath, options);
@@ -1894,6 +2543,12 @@ export async function loadRetrievalBenchmark(datasetPath, options = {}) {
       && (await findFirstExisting(absolutePath, ['corpus_clean.jsonl', 'corpus.jsonl', 'corpus_clean.json', 'corpus.json']))
     ) {
       return loadLitSearchBenchmark(absolutePath, options);
+    }
+    if (
+      (await findFirstExisting(absolutePath, ['scholargym_bench.jsonl', 'scholargym_bench.json']))
+      && (await findFirstExisting(absolutePath, ['scholargym_paper_db.json', 'paper_db.json']))
+    ) {
+      return loadScholarGymBenchmark(absolutePath, options);
     }
     if (await findFirstMatchingFile(absolutePath, [/bioasq.*\.json$/i, /.*questions.*\.json$/i])) {
       const parsed = await readJson(await findFirstMatchingFile(absolutePath, [/bioasq.*\.json$/i, /.*questions.*\.json$/i]), null);
@@ -2560,6 +3215,14 @@ function summarizeBenchmarkDiagnostics(results = []) {
     summary.failedSeeds += Number(entry.failedSeeds || 0);
     return summary;
   }, { seeds: 0, addedCandidates: 0, failedSeeds: 0 });
+  const queryAnalyses = results.map((result) => result.discovery?.queryAnalysis).filter(Boolean);
+  const queryAnalysis = {
+    enabledQueries: queryAnalyses.filter((entry) => entry.enabled).length,
+    modes: unique(queryAnalyses.map((entry) => entry.mode).filter(Boolean)).sort(),
+    sources: unique(queryAnalyses.map((entry) => entry.source).filter(Boolean)).sort(),
+    averageAddedTokenCount: average(queryAnalyses.map((entry) => entry.addedTokenCount || 0)),
+    errors: queryAnalyses.filter((entry) => entry.error).length
+  };
   const providerFailures = aggregateProviderFailures(results);
   const goldMissReasons = aggregateGoldMissReasons(results);
 
@@ -2587,12 +3250,19 @@ function summarizeBenchmarkDiagnostics(results = []) {
     goldMissReasons,
     providerFailuresTotal: providerFailures.reduce((sum, entry) => sum + entry.count, 0),
     providerFailures,
-    citationExpansion
+    citationExpansion,
+    queryAnalysis
   };
 }
 
 function selectQueries(benchmark = {}, options = {}) {
-  const limit = Math.max(0, Math.floor(Number(options.limit || options.benchmarkLimit || 0)));
+  const limit = Math.max(0, Math.floor(Number(pickFirst(
+    options.limit,
+    options.benchmarkLimit,
+    options.maxQueries,
+    options.max_queries,
+    0
+  ))));
   const offset = Math.max(0, Math.floor(Number(options.offset || 0)));
   const queries = benchmark.queries || [];
   return (limit ? queries.slice(offset, offset + limit) : queries.slice(offset));
@@ -2661,40 +3331,223 @@ function resolveFixedCorpusScanLimit(options = {}, resultLimit = DEFAULT_FIXED_C
   return Number.isFinite(limit) && limit > 0 ? limit : fallback;
 }
 
+function resolveFixedCorpusQueryAnalysisExtraLimit(options = {}, scanLimit = DEFAULT_FIXED_CORPUS_SCAN_LIMIT, resultLimit = DEFAULT_FIXED_CORPUS_LIMIT) {
+  const explicitRaw = [
+    options.fixedCorpusQueryAnalysisExtraLimit,
+    options.fixed_corpus_query_analysis_extra_limit
+  ].find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+  if (explicitRaw !== undefined) {
+    const explicit = Math.floor(Number(explicitRaw));
+    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  }
+  const fallback = Math.max(resultLimit, Math.min(2000, Math.ceil(Number(scanLimit || 0) * 0.05)));
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : resultLimit;
+}
+
+function normalizeFixedCorpusRetrievalMode(options = {}) {
+  const raw = pickFirst(
+    options.fixedCorpusRetrievalMode,
+    options.fixed_corpus_retrieval_mode,
+    options.retrievalMode,
+    options.retrieval_mode,
+    'lexical'
+  );
+  const normalized = String(raw || 'lexical').trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (['dense', 'embedding', 'embeddings', 'dense-artifact'].includes(normalized)) return 'dense';
+  if (['hybrid', 'rrf', 'hybrid-rrf', 'lexical-dense', 'dense-lexical'].includes(normalized)) return 'hybrid';
+  if (['rerank', 'reranker', 'rerank-artifact', 'cross-encoder'].includes(normalized)) return 'rerank';
+  if (['hybrid-rerank', 'rerank-hybrid', 'rrf-rerank', 'hybrid-rrf-rerank'].includes(normalized)) return 'hybrid-rerank';
+  return 'lexical';
+}
+
+function resolveFixedCorpusRrfK(options = {}) {
+  const value = Number(pickFirst(
+    options.fixedCorpusRrfK,
+    options.fixed_corpus_rrf_k,
+    options.rrfK,
+    options.rrf_k,
+    60
+  ));
+  return Number.isFinite(value) && value > 0 ? value : 60;
+}
+
+function fixedCorpusScorerName(options = {}) {
+  const mode = normalizeFixedCorpusRetrievalMode(options);
+  if (mode === 'dense') return 'dense-artifact-v1';
+  if (mode === 'hybrid') return 'hybrid-rrf-v1';
+  if (mode === 'rerank') return 'rerank-artifact-v1';
+  if (mode === 'hybrid-rerank') return 'hybrid-rerank-v1';
+  return 'hybrid-bm25-v1';
+}
+
+function resolveFixedCorpusDenseScoresPath(options = {}) {
+  return compactText(pickFirst(
+    options.fixedCorpusDenseScoresPath,
+    options.fixed_corpus_dense_scores_path,
+    options.fixedCorpusDenseScoresFile,
+    options.fixed_corpus_dense_scores_file,
+    options.fixedCorpusDenseScores,
+    options.fixed_corpus_dense_scores
+  ));
+}
+
+function resolveFixedCorpusRerankScoresPath(options = {}) {
+  return compactText(pickFirst(
+    options.fixedCorpusRerankScoresPath,
+    options.fixed_corpus_rerank_scores_path,
+    options.fixedCorpusRerankScoresFile,
+    options.fixed_corpus_rerank_scores_file,
+    options.fixedCorpusRerankScores,
+    options.fixed_corpus_rerank_scores
+  ));
+}
+
+function looksLikeNormalizedPaperRecord(paper = {}) {
+  const record = asObject(paper);
+  return Boolean(
+    compactText(record.id)
+    && record.identifiers
+    && typeof record.identifiers === 'object'
+    && !Array.isArray(record.identifiers)
+    && (record.canonicalId || record.normalizedTitle || Array.isArray(record.identityAliases))
+  );
+}
+
+function normalizeFixedCorpusRecord(paper = {}, index = 0) {
+  return looksLikeNormalizedPaperRecord(paper)
+    ? paper
+    : normalizePaperRecord(paper, `fixed:${index}`);
+}
+
+function normalizeFixedCorpusRecords(corpus = []) {
+  return asArray(corpus).map((paper, index) => normalizeFixedCorpusRecord(paper, index));
+}
+
+function buildFixedCorpusTitleFields(normalizedCorpus = []) {
+  const compactTitles = normalizedCorpus.map((paper) => compactText(paper.title));
+  return {
+    compactTitles,
+    compactTitleLowers: compactTitles.map((title) => title.toLowerCase())
+  };
+}
+
+function summarizeFixedCorpusMemoryProfile(corpus = [], normalizedCorpus = [], fallback = {}) {
+  return {
+    fieldTokenSetsStored: false,
+    combinedTokenSetsStored: false,
+    reusedNormalizedRecords: normalizedCorpus.reduce((count, paper, index) => (
+      paper === corpus[index] ? count + 1 : count
+    ), 0),
+    normalizedRecordCount: normalizedCorpus.length,
+    ...fallback
+  };
+}
+
+function buildFixedCorpusTokenIndexStats(normalizedCorpus = []) {
+  const titleDf = new Map();
+  const abstractDf = new Map();
+  const combinedDf = new Map();
+  const combinedInvertedIndex = new Map();
+  const titleLengths = [];
+  const abstractLengths = [];
+  const combinedLengths = [];
+  const titleUniqueCounts = [];
+  const abstractUniqueCounts = [];
+  let titleTokenTotal = 0;
+  let abstractTokenTotal = 0;
+  let combinedTokenTotal = 0;
+
+  for (let index = 0; index < normalizedCorpus.length; index += 1) {
+    const paper = normalizedCorpus[index] || {};
+    const titleTokens = tokenizeWithoutStopwords(paper.title);
+    const abstractTokens = tokenizeWithoutStopwords(paper.abstract);
+    const titleTokenSet = new Set(titleTokens);
+    const abstractTokenSet = new Set(abstractTokens);
+    const combinedTokens = unique([...titleTokens, ...abstractTokens]);
+    titleLengths[index] = titleTokens.length;
+    abstractLengths[index] = abstractTokens.length;
+    combinedLengths[index] = combinedTokens.length;
+    titleUniqueCounts[index] = titleTokenSet.size;
+    abstractUniqueCounts[index] = abstractTokenSet.size;
+    titleTokenTotal += titleTokens.length;
+    abstractTokenTotal += abstractTokens.length;
+    combinedTokenTotal += combinedTokens.length;
+    for (const token of titleTokenSet) {
+      titleDf.set(token, (titleDf.get(token) || 0) + 1);
+    }
+    for (const token of abstractTokenSet) {
+      abstractDf.set(token, (abstractDf.get(token) || 0) + 1);
+    }
+    for (const token of combinedTokens) {
+      combinedDf.set(token, (combinedDf.get(token) || 0) + 1);
+      const postings = combinedInvertedIndex.get(token);
+      if (postings) {
+        postings.push(index);
+      } else {
+        combinedInvertedIndex.set(token, [index]);
+      }
+    }
+  }
+
+  return {
+    titleDf,
+    abstractDf,
+    combinedDf,
+    combinedInvertedIndex,
+    fieldTokenStats: {
+      titleLengths,
+      abstractLengths,
+      combinedLengths,
+      titleUniqueCounts,
+      abstractUniqueCounts
+    },
+    avgTitleLength: titleTokenTotal / Math.max(1, normalizedCorpus.length),
+    avgAbstractLength: abstractTokenTotal / Math.max(1, normalizedCorpus.length),
+    avgCombinedLength: combinedTokenTotal / Math.max(1, normalizedCorpus.length)
+  };
+}
+
 function buildFixedCorpusIndex(benchmark = {}, options = {}) {
   const corpus = asArray(options.fixedCorpus || benchmark.corpus);
   if (!corpus.length) {
     throw new Error(`Benchmark ${benchmark.name || benchmark.format || ''} does not include a local corpus. Use live mode or provide a corpus file.`);
   }
 
-  const normalizedCorpus = corpus.map((paper, index) => normalizePaperRecord(paper, `fixed:${index}`));
-  const titleTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.title));
-  const abstractTokenSets = normalizedCorpus.map((paper) => tokenizeWithoutStopwords(paper.abstract));
-  const combinedTokenSets = normalizedCorpus.map((paper, index) => unique([...titleTokenSets[index], ...abstractTokenSets[index]]));
-  const combinedInvertedIndex = buildTokenInvertedIndex(combinedTokenSets);
-  const compactTitles = normalizedCorpus.map((paper) => compactText(paper.title));
-  const compactTitleLowers = compactTitles.map((title) => title.toLowerCase());
+  const normalizedCorpus = normalizeFixedCorpusRecords(corpus);
+  const {
+    titleDf,
+    abstractDf,
+    combinedDf,
+    combinedInvertedIndex,
+    fieldTokenStats,
+    avgTitleLength,
+    avgAbstractLength,
+    avgCombinedLength
+  } = buildFixedCorpusTokenIndexStats(normalizedCorpus);
+  const { compactTitles, compactTitleLowers } = buildFixedCorpusTitleFields(normalizedCorpus);
   const totalDocuments = normalizedCorpus.length;
   const stats = {
     totalDocuments,
-    titleDf: buildDocumentFrequency(titleTokenSets),
-    abstractDf: buildDocumentFrequency(abstractTokenSets),
-    combinedDf: buildDocumentFrequency(combinedTokenSets),
-    avgTitleLength: titleTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
-    avgAbstractLength: abstractTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments),
-    avgCombinedLength: combinedTokenSets.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(1, totalDocuments)
+    titleDf,
+    abstractDf,
+    combinedDf,
+    avgTitleLength,
+    avgAbstractLength,
+    avgCombinedLength
   };
 
   return {
-    corpus,
+    corpus: normalizedCorpus,
     normalizedCorpus,
-    titleTokenSets,
-    abstractTokenSets,
-    combinedTokenSets,
+    titleTokenSets: null,
+    abstractTokenSets: null,
+    combinedTokenSets: null,
     combinedInvertedIndex,
+    fieldTokenStats,
     compactTitles,
     compactTitleLowers,
     stats,
+    memoryProfile: summarizeFixedCorpusMemoryProfile(corpus, normalizedCorpus),
     cache: {
       mode: 'in-memory-per-run',
       hit: false,
@@ -2714,40 +3567,64 @@ function deserializeMap(entries = []) {
 
 function serializeFixedCorpusIndex(index = {}) {
   return {
-    contractVersion: 'fixed-corpus-index-cache-v1',
-    corpus: index.corpus || [],
-    normalizedCorpus: index.normalizedCorpus || [],
-    titleTokenSets: index.titleTokenSets || [],
-    abstractTokenSets: index.abstractTokenSets || [],
-    combinedTokenSets: index.combinedTokenSets || [],
+    contractVersion: FIXED_CORPUS_INDEX_CACHE_VERSION,
     combinedInvertedIndex: serializeMap(index.combinedInvertedIndex),
-    compactTitles: index.compactTitles || [],
-    compactTitleLowers: index.compactTitleLowers || [],
+    fieldTokenStats: index.fieldTokenStats || null,
     stats: {
       ...(index.stats || {}),
       titleDf: serializeMap(index.stats?.titleDf),
       abstractDf: serializeMap(index.stats?.abstractDf),
       combinedDf: serializeMap(index.stats?.combinedDf)
+    },
+    memoryProfile: {
+      ...(index.memoryProfile || {}),
+      normalizedRecordCount: index.normalizedCorpus?.length || index.memoryProfile?.normalizedRecordCount || null,
+      corpusStoredInCache: false,
+      compactTitleFieldsStoredInCache: false
     }
   };
 }
 
-function deserializeFixedCorpusIndex(payload = {}, cache = {}) {
+function deserializeFixedCorpusIndex(payload = {}, cache = {}, benchmark = {}) {
+  const sourceCorpus = asArray(benchmark.corpus).length
+    ? asArray(benchmark.corpus)
+    : asArray(payload.normalizedCorpus || payload.corpus);
+  const normalizedCorpus = normalizeFixedCorpusRecords(sourceCorpus);
+  const rebuiltStats = (
+    !payload.combinedInvertedIndex
+    || !payload.stats?.titleDf
+    || !payload.stats?.abstractDf
+    || !payload.stats?.combinedDf
+  )
+    ? buildFixedCorpusTokenIndexStats(normalizedCorpus)
+    : null;
+  const { compactTitles, compactTitleLowers } = buildFixedCorpusTitleFields(normalizedCorpus);
   return {
-    corpus: payload.corpus || [],
-    normalizedCorpus: payload.normalizedCorpus || [],
-    titleTokenSets: payload.titleTokenSets || [],
-    abstractTokenSets: payload.abstractTokenSets || [],
-    combinedTokenSets: payload.combinedTokenSets || [],
-    combinedInvertedIndex: deserializeMap(payload.combinedInvertedIndex),
-    compactTitles: payload.compactTitles || [],
-    compactTitleLowers: payload.compactTitleLowers || [],
+    corpus: normalizedCorpus,
+    normalizedCorpus,
+    titleTokenSets: payload.titleTokenSets || null,
+    abstractTokenSets: payload.abstractTokenSets || null,
+    combinedTokenSets: payload.combinedTokenSets || null,
+    combinedInvertedIndex: rebuiltStats?.combinedInvertedIndex || deserializeMap(payload.combinedInvertedIndex),
+    fieldTokenStats: payload.fieldTokenStats || rebuiltStats?.fieldTokenStats || null,
+    compactTitles,
+    compactTitleLowers,
     stats: {
       ...(payload.stats || {}),
-      titleDf: deserializeMap(payload.stats?.titleDf),
-      abstractDf: deserializeMap(payload.stats?.abstractDf),
-      combinedDf: deserializeMap(payload.stats?.combinedDf)
+      titleDf: rebuiltStats?.titleDf || deserializeMap(payload.stats?.titleDf),
+      abstractDf: rebuiltStats?.abstractDf || deserializeMap(payload.stats?.abstractDf),
+      combinedDf: rebuiltStats?.combinedDf || deserializeMap(payload.stats?.combinedDf),
+      avgTitleLength: payload.stats?.avgTitleLength ?? rebuiltStats?.avgTitleLength ?? 0,
+      avgAbstractLength: payload.stats?.avgAbstractLength ?? rebuiltStats?.avgAbstractLength ?? 0,
+      avgCombinedLength: payload.stats?.avgCombinedLength ?? rebuiltStats?.avgCombinedLength ?? 0
     },
+    memoryProfile: summarizeFixedCorpusMemoryProfile(sourceCorpus, normalizedCorpus, {
+      ...(payload.memoryProfile || {}),
+      fieldTokenSetsStored: Array.isArray(payload.titleTokenSets) || Array.isArray(payload.abstractTokenSets),
+      combinedTokenSetsStored: Array.isArray(payload.combinedTokenSets),
+      corpusStoredInCache: Array.isArray(payload.normalizedCorpus) || Array.isArray(payload.corpus),
+      compactTitleFieldsStoredInCache: Array.isArray(payload.compactTitles) || Array.isArray(payload.compactTitleLowers)
+    }),
     cache
   };
 }
@@ -2773,7 +3650,7 @@ async function fixedCorpusSourceFingerprint(benchmark = {}, options = {}) {
 
 async function fixedCorpusCacheKey(benchmark = {}, options = {}) {
   return stableHash(JSON.stringify({
-    version: 'fixed-corpus-index-cache-v1',
+    version: FIXED_CORPUS_INDEX_CACHE_VERSION,
     tokenizer: 'tokenizeWithoutStopwords-v1',
     scorer: 'hybrid-bm25-v1',
     corpusSize: benchmark.corpusSize || asArray(benchmark.corpus).length,
@@ -2791,14 +3668,20 @@ async function loadOrBuildFixedCorpusIndex(benchmark = {}, options = {}) {
 
   const key = await fixedCorpusCacheKey(benchmark, options);
   const cachePath = path.join(path.resolve(process.cwd(), cacheDir), `${key}.json`);
-  const cached = await readJson(cachePath, null);
-  if (cached?.contractVersion === 'fixed-corpus-index-cache-v1') {
+  let cacheReadError = null;
+  let cached = null;
+  try {
+    cached = await readJson(cachePath, null);
+  } catch (error) {
+    cacheReadError = error?.message || String(error);
+  }
+  if (cached?.contractVersion === FIXED_CORPUS_INDEX_CACHE_VERSION) {
     return deserializeFixedCorpusIndex(cached, {
       mode: 'persistent',
       hit: true,
       key,
       path: cachePath
-    });
+    }, benchmark);
   }
 
   const built = buildFixedCorpusIndex(benchmark, options);
@@ -2808,8 +3691,18 @@ async function loadOrBuildFixedCorpusIndex(benchmark = {}, options = {}) {
     key,
     path: cachePath
   };
-  await ensureDir(path.dirname(cachePath));
-  await writeJson(cachePath, serializeFixedCorpusIndex(built));
+  try {
+    await ensureDir(path.dirname(cachePath));
+    await writeText(cachePath, `${JSON.stringify(serializeFixedCorpusIndex(built))}\n`);
+  } catch (error) {
+    built.cache = {
+      mode: 'persistent-write-failed',
+      hit: false,
+      key,
+      path: cachePath,
+      error: [cacheReadError, error?.message || String(error)].filter(Boolean).join('; ')
+    };
+  }
   return built;
 }
 
@@ -2821,21 +3714,525 @@ function summarizeFixedCorpusIndex(fixedCorpusIndex = null) {
     cacheHit: Boolean(fixedCorpusIndex.cache?.hit),
     cacheKey: fixedCorpusIndex.cache?.key || null,
     cachePath: fixedCorpusIndex.cache?.path || null,
+    cacheError: fixedCorpusIndex.cache?.error || null,
     corpusSize: fixedCorpusIndex.normalizedCorpus.length,
     titleDfTerms: fixedCorpusIndex.stats.titleDf.size,
     abstractDfTerms: fixedCorpusIndex.stats.abstractDf.size,
     combinedDfTerms: fixedCorpusIndex.stats.combinedDf.size,
     invertedTerms: fixedCorpusIndex.combinedInvertedIndex.size,
+    fieldLengthStatsStored: Boolean(fixedCorpusIndex.fieldTokenStats?.titleLengths?.length),
+    fieldTokenSetsStored: Boolean(fixedCorpusIndex.memoryProfile?.fieldTokenSetsStored),
+    combinedTokenSetsStored: Boolean(fixedCorpusIndex.memoryProfile?.combinedTokenSetsStored),
+    reusedNormalizedRecords: fixedCorpusIndex.memoryProfile?.reusedNormalizedRecords ?? null,
     avgTitleLength: fixedCorpusIndex.stats.avgTitleLength,
     avgAbstractLength: fixedCorpusIndex.stats.avgAbstractLength,
     avgCombinedLength: fixedCorpusIndex.stats.avgCombinedLength
   };
 }
 
-function resolveFixedCorpusCandidateIndexes(fixedCorpusIndex = {}, queryTokens = [], limit = DEFAULT_FIXED_CORPUS_LIMIT, scanLimit = DEFAULT_FIXED_CORPUS_SCAN_LIMIT) {
+function fixedCorpusLookupKey(value = '') {
+  return compactText(value).toLowerCase();
+}
+
+function fixedCorpusLookupKeyAliases(value = '') {
+  const key = fixedCorpusLookupKey(value);
+  if (!key) return [];
+  const aliases = [key];
+  const litsearchMatch = key.match(/^litsearch:(\d+)$/);
+  const queryMatch = key.match(/^q(\d+)$/);
+  if (litsearchMatch) aliases.push(`q${litsearchMatch[1]}`, litsearchMatch[1]);
+  if (queryMatch) aliases.push(`litsearch:${queryMatch[1]}`, queryMatch[1]);
+  if (/^d\d+$/.test(key)) aliases.push(key.slice(1));
+  if (/^\d+$/.test(key)) aliases.push(`d${key}`);
+  return unique(aliases);
+}
+
+function expandFixedCorpusLookupKeys(values = []) {
+  return unique(values.flatMap((value) => fixedCorpusLookupKeyAliases(value)).filter(Boolean));
+}
+
+function fixedCorpusDocumentLookupKeys(paper = {}) {
+  const identifiers = normalizePaperIdentifiers({
+    ...asObject(paper.identifiers),
+    ...paper
+  });
+  return expandFixedCorpusLookupKeys([
+    ...collectMatchAliases(paper),
+    ...collectIdentifierMatchKeys(paper),
+    paper.normalizedTitle,
+    paper.title,
+    ...Object.entries(identifiers)
+      .filter(([, value]) => compactText(value))
+      .map(([field, value]) => `${field}:${compactText(value)}`)
+  ].map(fixedCorpusLookupKey).filter(Boolean));
+}
+
+function buildFixedCorpusDocumentLookup(fixedCorpusIndex = {}) {
+  const lookup = new Map();
+  (fixedCorpusIndex.normalizedCorpus || []).forEach((paper, index) => {
+    for (const key of fixedCorpusDocumentLookupKeys(paper)) {
+      if (!lookup.has(key)) lookup.set(key, index);
+    }
+  });
+  return lookup;
+}
+
+function fixedCorpusDenseQueryKeys(queryCase = {}) {
+  const native = asObject(queryCase.metadata?.native);
+  return expandFixedCorpusLookupKeys([
+    queryCase.id,
+    queryCase.query,
+    queryCase.queryKey,
+    native.id,
+    native._id,
+    native.qid,
+    native.queryId,
+    native.query_id,
+    native.query,
+    native.text,
+    native.question
+  ].map(fixedCorpusLookupKey).filter(Boolean));
+}
+
+function denseArtifactQueryKeys(entry = {}, fallbackKey = '') {
+  const native = asObject(entry.metadata);
+  return expandFixedCorpusLookupKeys([
+    fallbackKey,
+    entry.queryKey,
+    entry.query_key,
+    entry.queryId,
+    entry.query_id,
+    entry.id,
+    entry._id,
+    entry.qid,
+    entry.query,
+    entry.text,
+    entry.question,
+    native.queryKey,
+    native.query_key,
+    native.queryId,
+    native.query_id,
+    native.id,
+    native.qid
+  ].map(fixedCorpusLookupKey).filter(Boolean));
+}
+
+function denseArtifactDocumentKeys(entry = {}) {
+  const paper = asObject(entry.paper || entry.document || entry.doc || entry.candidate);
+  return expandFixedCorpusLookupKeys([
+    entry.documentKey,
+    entry.document_key,
+    entry.documentId,
+    entry.document_id,
+    entry.docId,
+    entry.doc_id,
+    entry.corpusId,
+    entry.corpus_id,
+    entry.paperId,
+    entry.paper_id,
+    entry.id,
+    entry._id,
+    entry.title,
+    paper.documentKey,
+    paper.document_key,
+    paper.documentId,
+    paper.document_id,
+    paper.docId,
+    paper.doc_id,
+    paper.corpusId,
+    paper.corpus_id,
+    paper.paperId,
+    paper.paper_id,
+    paper.id,
+    paper._id,
+    paper.title
+  ].map(fixedCorpusLookupKey).filter(Boolean));
+}
+
+function denseArtifactRowsFromPayload(payload = {}) {
+  if (Array.isArray(payload)) return payload.map((entry) => ({ entry, fallbackKey: '' }));
+  const root = asObject(payload);
+  const arrayEntries = [
+    root.queries,
+    root.results,
+    root.items,
+    root.data,
+    Array.isArray(root.rankings) ? root.rankings : null
+  ].find(Array.isArray);
+  if (arrayEntries) return arrayEntries.map((entry) => ({ entry, fallbackKey: '' }));
+
+  const rankingMap = asObject(root.rankings);
+  if (Object.keys(rankingMap).length) {
+    return Object.entries(rankingMap).map(([fallbackKey, rankings]) => ({
+      entry: { queryId: fallbackKey, rankings },
+      fallbackKey
+    }));
+  }
+
+  return Object.entries(root)
+    .filter(([key]) => !['contractVersion', 'method', 'model', 'createdAt', 'metadata'].includes(key))
+    .map(([fallbackKey, value]) => ({
+      entry: Array.isArray(value) ? { queryId: fallbackKey, rankings: value } : { queryId: fallbackKey, ...asObject(value) },
+      fallbackKey
+    }));
+}
+
+function denseArtifactRankingsFromEntry(entry = {}) {
+  return [
+    entry.rankings,
+    entry.ranking,
+    entry.candidates,
+    entry.documents,
+    entry.docs,
+    entry.hits,
+    entry.top,
+    entry.results
+  ].find(Array.isArray) || null;
+}
+
+function denseArtifactScore(entry = {}, fallbackRank = 0) {
+  const score = Number(pickFirst(
+    entry.score,
+    entry.denseScore,
+    entry.dense_score,
+    entry.similarity,
+    entry.cosine,
+    entry.value
+  ));
+  if (Number.isFinite(score)) return score;
+  return 1 / Math.max(1, fallbackRank + 1);
+}
+
+function denseArtifactRank(entry = {}, fallbackRank = 0) {
+  const rank = Number(pickFirst(entry.rank, entry.position, entry.index));
+  return Number.isFinite(rank) && rank > 0 ? Math.floor(rank) : fallbackRank + 1;
+}
+
+async function readFixedCorpusRankingScorePayload(options = {}, artifactType = 'dense') {
+  const isRerank = artifactType === 'rerank';
+  const inlinePayload = isRerank
+    ? pickFirst(options.fixedCorpusRerankScorePayload, options.fixed_corpus_rerank_score_payload)
+    : pickFirst(options.fixedCorpusDenseScorePayload, options.fixed_corpus_dense_score_payload);
+  if (inlinePayload && typeof inlinePayload === 'object') {
+    return {
+      payload: inlinePayload,
+      path: null,
+      source: 'inline'
+    };
+  }
+
+  const configuredPath = isRerank
+    ? resolveFixedCorpusRerankScoresPath(options)
+    : resolveFixedCorpusDenseScoresPath(options);
+  if (!configuredPath) return null;
+  const absolutePath = path.resolve(process.cwd(), configuredPath);
+  const payload = (absolutePath.endsWith('.jsonl') || absolutePath.endsWith('.ndjson'))
+    ? await readJsonl(absolutePath)
+    : await readJson(absolutePath, null);
+  return {
+    payload,
+    path: absolutePath,
+    source: 'file'
+  };
+}
+
+async function loadFixedCorpusRankingScoreIndex(benchmark = {}, fixedCorpusIndex = {}, options = {}, artifactType = 'dense') {
+  const payloadInfo = await readFixedCorpusRankingScorePayload(options, artifactType);
+  if (!payloadInfo) {
+    const flag = artifactType === 'rerank' ? '--fixed-corpus-rerank-scores <path>' : '--fixed-corpus-dense-scores <path>';
+    throw new Error(`Fixed-corpus ${artifactType} retrieval requires ${flag}.`);
+  }
+
+  const documentLookup = buildFixedCorpusDocumentLookup(fixedCorpusIndex);
+  const rankingsByQueryKey = new Map();
+  const queryStats = new Map();
+  let sourceRowCount = 0;
+  let resolvedScoreCount = 0;
+  let unresolvedScoreCount = 0;
+  let resolvedQueryCount = 0;
+
+  const addRankingRows = (queryKeys = [], rows = []) => {
+    const normalizedQueryKeys = unique(queryKeys.map(fixedCorpusLookupKey).filter(Boolean));
+    if (!normalizedQueryKeys.length) return;
+    const resolvedRows = [];
+    rows.forEach((row, fallbackRank) => {
+      sourceRowCount += 1;
+      const docKeys = denseArtifactDocumentKeys(row);
+      const docIndex = docKeys.map((key) => documentLookup.get(key)).find((index) => index !== undefined);
+      if (docIndex === undefined) {
+        unresolvedScoreCount += 1;
+        return;
+      }
+      resolvedScoreCount += 1;
+      resolvedRows.push({
+        index: docIndex,
+        score: denseArtifactScore(row, fallbackRank),
+        rank: denseArtifactRank(row, fallbackRank)
+      });
+    });
+    if (!resolvedRows.length) return;
+    resolvedQueryCount += 1;
+
+    const sortedRows = resolvedRows
+      .sort((left, right) => (
+        (left.rank - right.rank)
+        || (right.score - left.score)
+        || (left.index - right.index)
+      ));
+    for (const key of normalizedQueryKeys) {
+      rankingsByQueryKey.set(key, sortedRows);
+      queryStats.set(key, {
+        sourceRows: rows.length,
+        resolvedRows: sortedRows.length
+      });
+    }
+  };
+
+  const flatRowsByQuery = new Map();
+  for (const { entry, fallbackKey } of denseArtifactRowsFromPayload(payloadInfo.payload)) {
+    const row = asObject(entry);
+    const rankings = denseArtifactRankingsFromEntry(row);
+    const queryKeys = denseArtifactQueryKeys(row, fallbackKey);
+    if (rankings) {
+      addRankingRows(queryKeys, rankings);
+      continue;
+    }
+    if (denseArtifactDocumentKeys(row).length) {
+      const key = queryKeys[0];
+      if (!key) continue;
+      if (!flatRowsByQuery.has(key)) flatRowsByQuery.set(key, { queryKeys, rows: [] });
+      flatRowsByQuery.get(key).rows.push(row);
+    }
+  }
+  for (const { queryKeys, rows } of flatRowsByQuery.values()) {
+    addRankingRows(queryKeys, rows);
+  }
+
+  return {
+    enabled: true,
+    path: payloadInfo.path,
+    source: payloadInfo.source,
+    contractVersion: asObject(payloadInfo.payload).contractVersion || null,
+    method: asObject(payloadInfo.payload).method || null,
+    model: asObject(payloadInfo.payload).model || null,
+    queryCount: resolvedQueryCount,
+    queryKeyCount: rankingsByQueryKey.size,
+    sourceRowCount,
+    resolvedScoreCount,
+    unresolvedScoreCount,
+    rankingsByQueryKey,
+    queryStats
+  };
+}
+
+async function loadFixedCorpusDenseScoreIndex(benchmark = {}, fixedCorpusIndex = {}, options = {}) {
+  return loadFixedCorpusRankingScoreIndex(benchmark, fixedCorpusIndex, options, 'dense');
+}
+
+async function loadFixedCorpusRerankScoreIndex(benchmark = {}, fixedCorpusIndex = {}, options = {}) {
+  return loadFixedCorpusRankingScoreIndex(benchmark, fixedCorpusIndex, options, 'rerank');
+}
+
+function lookupFixedCorpusRanking(rankingIndex = null, queryCase = {}) {
+  if (!rankingIndex?.enabled) return null;
+  for (const key of fixedCorpusDenseQueryKeys(queryCase)) {
+    const ranking = rankingIndex.rankingsByQueryKey.get(key);
+    if (ranking) {
+      return {
+        key,
+        ranking,
+        stats: rankingIndex.queryStats.get(key) || null
+      };
+    }
+  }
+  return null;
+}
+
+function lookupFixedCorpusDenseRanking(denseIndex = null, queryCase = {}) {
+  return lookupFixedCorpusRanking(denseIndex, queryCase);
+}
+
+function lookupFixedCorpusRerankRanking(rerankIndex = null, queryCase = {}) {
+  return lookupFixedCorpusRanking(rerankIndex, queryCase);
+}
+
+function summarizeFixedCorpusRankingIndex(rankingIndex = null) {
+  if (!rankingIndex) return null;
+  return {
+    enabled: true,
+    source: rankingIndex.source || null,
+    path: rankingIndex.path || null,
+    contractVersion: rankingIndex.contractVersion || null,
+    method: rankingIndex.method || null,
+    model: rankingIndex.model || null,
+    queryCount: rankingIndex.queryCount || 0,
+    queryKeyCount: rankingIndex.queryKeyCount || 0,
+    sourceRowCount: rankingIndex.sourceRowCount || 0,
+    resolvedScoreCount: rankingIndex.resolvedScoreCount || 0,
+    unresolvedScoreCount: rankingIndex.unresolvedScoreCount || 0
+  };
+}
+
+function summarizeFixedCorpusDenseIndex(denseIndex = null) {
+  return summarizeFixedCorpusRankingIndex(denseIndex);
+}
+
+function summarizeFixedCorpusRerankIndex(rerankIndex = null) {
+  return summarizeFixedCorpusRankingIndex(rerankIndex);
+}
+
+function buildFixedCorpusRankingCandidates(fixedCorpusIndex = {}, rankingMatch = null, queryCase = {}, options = {}, artifactType = 'dense') {
+  const limit = resolveFixedCorpusLimit(options);
+  const sourcePaperId = queryCase.metadata?.sourcePaperId || '';
+  const normalizedCorpus = fixedCorpusIndex.normalizedCorpus || [];
+  const candidates = [];
+  const seen = new Set();
+  const scoreField = artifactType === 'rerank' ? 'rerankScore' : 'denseScore';
+  const rankField = artifactType === 'rerank' ? 'rerankRank' : 'denseRank';
+  const sourceProvider = artifactType === 'rerank' ? 'fixed_corpus_rerank' : 'fixed_corpus_dense';
+  for (const entry of rankingMatch?.ranking || []) {
+    const paper = normalizedCorpus[entry.index];
+    if (!paper) continue;
+    if (sourcePaperId && [paper.id, paper.canonicalId].includes(sourcePaperId)) continue;
+    const key = paper.canonicalId || paper.id || paper.normalizedTitle || String(entry.index);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      ...paper,
+      score: entry.score,
+      [scoreField]: entry.score,
+      [rankField]: entry.rank,
+      sourceProvider
+    });
+    if (candidates.length >= limit) break;
+  }
+  return candidates;
+}
+
+function buildDenseFixedCorpusCandidates(fixedCorpusIndex = {}, denseMatch = null, queryCase = {}, options = {}) {
+  return buildFixedCorpusRankingCandidates(fixedCorpusIndex, denseMatch, queryCase, options, 'dense');
+}
+
+function buildRerankFixedCorpusCandidates(fixedCorpusIndex = {}, rerankMatch = null, queryCase = {}, options = {}) {
+  return buildFixedCorpusRankingCandidates(fixedCorpusIndex, rerankMatch, queryCase, options, 'rerank');
+}
+
+function fixedCorpusCandidateFusionKey(candidate = {}) {
+  return fixedCorpusLookupKey(candidate.canonicalId || candidate.id || candidate.normalizedTitle || candidate.title);
+}
+
+function reciprocalRankScore(rank = 0, k = 60) {
+  return rank > 0 ? 1 / (k + rank) : 0;
+}
+
+function fuseFixedCorpusCandidatesWithRrf(lexicalCandidates = [], denseCandidates = [], options = {}) {
+  const limit = resolveFixedCorpusLimit(options);
+  const rrfK = resolveFixedCorpusRrfK(options);
+  const byKey = new Map();
+  const addCandidates = (candidates = [], channel = 'lexical') => {
+    candidates.forEach((candidate, index) => {
+      const key = fixedCorpusCandidateFusionKey(candidate);
+      if (!key) return;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          candidate,
+          lexicalRank: null,
+          denseRank: null,
+          lexicalScore: null,
+          denseScore: null,
+          score: 0
+        });
+      }
+      const record = byKey.get(key);
+      const rank = index + 1;
+      record.score += reciprocalRankScore(rank, rrfK);
+      if (channel === 'lexical') {
+        record.lexicalRank = rank;
+        record.lexicalScore = candidate.score ?? null;
+      } else {
+        record.denseRank = rank;
+        record.denseScore = candidate.denseScore ?? candidate.score ?? null;
+      }
+    });
+  };
+  addCandidates(lexicalCandidates, 'lexical');
+  addCandidates(denseCandidates, 'dense');
+
+  return [...byKey.values()]
+    .sort((left, right) => (
+      (right.score - left.score)
+      || ((left.denseRank || Number.MAX_SAFE_INTEGER) - (right.denseRank || Number.MAX_SAFE_INTEGER))
+      || ((left.lexicalRank || Number.MAX_SAFE_INTEGER) - (right.lexicalRank || Number.MAX_SAFE_INTEGER))
+    ))
+    .slice(0, limit)
+    .map((record) => ({
+      ...record.candidate,
+      score: record.score,
+      sourceProvider: 'fixed_corpus_hybrid_rrf',
+      retrievalSignals: {
+        lexicalRank: record.lexicalRank,
+        denseRank: record.denseRank,
+        lexicalScore: record.lexicalScore,
+        denseScore: record.denseScore,
+        rrfK
+      }
+    }));
+}
+
+function applyFixedCorpusRerankCandidates(baseCandidates = [], rerankCandidates = [], options = {}) {
+  const limit = resolveFixedCorpusLimit(options);
+  const rerankByKey = new Map();
+  rerankCandidates.forEach((candidate, index) => {
+    const key = fixedCorpusCandidateFusionKey(candidate);
+    if (!key || rerankByKey.has(key)) return;
+    rerankByKey.set(key, {
+      rank: candidate.rerankRank || index + 1,
+      score: candidate.rerankScore ?? candidate.score ?? null
+    });
+  });
+
+  return baseCandidates
+    .map((candidate, index) => {
+      const rerank = rerankByKey.get(fixedCorpusCandidateFusionKey(candidate));
+      return {
+        candidate,
+        baseRank: index + 1,
+        rerankRank: rerank?.rank || null,
+        rerankScore: rerank?.score ?? null
+      };
+    })
+    .sort((left, right) => {
+      const leftMatched = left.rerankRank !== null;
+      const rightMatched = right.rerankRank !== null;
+      if (leftMatched !== rightMatched) return leftMatched ? -1 : 1;
+      if (leftMatched && rightMatched) {
+        return (
+          (left.rerankRank - right.rerankRank)
+          || ((right.rerankScore ?? -Infinity) - (left.rerankScore ?? -Infinity))
+          || (left.baseRank - right.baseRank)
+        );
+      }
+      return left.baseRank - right.baseRank;
+    })
+    .slice(0, limit)
+    .map((record) => ({
+      ...record.candidate,
+      score: record.rerankScore ?? record.candidate.score,
+      sourceProvider: 'fixed_corpus_hybrid_rerank',
+      retrievalSignals: {
+        ...(record.candidate.retrievalSignals || {}),
+        baseRank: record.baseRank,
+        rerankRank: record.rerankRank,
+        rerankScore: record.rerankScore
+      }
+    }));
+}
+
+function resolveFixedCorpusCandidateIndexes(fixedCorpusIndex = {}, queryTokens = [], limit = DEFAULT_FIXED_CORPUS_LIMIT, scanLimit = DEFAULT_FIXED_CORPUS_SCAN_LIMIT, options = {}) {
   const normalizedCorpus = fixedCorpusIndex.normalizedCorpus || [];
   const invertedIndex = fixedCorpusIndex.combinedInvertedIndex || new Map();
   const combinedDf = fixedCorpusIndex.stats?.combinedDf || new Map();
+  const allowFallback = options.fallback !== false;
   const candidateIndexes = new Set();
   const sortedQueryTokens = [...new Set(queryTokens || [])]
     .sort((left, right) => (combinedDf.get(left) || Number.MAX_SAFE_INTEGER) - (combinedDf.get(right) || Number.MAX_SAFE_INTEGER));
@@ -2850,10 +4247,11 @@ function resolveFixedCorpusCandidateIndexes(fixedCorpusIndex = {}, queryTokens =
   }
 
   if (!candidateIndexes.size) {
+    if (!allowFallback) return [];
     return normalizedCorpus.map((_, index) => index);
   }
 
-  if (candidateIndexes.size < limit) {
+  if (allowFallback && candidateIndexes.size < limit) {
     for (let index = 0; index < normalizedCorpus.length && candidateIndexes.size < limit; index += 1) {
       candidateIndexes.add(index);
     }
@@ -2864,9 +4262,19 @@ function resolveFixedCorpusCandidateIndexes(fixedCorpusIndex = {}, queryTokens =
 
 function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}, prepared = {}) {
   const queryTokens = prepared.queryTokens || tokenizeWithoutStopwords(queryCase.query);
-  const titleTokens = prepared.titleTokens || tokenizeWithoutStopwords(paper.title);
-  const abstractTokens = prepared.abstractTokens || tokenizeWithoutStopwords(paper.abstract);
-  const combinedTokens = prepared.combinedTokens || unique([...titleTokens, ...abstractTokens]);
+  const queryTokenSet = prepared.queryTokenSet || new Set(queryTokens);
+  const titleMatch = prepared.titleMatch || summarizeQueryTokenMatches(paper.title, queryTokenSet, {
+    length: prepared.titleLength,
+    uniqueCount: prepared.titleUniqueCount
+  });
+  const abstractMatch = prepared.abstractMatch || summarizeQueryTokenMatches(paper.abstract, queryTokenSet, {
+    length: prepared.abstractLength,
+    uniqueCount: prepared.abstractUniqueCount
+  });
+  const combinedMatch = prepared.combinedMatch || combineQueryTokenMatches(titleMatch, abstractMatch, {
+    length: prepared.combinedLength,
+    uniqueCount: prepared.combinedLength
+  });
   const queryIdentifiers = prepared.queryIdentifiers || normalizePaperIdentifiers({
     ...asObject(queryCase.metadata?.identifiers),
     ...asObject(queryCase.metadata?.sourceIdentifiers),
@@ -2876,13 +4284,13 @@ function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}, prepa
   const compactTitle = prepared.compactTitle ?? compactText(paper.title);
   const compactQueryLower = prepared.compactQueryLower ?? compactQuery.toLowerCase();
   const compactTitleLower = prepared.compactTitleLower ?? compactTitle.toLowerCase();
-  const titleOverlap = scoreTokenOverlap(queryTokens, titleTokens);
-  const abstractOverlap = scoreTokenOverlap(queryTokens, abstractTokens);
-  const combinedOverlap = scoreTokenOverlap(queryTokens, combinedTokens);
-  const titleSimilarityScore = jaccardSimilarity(queryCase.query, paper.title);
-  const bm25Title = bm25FieldScore(queryTokens, titleTokens, stats.titleDf, stats.totalDocuments, stats.avgTitleLength, prepared.titleTokenCounts);
-  const bm25Abstract = bm25FieldScore(queryTokens, abstractTokens, stats.abstractDf, stats.totalDocuments, stats.avgAbstractLength, prepared.abstractTokenCounts);
-  const bm25Combined = bm25FieldScore(queryTokens, combinedTokens, stats.combinedDf, stats.totalDocuments, stats.avgCombinedLength, prepared.combinedTokenCounts);
+  const titleOverlap = scoreMatchedTokenOverlap(queryTokens, titleMatch.matched);
+  const abstractOverlap = scoreMatchedTokenOverlap(queryTokens, abstractMatch.matched);
+  const combinedOverlap = scoreMatchedTokenOverlap(queryTokens, combinedMatch.matched);
+  const titleSimilarityScore = scorePreparedTitleSimilarity(queryTokenSet, titleMatch);
+  const bm25Title = bm25FieldScore(queryTokens, [], stats.titleDf, stats.totalDocuments, stats.avgTitleLength, titleMatch.counts, titleMatch.length);
+  const bm25Abstract = bm25FieldScore(queryTokens, [], stats.abstractDf, stats.totalDocuments, stats.avgAbstractLength, abstractMatch.counts, abstractMatch.length);
+  const bm25Combined = bm25FieldScore(queryTokens, [], stats.combinedDf, stats.totalDocuments, stats.avgCombinedLength, combinedMatch.counts, combinedMatch.length);
   const exactTitleMatch = compactQueryLower === compactTitleLower ? 2.5 : 0;
   const phraseMatch = compactQuery
     && compactTitle
@@ -2892,6 +4300,7 @@ function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}, prepa
   const facet = queryCase.metadata?.facet || '';
   const facetBoost = facet ? scoreFacetAwareBoost(facet, paper) : 0;
   const identifierBoost = paperIdentifiersOverlap(queryIdentifiers, paper.identifiers) ? 2.5 : 0;
+  const queryAnalysisBoost = scoreFixedCorpusQueryAnalysisBoost(prepared.queryAnalysis, titleMatch, abstractMatch);
   return (
     (titleOverlap * 2.5)
     + (abstractOverlap * 1.25)
@@ -2904,14 +4313,55 @@ function scoreFixedCorpusCandidate(queryCase = {}, paper = {}, stats = {}, prepa
     + phraseMatch
     + facetBoost
     + identifierBoost
+    + queryAnalysisBoost
   );
 }
 
-function buildFixedCorpusCandidates(benchmark = {}, queryCase = {}, options = {}) {
+function isWorseFixedCorpusTopCandidate(candidate = {}, reference = null) {
+  return (
+    !reference
+    || candidate.score < reference.score
+    || (candidate.score === reference.score && candidate.__candidateOrder > reference.__candidateOrder)
+  );
+}
+
+function findWorstFixedCorpusTopCandidate(candidates = []) {
+  let worstIndex = -1;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    const worst = worstIndex >= 0 ? candidates[worstIndex] : null;
+    if (isWorseFixedCorpusTopCandidate(candidate, worst)) {
+      worstIndex = index;
+    }
+  }
+  return worstIndex;
+}
+
+function fixedCorpusTopCandidateReplacementIndex(topCandidates = [], score = 0, limit = DEFAULT_FIXED_CORPUS_LIMIT, worstIndex = -1) {
+  if (topCandidates.length < limit) return topCandidates.length;
+  const resolvedWorstIndex = worstIndex >= 0 && worstIndex < topCandidates.length
+    ? worstIndex
+    : findWorstFixedCorpusTopCandidate(topCandidates);
+  const worst = topCandidates[resolvedWorstIndex];
+  return !worst || score > worst.score ? resolvedWorstIndex : -1;
+}
+
+function rankFixedCorpusTopCandidates(candidates = []) {
+  return candidates
+    .sort((left, right) => (
+      (right.score - left.score)
+      || ((left.__candidateOrder || 0) - (right.__candidateOrder || 0))
+    ))
+    .map(({ __candidateOrder, ...candidate }) => candidate);
+}
+
+async function buildFixedCorpusCandidates(benchmark = {}, queryCase = {}, options = {}) {
   const fixedCorpusIndex = options.fixedCorpusIndex || buildFixedCorpusIndex(benchmark, options);
   const sourcePaperId = queryCase.metadata?.sourcePaperId || '';
   const limit = resolveFixedCorpusLimit(options);
   const scanLimit = resolveFixedCorpusScanLimit(options, limit);
+  const retrievalMode = normalizeFixedCorpusRetrievalMode(options);
+  const queryAnalysis = await buildFixedCorpusQueryAnalysis(queryCase, options);
   const queryTokens = tokenizeWithoutStopwords(queryCase.query);
   const queryIdentifiers = normalizePaperIdentifiers({
     ...asObject(queryCase.metadata?.identifiers),
@@ -2922,36 +4372,169 @@ function buildFixedCorpusCandidates(benchmark = {}, queryCase = {}, options = {}
   const compactQueryLower = compactQuery.toLowerCase();
   const {
     normalizedCorpus,
-    titleTokenSets,
-    abstractTokenSets,
-    combinedTokenSets,
     compactTitles,
     compactTitleLowers,
+    fieldTokenStats,
     stats
   } = fixedCorpusIndex;
-  const candidateIndexes = resolveFixedCorpusCandidateIndexes(fixedCorpusIndex, queryTokens, limit, scanLimit);
-  return candidateIndexes
-    .map((index) => {
-      const paper = normalizedCorpus[index];
-      return {
-        ...paper,
-        score: scoreFixedCorpusCandidate(queryCase, paper, stats, {
-          queryTokens,
-          queryIdentifiers,
-          compactQuery,
-          compactQueryLower,
-          compactTitle: compactTitles[index],
-        compactTitleLower: compactTitleLowers[index],
-        titleTokens: titleTokenSets[index],
-        abstractTokens: abstractTokenSets[index],
-        combinedTokens: combinedTokenSets[index]
-      }),
-        sourceProvider: 'fixed_corpus'
-      };
-    })
-    .filter((paper) => !sourcePaperId || ![paper.id, paper.canonicalId].includes(sourcePaperId))
-    .sort((left, right) => right.score - left.score)
-    .slice(0, limit);
+  const denseMatch = lookupFixedCorpusDenseRanking(options.fixedCorpusDenseIndex, queryCase);
+  const rerankMatch = lookupFixedCorpusRerankRanking(options.fixedCorpusRerankIndex, queryCase);
+  if (retrievalMode === 'dense') {
+    const denseRanked = buildDenseFixedCorpusCandidates(fixedCorpusIndex, denseMatch, queryCase, options);
+    denseRanked.queryAnalysis = {
+      enabled: queryAnalysis.enabled,
+      mode: queryAnalysis.mode,
+      source: queryAnalysis.source,
+      originalTokenCount: queryAnalysis.originalTokenCount,
+      expandedTokenCount: queryAnalysis.expandedTokenCount,
+      addedTokenCount: queryAnalysis.addedTokenCount,
+      addedTokens: queryAnalysis.addedTokens,
+      error: queryAnalysis.error
+    };
+    denseRanked.retrieval = {
+      mode: retrievalMode,
+      scorer: fixedCorpusScorerName(options),
+      lexicalCandidateCount: 0,
+      denseCandidateCount: denseRanked.length,
+      denseQueryMatched: Boolean(denseMatch),
+      denseQueryKey: denseMatch?.key || null,
+      denseSourceRows: denseMatch?.stats?.sourceRows ?? null,
+      denseResolvedRows: denseMatch?.stats?.resolvedRows ?? null,
+      rerankCandidateCount: 0,
+      rerankQueryMatched: null,
+      rerankQueryKey: null,
+      rerankSourceRows: null,
+      rerankResolvedRows: null,
+      rrfK: null
+    };
+    return denseRanked;
+  }
+  if (retrievalMode === 'rerank') {
+    const rerankRanked = buildRerankFixedCorpusCandidates(fixedCorpusIndex, rerankMatch, queryCase, options);
+    rerankRanked.queryAnalysis = {
+      enabled: queryAnalysis.enabled,
+      mode: queryAnalysis.mode,
+      source: queryAnalysis.source,
+      originalTokenCount: queryAnalysis.originalTokenCount,
+      expandedTokenCount: queryAnalysis.expandedTokenCount,
+      addedTokenCount: queryAnalysis.addedTokenCount,
+      addedTokens: queryAnalysis.addedTokens,
+      error: queryAnalysis.error
+    };
+    rerankRanked.retrieval = {
+      mode: retrievalMode,
+      scorer: fixedCorpusScorerName(options),
+      lexicalCandidateCount: 0,
+      denseCandidateCount: 0,
+      denseQueryMatched: null,
+      denseQueryKey: null,
+      denseSourceRows: null,
+      denseResolvedRows: null,
+      rerankCandidateCount: rerankRanked.length,
+      rerankQueryMatched: Boolean(rerankMatch),
+      rerankQueryKey: rerankMatch?.key || null,
+      rerankSourceRows: rerankMatch?.stats?.sourceRows ?? null,
+      rerankResolvedRows: rerankMatch?.stats?.resolvedRows ?? null,
+      rrfK: null
+    };
+    return rerankRanked;
+  }
+  const baseCandidateIndexes = resolveFixedCorpusCandidateIndexes(fixedCorpusIndex, queryTokens, limit, scanLimit);
+  const candidateIndexes = new Set(baseCandidateIndexes);
+  if (queryAnalysis.enabled && queryAnalysis.addedTokens?.length) {
+    const extraLimit = resolveFixedCorpusQueryAnalysisExtraLimit(options, scanLimit, limit);
+    const expansionCandidateIndexes = resolveFixedCorpusCandidateIndexes(
+      fixedCorpusIndex,
+      queryAnalysis.addedTokens,
+      limit,
+      extraLimit,
+      { fallback: false }
+    );
+    for (const index of expansionCandidateIndexes) {
+      candidateIndexes.add(index);
+    }
+  }
+  const queryTokenSet = new Set(queryTokens);
+  const topCandidates = [];
+  let worstTopCandidateIndex = -1;
+  [...candidateIndexes].forEach((index, candidateOrder) => {
+    const paper = normalizedCorpus[index];
+    if (sourcePaperId && [paper.id, paper.canonicalId].includes(sourcePaperId)) return;
+    const score = scoreFixedCorpusCandidate(queryCase, paper, stats, {
+      queryTokens,
+      queryTokenSet,
+      queryIdentifiers,
+      compactQuery,
+      compactQueryLower,
+      compactTitle: compactTitles[index],
+      compactTitleLower: compactTitleLowers[index],
+      titleLength: fieldTokenStats?.titleLengths?.[index],
+      abstractLength: fieldTokenStats?.abstractLengths?.[index],
+      combinedLength: fieldTokenStats?.combinedLengths?.[index],
+      titleUniqueCount: fieldTokenStats?.titleUniqueCounts?.[index],
+      abstractUniqueCount: fieldTokenStats?.abstractUniqueCounts?.[index],
+      queryAnalysis
+    });
+    const wasFull = topCandidates.length >= limit;
+    const replacementIndex = fixedCorpusTopCandidateReplacementIndex(topCandidates, score, limit, worstTopCandidateIndex);
+    if (replacementIndex < 0) return;
+    const candidate = {
+      ...paper,
+      __candidateOrder: candidateOrder,
+      score,
+      sourceProvider: 'fixed_corpus'
+    };
+    topCandidates[replacementIndex] = candidate;
+    if (!wasFull && topCandidates.length < limit) {
+      const worst = worstTopCandidateIndex >= 0 ? topCandidates[worstTopCandidateIndex] : null;
+      if (isWorseFixedCorpusTopCandidate(candidate, worst)) {
+        worstTopCandidateIndex = replacementIndex;
+      }
+    } else {
+      worstTopCandidateIndex = findWorstFixedCorpusTopCandidate(topCandidates);
+    }
+  });
+
+  const lexicalRanked = rankFixedCorpusTopCandidates(topCandidates);
+  const denseRanked = ['hybrid', 'hybrid-rerank'].includes(retrievalMode)
+    ? buildDenseFixedCorpusCandidates(fixedCorpusIndex, denseMatch, queryCase, options)
+    : [];
+  const hybridRanked = ['hybrid', 'hybrid-rerank'].includes(retrievalMode)
+    ? fuseFixedCorpusCandidatesWithRrf(lexicalRanked, denseRanked, options)
+    : lexicalRanked;
+  const rerankRanked = retrievalMode === 'hybrid-rerank'
+    ? buildRerankFixedCorpusCandidates(fixedCorpusIndex, rerankMatch, queryCase, options)
+    : [];
+  const ranked = retrievalMode === 'hybrid-rerank'
+    ? applyFixedCorpusRerankCandidates(hybridRanked, rerankRanked, options)
+    : hybridRanked;
+  ranked.queryAnalysis = {
+    enabled: queryAnalysis.enabled,
+    mode: queryAnalysis.mode,
+    source: queryAnalysis.source,
+    originalTokenCount: queryAnalysis.originalTokenCount,
+    expandedTokenCount: queryAnalysis.expandedTokenCount,
+    addedTokenCount: queryAnalysis.addedTokenCount,
+    addedTokens: queryAnalysis.addedTokens,
+    error: queryAnalysis.error
+  };
+  ranked.retrieval = {
+    mode: retrievalMode,
+    scorer: fixedCorpusScorerName(options),
+    lexicalCandidateCount: lexicalRanked.length,
+    denseCandidateCount: denseRanked.length,
+    denseQueryMatched: ['hybrid', 'hybrid-rerank'].includes(retrievalMode) ? Boolean(denseMatch) : null,
+    denseQueryKey: denseMatch?.key || null,
+    denseSourceRows: denseMatch?.stats?.sourceRows ?? null,
+    denseResolvedRows: denseMatch?.stats?.resolvedRows ?? null,
+    rerankCandidateCount: rerankRanked.length,
+    rerankQueryMatched: retrievalMode === 'hybrid-rerank' ? Boolean(rerankMatch) : null,
+    rerankQueryKey: rerankMatch?.key || null,
+    rerankSourceRows: rerankMatch?.stats?.sourceRows ?? null,
+    rerankResolvedRows: rerankMatch?.stats?.resolvedRows ?? null,
+    rrfK: ['hybrid', 'hybrid-rerank'].includes(retrievalMode) ? resolveFixedCorpusRrfK(options) : null
+  };
+  return ranked;
 }
 
 function benchmarkAlignment(benchmark = {}, config = {}) {
@@ -3046,6 +4629,15 @@ export async function runRetrievalBenchmark(params = {}) {
   const fixedCorpusIndex = evaluationMode === 'fixed-corpus'
     ? await loadOrBuildFixedCorpusIndex(benchmark, params)
     : null;
+  const fixedCorpusRetrievalMode = evaluationMode === 'fixed-corpus'
+    ? normalizeFixedCorpusRetrievalMode(params)
+    : null;
+  const fixedCorpusDenseIndex = evaluationMode === 'fixed-corpus' && ['dense', 'hybrid', 'hybrid-rerank'].includes(fixedCorpusRetrievalMode)
+    ? await loadFixedCorpusDenseScoreIndex(benchmark, fixedCorpusIndex, params)
+    : null;
+  const fixedCorpusRerankIndex = evaluationMode === 'fixed-corpus' && ['rerank', 'hybrid-rerank'].includes(fixedCorpusRetrievalMode)
+    ? await loadFixedCorpusRerankScoreIndex(benchmark, fixedCorpusIndex, params)
+    : null;
 
   await writeRetrievalBenchmarkCheckpoint(artifactRun, {
     status: 'running',
@@ -3072,18 +4664,25 @@ export async function runRetrievalBenchmark(params = {}) {
         phase: 'running'
       });
       try {
+        const fixedCorpusCandidates = evaluationMode === 'fixed-corpus'
+          ? await buildFixedCorpusCandidates(benchmark, queryCase, {
+            ...params,
+            fixedCorpusIndex,
+            fixedCorpusDenseIndex,
+            fixedCorpusRerankIndex
+          })
+          : null;
         const discoveryRun = evaluationMode === 'fixed-corpus'
           ? {
             runId: null,
             providers: ['fixed_corpus'],
             rawCandidateCount: benchmark.corpusSize || asArray(benchmark.corpus).length,
-            candidates: buildFixedCorpusCandidates(benchmark, queryCase, {
-              ...params,
-              fixedCorpusIndex
-            }),
+            candidates: fixedCorpusCandidates,
             coverage: null,
             artifacts: null,
-            queryResults: []
+            queryResults: [],
+            queryAnalysis: fixedCorpusCandidates?.queryAnalysis || null,
+            retrieval: fixedCorpusCandidates?.retrieval || null
           }
           : await runDiscovery(buildDiscoveryParams(queryCase, params));
         const candidates = discoveryRun.candidates || [];
@@ -3117,6 +4716,8 @@ export async function runRetrievalBenchmark(params = {}) {
             mergedPaperCount: candidates.length,
             providerFailures,
             citationExpansion: discoveryRun.citationExpansion || null,
+            queryAnalysis: discoveryRun.queryAnalysis || null,
+            retrieval: discoveryRun.retrieval || null,
             coverage: discoveryRun.coverage || null,
             artifacts: discoveryRun.artifacts || null,
             diagnosticTrace: buildQueryDiagnosticTrace(queryCase, evaluation, discoveryRun, candidates)
@@ -3208,11 +4809,15 @@ export async function runRetrievalBenchmark(params = {}) {
   const discoveryCacheEnabled = resolveDiscoveryCacheEnabled(params, discoveryCacheTtlMs);
   const discoveryCacheMode = inferDiscoveryCacheMode(discoveryRequestCacheStats, discoveryCacheEnabled);
   const fixedCorpusIndexSummary = summarizeFixedCorpusIndex(fixedCorpusIndex);
+  const fixedCorpusDenseIndexSummary = summarizeFixedCorpusDenseIndex(fixedCorpusDenseIndex);
+  const fixedCorpusRerankIndexSummary = summarizeFixedCorpusRerankIndex(fixedCorpusRerankIndex);
   const diagnostics = {
     ...summarizeBenchmarkDiagnostics(results),
     resumedQueries: completedBeforeRun,
     failedQueries: results.filter((result) => String(result.status || '').toLowerCase() === 'failed').length,
     fixedCorpusIndex: fixedCorpusIndexSummary,
+    fixedCorpusDenseIndex: fixedCorpusDenseIndexSummary,
+    fixedCorpusRerankIndex: fixedCorpusRerankIndexSummary,
     discoveryRequestCache: {
       enabled: discoveryCacheEnabled,
       mode: discoveryCacheMode,
@@ -3244,10 +4849,25 @@ export async function runRetrievalBenchmark(params = {}) {
       fixedCorpusScanLimit: evaluationMode === 'fixed-corpus'
         ? resolveFixedCorpusScanLimit(params, resolveFixedCorpusLimit(params))
         : null,
-      fixedCorpusScorer: evaluationMode === 'fixed-corpus' ? 'hybrid-bm25-v1' : null,
+      fixedCorpusRetrievalMode,
+      fixedCorpusScorer: evaluationMode === 'fixed-corpus' ? fixedCorpusScorerName(params) : null,
       fixedCorpusIndexCache: fixedCorpusIndexSummary?.mode || null,
       fixedCorpusCacheHit: fixedCorpusIndexSummary?.cacheHit ?? null,
       fixedCorpusCachePath: fixedCorpusIndexSummary?.cachePath || null,
+      fixedCorpusDenseScoresPath: fixedCorpusDenseIndexSummary?.path || resolveFixedCorpusDenseScoresPath(params) || null,
+      fixedCorpusDenseScoresLoadedQueries: fixedCorpusDenseIndexSummary?.queryCount ?? null,
+      fixedCorpusRerankScoresPath: fixedCorpusRerankIndexSummary?.path || resolveFixedCorpusRerankScoresPath(params) || null,
+      fixedCorpusRerankScoresLoadedQueries: fixedCorpusRerankIndexSummary?.queryCount ?? null,
+      fixedCorpusRrfK: evaluationMode === 'fixed-corpus' && ['hybrid', 'hybrid-rerank'].includes(fixedCorpusRetrievalMode)
+        ? resolveFixedCorpusRrfK(params)
+        : null,
+      fixedCorpusQueryAnalysis: evaluationMode === 'fixed-corpus'
+        ? normalizeFixedCorpusQueryAnalysisMode(params)
+        : null,
+      fixedCorpusQueryAnalysisExtraLimit: evaluationMode === 'fixed-corpus'
+        && normalizeFixedCorpusQueryAnalysisMode(params) !== 'off'
+        ? resolveFixedCorpusQueryAnalysisExtraLimit(params, resolveFixedCorpusScanLimit(params, resolveFixedCorpusLimit(params)), resolveFixedCorpusLimit(params))
+        : null,
       discoveryCacheEnabled,
       discoveryCacheMode,
       discoveryCacheTtlMs,
@@ -3342,9 +4962,17 @@ export function renderRetrievalBenchmarkReport(report = {}) {
     `Evaluation mode: ${alignment.evaluationMode || config.evaluationMode || 'live'}`,
     `Discovery depth: ${config.depth || 'quick'}`,
     `Providers: ${Array.isArray(config.providers) ? config.providers.join(', ') : (config.providers || 'default')}`,
+    `Fixed-corpus retrieval mode: ${config.fixedCorpusRetrievalMode || 'n/a'}`,
     `Fixed-corpus scorer: ${config.fixedCorpusScorer || 'n/a'}`,
     `Fixed-corpus index cache: ${config.fixedCorpusIndexCache || 'n/a'}`,
+    `Fixed-corpus dense scores: ${config.fixedCorpusDenseScoresPath || 'n/a'}`,
+    `Fixed-corpus dense-score queries: ${config.fixedCorpusDenseScoresLoadedQueries ?? 'n/a'}`,
+    `Fixed-corpus rerank scores: ${config.fixedCorpusRerankScoresPath || 'n/a'}`,
+    `Fixed-corpus rerank-score queries: ${config.fixedCorpusRerankScoresLoadedQueries ?? 'n/a'}`,
+    `Fixed-corpus RRF k: ${config.fixedCorpusRrfK ?? 'n/a'}`,
     `Fixed-corpus scan limit: ${config.fixedCorpusScanLimit || 'n/a'}`,
+    `Fixed-corpus query analysis: ${config.fixedCorpusQueryAnalysis || 'n/a'}`,
+    `Fixed-corpus query-analysis extra limit: ${config.fixedCorpusQueryAnalysisExtraLimit ?? 'n/a'}`,
     `Discovery cache mode: ${config.discoveryCacheMode || 'unknown'}`,
     `Discovery cache TTL: ${config.discoveryCacheTtlMs || 0} ms`,
     `Discovery failure cache TTL: ${config.discoveryFailureCacheTtlMs || 0} ms`,

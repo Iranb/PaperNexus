@@ -70,7 +70,7 @@ Commands:
   papernexus graph-v2 tail [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
   papernexus graph-v2 continue [<corpus>] [--run-id <id|latest>] [--json]
   papernexus graph-v2 report [<corpus>] [--run-id <id|latest>] [--tail <n>] [--json]
-  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--query-decomposition <auto|true|false>] [--benchmark-limit <n>] [--max-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--fixed-corpus-scan-limit <n>] [--fixed-corpus-cache-dir <dir>] [--k <1,5,10,20>] [--output <dir>] [--run-id <id>] [--resume] [--continue-on-error <true|false>] [--json]
+  papernexus benchmark-retrieval <benchmark-path> [--format <auto|custom|beir|litsearch|bioasq|trec|sage|scholarqa|paperask|sparbench|scholargym|scinetbench|csfcube>] [--evaluation-mode <live|fixed-corpus>] [--fixed-corpus-retrieval-mode <lexical|dense|hybrid|rerank|hybrid-rerank>] [--fixed-corpus-dense-scores <path>] [--fixed-corpus-rerank-scores <path>] [--fixed-corpus-rrf-k <n>] [--fixed-corpus-query-analysis <off|heuristic|llm>] [--fixed-corpus-query-analysis-extra-limit <n>] [--task-evaluation <off|rules|llm>] [--generate-task-answers <true|false>] [--max-task-context <n>] [--corpus <name|path>] [--providers <name[,name...]>] [--depth <quick|default|deep>] [--query-decomposition <auto|true|false>] [--benchmark-limit <n>] [--max-queries <n>] [--max-discovery-queries <n>] [--max-results-per-query <n>] [--max-candidates <n>] [--fixed-corpus-scan-limit <n>] [--fixed-corpus-cache-dir <dir>] [--k <1,5,10,20>] [--output <dir>] [--run-id <id>] [--resume] [--continue-on-error <true|false>] [--json]
   papernexus backup-export [archive-path] [--corpus <name>]
   papernexus backup-unpack <archive-path> --output <dir>
   papernexus backup-load <archive-path> --output <dir>
@@ -744,14 +744,21 @@ function buildRetrievalBenchmarkOptions(flags, config) {
     providers: providerList.length ? providerList : firstDefined(commandConfig.providers, undefined),
     depth: firstDefined(flags.depth, commandConfig.depth, 'quick'),
     queryDecomposition: firstDefined(flags['query-decomposition'], commandConfig.queryDecomposition, undefined),
-    benchmarkLimit: toNumber(firstDefined(flags['benchmark-limit'], flags.sample, commandConfig.benchmarkLimit), undefined),
+    benchmarkLimit: toNumber(firstDefined(flags['benchmark-limit'], flags['max-queries'], flags.sample, commandConfig.benchmarkLimit, commandConfig.maxQueries), undefined),
     offset: toNumber(firstDefined(flags.offset, commandConfig.offset), 0),
-    maxDiscoveryQueries: toNumber(firstDefined(flags['max-queries'], commandConfig.maxDiscoveryQueries), undefined),
+    maxQueries: toNumber(firstDefined(flags['max-queries'], commandConfig.maxQueries), undefined),
+    maxDiscoveryQueries: toNumber(firstDefined(flags['max-discovery-queries'], flags['max-queries'], commandConfig.maxDiscoveryQueries), undefined),
     maxResultsPerQuery: toNumber(firstDefined(flags['max-results-per-query'], commandConfig.maxResultsPerQuery), 10),
     maxCandidates: toNumber(firstDefined(flags['max-candidates'], commandConfig.maxCandidates), 50),
     fixedCorpusLimit: toNumber(firstDefined(flags['fixed-corpus-limit'], flags['max-fixed-corpus-results'], commandConfig.fixedCorpusLimit), undefined),
     fixedCorpusScanLimit: toNumber(firstDefined(flags['fixed-corpus-scan-limit'], commandConfig.fixedCorpusScanLimit), undefined),
     fixedCorpusCacheDir: firstDefined(flags['fixed-corpus-cache-dir'], commandConfig.fixedCorpusCacheDir),
+    fixedCorpusRetrievalMode: firstDefined(flags['fixed-corpus-retrieval-mode'], commandConfig.fixedCorpusRetrievalMode),
+    fixedCorpusDenseScoresPath: firstDefined(flags['fixed-corpus-dense-scores'], flags['fixed-corpus-dense-scores-path'], commandConfig.fixedCorpusDenseScoresPath),
+    fixedCorpusRerankScoresPath: firstDefined(flags['fixed-corpus-rerank-scores'], flags['fixed-corpus-rerank-scores-path'], commandConfig.fixedCorpusRerankScoresPath),
+    fixedCorpusRrfK: toNumber(firstDefined(flags['fixed-corpus-rrf-k'], commandConfig.fixedCorpusRrfK), undefined),
+    fixedCorpusQueryAnalysis: firstDefined(flags['fixed-corpus-query-analysis'], commandConfig.fixedCorpusQueryAnalysis, 'off'),
+    fixedCorpusQueryAnalysisExtraLimit: toNumber(firstDefined(flags['fixed-corpus-query-analysis-extra-limit'], commandConfig.fixedCorpusQueryAnalysisExtraLimit), undefined),
     providerConcurrency: toNumber(firstDefined(flags['provider-concurrency'], commandConfig.providerConcurrency), undefined),
     benchmarkConcurrency: toNumber(firstDefined(flags['benchmark-concurrency'], commandConfig.benchmarkConcurrency), 1),
     timeoutMs: toNumber(firstDefined(flags['timeout-ms'], commandConfig.timeoutMs), undefined),

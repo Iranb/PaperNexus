@@ -356,6 +356,108 @@ test('LitSearch-style exported query and corpus files resolve corpus id gold lab
   }
 });
 
+test('ScholarGym raw files load queries, paper DB, and qrels-backed positives', async () => {
+  const tempDir = await createTempDir();
+
+  try {
+    await fs.writeFile(path.join(tempDir, 'scholargym_paper_db.json'), `${JSON.stringify({
+      '2009.02040': {
+        arxiv_id: '2009.02040',
+        title: 'Multivariate Time-series Anomaly Detection via Graph Attention Network',
+        abstract: 'Hybrid graph attention architecture for anomaly detection.',
+        authors: ['A. Researcher'],
+        category: ['cs.LG']
+      },
+      '2010.08090': {
+        arxiv_id: '2010.08090',
+        title: 'Inferring symmetry in natural language',
+        abstract: 'Symmetry inference in language.'
+      }
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(tempDir, 'scholargym_bench.jsonl'), [
+      JSON.stringify({
+        qid: 'AutoScholarQuery_test_0',
+        query: 'papers about hybrid architectures in reconstruction-based techniques',
+        cited_paper: [
+          { arxiv_id: '2009.02040', title: 'Multivariate Time-series Anomaly Detection via Graph Attention Network' },
+          { arxiv_id: '2010.08090', title: 'Inferring symmetry in natural language' }
+        ],
+        gt_label: [1, 0],
+        source: 'PASA_AutoScholar',
+        valid: true
+      }),
+      JSON.stringify({
+        qid: 'invalid',
+        query: 'invalid query without counted labels',
+        cited_paper: [{ arxiv_id: '2010.08090' }],
+        gt_label: [1],
+        valid: false
+      })
+    ].join('\n'));
+
+    const benchmark = await loadRetrievalBenchmark(tempDir, { format: 'scholargym' });
+    const autodetected = await loadRetrievalBenchmark(tempDir, { format: 'auto' });
+
+    assert.equal(benchmark.format, 'scholargym');
+    assert.equal(autodetected.format, 'scholargym');
+    assert.equal(benchmark.profile.taskType, 'academic_literature_retrieval');
+    assert.equal(benchmark.corpusSize, 2);
+    assert.equal(benchmark.queryCount, 1);
+    assert.equal(benchmark.queries[0].id, 'AutoScholarQuery_test_0');
+    assert.equal(benchmark.queries[0].relevant.length, 1);
+    assert.equal(benchmark.queries[0].relevant[0].identifiers.arxivId, '2009.02040');
+    assert.equal(benchmark.queries[0].relevant[0].title, 'Multivariate Time-series Anomaly Detection via Graph Attention Network');
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('ScholarGym fixed-corpus evaluation runs through benchmark-retrieval', async () => {
+  const tempDir = await createTempDir();
+
+  try {
+    await fs.writeFile(path.join(tempDir, 'scholargym_paper_db.json'), `${JSON.stringify({
+      '2009.02040': {
+        arxiv_id: '2009.02040',
+        title: 'Graph Attention Anomaly Detection',
+        abstract: 'Hybrid reconstruction architecture for time series anomaly detection.'
+      },
+      '2010.08090': {
+        arxiv_id: '2010.08090',
+        title: 'Unrelated Symmetry Inference',
+        abstract: 'Natural language symmetry.'
+      }
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(tempDir, 'scholargym_bench.jsonl'), `${JSON.stringify({
+      qid: 'sg1',
+      query: 'hybrid reconstruction anomaly detection graph attention',
+      cited_paper: [{ arxiv_id: '2009.02040', title: 'Graph Attention Anomaly Detection' }],
+      gt_label: [1],
+      valid: true
+    })}\n`);
+
+    const report = await runRetrievalBenchmark({
+      datasetPath: tempDir,
+      format: 'scholargym',
+      evaluationMode: 'fixed-corpus',
+      cutoffs: [1]
+    });
+
+    assert.equal(report.benchmark.format, 'scholargym');
+    assert.equal(report.config.evaluationMode, 'fixed-corpus');
+    assert.equal(report.config.fixedCorpusScorer, 'hybrid-bm25-v1');
+    assert.equal(report.metrics['hit@1'], 1);
+    assert.equal(report.metrics['recall@1'], 1);
+    assert.equal(report.diagnostics.fixedCorpusIndex.corpusSize, 2);
+    assert.equal(report.diagnostics.fixedCorpusIndex.fieldLengthStatsStored, true);
+    assert.equal(report.diagnostics.fixedCorpusIndex.fieldTokenSetsStored, false);
+    assert.equal(report.diagnostics.fixedCorpusIndex.combinedTokenSetsStored, false);
+    assert.equal(report.diagnostics.fixedCorpusIndex.reusedNormalizedRecords, 2);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('BioASQ official question JSON maps PubMed documents to retrieval cases', async () => {
   const tempDir = await createTempDir();
   const benchmarkPath = path.join(tempDir, 'bioasq.json');
@@ -1230,11 +1332,465 @@ test('fixed-corpus evaluation ranks benchmark corpus without live providers', as
   assert.equal(report.config.evaluationMode, 'fixed-corpus');
   assert.equal(report.config.fixedCorpusScorer, 'hybrid-bm25-v1');
   assert.equal(report.config.fixedCorpusIndexCache, 'in-memory-per-run');
+  assert.equal(report.config.fixedCorpusQueryAnalysis, 'off');
   assert.equal(report.metrics['hit@1'], 1);
   assert.equal(report.alignment.officialComparable, true);
   assert.equal(report.results[0].discovery.providerCount, 1);
+  assert.equal(report.results[0].discovery.queryAnalysis.enabled, false);
   assert.equal(report.diagnostics.fixedCorpusIndex.enabled, true);
   assert.equal(report.diagnostics.fixedCorpusIndex.corpusSize, 2);
+});
+
+test('fixed-corpus evaluation accepts maxQueries as benchmark case limit', async () => {
+  const benchmark = {
+    name: 'fixed-max-queries',
+    format: 'custom',
+    corpus: [
+      { id: 'd1', title: 'Graph augmented literature mapping', abstract: 'Knowledge graph search.' },
+      { id: 'd2', title: 'Retrieval augmented experiment planning', abstract: 'Benchmark planning.' },
+      { id: 'd3', title: 'Citation grounded synthesis', abstract: 'Evidence synthesis.' }
+    ],
+    corpusSize: 3,
+    queryCount: 3,
+    queries: [
+      {
+        id: 'q1',
+        query: 'graph augmented literature mapping',
+        relevant: [{ id: 'd1', title: 'Graph augmented literature mapping' }]
+      },
+      {
+        id: 'q2',
+        query: 'retrieval augmented experiment planning',
+        relevant: [{ id: 'd2', title: 'Retrieval augmented experiment planning' }]
+      },
+      {
+        id: 'q3',
+        query: 'citation grounded synthesis',
+        relevant: [{ id: 'd3', title: 'Citation grounded synthesis' }]
+      }
+    ]
+  };
+
+  const report = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    maxQueries: 2,
+    cutoffs: [1]
+  });
+
+  assert.equal(report.benchmark.loadedQueries, 3);
+  assert.equal(report.benchmark.evaluatedQueries, 2);
+  assert.equal(report.results.length, 2);
+  assert.deepEqual(report.results.map((result) => result.id), ['q1', 'q2']);
+});
+
+test('fixed-corpus evaluation keeps bounded top candidates while scanning larger pools', async () => {
+  const report = await runRetrievalBenchmark({
+    benchmark: {
+      name: 'fixed-top-k',
+      format: 'custom',
+      corpus: [
+        { id: 'd1', title: 'Graph augmented literature mapping', abstract: 'Knowledge graph search.' },
+        { id: 'd2', title: 'Graph augmented literature noise', abstract: 'Unrelated overview.' },
+        { id: 'd3', title: 'Literature mapping survey', abstract: 'Broad graph benchmark notes.' },
+        { id: 'd4', title: 'Unrelated result', abstract: 'Noise.' }
+      ],
+      corpusSize: 4,
+      queryCount: 1,
+      queries: [{
+        id: 'q1',
+        query: 'graph augmented literature mapping',
+        relevant: [{ id: 'd1', title: 'Graph augmented literature mapping' }]
+      }]
+    },
+    evaluationMode: 'fixed-corpus',
+    maxCandidates: 1,
+    fixedCorpusScanLimit: 4,
+    cutoffs: [1]
+  });
+
+  assert.equal(report.metrics['hit@1'], 1);
+  assert.equal(report.results[0].discovery.mergedPaperCount, 1);
+});
+
+test('fixed-corpus lightweight scoring preserves BM25 term-frequency ranking', async () => {
+  const corpus = [
+    {
+      id: 'baseline',
+      title: 'Graph method baseline',
+      abstract: 'Anomaly detection.'
+    },
+    {
+      id: 'amplified',
+      title: 'Graph method amplified',
+      abstract: 'Anomaly detection anomaly detection anomaly detection anomaly detection.'
+    },
+    {
+      id: 'noise',
+      title: 'Graph method noise',
+      abstract: 'General literature note.'
+    }
+  ];
+  const report = await runRetrievalBenchmark({
+    benchmark: {
+      name: 'fixed-lightweight-scoring',
+      format: 'custom',
+      corpus,
+      corpusSize: corpus.length,
+      queryCount: 1,
+      queries: [{
+        id: 'q1',
+        query: 'graph anomaly detection',
+        relevant: corpus
+      }]
+    },
+    evaluationMode: 'fixed-corpus',
+    maxCandidates: 3,
+    fixedCorpusScanLimit: 3,
+    cutoffs: [3]
+  });
+
+  assert.deepEqual(
+    report.results[0].topMatches.map((entry) => entry.title),
+    ['Graph method amplified', 'Graph method baseline', 'Graph method noise']
+  );
+});
+
+test('fixed-corpus dense mode evaluates external ranking artifacts', async () => {
+  const benchmark = {
+    name: 'fixed-dense-artifact',
+    format: 'custom',
+    corpus: [
+      { id: 'd1', title: 'Lexical distractor for domain shift', abstract: 'Domain shift adaptation challenge overview.' },
+      { id: 'd2', title: 'Failure modes of out-of-distribution generalization', abstract: 'Robustness issues under distribution shift.' }
+    ],
+    corpusSize: 2,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'papers studying challenges of domain shift adaptation',
+      relevant: [{ id: 'd2', title: 'Failure modes of out-of-distribution generalization' }]
+    }]
+  };
+
+  const report = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusRetrievalMode: 'dense',
+    fixedCorpusDenseScorePayload: {
+      contractVersion: 'fixed-corpus-dense-scores-v1',
+      method: 'mock-dense',
+      model: 'mock-embedding',
+      queries: [{
+        queryId: 'q1',
+        rankings: [
+          { documentId: 'd2', score: 0.91 },
+          { documentId: 'd1', score: 0.14 }
+        ]
+      }]
+    },
+    maxCandidates: 1,
+    cutoffs: [1]
+  });
+
+  assert.equal(report.config.fixedCorpusRetrievalMode, 'dense');
+  assert.equal(report.config.fixedCorpusScorer, 'dense-artifact-v1');
+  assert.equal(report.config.fixedCorpusDenseScoresLoadedQueries, 1);
+  assert.equal(report.diagnostics.fixedCorpusDenseIndex.resolvedScoreCount, 2);
+  assert.equal(report.metrics['hit@1'], 1);
+  assert.equal(report.results[0].discovery.retrieval.denseQueryMatched, true);
+  assert.equal(report.results[0].topMatches[0].title, 'Failure modes of out-of-distribution generalization');
+});
+
+test('fixed-corpus dense mode accepts top100 JSONL-style artifacts', async () => {
+  const benchmark = {
+    name: 'fixed-dense-top-jsonl',
+    format: 'custom',
+    corpus: [
+      { id: 'd1', title: 'Lexical distractor for domain shift', abstract: 'Domain shift adaptation challenge overview.' },
+      { id: 'd2', title: 'Failure modes of out-of-distribution generalization', abstract: 'Robustness issues under distribution shift.' }
+    ],
+    corpusSize: 2,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'papers studying challenges of domain shift adaptation',
+      relevant: [{ id: 'd2', title: 'Failure modes of out-of-distribution generalization' }]
+    }]
+  };
+
+  const report = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusRetrievalMode: 'dense',
+    fixedCorpusDenseScorePayload: [{
+      id: 'litsearch:1',
+      top: [
+        { id: '2', score: 0.91, rank: 1 },
+        { id: '1', score: 0.14, rank: 2 }
+      ]
+    }],
+    maxCandidates: 1,
+    cutoffs: [1]
+  });
+
+  assert.equal(report.config.fixedCorpusRetrievalMode, 'dense');
+  assert.equal(report.config.fixedCorpusDenseScoresLoadedQueries, 1);
+  assert.equal(report.diagnostics.fixedCorpusDenseIndex.resolvedScoreCount, 2);
+  assert.equal(report.metrics['hit@1'], 1);
+});
+
+test('fixed-corpus hybrid mode fuses lexical and dense rankings with RRF', async () => {
+  const benchmark = {
+    name: 'fixed-hybrid-rrf',
+    format: 'custom',
+    corpus: [
+      { id: 'd1', title: 'Domain shift adaptation methods', abstract: 'A direct lexical match for domain shift adaptation.' },
+      { id: 'd2', title: 'Failure modes of out-of-distribution generalization', abstract: 'Robustness issues under distribution shift.' }
+    ],
+    corpusSize: 2,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'papers studying challenges of domain shift adaptation',
+      relevant: [{ id: 'd2', title: 'Failure modes of out-of-distribution generalization' }]
+    }]
+  };
+
+  const lexicalReport = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusRetrievalMode: 'lexical',
+    maxCandidates: 1,
+    fixedCorpusScanLimit: 1,
+    cutoffs: [1]
+  });
+  const hybridReport = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusRetrievalMode: 'hybrid',
+    fixedCorpusDenseScorePayload: {
+      queries: [{
+        queryId: 'q1',
+        rankings: [{ documentId: 'd2', score: 0.95 }]
+      }]
+    },
+    fixedCorpusRrfK: 30,
+    maxCandidates: 1,
+    fixedCorpusScanLimit: 1,
+    cutoffs: [1]
+  });
+
+  assert.equal(lexicalReport.metrics['hit@1'], 0);
+  assert.equal(hybridReport.config.fixedCorpusRetrievalMode, 'hybrid');
+  assert.equal(hybridReport.config.fixedCorpusScorer, 'hybrid-rrf-v1');
+  assert.equal(hybridReport.config.fixedCorpusRrfK, 30);
+  assert.equal(hybridReport.metrics['hit@1'], 1);
+  assert.equal(hybridReport.results[0].discovery.retrieval.lexicalCandidateCount, 1);
+  assert.equal(hybridReport.results[0].discovery.retrieval.denseCandidateCount, 1);
+  assert.equal(hybridReport.results[0].topMatches[0].title, 'Failure modes of out-of-distribution generalization');
+});
+
+test('fixed-corpus rerank mode evaluates external reranker artifacts', async () => {
+  const benchmark = {
+    name: 'fixed-rerank-artifact',
+    format: 'custom',
+    corpus: [
+      { id: 'd1', title: 'Lexical distractor for domain shift', abstract: 'Domain shift adaptation challenge overview.' },
+      { id: 'd2', title: 'Failure modes of out-of-distribution generalization', abstract: 'Robustness issues under distribution shift.' }
+    ],
+    corpusSize: 2,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'papers studying challenges of domain shift adaptation',
+      relevant: [{ id: 'd2', title: 'Failure modes of out-of-distribution generalization' }]
+    }]
+  };
+
+  const report = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusRetrievalMode: 'rerank',
+    fixedCorpusRerankScorePayload: {
+      contractVersion: 'fixed-corpus-rerank-scores-v1',
+      method: 'mock-cross-encoder',
+      model: 'mock-reranker',
+      queries: [{
+        queryId: 'q1',
+        rankings: [
+          { documentId: 'd2', score: 8.2 },
+          { documentId: 'd1', score: 1.1 }
+        ]
+      }]
+    },
+    maxCandidates: 1,
+    cutoffs: [1]
+  });
+
+  assert.equal(report.config.fixedCorpusRetrievalMode, 'rerank');
+  assert.equal(report.config.fixedCorpusScorer, 'rerank-artifact-v1');
+  assert.equal(report.config.fixedCorpusRerankScoresLoadedQueries, 1);
+  assert.equal(report.diagnostics.fixedCorpusRerankIndex.resolvedScoreCount, 2);
+  assert.equal(report.metrics['hit@1'], 1);
+  assert.equal(report.results[0].discovery.retrieval.rerankQueryMatched, true);
+  assert.equal(report.results[0].topMatches[0].title, 'Failure modes of out-of-distribution generalization');
+});
+
+test('fixed-corpus hybrid-rerank mode reranks hybrid candidates and preserves unmatched base order', async () => {
+  const benchmark = {
+    name: 'fixed-hybrid-rerank',
+    format: 'custom',
+    corpus: [
+      { id: 'd1', title: 'Domain shift adaptation methods', abstract: 'A direct lexical match for domain shift adaptation.' },
+      { id: 'd2', title: 'Failure modes of out-of-distribution generalization', abstract: 'Robustness issues under distribution shift.' },
+      { id: 'd3', title: 'Unrelated optimizer analysis', abstract: 'A distractor document outside the hybrid candidate set.' }
+    ],
+    corpusSize: 3,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'papers studying challenges of domain shift adaptation',
+      relevant: [
+        { id: 'd2', title: 'Failure modes of out-of-distribution generalization' },
+        { id: 'd1', title: 'Domain shift adaptation methods' }
+      ]
+    }]
+  };
+
+  const report = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusRetrievalMode: 'hybrid-rerank',
+    fixedCorpusDenseScorePayload: {
+      queries: [{
+        queryId: 'q1',
+        rankings: [
+          { documentId: 'd1', score: 0.92 },
+          { documentId: 'd2', score: 0.88 }
+        ]
+      }]
+    },
+    fixedCorpusRerankScorePayload: {
+      queries: [{
+        queryId: 'q1',
+        rankings: [
+          { documentId: 'd2', score: 7.4 },
+          { documentId: 'd3', score: 9.9 }
+        ]
+      }]
+    },
+    fixedCorpusRrfK: 30,
+    maxCandidates: 2,
+    fixedCorpusScanLimit: 2,
+    cutoffs: [1, 2]
+  });
+
+  assert.equal(report.config.fixedCorpusRetrievalMode, 'hybrid-rerank');
+  assert.equal(report.config.fixedCorpusScorer, 'hybrid-rerank-v1');
+  assert.equal(report.config.fixedCorpusDenseScoresLoadedQueries, 1);
+  assert.equal(report.config.fixedCorpusRerankScoresLoadedQueries, 1);
+  assert.equal(report.metrics['hit@1'], 1);
+  assert.deepEqual(
+    report.results[0].topMatches.map((entry) => entry.title),
+    ['Failure modes of out-of-distribution generalization', 'Domain shift adaptation methods']
+  );
+  assert.equal(report.results[0].discovery.retrieval.rerankCandidateCount, 2);
+  assert.equal(report.results[0].discovery.retrieval.rerankQueryMatched, true);
+});
+
+test('fixed-corpus query analysis expands weak natural-language title overlap', async () => {
+  const benchmark = {
+    name: 'fixed-query-analysis',
+    format: 'custom',
+    corpus: [
+      {
+        id: 'surface',
+        title: 'Domain shift adaptation methods',
+        abstract: 'A direct lexical match for domain shift adaptation.'
+      },
+      {
+        id: 'semantic',
+        title: 'Failure modes of out-of-distribution generalization',
+        abstract: 'Limitations and robustness issues under distribution shift.'
+      }
+    ],
+    corpusSize: 2,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'papers studying challenges of domain shift adaptation',
+      relevant: [{ id: 'semantic', title: 'Failure modes of out-of-distribution generalization' }]
+    }]
+  };
+
+  const defaultReport = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    maxCandidates: 1,
+    fixedCorpusScanLimit: 1,
+    cutoffs: [1]
+  });
+  const expandedReport = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusQueryAnalysis: 'heuristic',
+    maxCandidates: 2,
+    fixedCorpusScanLimit: 1,
+    cutoffs: [2]
+  });
+
+  assert.equal(defaultReport.config.fixedCorpusQueryAnalysis, 'off');
+  assert.equal(defaultReport.metrics['hit@1'], 0);
+  assert.equal(expandedReport.config.fixedCorpusQueryAnalysis, 'heuristic');
+  assert.equal(expandedReport.config.fixedCorpusQueryAnalysisExtraLimit, 2);
+  assert.equal(expandedReport.metrics['hit@2'], 1);
+  assert.equal(expandedReport.results[0].topMatches[0].title, 'Failure modes of out-of-distribution generalization');
+  assert.equal(expandedReport.results[0].discovery.queryAnalysis.enabled, true);
+  assert.equal(expandedReport.results[0].discovery.queryAnalysis.source, 'heuristic');
+  assert.ok(expandedReport.results[0].discovery.queryAnalysis.addedTokens.includes('out-of-distribution'));
+  assert.equal(expandedReport.diagnostics.queryAnalysis.enabledQueries, 1);
+});
+
+test('fixed-corpus query analysis accepts LLM-compatible analyzer payloads', async () => {
+  const benchmark = {
+    name: 'fixed-query-analysis-hook',
+    format: 'custom',
+    corpus: [
+      { id: 'surface', title: 'Domain shift adaptation methods', abstract: 'Lexical baseline.' },
+      { id: 'semantic', title: 'Failure modes of out-of-distribution generalization', abstract: 'Robustness issues.' }
+    ],
+    corpusSize: 2,
+    queryCount: 1,
+    queries: [{
+      id: 'q1',
+      query: 'papers studying challenges of domain shift adaptation',
+      relevant: [{ id: 'semantic', title: 'Failure modes of out-of-distribution generalization' }]
+    }]
+  };
+
+  const report = await runRetrievalBenchmark({
+    benchmark,
+    evaluationMode: 'fixed-corpus',
+    fixedCorpusQueryAnalysis: 'llm',
+    fixedCorpusQueryAnalyzer: async () => ({
+      coreConcepts: ['domain shift adaptation'],
+      facetTerms: ['failure modes', 'out-of-distribution generalization'],
+      synonyms: ['distribution shift robustness'],
+      relatedTerms: ['limitations'],
+      negativeTerms: ['papers', 'studying']
+    }),
+    maxCandidates: 2,
+    fixedCorpusScanLimit: 1,
+    cutoffs: [2]
+  });
+
+  assert.equal(report.config.fixedCorpusQueryAnalysis, 'llm');
+  assert.equal(report.config.fixedCorpusQueryAnalysisExtraLimit, 2);
+  assert.equal(report.metrics['hit@2'], 1);
+  assert.equal(report.results[0].topMatches[0].title, 'Failure modes of out-of-distribution generalization');
+  assert.equal(report.results[0].discovery.queryAnalysis.source, 'llm');
+  assert.ok(report.results[0].discovery.queryAnalysis.addedTokenCount > 0);
 });
 
 test('benchmark artifacts checkpoint per-query results and resume completed queries', async () => {
@@ -1380,7 +1936,62 @@ test('fixed-corpus evaluation can reuse a persistent index cache', async () => {
     assert.equal(first.diagnostics.fixedCorpusIndex.cacheHit, false);
     assert.equal(second.diagnostics.fixedCorpusIndex.mode, 'persistent');
     assert.equal(second.diagnostics.fixedCorpusIndex.cacheHit, true);
+    assert.equal(second.diagnostics.fixedCorpusIndex.fieldLengthStatsStored, true);
+    assert.equal(second.diagnostics.fixedCorpusIndex.fieldTokenSetsStored, false);
+    assert.equal(second.diagnostics.fixedCorpusIndex.combinedTokenSetsStored, false);
     assert.equal(second.metrics['recall@1'], 1);
+
+    const cacheFiles = await fs.readdir(cacheDir);
+    const cachePayload = JSON.parse(await fs.readFile(path.join(cacheDir, cacheFiles[0]), 'utf8'));
+    assert.equal(cachePayload.contractVersion, 'fixed-corpus-index-cache-v5');
+    assert.equal(Array.isArray(cachePayload.fieldTokenStats.titleLengths), true);
+    assert.equal(Array.isArray(cachePayload.fieldTokenStats.abstractLengths), true);
+    assert.equal(Array.isArray(cachePayload.fieldTokenStats.combinedLengths), true);
+    assert.equal(Array.isArray(cachePayload.fieldTokenStats.titleUniqueCounts), true);
+    assert.equal(Array.isArray(cachePayload.fieldTokenStats.abstractUniqueCounts), true);
+    assert.equal(Object.hasOwn(cachePayload, 'corpus'), false);
+    assert.equal(Object.hasOwn(cachePayload, 'normalizedCorpus'), false);
+    assert.equal(Object.hasOwn(cachePayload, 'compactTitles'), false);
+    assert.equal(Object.hasOwn(cachePayload, 'compactTitleLowers'), false);
+    assert.equal(Object.hasOwn(cachePayload, 'titleTokenSets'), false);
+    assert.equal(Object.hasOwn(cachePayload, 'abstractTokenSets'), false);
+    assert.equal(Object.hasOwn(cachePayload, 'combinedTokenSets'), false);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('fixed-corpus cache write failures fall back to completed in-memory runs', async () => {
+  const tempDir = await createTempDir();
+  const blockedCacheDir = path.join(tempDir, 'cache-file');
+
+  try {
+    await fs.writeFile(blockedCacheDir, 'not a directory\n');
+    const report = await runRetrievalBenchmark({
+      benchmark: {
+        name: 'fixed-cache-write-failure',
+        format: 'custom',
+        corpus: [
+          { id: 'd1', title: 'Graph anomaly detection', abstract: 'Graph anomaly detection method.' }
+        ],
+        corpusSize: 1,
+        queryCount: 1,
+        queries: [{
+          id: 'q1',
+          query: 'graph anomaly detection',
+          relevant: [{ id: 'd1', title: 'Graph anomaly detection' }]
+        }]
+      },
+      evaluationMode: 'fixed-corpus',
+      fixedCorpusCacheDir: blockedCacheDir,
+      cutoffs: [1]
+    });
+
+    assert.equal(report.status, 'completed');
+    assert.equal(report.config.fixedCorpusIndexCache, 'persistent-write-failed');
+    assert.equal(report.config.fixedCorpusCacheHit, false);
+    assert.match(report.diagnostics.fixedCorpusIndex.cacheError, /not a directory|EEXIST|ENOTDIR/i);
+    assert.equal(report.metrics['recall@1'], 1);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
