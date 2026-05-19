@@ -7,10 +7,10 @@
 Read-only material operations:
 
 - `paper_material_view`: returns one paper's source availability, graph context, chunks, source spans, lightweight markdown table/figure materials, and matching project overlay roles.
-- `source_discovery_plan`: generates target, near-source, and far-source queries, committed-graph candidates, optional provider snippet evidence, sparse-role negative evidence, and import requisitions.
-- `research_material_pack`: returns role-grouped materials plus source discovery metadata, source-domain item annotations, optional provider snippets, missing materials, import requisitions, and project overlay summary.
-- `import_requisition_pack`: returns missing-but-useful import requests and generated queries.
-- `negative_evidence_pack`: records searched queries, filters, direct hits, adjacent hits, absence confidence, and recommended next queries from committed graph state; with `includeProviderEvidence=true`, it also records bounded Semantic Scholar snippet query runs and direct/adjacent provider hit counts.
+- `source_discovery_plan`: generates target, near-source, and far-source queries, committed-graph candidates, optional provider snippet evidence, optional live-discovery evidence, optional literature-discovery resolve/import readiness, sparse-role negative evidence, and import requisitions.
+- `research_material_pack`: returns role-grouped materials plus source discovery metadata, source-domain item annotations, optional provider/live-discovery/literature-discovery materials, missing materials, import requisitions, and project overlay summary.
+- `import_requisition_pack`: returns missing-but-useful import requests, generated queries, and optional literature-discovery import readiness.
+- `negative_evidence_pack`: records searched queries, filters, direct hits, adjacent hits, absence confidence, and recommended next queries from committed graph state; with `includeProviderEvidence=true`, it also records bounded Semantic Scholar snippet query runs and direct/adjacent provider hit counts. Live-discovery evidence is exposed through `source_discovery_plan` and `research_material_pack`, not persisted by this negative-evidence operation.
 - `experiment_cost_materials`: extracts GPU/runtime/epoch/batch-size/dataset/backbone/code-availability snippets from chunks, source spans, markdown tables, table captions, and figure captions with provenance for Agent inspection.
 
 Project overlay operations:
@@ -49,7 +49,23 @@ Source-domain candidates promoted into `research_material_pack.groups[].items[]`
 
 Provider evidence is explicit opt-in. Set `includeProviderEvidence=true` to run bounded read-only Semantic Scholar snippet searches over generated target/source queries. The backend records `provider_evidence.query_runs[]`, discovered provider candidates, provider-backed import requisitions, and `materials.provider_snippets[]` for material-pack items. This does not resolve PDFs, enqueue imports, or write graph facts.
 
-Set `persistProviderEvidence=true` with a `project` to copy returned provider snippets into the project `evidence_cart` as `provider_snippet` items. This creates recoverable Agent memory while keeping raw corpus graph state unchanged. Use `providerEvidencePersistLimit` to cap persisted snippets. Full `idea_catalyst live_discovery` orchestration remains outside `agent_materials`.
+Set `persistProviderEvidence=true` with a `project` to copy returned provider snippets into the project `evidence_cart` as `provider_snippet` items. This creates recoverable Agent memory while keeping raw corpus graph state unchanged. Use `providerEvidencePersistLimit` to cap persisted snippets.
+
+Live discovery evidence is also explicit opt-in. Set `includeLiveDiscoveryEvidence=true` to run bounded `idea_catalyst live_discovery` inside `source_discovery_plan`, `research_material_pack`, or `import_requisition_pack`. The backend records `live_discovery_evidence.source_domain_analyses[]`, `source_domain_queries[]`, `source_spans[]`, `supporting_papers[]`, and `idea_fragments[]`; supporting papers become discovered candidate materials and import requisitions when they are not materialized in the selected corpus. This remains read-only against the raw graph and does not submit imports or produce novelty verdicts.
+
+For controlled sparse fallback, set `runLiveIdeaCatalystIfNeeded=true` or `liveDiscoveryFallbackIfSparse=true`. The backend first counts committed-graph candidates for requested roles, then runs live discovery only when the sparse-role threshold is met. Use `liveDiscoverySparseRoleThreshold` and `liveDiscoverySparseMinScore` to tune that trigger.
+
+Set `persistLiveDiscoveryEvidence=true` with a `project` to copy returned live-discovery spans/fragments into the project `evidence_cart` as `idea_catalyst_live_discovery` items. Use `liveDiscoveryNumQuestions`, `liveDiscoverySourceDomainLimit`, `liveDiscoveryMaxPapersPerQuery`, `liveDiscoveryIdeaFragmentLimit`, and `liveDiscoveryPersistLimit` to keep the live run bounded.
+
+Literature discovery evidence is explicit opt-in. Set `includeLiteratureDiscoveryEvidence=true` to run bounded `literature_discovery` search and source resolution inside `source_discovery_plan`, `research_material_pack`, or `import_requisition_pack`. The backend records `literature_discovery_evidence.plan_queries[]`, resolved/metadata-only candidates, `importable_candidates[]`, and import requisitions for candidates not materialized in the corpus.
+
+When `includeProviderEvidence=true` and `includeLiteratureDiscoveryEvidence=true` are both enabled, set `literatureDiscoverySeedProviderPapers=true` to pass provider evidence hits into `literature_discovery` as exact seed papers. This can turn snippet-only provider discoveries into source-resolution attempts, while still avoiding import submission unless `submitLiteratureDiscoveryImports=true` is also set.
+
+When `includeLiveDiscoveryEvidence=true` and `includeLiteratureDiscoveryEvidence=true` are both enabled, set `literatureDiscoverySeedLivePapers=true` to pass live-discovery supporting papers into `literature_discovery` as exact seed papers. This is still an explicit bridge: it helps resolve live-discovered papers, but it does not submit imports unless `submitLiteratureDiscoveryImports=true` is also set.
+
+By default this bridge does not submit imports. Set `submitLiteratureDiscoveryImports=true` to enqueue resolved full-text candidates, and set `processLiteratureDiscoveryImports=true` only when the caller intentionally wants the import worker to run inline. Inline processing uses logical batching by default with `literatureDiscoveryImportBatchEnabled=true` and `literatureDiscoveryImportBatchMaxTasks=8`.
+
+For controlled sparse fallback, set `runLiteratureDiscoveryIfSparse=true` or `literatureDiscoveryFallbackIfSparse=true`. The backend first counts committed-graph candidates for requested roles, then runs literature discovery only when the sparse-role threshold is met.
 
 ## Wrapper Examples
 
@@ -101,7 +117,19 @@ python SKILL/PaperNexus/scripts/pn_agent_materials.py experiment-cost-materials 
   --paper-id <paper-id>
 ```
 
-The cost extractor is still material-only: it uses deterministic regex over paper chunks, source excerpts, markdown tables, table captions, and figure captions. It returns snippet provenance such as `source_type=markdown_table` or `source_type=figure_caption`, but does not use an LLM or decide whether an experiment is feasible.
+By default the cost extractor is material-only and deterministic: it uses regex over paper chunks, source excerpts, markdown tables, table captions, and figure captions. It returns snippet provenance such as `source_type=markdown_table` or `source_type=figure_caption`, but does not decide whether an experiment is feasible.
+
+For papers where regex snippets are too noisy, explicitly opt in to bounded LLM structured extraction:
+
+```bash
+python SKILL/PaperNexus/scripts/pn_agent_materials.py experiment-cost-materials \
+  --corpus <corpus> \
+  --paper-id <paper-id> \
+  --include-cost-llm-extraction \
+  --cost-llm-model <model>
+```
+
+The LLM layer reads only capped material records from the selected paper and writes an additive `llm_extraction` block. It is not enabled by default and still returns provenance-linked materials rather than final feasibility judgments.
 
 Record negative-evidence material:
 
@@ -132,7 +160,11 @@ python SKILL/PaperNexus/scripts/pn_agent_materials.py source-discovery-plan \
   --include-provider-evidence \
   --persist-provider-evidence \
   --provider-evidence-query-limit 6 \
-  --provider-evidence-limit 3
+  --provider-evidence-limit 3 \
+  --include-live-discovery-evidence \
+  --live-discovery-num-questions 1 \
+  --live-discovery-source-domain-limit 2 \
+  --live-discovery-max-papers-per-query 5
 ```
 
 Regenerate a material pack after overlay writes:

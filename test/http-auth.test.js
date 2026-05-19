@@ -458,7 +458,7 @@ test('serveCommand enables import batching by default for MCP serve workers', as
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(calls.length, 1);
       assert.equal(calls[0].batchEnabled, true);
-      assert.equal(calls[0].batchMaxTasks, 4);
+      assert.equal(calls[0].batchMaxTasks, 8);
     } finally {
       await serverHandle.stop();
     }

@@ -19,8 +19,8 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`interdisciplinary_potential`](#tool-interdisciplinary_potential) | Rank source domains by interdisciplinary potential using community structure, cross-domain bridges, and structured takeaways. |
 | [`research_lookup`](#tool-research_lookup) | Run high-level lookup operations over already committed graph state using one remote HTTP MCP surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups. Use literature_discovery first for fresh keyword literature search; graph lookup only sees imported papers after import tasks reach status=completed and stage=completed. |
 | [`research_briefing`](#tool-research_briefing) | Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP MCP tool surface. |
-| [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it. |
-| [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4. |
+| [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=8 unless server config explicitly disables or overrides it. |
+| [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
 | [`agent_materials`](#tool-agent_materials) | Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, and import requisitions without making novelty judgments; overlay operations store paper roles, evidence carts, and workflow state outside the raw corpus graph. |
 | [`mutate_graph`](#tool-mutate_graph) | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
@@ -261,7 +261,7 @@ Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP 
 
 <a id="tool-import_workflow"></a>
 
-Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it.
+Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=8 unless server config explicitly disables or overrides it.
 
 ### Input Schema
 
@@ -293,7 +293,7 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 <a id="tool-literature_discovery"></a>
 
-Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4.
+Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8.
 
 ### Input Schema
 
@@ -364,7 +364,7 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `importResolved` | optional | boolean | Submit resolved local full-text sources to the import queue after discovery. This accepts work into the queue; use processImports or import_workflow wait/status before treating papers as graph-visible. |
 | `processImports` | optional | boolean | After submitting resolved sources, synchronously run the import worker so downloaded PDFs are parsed and fast-committed into the graph. Use this only when the caller intentionally wants to wait for graph visibility; it can be long-running. |
 | `importBatchEnabled` | optional | boolean | Enable worker-side logical batching for inline import processing triggered by ingest, import_and_process, or processImports. Defaults to true for MCP so multiple submitted tasks can share one LLM optimization and fast commit. Server background workers use the same default unless imports.batchEnabled is explicitly set. |
-| `importBatchMaxTasks` | optional | number | Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 4. |
+| `importBatchMaxTasks` | optional | number | Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 8. |
 | `importMaxPasses` | optional | number | Maximum import queue tasks to process inline when processImports is true. Defaults to the number of newly submitted tasks. |
 | `maxImported` | optional | number | Maximum resolved full-text sources to submit when importResolved is true. Metadata-only candidates remain in discovery artifacts but are not graph-visible until materialized through import. |
 | `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction mode for inline import processing. |
@@ -461,6 +461,38 @@ Assemble Agent-facing research materials from committed graph/source state and m
 | `providerEvidenceQueryLimit` | optional | number | Maximum generated queries sent to the provider-evidence layer. |
 | `providerEvidenceTimeoutMs` | optional | number | Timeout in milliseconds for each provider-evidence request. |
 | `providerEvidenceFallbackToAbstract` | optional | boolean | When true, hydrate degenerate provider snippets with paper abstracts when available. |
+| `includeLiveDiscoveryEvidence` | optional | boolean | Opt in to bounded idea_catalyst live_discovery evidence for source_discovery_plan, research_material_pack, and import_requisition_pack. Default false to avoid implicit LLM and network calls. |
+| `runLiveIdeaCatalystIfNeeded` | optional | boolean | Opt in to running bounded idea_catalyst live_discovery only when requested roles are sparse in the committed graph. Default false to avoid implicit LLM and network calls. |
+| `liveDiscoveryFallbackIfSparse` | optional | boolean | Alias for runLiveIdeaCatalystIfNeeded; runs live discovery only when committed-graph role evidence is sparse. |
+| `liveDiscoverySparseRoleThreshold` | optional | number | Number of sparse requested roles required before runLiveIdeaCatalystIfNeeded triggers live discovery. |
+| `liveDiscoverySparseMinScore` | optional | number | Minimum committed-graph search score counted as non-sparse for runLiveIdeaCatalystIfNeeded. |
+| `persistLiveDiscoveryEvidence` | optional | boolean | When includeLiveDiscoveryEvidence is true, persist returned live-discovery spans/fragments into the project evidence cart. Requires project; default false. |
+| `liveDiscoveryNumQuestions` | optional | number | Maximum target research questions used by opt-in live discovery evidence. |
+| `liveDiscoverySourceDomainLimit` | optional | number | Maximum source domains used by opt-in live discovery evidence. |
+| `liveDiscoveryMaxPapersPerQuery` | optional | number | Maximum Semantic Scholar snippet papers retrieved per live-discovery query. |
+| `liveDiscoverySourceRelevanceThreshold` | optional | number | Paper-level source relevance ratio threshold used by opt-in live discovery evidence. |
+| `liveDiscoveryIdeaFragmentLimit` | optional | number | Maximum idea fragments retained from opt-in live discovery evidence. |
+| `liveDiscoveryPersistLimit` | optional | number | Maximum live-discovery spans/fragments persisted into the project evidence cart when persistLiveDiscoveryEvidence=true. |
+| `liveDiscoveryTimeoutMs` | optional | number | Timeout in milliseconds for each live-discovery provider request. |
+| `includeLiteratureDiscoveryEvidence` | optional | boolean | Opt in to bounded literature_discovery search/resolve evidence for source_discovery_plan, research_material_pack, and import_requisition_pack. Default false to avoid implicit network/download work. |
+| `runLiteratureDiscoveryIfSparse` | optional | boolean | Opt in to running bounded literature_discovery only when requested roles are sparse in the committed graph. Default false. |
+| `literatureDiscoveryFallbackIfSparse` | optional | boolean | Alias for runLiteratureDiscoveryIfSparse; runs literature_discovery only when committed-graph role evidence is sparse. |
+| `literatureDiscoverySeedProviderPapers` | optional | boolean | When both provider evidence and literature-discovery evidence are enabled, pass provider snippet hits into literature_discovery as exact seed papers. Default false. |
+| `literatureDiscoveryProviderSeedLimit` | optional | number | Maximum provider evidence hits passed into literature_discovery as exact seed papers. |
+| `literatureDiscoverySeedLivePapers` | optional | boolean | When both live-discovery and literature-discovery evidence are enabled, pass live-discovery supporting papers into literature_discovery as exact seed papers. Default false. |
+| `literatureDiscoveryLiveSeedLimit` | optional | number | Maximum live-discovery supporting papers passed into literature_discovery as exact seed papers. |
+| `literatureDiscoveryResolveSources` | optional | boolean | Resolve legal full-text sources during opt-in literature discovery evidence. Default true; set false for metadata-only discovery. |
+| `literatureDiscoveryAllowDownloads` | optional | boolean | Allow opt-in literature discovery source resolution to stage legal markdown/open-PDF downloads. Default true when literature discovery evidence is enabled. |
+| `submitLiteratureDiscoveryImports` | optional | boolean | Submit resolved literature_discovery full-text sources to the import queue from agent_materials. Default false; use import_workflow wait/status before treating submitted papers as graph-visible. |
+| `processLiteratureDiscoveryImports` | optional | boolean | After submitting resolved literature_discovery sources, synchronously run the import worker so imports can become graph-visible. Default false because this can be long-running. |
+| `literatureDiscoveryMaxQueries` | optional | number | Maximum generated literature_discovery queries when opt-in evidence is enabled. |
+| `literatureDiscoveryMaxResultsPerQuery` | optional | number | Maximum provider results retained per literature_discovery query when opt-in evidence is enabled. |
+| `literatureDiscoveryMaxCandidates` | optional | number | Maximum merged literature_discovery candidates retained when opt-in evidence is enabled. |
+| `literatureDiscoveryMaxDownloads` | optional | number | Maximum legal full-text downloads staged by opt-in literature_discovery source resolution. |
+| `literatureDiscoveryMaxImported` | optional | number | Maximum resolved full-text sources submitted when submitLiteratureDiscoveryImports is true. |
+| `literatureDiscoveryImportMaxPasses` | optional | number | Maximum import worker passes when processLiteratureDiscoveryImports is true. |
+| `literatureDiscoveryImportBatchEnabled` | optional | boolean | Enable worker-side logical batching for inline literature_discovery import processing triggered by processLiteratureDiscoveryImports. |
+| `literatureDiscoveryImportBatchMaxTasks` | optional | number | Maximum import tasks to reserve into one logical batch for inline literature_discovery import processing. |
 | `timeWindow` | optional | string | Optional time-window label recorded in negative_evidence_pack filters. |
 | `roles` | optional | string \| array | Requested material roles, for example target_prior, near_source_method, far_source_story, novelty_risk, or baseline_candidate. |
 | `role` | optional | string | Single-role alias for roles. |
@@ -497,6 +529,15 @@ Assemble Agent-facing research materials from committed graph/source state and m
 | `seedPapers` | optional | array | Optional user- or Agent-provided candidate papers. Missing seeds become import requisitions in the MVP. |
 | `limit` | optional | number | Maximum candidates per role or generated query group. |
 | `chunkLimit` | optional | number | Maximum chunk records returned by paper_material_view. |
+| `includeCostLlmExtraction` | optional | boolean | Opt in to bounded LLM structured extraction for experiment_cost_materials. Default false to avoid implicit LLM calls. |
+| `costLlmRecordLimit` | optional | number | Maximum paper material records sent to the opt-in experiment-cost LLM extractor. |
+| `costLlmMaxInputChars` | optional | number | Maximum characters from paper material records sent to the opt-in experiment-cost LLM extractor. |
+| `costLlmProvider` | optional | string | Optional LLM provider override for opt-in experiment-cost extraction, for example ollama, openai, or anthropic. |
+| `costLlmModel` | optional | string | Optional LLM model override for opt-in experiment-cost extraction. |
+| `costLlmBaseUrl` | optional | string | Optional LLM base URL override for opt-in experiment-cost extraction, including OpenAI-compatible Qwen endpoints. |
+| `costLlmApiKeyEnv` | optional | string | Optional environment variable name containing the API key for opt-in experiment-cost extraction. |
+| `costLlmTimeoutMs` | optional | number | Timeout in milliseconds for the opt-in experiment-cost LLM extraction request. |
+| `costLlmMaxTokens` | optional | number | Maximum output tokens requested from the opt-in experiment-cost LLM extractor. |
 | `outputDir` | optional | string | Optional server-local directory for JSON/Markdown exports. Omit for pure read-only response. |
 
 ## Tool: mutate_graph

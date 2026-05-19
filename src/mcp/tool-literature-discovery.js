@@ -139,7 +139,7 @@ function buildImportProcessingOptions(args = {}, options = {}, importResult = {}
       importConfig.importBatchMaxTasks,
       importConfig.batchMaxTasks,
       importConfig.maxTasks,
-      4
+      8
     ),
     importBatchMaxFiles: firstDefined(
       args.importBatchMaxFiles,

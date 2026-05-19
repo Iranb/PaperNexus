@@ -7,6 +7,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexus/scripts/pn_agent_materials.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_agent_materials.py) | Canonical skill wrapper for read-only Agent material packs and paper material views. |
 | [`SKILL/PaperNexus/scripts/pn_batch_import.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_batch_import.py) | Canonical skill wrapper for manifest-based batch imports. |
 | [`SKILL/PaperNexus/scripts/pn_common.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_common.py) | Pn Common implementation. |
+| [`SKILL/PaperNexus/scripts/pn_corpus_refresh 2.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_corpus_refresh 2.py) | Pn Corpus Refresh 2 implementation. |
 | [`SKILL/PaperNexus/scripts/pn_corpus_refresh.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_corpus_refresh.py) | Pn Corpus Refresh implementation. |
 | [`SKILL/PaperNexus/scripts/pn_graph_query.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_graph_query.py) | Canonical skill wrapper for remote query, context, impact, ideas, and brainstorming. |
 | [`SKILL/PaperNexus/scripts/pn_import_queue.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_import_queue.py) | Canonical skill wrapper for queue status, progress, logs, and wait operations. |

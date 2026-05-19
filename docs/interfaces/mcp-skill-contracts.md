@@ -32,7 +32,7 @@ The generated reference in `docs/reference/generated/mcp-tools.md` is the source
 | `import_workflow` | Stable remote import queue control surface. |
 | `literature_discovery` | Stable fresh literature discovery and optional import surface. |
 | `idea_catalyst` | Stable high-level idea-catalyst surface. |
-| `agent_materials` | Additive Agent-facing material backend and project overlay surface. Material operations include `research_material_pack`, `source_discovery_plan`, `paper_material_view`, `negative_evidence_pack`, `experiment_cost_materials`, and `import_requisition_pack`; `paper_material_view` and cost materials may expose optional markdown table/figure-caption provenance; `autoDiscoverSources`, source-router arguments, opt-in `includeProviderEvidence` provider-snippet evidence, and opt-in `persistProviderEvidence` evidence-cart persistence are optional/additive; overlay operations include `paper_role_overlay`, `evidence_cart`, and `workflow_state`, stored outside the raw corpus graph. |
+| `agent_materials` | Additive Agent-facing material backend and project overlay surface. Material operations include `research_material_pack`, `source_discovery_plan`, `paper_material_view`, `negative_evidence_pack`, `experiment_cost_materials`, and `import_requisition_pack`; `paper_material_view` and cost materials may expose optional markdown table/figure-caption provenance; `experiment_cost_materials` can explicitly opt in to bounded LLM structured extraction with `includeCostLlmExtraction`; `autoDiscoverSources`, source-router arguments, opt-in `includeProviderEvidence` provider-snippet evidence, opt-in `includeLiveDiscoveryEvidence` idea-catalyst live-discovery evidence, opt-in sparse live-discovery fallback with `runLiveIdeaCatalystIfNeeded`, opt-in `includeLiteratureDiscoveryEvidence` literature-discovery resolve/import readiness, opt-in `literatureDiscoverySeedProviderPapers` provider-to-literature exact seeding, opt-in `literatureDiscoverySeedLivePapers` live-to-literature exact seeding, explicit `submitLiteratureDiscoveryImports` / `processLiteratureDiscoveryImports`, and opt-in provider/live-discovery evidence-cart persistence are optional/additive; overlay operations include `paper_role_overlay`, `evidence_cart`, and `workflow_state`, stored outside the raw corpus graph. |
 | `mutate_graph` | Write-capable graph mutation surface; keep dry-run semantics stable. |
 | `refresh_corpus` | Write-capable corpus maintenance surface; keep mode names stable. |
 | `refresh_paper_graph` | Write-capable per-paper refresh surface. |
@@ -46,11 +46,11 @@ Stable wrapper expectations:
 - `pn_common.py` owns MCP URL/token handling and JSON-RPC transport.
 - `pn_graph_query.py` owns read-only graph query/context/idea workflows.
 - `pn_research_chains.py` owns chain and briefing workflows.
-- `pn_agent_materials.py` owns Agent material pack, source discovery plan, paper material view, negative evidence, experiment-cost materials, import requisition, `--auto-discover-sources`, graph-native source-router hints, opt-in provider-evidence and provider-evidence persistence flags, paper role overlay, evidence cart, and workflow state workflows.
+- `pn_agent_materials.py` owns Agent material pack, source discovery plan, paper material view, negative evidence, experiment-cost materials, explicit `--include-cost-llm-extraction`, import requisition, `--auto-discover-sources`, graph-native source-router hints, opt-in provider-evidence/live-discovery/literature-discovery evidence, sparse live/literature-discovery fallback, opt-in `--literature-discovery-seed-provider-papers` and `--literature-discovery-seed-live-papers`, explicit literature-discovery import submission/processing, persistence flags, paper role overlay, evidence cart, and workflow state workflows.
 - `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py` own remote import submission and tracking.
 - Skill wrappers should not call private `/api/*` routes for live graph control.
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.
-- MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true` and `batchMaxTasks=4`; wrappers continue tracking per-task ids.
+- MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true` and `batchMaxTasks=8`; wrappers continue tracking per-task ids.
 
 ## Current Harness Changes
 

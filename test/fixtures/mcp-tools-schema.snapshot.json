@@ -57,6 +57,34 @@
         "corpus": {
           "type": "string"
         },
+        "costLlmApiKeyEnv": {
+          "type": "string"
+        },
+        "costLlmBaseUrl": {
+          "type": "string"
+        },
+        "costLlmMaxInputChars": {
+          "type": "number",
+          "default": 12000
+        },
+        "costLlmMaxTokens": {
+          "type": "number",
+          "default": 1600
+        },
+        "costLlmModel": {
+          "type": "string"
+        },
+        "costLlmProvider": {
+          "type": "string"
+        },
+        "costLlmRecordLimit": {
+          "type": "number",
+          "default": 16
+        },
+        "costLlmTimeoutMs": {
+          "type": "number",
+          "default": 45000
+        },
         "currentStage": {
           "type": "string"
         },
@@ -102,6 +130,18 @@
         "identifier": {
           "type": "string"
         },
+        "includeCostLlmExtraction": {
+          "type": "boolean",
+          "default": false
+        },
+        "includeLiteratureDiscoveryEvidence": {
+          "type": "boolean",
+          "default": false
+        },
+        "includeLiveDiscoveryEvidence": {
+          "type": "boolean",
+          "default": false
+        },
         "includeProviderEvidence": {
           "type": "boolean",
           "default": false
@@ -118,6 +158,106 @@
         "limit": {
           "type": "number",
           "default": 5
+        },
+        "literatureDiscoveryAllowDownloads": {
+          "type": "boolean",
+          "default": true
+        },
+        "literatureDiscoveryFallbackIfSparse": {
+          "type": "boolean",
+          "default": false
+        },
+        "literatureDiscoveryImportBatchEnabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "literatureDiscoveryImportBatchMaxTasks": {
+          "type": "number",
+          "default": 8
+        },
+        "literatureDiscoveryImportMaxPasses": {
+          "type": "number",
+          "default": 4
+        },
+        "literatureDiscoveryLiveSeedLimit": {
+          "type": "number",
+          "default": 8
+        },
+        "literatureDiscoveryMaxCandidates": {
+          "type": "number",
+          "default": 16
+        },
+        "literatureDiscoveryMaxDownloads": {
+          "type": "number",
+          "default": 6
+        },
+        "literatureDiscoveryMaxImported": {
+          "type": "number",
+          "default": 4
+        },
+        "literatureDiscoveryMaxQueries": {
+          "type": "number",
+          "default": 4
+        },
+        "literatureDiscoveryMaxResultsPerQuery": {
+          "type": "number",
+          "default": 8
+        },
+        "literatureDiscoveryProviderSeedLimit": {
+          "type": "number",
+          "default": 8
+        },
+        "literatureDiscoveryResolveSources": {
+          "type": "boolean",
+          "default": true
+        },
+        "literatureDiscoverySeedLivePapers": {
+          "type": "boolean",
+          "default": false
+        },
+        "literatureDiscoverySeedProviderPapers": {
+          "type": "boolean",
+          "default": false
+        },
+        "liveDiscoveryFallbackIfSparse": {
+          "type": "boolean",
+          "default": false
+        },
+        "liveDiscoveryIdeaFragmentLimit": {
+          "type": "number",
+          "default": 3
+        },
+        "liveDiscoveryMaxPapersPerQuery": {
+          "type": "number",
+          "default": 5
+        },
+        "liveDiscoveryNumQuestions": {
+          "type": "number",
+          "default": 1
+        },
+        "liveDiscoveryPersistLimit": {
+          "type": "number",
+          "default": 20
+        },
+        "liveDiscoverySourceDomainLimit": {
+          "type": "number",
+          "default": 2
+        },
+        "liveDiscoverySourceRelevanceThreshold": {
+          "type": "number",
+          "default": 0.5
+        },
+        "liveDiscoverySparseMinScore": {
+          "type": "number",
+          "default": 0.05
+        },
+        "liveDiscoverySparseRoleThreshold": {
+          "type": "number",
+          "default": 1
+        },
+        "liveDiscoveryTimeoutMs": {
+          "type": "number",
+          "default": 12000
         },
         "maxProximalResults": {
           "type": "number",
@@ -178,6 +318,10 @@
         "paperTitle": {
           "type": "string"
         },
+        "persistLiveDiscoveryEvidence": {
+          "type": "boolean",
+          "default": false
+        },
         "persistProviderEvidence": {
           "type": "boolean",
           "default": false
@@ -200,6 +344,10 @@
               }
             }
           ]
+        },
+        "processLiteratureDiscoveryImports": {
+          "type": "boolean",
+          "default": false
         },
         "project": {
           "type": "string"
@@ -259,6 +407,14 @@
             }
           ]
         },
+        "runLiteratureDiscoveryIfSparse": {
+          "type": "boolean",
+          "default": false
+        },
+        "runLiveIdeaCatalystIfNeeded": {
+          "type": "boolean",
+          "default": false
+        },
         "seedPapers": {
           "type": "array",
           "items": {
@@ -278,6 +434,10 @@
         },
         "sourceType": {
           "type": "string"
+        },
+        "submitLiteratureDiscoveryImports": {
+          "type": "boolean",
+          "default": false
         },
         "supportingEvidenceIds": {
           "type": "array",
@@ -927,7 +1087,7 @@
         },
         "importBatchMaxTasks": {
           "type": "number",
-          "default": 4
+          "default": 8
         },
         "importMaxPasses": {
           "type": "number",

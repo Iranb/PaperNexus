@@ -17,7 +17,7 @@ For two or more files, prefer:
 
 Do not write ad-hoc shell loops. The batch wrapper is the default control plane because it keeps one manifest format, one task registry, and one `summary/items` response shape.
 It also uses one remote `queue_progress` snapshot for status reads, so agents do not need to infer progress from elapsed time.
-PaperNexus MCP/serve defaults logical import batching on (`imports.batchEnabled=true`, `batchMaxTasks=4`), so several submitted task ids may complete from one shared graph commit and authoritative sync job; keep tracking by task id as usual. Server config can still disable or retune batching.
+PaperNexus MCP/serve defaults logical import batching on (`imports.batchEnabled=true`, `batchMaxTasks=8`), so several submitted task ids may complete from one shared graph commit and authoritative sync job; keep tracking by task id as usual. Server config can still disable or retune batching.
 For live graph status reads on already-staged files, `import_workflow` on `papernexus-remote` remains the authoritative MCP surface.
 
 ## Manifest Format

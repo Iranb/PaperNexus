@@ -35,6 +35,38 @@ def add_project_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider-evidence-query-limit", type=int, help="Maximum generated queries sent to provider evidence search.")
     parser.add_argument("--provider-evidence-timeout-ms", type=int, help="Timeout in milliseconds for each provider evidence request.")
     parser.add_argument("--provider-evidence-fallback-to-abstract", action="store_true", help="Hydrate degenerate provider snippets with abstracts when available.")
+    parser.add_argument("--include-live-discovery-evidence", action="store_true", help="Opt in to bounded idea_catalyst live_discovery evidence.")
+    parser.add_argument("--run-live-idea-catalyst-if-needed", action="store_true", help="Run bounded idea_catalyst live_discovery only when committed-graph role evidence is sparse.")
+    parser.add_argument("--live-discovery-fallback-if-sparse", action="store_true", help="Alias for --run-live-idea-catalyst-if-needed.")
+    parser.add_argument("--live-discovery-sparse-role-threshold", type=int, help="Number of sparse requested roles required before sparse live-discovery fallback runs.")
+    parser.add_argument("--live-discovery-sparse-min-score", type=float, help="Minimum committed-graph search score counted as non-sparse for sparse live-discovery fallback.")
+    parser.add_argument("--persist-live-discovery-evidence", action="store_true", help="Persist live-discovery spans/fragments into the project evidence cart. Requires --project.")
+    parser.add_argument("--live-discovery-num-questions", type=int, help="Maximum target research questions used by live discovery.")
+    parser.add_argument("--live-discovery-source-domain-limit", type=int, help="Maximum source domains used by live discovery.")
+    parser.add_argument("--live-discovery-max-papers-per-query", type=int, help="Maximum snippet papers retrieved per live-discovery query.")
+    parser.add_argument("--live-discovery-source-relevance-threshold", type=float, help="Paper-level source relevance ratio threshold for live discovery.")
+    parser.add_argument("--live-discovery-idea-fragment-limit", type=int, help="Maximum live-discovery idea fragments retained.")
+    parser.add_argument("--live-discovery-persist-limit", type=int, help="Maximum live-discovery evidence items persisted into the evidence cart.")
+    parser.add_argument("--live-discovery-timeout-ms", type=int, help="Timeout in milliseconds for each live-discovery provider request.")
+    parser.add_argument("--include-literature-discovery-evidence", action="store_true", help="Opt in to bounded literature_discovery search/resolve evidence.")
+    parser.add_argument("--run-literature-discovery-if-sparse", action="store_true", help="Run bounded literature_discovery only when committed-graph role evidence is sparse.")
+    parser.add_argument("--literature-discovery-fallback-if-sparse", action="store_true", help="Alias for --run-literature-discovery-if-sparse.")
+    parser.add_argument("--literature-discovery-seed-provider-papers", action="store_true", help="Pass provider evidence hits into literature_discovery as exact seed papers when both evidence layers are enabled.")
+    parser.add_argument("--literature-discovery-provider-seed-limit", type=int, help="Maximum provider evidence hits passed into literature_discovery as exact seed papers.")
+    parser.add_argument("--literature-discovery-seed-live-papers", action="store_true", help="Pass live-discovery supporting papers into literature_discovery as exact seed papers when both evidence layers are enabled.")
+    parser.add_argument("--literature-discovery-live-seed-limit", type=int, help="Maximum live-discovery supporting papers passed into literature_discovery as exact seed papers.")
+    parser.add_argument("--literature-discovery-resolve-sources", action=argparse.BooleanOptionalAction, default=None, help="Resolve legal full-text sources during opt-in literature discovery evidence.")
+    parser.add_argument("--literature-discovery-allow-downloads", action=argparse.BooleanOptionalAction, default=None, help="Allow opt-in literature discovery source resolution to stage legal markdown/open-PDF downloads.")
+    parser.add_argument("--submit-literature-discovery-imports", action="store_true", help="Submit resolved literature_discovery full-text sources to the import queue.")
+    parser.add_argument("--process-literature-discovery-imports", action="store_true", help="Run the import worker after submitting resolved literature_discovery sources.")
+    parser.add_argument("--literature-discovery-max-queries", type=int, help="Maximum generated literature_discovery queries.")
+    parser.add_argument("--literature-discovery-max-results-per-query", type=int, help="Maximum provider results retained per literature_discovery query.")
+    parser.add_argument("--literature-discovery-max-candidates", type=int, help="Maximum merged literature_discovery candidates retained.")
+    parser.add_argument("--literature-discovery-max-downloads", type=int, help="Maximum legal full-text downloads staged by literature_discovery.")
+    parser.add_argument("--literature-discovery-max-imported", type=int, help="Maximum resolved sources submitted when import submission is enabled.")
+    parser.add_argument("--literature-discovery-import-max-passes", type=int, help="Maximum import worker passes when processing literature_discovery imports.")
+    parser.add_argument("--literature-discovery-import-batch-enabled", action=argparse.BooleanOptionalAction, default=None, help="Enable worker-side logical batching for processed literature_discovery imports.")
+    parser.add_argument("--literature-discovery-import-batch-max-tasks", type=int, help="Maximum import tasks reserved into one logical batch for processed literature_discovery imports.")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--output-dir")
 
@@ -124,6 +156,15 @@ def parse_args():
     cost.add_argument("--pmid")
     cost.add_argument("--pmcid")
     cost.add_argument("--chunk-limit", type=int)
+    cost.add_argument("--include-cost-llm-extraction", action="store_true", help="Opt in to bounded LLM structured extraction for experiment-cost materials.")
+    cost.add_argument("--cost-llm-record-limit", type=int, help="Maximum paper material records sent to the opt-in cost LLM extractor.")
+    cost.add_argument("--cost-llm-max-input-chars", type=int, help="Maximum characters sent to the opt-in cost LLM extractor.")
+    cost.add_argument("--cost-llm-provider", help="Optional LLM provider override for opt-in cost extraction.")
+    cost.add_argument("--cost-llm-model", help="Optional LLM model override for opt-in cost extraction.")
+    cost.add_argument("--cost-llm-base-url", help="Optional LLM base URL override for opt-in cost extraction.")
+    cost.add_argument("--cost-llm-api-key-env", help="Optional environment variable name containing the cost-extraction LLM API key.")
+    cost.add_argument("--cost-llm-timeout-ms", type=int, help="Timeout in milliseconds for opt-in cost LLM extraction.")
+    cost.add_argument("--cost-llm-max-tokens", type=int, help="Maximum output tokens for opt-in cost LLM extraction.")
     cost.add_argument("--output-dir")
 
     role_overlay = subparsers.add_parser("paper-role-overlay")
@@ -188,6 +229,38 @@ def common_payload(args, corpus: str) -> dict:
         "providerEvidenceQueryLimit": args.provider_evidence_query_limit,
         "providerEvidenceTimeoutMs": args.provider_evidence_timeout_ms,
         "providerEvidenceFallbackToAbstract": args.provider_evidence_fallback_to_abstract,
+        "includeLiveDiscoveryEvidence": args.include_live_discovery_evidence,
+        "runLiveIdeaCatalystIfNeeded": args.run_live_idea_catalyst_if_needed,
+        "liveDiscoveryFallbackIfSparse": args.live_discovery_fallback_if_sparse,
+        "liveDiscoverySparseRoleThreshold": args.live_discovery_sparse_role_threshold,
+        "liveDiscoverySparseMinScore": args.live_discovery_sparse_min_score,
+        "persistLiveDiscoveryEvidence": args.persist_live_discovery_evidence,
+        "liveDiscoveryNumQuestions": args.live_discovery_num_questions,
+        "liveDiscoverySourceDomainLimit": args.live_discovery_source_domain_limit,
+        "liveDiscoveryMaxPapersPerQuery": args.live_discovery_max_papers_per_query,
+        "liveDiscoverySourceRelevanceThreshold": args.live_discovery_source_relevance_threshold,
+        "liveDiscoveryIdeaFragmentLimit": args.live_discovery_idea_fragment_limit,
+        "liveDiscoveryPersistLimit": args.live_discovery_persist_limit,
+        "liveDiscoveryTimeoutMs": args.live_discovery_timeout_ms,
+        "includeLiteratureDiscoveryEvidence": args.include_literature_discovery_evidence,
+        "runLiteratureDiscoveryIfSparse": args.run_literature_discovery_if_sparse,
+        "literatureDiscoveryFallbackIfSparse": args.literature_discovery_fallback_if_sparse,
+        "literatureDiscoverySeedProviderPapers": args.literature_discovery_seed_provider_papers,
+        "literatureDiscoveryProviderSeedLimit": args.literature_discovery_provider_seed_limit,
+        "literatureDiscoverySeedLivePapers": args.literature_discovery_seed_live_papers,
+        "literatureDiscoveryLiveSeedLimit": args.literature_discovery_live_seed_limit,
+        "literatureDiscoveryResolveSources": args.literature_discovery_resolve_sources,
+        "literatureDiscoveryAllowDownloads": args.literature_discovery_allow_downloads,
+        "submitLiteratureDiscoveryImports": args.submit_literature_discovery_imports,
+        "processLiteratureDiscoveryImports": args.process_literature_discovery_imports,
+        "literatureDiscoveryMaxQueries": args.literature_discovery_max_queries,
+        "literatureDiscoveryMaxResultsPerQuery": args.literature_discovery_max_results_per_query,
+        "literatureDiscoveryMaxCandidates": args.literature_discovery_max_candidates,
+        "literatureDiscoveryMaxDownloads": args.literature_discovery_max_downloads,
+        "literatureDiscoveryMaxImported": args.literature_discovery_max_imported,
+        "literatureDiscoveryImportMaxPasses": args.literature_discovery_import_max_passes,
+        "literatureDiscoveryImportBatchEnabled": args.literature_discovery_import_batch_enabled,
+        "literatureDiscoveryImportBatchMaxTasks": args.literature_discovery_import_batch_max_tasks,
         "limit": args.limit,
         "outputDir": args.output_dir,
         "seedPapers": parse_seed_papers(args),
@@ -217,7 +290,18 @@ def cost_payload(args, corpus: str) -> dict:
     payload = paper_payload(args, corpus)
     if getattr(args, "project", None):
         payload["project"] = args.project
-    return payload
+    payload.update({
+        "includeCostLlmExtraction": getattr(args, "include_cost_llm_extraction", False),
+        "costLlmRecordLimit": getattr(args, "cost_llm_record_limit", None),
+        "costLlmMaxInputChars": getattr(args, "cost_llm_max_input_chars", None),
+        "costLlmProvider": getattr(args, "cost_llm_provider", None),
+        "costLlmModel": getattr(args, "cost_llm_model", None),
+        "costLlmBaseUrl": getattr(args, "cost_llm_base_url", None),
+        "costLlmApiKeyEnv": getattr(args, "cost_llm_api_key_env", None),
+        "costLlmTimeoutMs": getattr(args, "cost_llm_timeout_ms", None),
+        "costLlmMaxTokens": getattr(args, "cost_llm_max_tokens", None)
+    })
+    return {key: value for key, value in payload.items() if value not in (None, "", [])}
 
 
 def role_overlay_payload(args, corpus: str) -> dict:

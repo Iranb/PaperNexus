@@ -119,7 +119,7 @@ For MCP/serve workloads, import batching is enabled by default. Configure it und
 {
   "imports": {
     "batchEnabled": true,
-    "batchMaxTasks": 4,
+    "batchMaxTasks": 8,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   }

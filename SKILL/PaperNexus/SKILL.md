@@ -26,6 +26,7 @@ Default client assumption:
 Preferred MCP tools:
 
 - `list_corpora`
+- `agent_materials`
 - `literature_discovery`
 - `research_lookup`
 - `research_briefing`
@@ -45,6 +46,7 @@ Shell fallback wrappers:
 - `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
 - `python3 SKILL/PaperNexus/scripts/pn_import_submit.py`
 - `python3 SKILL/PaperNexus/scripts/pn_import_queue.py`
+- `python3 SKILL/PaperNexus/scripts/pn_agent_materials.py`
 - `python3 SKILL/PaperNexus/scripts/pn_graph_query.py`
 - `python3 SKILL/PaperNexus/scripts/pn_research_chains.py`
 
@@ -87,9 +89,13 @@ For OpenClaw-native use, call these tools on the configured `papernexus-remote` 
   Use to force-refresh one already-indexed paper or one duplicate group
 - `list_corpora`
   Use to resolve the current corpus when the active corpus is not explicit
+- `agent_materials`
+  Use for multi-domain Agent material workflows: `research_material_pack`, `source_discovery_plan`, `paper_material_view`, `import_requisition_pack`, `negative_evidence_pack`, `paper_role_overlay`, `evidence_cart`, and `workflow_state`. Prefer graph-first packs, then explicitly opt into provider evidence, live discovery, literature-discovery source resolution, and import submission only when the task requires those phases.
 - `literature_discovery`
   Use for keyword/topic literature survey, provider search, legal full-text resolution, discovery reports, and optional import submission.
   Important operations: `plan`, `search`, `resolve`, `run`, `import`, `ingest`, `import_and_process`, `status`, `report`, `list`, `supplement`
+
+For target-domain / near-source / far-source material workflows, read `SKILL/PaperNexusAgentMaterials/SKILL.md` and use its phased MCP process.
 
 ## Keyword Discovery And Graph-Lag Policy
 
@@ -142,7 +148,7 @@ Latency rule:
 7. Batch progress:
    `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> status`
    because it uses one remote `queue_progress` snapshot instead of guessing by time
-8. MCP/serve import workers default to worker-side logical batching (`imports.batchEnabled=true`, `batchMaxTasks=4`), so multiple task ids may complete from one shared graph commit; keep waiting on each task id and do not change wrapper arguments.
+8. MCP/serve import workers default to worker-side logical batching (`imports.batchEnabled=true`, `batchMaxTasks=8`), so multiple task ids may complete from one shared graph commit; keep waiting on each task id and do not change wrapper arguments.
 9. Only claim graph sync or graph visibility succeeded when the task is `status=completed` and `stage=completed`.
 
 Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging and `serverFilePath`.

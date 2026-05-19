@@ -45,7 +45,7 @@
   },
   "imports": {
     "batchEnabled": true,
-    "batchMaxTasks": 4,
+    "batchMaxTasks": 8,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   },

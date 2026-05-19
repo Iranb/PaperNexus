@@ -540,7 +540,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'import_workflow',
-    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=4 unless server config explicitly disables or overrides it.',
+    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=8 unless server config explicitly disables or overrides it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -643,7 +643,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'literature_discovery',
-    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=4.',
+    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1016,8 +1016,8 @@ export const PAPERNEXUS_TOOLS = [
         },
         importBatchMaxTasks: {
           type: 'number',
-          description: 'Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 4.',
-          default: 4
+          description: 'Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 8.',
+          default: 8
         },
         importMaxPasses: {
           type: 'number',
@@ -1410,6 +1410,166 @@ export const PAPERNEXUS_TOOLS = [
           description: 'When true, hydrate degenerate provider snippets with paper abstracts when available.',
           default: false
         },
+        includeLiveDiscoveryEvidence: {
+          type: 'boolean',
+          description: 'Opt in to bounded idea_catalyst live_discovery evidence for source_discovery_plan, research_material_pack, and import_requisition_pack. Default false to avoid implicit LLM and network calls.',
+          default: false
+        },
+        runLiveIdeaCatalystIfNeeded: {
+          type: 'boolean',
+          description: 'Opt in to running bounded idea_catalyst live_discovery only when requested roles are sparse in the committed graph. Default false to avoid implicit LLM and network calls.',
+          default: false
+        },
+        liveDiscoveryFallbackIfSparse: {
+          type: 'boolean',
+          description: 'Alias for runLiveIdeaCatalystIfNeeded; runs live discovery only when committed-graph role evidence is sparse.',
+          default: false
+        },
+        liveDiscoverySparseRoleThreshold: {
+          type: 'number',
+          description: 'Number of sparse requested roles required before runLiveIdeaCatalystIfNeeded triggers live discovery.',
+          default: 1
+        },
+        liveDiscoverySparseMinScore: {
+          type: 'number',
+          description: 'Minimum committed-graph search score counted as non-sparse for runLiveIdeaCatalystIfNeeded.',
+          default: 0.05
+        },
+        persistLiveDiscoveryEvidence: {
+          type: 'boolean',
+          description: 'When includeLiveDiscoveryEvidence is true, persist returned live-discovery spans/fragments into the project evidence cart. Requires project; default false.',
+          default: false
+        },
+        liveDiscoveryNumQuestions: {
+          type: 'number',
+          description: 'Maximum target research questions used by opt-in live discovery evidence.',
+          default: 1
+        },
+        liveDiscoverySourceDomainLimit: {
+          type: 'number',
+          description: 'Maximum source domains used by opt-in live discovery evidence.',
+          default: 2
+        },
+        liveDiscoveryMaxPapersPerQuery: {
+          type: 'number',
+          description: 'Maximum Semantic Scholar snippet papers retrieved per live-discovery query.',
+          default: 5
+        },
+        liveDiscoverySourceRelevanceThreshold: {
+          type: 'number',
+          description: 'Paper-level source relevance ratio threshold used by opt-in live discovery evidence.',
+          default: 0.5
+        },
+        liveDiscoveryIdeaFragmentLimit: {
+          type: 'number',
+          description: 'Maximum idea fragments retained from opt-in live discovery evidence.',
+          default: 3
+        },
+        liveDiscoveryPersistLimit: {
+          type: 'number',
+          description: 'Maximum live-discovery spans/fragments persisted into the project evidence cart when persistLiveDiscoveryEvidence=true.',
+          default: 20
+        },
+        liveDiscoveryTimeoutMs: {
+          type: 'number',
+          description: 'Timeout in milliseconds for each live-discovery provider request.',
+          default: 12000
+        },
+        includeLiteratureDiscoveryEvidence: {
+          type: 'boolean',
+          description: 'Opt in to bounded literature_discovery search/resolve evidence for source_discovery_plan, research_material_pack, and import_requisition_pack. Default false to avoid implicit network/download work.',
+          default: false
+        },
+        runLiteratureDiscoveryIfSparse: {
+          type: 'boolean',
+          description: 'Opt in to running bounded literature_discovery only when requested roles are sparse in the committed graph. Default false.',
+          default: false
+        },
+        literatureDiscoveryFallbackIfSparse: {
+          type: 'boolean',
+          description: 'Alias for runLiteratureDiscoveryIfSparse; runs literature_discovery only when committed-graph role evidence is sparse.',
+          default: false
+        },
+        literatureDiscoverySeedProviderPapers: {
+          type: 'boolean',
+          description: 'When both provider evidence and literature-discovery evidence are enabled, pass provider snippet hits into literature_discovery as exact seed papers. Default false.',
+          default: false
+        },
+        literatureDiscoveryProviderSeedLimit: {
+          type: 'number',
+          description: 'Maximum provider evidence hits passed into literature_discovery as exact seed papers.',
+          default: 8
+        },
+        literatureDiscoverySeedLivePapers: {
+          type: 'boolean',
+          description: 'When both live-discovery and literature-discovery evidence are enabled, pass live-discovery supporting papers into literature_discovery as exact seed papers. Default false.',
+          default: false
+        },
+        literatureDiscoveryLiveSeedLimit: {
+          type: 'number',
+          description: 'Maximum live-discovery supporting papers passed into literature_discovery as exact seed papers.',
+          default: 8
+        },
+        literatureDiscoveryResolveSources: {
+          type: 'boolean',
+          description: 'Resolve legal full-text sources during opt-in literature discovery evidence. Default true; set false for metadata-only discovery.',
+          default: true
+        },
+        literatureDiscoveryAllowDownloads: {
+          type: 'boolean',
+          description: 'Allow opt-in literature discovery source resolution to stage legal markdown/open-PDF downloads. Default true when literature discovery evidence is enabled.',
+          default: true
+        },
+        submitLiteratureDiscoveryImports: {
+          type: 'boolean',
+          description: 'Submit resolved literature_discovery full-text sources to the import queue from agent_materials. Default false; use import_workflow wait/status before treating submitted papers as graph-visible.',
+          default: false
+        },
+        processLiteratureDiscoveryImports: {
+          type: 'boolean',
+          description: 'After submitting resolved literature_discovery sources, synchronously run the import worker so imports can become graph-visible. Default false because this can be long-running.',
+          default: false
+        },
+        literatureDiscoveryMaxQueries: {
+          type: 'number',
+          description: 'Maximum generated literature_discovery queries when opt-in evidence is enabled.',
+          default: 4
+        },
+        literatureDiscoveryMaxResultsPerQuery: {
+          type: 'number',
+          description: 'Maximum provider results retained per literature_discovery query when opt-in evidence is enabled.',
+          default: 8
+        },
+        literatureDiscoveryMaxCandidates: {
+          type: 'number',
+          description: 'Maximum merged literature_discovery candidates retained when opt-in evidence is enabled.',
+          default: 16
+        },
+        literatureDiscoveryMaxDownloads: {
+          type: 'number',
+          description: 'Maximum legal full-text downloads staged by opt-in literature_discovery source resolution.',
+          default: 6
+        },
+        literatureDiscoveryMaxImported: {
+          type: 'number',
+          description: 'Maximum resolved full-text sources submitted when submitLiteratureDiscoveryImports is true.',
+          default: 4
+        },
+        literatureDiscoveryImportMaxPasses: {
+          type: 'number',
+          description: 'Maximum import worker passes when processLiteratureDiscoveryImports is true.',
+          default: 4
+        },
+        literatureDiscoveryImportBatchEnabled: {
+          type: 'boolean',
+          description: 'Enable worker-side logical batching for inline literature_discovery import processing triggered by processLiteratureDiscoveryImports.',
+          default: true
+        },
+        literatureDiscoveryImportBatchMaxTasks: {
+          type: 'number',
+          description: 'Maximum import tasks to reserve into one logical batch for inline literature_discovery import processing.',
+          default: 8
+        },
         timeWindow: {
           type: 'string',
           description: 'Optional time-window label recorded in negative_evidence_pack filters.'
@@ -1581,6 +1741,47 @@ export const PAPERNEXUS_TOOLS = [
           type: 'number',
           description: 'Maximum chunk records returned by paper_material_view.',
           default: 8
+        },
+        includeCostLlmExtraction: {
+          type: 'boolean',
+          description: 'Opt in to bounded LLM structured extraction for experiment_cost_materials. Default false to avoid implicit LLM calls.',
+          default: false
+        },
+        costLlmRecordLimit: {
+          type: 'number',
+          description: 'Maximum paper material records sent to the opt-in experiment-cost LLM extractor.',
+          default: 16
+        },
+        costLlmMaxInputChars: {
+          type: 'number',
+          description: 'Maximum characters from paper material records sent to the opt-in experiment-cost LLM extractor.',
+          default: 12000
+        },
+        costLlmProvider: {
+          type: 'string',
+          description: 'Optional LLM provider override for opt-in experiment-cost extraction, for example ollama, openai, or anthropic.'
+        },
+        costLlmModel: {
+          type: 'string',
+          description: 'Optional LLM model override for opt-in experiment-cost extraction.'
+        },
+        costLlmBaseUrl: {
+          type: 'string',
+          description: 'Optional LLM base URL override for opt-in experiment-cost extraction, including OpenAI-compatible Qwen endpoints.'
+        },
+        costLlmApiKeyEnv: {
+          type: 'string',
+          description: 'Optional environment variable name containing the API key for opt-in experiment-cost extraction.'
+        },
+        costLlmTimeoutMs: {
+          type: 'number',
+          description: 'Timeout in milliseconds for the opt-in experiment-cost LLM extraction request.',
+          default: 45000
+        },
+        costLlmMaxTokens: {
+          type: 'number',
+          description: 'Maximum output tokens requested from the opt-in experiment-cost LLM extractor.',
+          default: 1600
         },
         outputDir: {
           type: 'string',

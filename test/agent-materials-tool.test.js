@@ -442,6 +442,61 @@ test('agent_materials opt-in provider evidence records provider hits without imp
     assert.ok(plan.candidate_papers.some((entry) => entry.provider === 'semantic_scholar_snippets'));
     assert.ok(plan.import_requisitions.some((entry) => entry.why_needed.includes('Provider evidence hit')));
 
+    const literatureCalls = [];
+    const seededProviderPlan = await executeAgentMaterialsTool({
+      operation: 'source_discovery_plan',
+      corpus: rootPath,
+      project: 'ProviderEvidenceSeededLiterature',
+      targetDomain: 'Computer Science',
+      targetProblem: 'calibrated discovery under distribution shift',
+      roles: ['target_prior'],
+      includeProviderEvidence: true,
+      includeLiteratureDiscoveryEvidence: true,
+      literatureDiscoverySeedProviderPapers: true,
+      providerEvidenceLimit: 1,
+      providerEvidenceQueryLimit: 1
+    }, {
+      fetch,
+      async runLiteratureDiscovery(params) {
+        literatureCalls.push(params);
+        return {
+          runId: 'lit-provider-seeded',
+          topic: params.topic,
+          plan: {
+            topic: params.topic,
+            queries: params.seedPapers.map((seed, index) => ({
+              id: `provider-seed-${index + 1}`,
+              query: seed.title,
+              family: 'client_seed',
+              rationale: 'Resolve a provider evidence hit.'
+            }))
+          },
+          queryResults: [],
+          candidates: [],
+          resolutionSummary: {
+            total: 0,
+            resolvedFullText: 0,
+            metadataOnly: 0,
+            downloaded: 0
+          },
+          coverage: {
+            mergedPaperCount: 0,
+            resolvedFullTextCount: 0,
+            metadataOnlyCount: 0,
+            importedCount: 0,
+            queryCoverage: []
+          },
+          artifacts: null
+        };
+      }
+    });
+    assert.equal(literatureCalls.length, 1);
+    assert.equal(literatureCalls[0].seedPapers.length, 1);
+    assert.equal(literatureCalls[0].seedPapers[0].seed_source, 'provider_search');
+    assert.ok(literatureCalls[0].seedPapers[0].sourceHints.some((entry) => entry.endsWith('.pdf')));
+    assert.equal(seededProviderPlan.literature_discovery_evidence.seed_paper_count, 1);
+    assert.equal(seededProviderPlan.literature_discovery_evidence.seed_papers[0].seed_source, 'provider_search');
+
     const cart = await executeAgentMaterialsTool({
       operation: 'evidence_cart',
       action: 'list',
@@ -485,6 +540,387 @@ test('agent_materials opt-in provider evidence records provider hits without imp
     assert.equal(negative.records[0].provider_evidence.enabled, true);
     assert.equal(negative.records[0].provider_evidence.persistence.persisted_count, 1);
     assert.ok(negative.records[0].provider_evidence.query_runs.some((run) => run.hit_classification === 'direct'));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('agent_materials opt-in live discovery evidence adds source-domain materials', async () => {
+  const rootPath = await createMaterialCorpus();
+  const fetch = async (input) => {
+    const url = new URL(String(input));
+    assert.ok(url.pathname.endsWith('/snippet/search'));
+    const field = url.searchParams.get('fieldsOfStudy');
+    if (field !== 'Psychology') {
+      return createJsonResponse({
+        data: [{
+          score: 0.8,
+          paper: {
+            paperId: 'cs-target',
+            corpusId: 'cs-target',
+            title: 'Adaptive Collaboration in Computer Science',
+            fieldsOfStudy: ['Computer Science']
+          },
+          snippet: {
+            text: 'Adaptive collaboration systems still struggle with changing goals and feedback.',
+            snippetKind: 'abstract',
+            section: 'Abstract'
+          }
+        }]
+      });
+    }
+    if (field === 'Psychology') {
+      return createJsonResponse({
+        data: [{
+          score: 0.9,
+          paper: {
+            paperId: 'psy-control',
+            corpusId: 'psy-control',
+            title: 'Goal Regulation Under Changing Feedback',
+            fieldsOfStudy: ['Psychology']
+          },
+          snippet: {
+            text: 'Goal regulation research studies how behavior balances persistence and flexibility under changing feedback.',
+            snippetKind: 'abstract',
+            section: 'Abstract'
+          }
+        }]
+      });
+    }
+    assert.fail(`Unexpected field ${field}`);
+  };
+  const llmJson = async ({ task }) => {
+    if (task === 'decompose') {
+      return {
+        research_questions: [{
+          id: 'q1',
+          domain_specific_question: 'How can computer systems adapt to changing collaboration goals?',
+          domain_agnostic_question: 'How can behavior adapt under changing goals and feedback?',
+          target_search_queries: ['adaptive collaboration changing goals']
+        }]
+      };
+    }
+    if (task === 'target_assessment') {
+      return {
+        progress: 'partially addressed',
+        remaining_challenges: [{
+          id: 'challenge:goals',
+          domain_specific_challenge: 'Computer systems do not robustly adapt to changing collaboration goals.',
+          domain_agnostic_challenge: 'How can behavior adapt under changing goals and feedback?',
+          target_evidence_ids: []
+        }]
+      };
+    }
+    if (task === 'source_domains') {
+      return {
+        source_domains: [{
+          domain: 'Psychology',
+          rationale: 'Psychology studies goal regulation under changing feedback.',
+          source_search_queries: ['goal regulation changing feedback']
+        }]
+      };
+    }
+    if (task === 'source_relevance') {
+      return {
+        papers: [{
+          paper_key: 'psy-control',
+          relevant: true,
+          relevance_score: 0.88,
+          reason: 'Goal regulation maps to adaptive behavior under changing goals.'
+        }]
+      };
+    }
+    if (task === 'source_takeaways') {
+      return {
+        takeaways: [{
+          id: 'takeaway:goal-regulation',
+          concept: 'Goal regulation',
+          mechanism: 'Balance persistence and flexibility when feedback changes.',
+          source_logic: 'Changing feedback can trigger adaptive control.',
+          paper_keys: ['psy-control']
+        }]
+      };
+    }
+    if (task === 'idea_fragments') {
+      return {
+        idea_fragments: [{
+          id: 'fragment:goal-regulation',
+          title: 'Goal-regulation bridge for adaptive collaboration',
+          target_challenge_id: 'challenge:goals',
+          target_challenge: 'Adapt under changing goals and feedback.',
+          source_domain: 'Psychology',
+          source_takeaway_ids: ['takeaway:goal-regulation'],
+          integration_rationale: 'Use goal-regulation evidence as far-source story material.',
+          novelty_score: 0.5,
+          usefulness_score: 0.7,
+          supporting_paper_keys: ['psy-control']
+        }]
+      };
+    }
+    assert.fail(`Unexpected live-discovery LLM task ${task}`);
+  };
+
+  try {
+    const pack = await executeAgentMaterialsTool({
+      operation: 'research_material_pack',
+      corpus: rootPath,
+      project: 'LiveDiscoverySmoke',
+      targetDomain: 'Computer Science',
+      targetProblem: 'adaptive collaboration under changing goals',
+      roles: ['far_source_story'],
+      includeLiveDiscoveryEvidence: true,
+      persistLiveDiscoveryEvidence: true,
+      liveDiscoveryNumQuestions: 1,
+      liveDiscoverySourceDomainLimit: 1,
+      liveDiscoveryMaxPapersPerQuery: 1,
+      liveDiscoveryIdeaFragmentLimit: 1,
+      liveDiscoveryPersistLimit: 2
+    }, { fetch, llmJson });
+
+    assert.equal(pack.source_discovery.live_discovery_evidence.enabled, true);
+    assert.equal(pack.source_discovery.live_discovery_evidence.status, 'ok');
+    assert.equal(pack.source_discovery.live_discovery_evidence.persistence.status, 'persisted');
+    assert.ok(pack.source_discovery.live_discovery_evidence.source_domain_analyses.some((entry) => entry.source_domain === 'Psychology'));
+    assert.ok(pack.source_discovery.candidate_papers.some((entry) => entry.discovery_source === 'idea_catalyst_live_discovery'));
+    const liveItem = pack.groups[0].items.find((entry) => entry.provenance[0].source_type === 'idea_catalyst_live_discovery');
+    assert.ok(liveItem);
+    assert.equal(liveItem.role, 'far_source_story');
+    assert.ok(liveItem.materials.live_discovery.source_spans.length > 0);
+    assert.ok(pack.import_requisitions.some((entry) => entry.why_needed.includes('Idea Catalyst live_discovery')));
+
+    const cart = await executeAgentMaterialsTool({
+      operation: 'evidence_cart',
+      action: 'list',
+      corpus: rootPath,
+      project: 'LiveDiscoverySmoke'
+    });
+    assert.ok(cart.items.some((item) => item.source_type === 'idea_catalyst_live_discovery'));
+
+    const literatureCalls = [];
+    const seededPlan = await executeAgentMaterialsTool({
+      operation: 'source_discovery_plan',
+      corpus: rootPath,
+      project: 'LiveDiscoverySeededLiterature',
+      targetDomain: 'Computer Science',
+      targetProblem: 'adaptive collaboration under changing goals',
+      roles: ['far_source_story'],
+      includeLiveDiscoveryEvidence: true,
+      includeLiteratureDiscoveryEvidence: true,
+      literatureDiscoverySeedLivePapers: true,
+      liveDiscoveryNumQuestions: 1,
+      liveDiscoverySourceDomainLimit: 1,
+      liveDiscoveryMaxPapersPerQuery: 1,
+      liveDiscoveryIdeaFragmentLimit: 1
+    }, {
+      fetch,
+      llmJson,
+      async runLiteratureDiscovery(params) {
+        literatureCalls.push(params);
+        return {
+          runId: 'lit-live-seeded',
+          topic: params.topic,
+          plan: {
+            topic: params.topic,
+            queries: params.seedPapers.map((seed, index) => ({
+              id: `seed-${index + 1}`,
+              query: seed.title,
+              family: 'client_seed',
+              rationale: 'Resolve a live-discovery supporting paper.'
+            }))
+          },
+          queryResults: [],
+          candidates: [],
+          resolutionSummary: {
+            total: 0,
+            resolvedFullText: 0,
+            metadataOnly: 0,
+            downloaded: 0
+          },
+          coverage: {
+            mergedPaperCount: 0,
+            resolvedFullTextCount: 0,
+            metadataOnlyCount: 0,
+            importedCount: 0,
+            queryCoverage: []
+          },
+          artifacts: null
+        };
+      }
+    });
+    assert.equal(literatureCalls.length, 1);
+    assert.equal(literatureCalls[0].seedPapers.length, 1);
+    assert.equal(literatureCalls[0].seedPapers[0].title, 'Goal Regulation Under Changing Feedback');
+    assert.equal(literatureCalls[0].seedPapers[0].seed_source, 'idea_catalyst_live_discovery');
+    assert.equal(seededPlan.literature_discovery_evidence.seed_paper_count, 1);
+    assert.equal(seededPlan.literature_discovery_evidence.seed_papers[0].seed_source, 'idea_catalyst_live_discovery');
+
+    const sparseFallbackPlan = await executeAgentMaterialsTool({
+      operation: 'source_discovery_plan',
+      corpus: rootPath,
+      project: 'LiveDiscoverySparseFallback',
+      targetDomain: 'Unindexed Systems Domain',
+      targetProblem: 'zzzxq nooverlap sparse live discovery gap',
+      roles: ['unmapped_sparse_role'],
+      runLiveIdeaCatalystIfNeeded: true,
+      liveDiscoverySparseMinScore: 100,
+      liveDiscoveryNumQuestions: 1,
+      liveDiscoverySourceDomainLimit: 1,
+      liveDiscoveryMaxPapersPerQuery: 1,
+      liveDiscoveryIdeaFragmentLimit: 1
+    }, { fetch, llmJson });
+    assert.equal(sparseFallbackPlan.live_discovery_evidence.status, 'ok');
+    assert.equal(sparseFallbackPlan.live_discovery_evidence.trigger_mode, 'graph_sparse_fallback');
+    assert.equal(sparseFallbackPlan.live_discovery_evidence.trigger.graph_sparse, true);
+    assert.ok(sparseFallbackPlan.live_discovery_evidence.trigger.sparse_roles.includes('unmapped_sparse_role'));
+
+    let skippedFallbackCalled = false;
+    const skippedFallbackPlan = await executeAgentMaterialsTool({
+      operation: 'source_discovery_plan',
+      corpus: rootPath,
+      project: 'LiveDiscoverySkipFallback',
+      targetDomain: 'Generalized Category Discovery',
+      targetProblem: 'known novel prior shift calibration',
+      roles: ['target_prior'],
+      runLiveIdeaCatalystIfNeeded: true,
+      liveDiscoveryNumQuestions: 1,
+      liveDiscoverySourceDomainLimit: 1
+    }, {
+      async llmJson() {
+        skippedFallbackCalled = true;
+        return {};
+      }
+    });
+    assert.equal(skippedFallbackPlan.live_discovery_evidence.status, 'skipped_not_sparse');
+    assert.equal(skippedFallbackPlan.live_discovery_evidence.trigger.graph_sparse, false);
+    assert.equal(skippedFallbackCalled, false);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('agent_materials opt-in literature discovery resolves import-ready candidates before explicit submit', async () => {
+  const rootPath = await createMaterialCorpus();
+  const discoveryCalls = [];
+  const submitCalls = [];
+  const resolvedPath = path.join(rootPath, 'resolved-literature.md');
+  const runLiteratureDiscovery = async (params) => {
+    discoveryCalls.push(params);
+    return {
+      runId: 'lit-run-1',
+      topic: params.topic,
+      plan: {
+        topic: params.topic,
+        queries: [{
+          id: 'q1',
+          query: 'resolved source candidate',
+          family: 'seed_text',
+          rationale: 'fixture query'
+        }]
+      },
+      queryResults: [],
+      candidates: [{
+        id: 'candidate:resolved',
+        canonicalId: 'doi:10.5555/resolved',
+        title: 'Resolved Literature Candidate',
+        authors: ['A. Researcher'],
+        year: 2026,
+        abstract: 'A resolved candidate returned by literature discovery.',
+        identifiers: {
+          doi: '10.5555/resolved'
+        },
+        providers: ['fixture-provider'],
+        providerAgreementCount: 1,
+        identityConfidence: 'strong',
+        source: {
+          resolutionStatus: 'fulltext_ready',
+          sourceKind: 'markdown',
+          sourcePath: resolvedPath,
+          sourceProvider: 'fixture-provider',
+          fullTextStatus: 'open_markdown',
+          markdownUrl: 'https://example.test/resolved.md',
+          pdfUrl: ''
+        }
+      }],
+      resolutionSummary: {
+        total: 1,
+        resolvedFullText: 1,
+        metadataOnly: 0,
+        downloaded: 1
+      },
+      coverage: {
+        mergedPaperCount: 1,
+        resolvedFullTextCount: 1,
+        metadataOnlyCount: 0,
+        importedCount: 0,
+        queryCoverage: []
+      },
+      artifacts: null
+    };
+  };
+  const submitDiscoveryImports = async (params) => {
+    submitCalls.push(params);
+    return {
+      submitted: 1,
+      deduped: 0,
+      failed: 0,
+      results: [{
+        canonicalId: 'doi:10.5555/resolved',
+        sourcePath: resolvedPath,
+        status: 'submitted',
+        taskId: 'task-resolved'
+      }]
+    };
+  };
+
+  try {
+    const defaultPlan = await executeAgentMaterialsTool({
+      operation: 'source_discovery_plan',
+      corpus: rootPath,
+      targetDomain: 'Computer Science',
+      targetProblem: 'resolved source candidate',
+      roles: ['target_prior']
+    }, { runLiteratureDiscovery });
+    assert.equal(defaultPlan.literature_discovery_evidence.status, 'disabled');
+    assert.equal(discoveryCalls.length, 0);
+
+    const plan = await executeAgentMaterialsTool({
+      operation: 'source_discovery_plan',
+      corpus: rootPath,
+      targetDomain: 'Computer Science',
+      targetProblem: 'resolved source candidate',
+      roles: ['target_prior'],
+      includeLiteratureDiscoveryEvidence: true,
+      literatureDiscoveryMaxQueries: 2,
+      literatureDiscoveryMaxCandidates: 3,
+      literatureDiscoveryMaxDownloads: 1
+    }, { runLiteratureDiscovery, submitDiscoveryImports });
+    assert.equal(discoveryCalls.length, 1);
+    assert.equal(discoveryCalls[0].persist, false);
+    assert.equal(discoveryCalls[0].resolveSources, true);
+    assert.equal(discoveryCalls[0].maxDownloads, 1);
+    assert.equal(plan.literature_discovery_evidence.status, 'ok');
+    assert.equal(plan.literature_discovery_evidence.queue_read_only, true);
+    assert.equal(plan.literature_discovery_evidence.importable_count, 1);
+    assert.equal(plan.literature_discovery_evidence.import_summary, null);
+    assert.equal(submitCalls.length, 0);
+    assert.ok(plan.candidate_papers.some((entry) => entry.discovery_source === 'literature_discovery'));
+    assert.ok(plan.import_requisitions.some((entry) => entry.why_needed.includes('Literature discovery resolved')));
+
+    const requisitions = await executeAgentMaterialsTool({
+      operation: 'import_requisition_pack',
+      corpus: rootPath,
+      targetDomain: 'Computer Science',
+      targetProblem: 'resolved source candidate',
+      includeLiteratureDiscoveryEvidence: true,
+      submitLiteratureDiscoveryImports: true,
+      literatureDiscoveryMaxImported: 1
+    }, { runLiteratureDiscovery, submitDiscoveryImports });
+    assert.equal(submitCalls.length, 1);
+    assert.equal(submitCalls[0].maxImported, 1);
+    assert.equal(requisitions.literature_discovery_evidence.queue_read_only, false);
+    assert.equal(requisitions.literature_discovery_evidence.import_summary.submitted, 1);
+    assert.equal(requisitions.literature_discovery_evidence.candidates[0].import.taskId, 'task-resolved');
+    assert.ok(requisitions.import_requisitions.some((entry) => entry.why_needed.includes('import status submitted')));
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }
@@ -650,12 +1086,58 @@ test('agent_materials returns negative evidence and experiment cost materials', 
 
     assert.equal(cost.operation, 'experiment_cost_materials');
     assert.equal(cost.extraction_policy.backend, 'regex_plus_structured_markdown_v1');
+    assert.equal(cost.extraction_policy.llm_enabled, false);
+    assert.equal(cost.llm_extraction.status, 'disabled');
     assert.equal(cost.signals.hardware.status, 'reported');
     assert.ok(cost.signals.hardware.snippets.some((snippet) => snippet.match.includes('A100')));
     assert.ok(cost.signals.hardware.snippets.some((snippet) => snippet.provenance.source_type === 'figure_caption'));
     assert.equal(cost.signals.batch_size.status, 'reported');
     assert.equal(cost.signals.runtime.status, 'reported');
     assert.ok(cost.signals.runtime.snippets.some((snippet) => snippet.provenance.source_type === 'markdown_table'));
+
+    const costWithLlm = await executeAgentMaterialsTool({
+      operation: 'experiment_cost_materials',
+      corpus: rootPath,
+      paperId: 'paper:gcd-calibration',
+      includeCostLlmExtraction: true,
+      costLlmRecordLimit: 4,
+      costLlmMaxInputChars: 3000
+    }, {
+      async llmJson({ records }) {
+        const record = records.find((entry) => entry.text.includes('A100')) || records[0];
+        return {
+          summary: 'Training cost is explicitly reported.',
+          fields: {
+            hardware: {
+              status: 'reported',
+              value: 'single A100 GPU',
+              confidence: 0.91,
+              evidence_text: 'single A100 GPU',
+              source_record_id: record.source_record_id
+            },
+            runtime: {
+              status: 'reported',
+              value: '6 hours',
+              confidence: 0.89,
+              evidence_text: '6 hours',
+              source_record_id: record.source_record_id
+            },
+            epochs: { status: 'reported', value: '100 epochs', confidence: 0.87, evidence_text: '100 epochs', source_record_id: record.source_record_id },
+            batch_size: { status: 'reported', value: '256', confidence: 0.85, evidence_text: 'batch size 256', source_record_id: record.source_record_id },
+            dataset_scale: { status: 'not_reported', value: null, confidence: 0, evidence_text: null, source_record_id: null },
+            backbone: { status: 'not_reported', value: null, confidence: 0, evidence_text: null, source_record_id: null },
+            code_availability: { status: 'reported', value: 'GitHub repository', confidence: 0.82, evidence_text: 'code is available', source_record_id: record.source_record_id }
+          }
+        };
+      }
+    });
+
+    assert.equal(costWithLlm.extraction_policy.llm_enabled, true);
+    assert.equal(costWithLlm.extraction_policy.llm_status, 'ok');
+    assert.equal(costWithLlm.llm_extraction.provider, 'custom-llm-json');
+    assert.equal(costWithLlm.llm_extraction.fields.hardware.value, 'single A100 GPU');
+    assert.equal(costWithLlm.llm_extraction.fields.dataset_scale.status, 'not_reported');
+    assert.equal(costWithLlm.llm_extraction.fields.hardware.provenance.paper_id, 'paper:gcd-calibration');
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

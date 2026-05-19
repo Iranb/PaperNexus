@@ -56,7 +56,7 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
   },
   "imports": {
     "batchEnabled": true,
-    "batchMaxTasks": 4,
+    "batchMaxTasks": 8,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   },
@@ -137,7 +137,7 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `global.corpus` | string | `demo-corpus` |
 | `imports` | object | section |
 | `imports.batchEnabled` | boolean | `true` |
-| `imports.batchMaxTasks` | number | `4` |
+| `imports.batchMaxTasks` | number | `8` |
 | `imports.batchMaxFiles` | number | `16` |
 | `imports.batchMaxBytes` | number | `104857600` |
 | `serve` | object | section |
