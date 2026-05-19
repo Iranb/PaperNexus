@@ -30,6 +30,7 @@ async function createMaterialCorpus() {
   await fs.mkdir(paths.corpusDir, { recursive: true });
 
   const sourcePath = path.join(rootPath, 'calibrated-gcd.md');
+  const pmidCollisionSourcePath = path.join(rootPath, 'pmid-collision.md');
   await fs.writeFile(sourcePath, [
     '# Reliability-Calibrated GCD',
     '',
@@ -53,6 +54,13 @@ async function createMaterialCorpus() {
     '',
     'Figure 1: Reliability diagram generated on A100 after 100 epochs.'
   ].join('\n'), 'utf8');
+  await fs.writeFile(pmidCollisionSourcePath, [
+    '# PMID Collision Fixture',
+    '',
+    '## Abstract',
+    '',
+    'This fixture should only match explicit PMID lookups, not arbitrary DOI URLs with similar digits.'
+  ].join('\n'), 'utf8');
 
   const graph = createKnowledgeGraph();
   graph.addNode({
@@ -62,6 +70,12 @@ async function createMaterialCorpus() {
     properties: {
       paperId: 'paper:gcd-calibration',
       paperTitle: 'Reliability-Calibrated GCD',
+      identifiers: {
+        doi: '10.0000/gcd',
+        arxiv_id: '2401.01234'
+      },
+      doi: '10.0000/gcd',
+      arxivId: '2401.01234',
       abstract: 'A target-domain prior for generalized category discovery with domain shift and calibration.',
       fieldOfStudy: 'Generalized Category Discovery'
     }
@@ -71,6 +85,22 @@ async function createMaterialCorpus() {
     type: NODE_TYPES.DOMAIN,
     name: 'Generalized Category Discovery',
     properties: {}
+  });
+  graph.addNode({
+    id: 'paper:graph-only-identifiers',
+    type: NODE_TYPES.PAPER,
+    name: 'Graph-Only Identifier Paper',
+    properties: {
+      paperId: 'paper:graph-only-identifiers',
+      paperTitle: 'Graph-Only Identifier Paper',
+      identifiers: {
+        doi: '10.0000/graph-only',
+        arxiv_id: '2402.01234'
+      },
+      doi: '10.0000/graph-only',
+      arxivId: '2402.01234',
+      abstract: 'A graph-only paper without a source manifest entry.'
+    }
   });
   graph.addNode({
     id: 'domain:calibration',
@@ -100,7 +130,7 @@ async function createMaterialCorpus() {
   await fs.writeFile(paths.metaPath, JSON.stringify({
     name: 'agent-materials-test',
     indexedAt: new Date().toISOString(),
-    paperCount: 1,
+    paperCount: 2,
     nodeCount: graph.nodeCount,
     relationshipCount: graph.relationshipCount
   }, null, 2));
@@ -119,9 +149,22 @@ async function createMaterialCorpus() {
       paperId: 'paper:gcd-calibration',
       paperTitle: 'Reliability-Calibrated GCD',
       identifiers: {
-        doi: '10.0000/gcd'
+        doi: '10.0000/gcd',
+        arxiv_id: '2401.01234'
       },
       activeInGraph: true
+    }, {
+      sourceKey: 'source:pmid-collision',
+      sourcePath: pmidCollisionSourcePath,
+      inputPath: pmidCollisionSourcePath,
+      kind: 'markdown',
+      sourceProvider: 'fixture',
+      paperId: 'paper:pmid-collision',
+      paperTitle: 'PMID Collision Fixture',
+      identifiers: {
+        pmid: '100000'
+      },
+      activeInGraph: false
     }]
   });
 
@@ -317,6 +360,51 @@ test('agent_materials paper_material_view returns source, graph, and chunk mater
   }
 });
 
+test('agent_materials paper_material_view rejects same-title graph matches when identifiers conflict', async () => {
+  const rootPath = await createMaterialCorpus();
+  try {
+    const payload = await executeAgentMaterialsTool({
+      operation: 'paper_material_view',
+      corpus: rootPath,
+      title: 'Reliability-Calibrated GCD',
+      doi: '10.0000/different-paper'
+    });
+
+    assert.equal(payload.operation, 'paper_material_view');
+    assert.equal(payload.paper.title, 'Reliability-Calibrated GCD');
+    assert.equal(payload.paper.status, 'material_unavailable');
+    assert.equal(payload.paper.availability.markdown, false);
+    assert.equal(payload.paper.availability.graph_context, false);
+    assert.deepEqual(payload.sources, []);
+    assert.deepEqual(payload.graph_context, []);
+    assert.equal(payload.import_requisitions.length, 1);
+    assert.equal(payload.import_requisitions[0].identifiers.doi, '10.0000/different-paper');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('agent_materials paper_material_view returns graph-only paper identifiers', async () => {
+  const rootPath = await createMaterialCorpus();
+  try {
+    const payload = await executeAgentMaterialsTool({
+      operation: 'paper_material_view',
+      corpus: rootPath,
+      title: 'Graph-Only Identifier Paper'
+    });
+
+    assert.equal(payload.paper.paper_id, 'paper:graph-only-identifiers');
+    assert.equal(payload.paper.status, 'in_graph');
+    assert.equal(payload.paper.availability.graph_context, true);
+    assert.equal(payload.paper.availability.markdown, false);
+    assert.equal(payload.paper.identifiers.doi, '10.0000/graph-only');
+    assert.equal(payload.paper.identifiers.arxivId, '2402.01234');
+    assert.deepEqual(payload.import_requisitions, []);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('agent_materials research_material_pack groups materials and records missing seeds', async () => {
   const rootPath = await createMaterialCorpus();
   try {
@@ -328,6 +416,35 @@ test('agent_materials research_material_pack groups materials and records missin
       targetProblem: 'known novel prior shift calibration',
       roles: ['target_prior', 'near_source_method'],
       seedPapers: [{
+        title: 'Seed Title Differs From Manifest',
+        identifiers: {
+          doi: '10.0000/gcd'
+        },
+        role: 'target_prior'
+      }, {
+        title: 'Generic DOI URL Seed',
+        identifier: 'https://doi.org/10.0000/gcd',
+        role: 'target_prior'
+      }, {
+        title: 'DOI URL Should Not Match PMID',
+        identifier: 'https://doi.org/10.0000/not-in-corpus',
+        role: 'target_prior',
+        markdownUrl: 'https://example.test/doi-url-should-not-match-pmid.md'
+      }, {
+        title: 'Reliability-Calibrated GCD',
+        identifiers: {
+          doi: '10.0000/different-paper'
+        },
+        role: 'far_source_story',
+        markdownUrl: 'https://example.test/title-collision.md'
+      }, {
+        title: 'Reliability-Calibrated GCD',
+        identifiers: {
+          arxivId: '2401.99999'
+        },
+        role: 'far_source_story',
+        markdownUrl: 'https://example.test/arxiv-title-collision.md'
+      }, {
         title: 'Missing Source Paper',
         role: 'far_source_story',
         markdownUrl: 'https://example.test/missing.md'
@@ -343,6 +460,11 @@ test('agent_materials research_material_pack groups materials and records missin
     assert.ok(payload.source_discovery.source_domain_queries.some((entry) => entry.domain === 'Calibration'));
     assert.ok(payload.source_discovery.source_relevance_scores.some((entry) => entry.domain === 'Calibration'));
     assert.ok(payload.import_requisitions.some((entry) => entry.title === 'Missing Source Paper'));
+    assert.ok(!payload.import_requisitions.some((entry) => entry.title === 'Seed Title Differs From Manifest'));
+    assert.ok(!payload.import_requisitions.some((entry) => entry.title === 'Generic DOI URL Seed'));
+    assert.ok(payload.import_requisitions.some((entry) => entry.title === 'DOI URL Should Not Match PMID'));
+    assert.ok(payload.import_requisitions.some((entry) => entry.title === 'Reliability-Calibrated GCD'));
+    assert.ok(payload.import_requisitions.some((entry) => entry.identifiers.arxivId === '2401.99999'));
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }
@@ -921,6 +1043,84 @@ test('agent_materials opt-in literature discovery resolves import-ready candidat
     assert.equal(requisitions.literature_discovery_evidence.import_summary.submitted, 1);
     assert.equal(requisitions.literature_discovery_evidence.candidates[0].import.taskId, 'task-resolved');
     assert.ok(requisitions.import_requisitions.some((entry) => entry.why_needed.includes('import status submitted')));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('agent_materials maps literature import status without canonical ids', async () => {
+  const rootPath = await createMaterialCorpus();
+  const resolvedPath = path.join(rootPath, 'resolved-no-canonical.md');
+  const runLiteratureDiscovery = async (params) => ({
+    runId: 'lit-run-no-canonical',
+    topic: params.topic,
+    plan: {
+      topic: params.topic,
+      queries: []
+    },
+    candidates: [{
+      candidate_id: '10.5555/collision-key',
+      title: 'Candidate Title Collision Without Canonical Id',
+      abstract: 'This candidate has a source path but no canonical id.',
+      identifiers: {},
+      providers: ['fixture-provider'],
+      source: {
+        resolution_status: 'fulltext_ready',
+        source_kind: 'markdown',
+        source_path: resolvedPath,
+        source_provider: 'fixture-provider',
+        full_text_status: 'open_markdown'
+      }
+    }, {
+      id: 'candidate:no-canonical-metadata',
+      title: 'Candidate Title Collision Without Canonical Id',
+      abstract: 'This candidate should not inherit the import task from the first candidate.',
+      identifiers: {
+        doi: '10.5555/collision-key'
+      },
+      providers: ['fixture-provider'],
+      source: {
+        resolutionStatus: 'metadata_only',
+        sourceKind: 'metadata_only',
+        fullTextStatus: 'unknown'
+      }
+    }]
+  });
+  const submitDiscoveryImports = async (params) => ({
+    submitted: 1,
+    deduped: 0,
+    failed: 0,
+    results: params.candidates
+      .filter((candidate) => candidate.source?.sourcePath || candidate.source?.source_path)
+      .map((candidate) => ({
+        candidateId: candidate.id || candidate.candidate_id,
+        canonicalId: candidate.canonicalId,
+        sourcePath: candidate.source.sourcePath || candidate.source.source_path,
+        title: candidate.title,
+        status: 'submitted',
+        taskId: 'task-no-canonical'
+      }))
+  });
+
+  try {
+    const requisitions = await executeAgentMaterialsTool({
+      operation: 'import_requisition_pack',
+      corpus: rootPath,
+      targetDomain: 'Computer Science',
+      targetProblem: 'candidate without canonical id',
+      includeLiteratureDiscoveryEvidence: true,
+      submitLiteratureDiscoveryImports: true
+    }, { runLiteratureDiscovery, submitDiscoveryImports });
+
+    const candidates = requisitions.literature_discovery_evidence.candidates;
+    assert.equal(
+      candidates.find((entry) => entry.candidate_id === '10.5555/collision-key').import.taskId,
+      'task-no-canonical'
+    );
+    assert.equal(
+      candidates.find((entry) => entry.candidate_id === 'candidate:no-canonical-metadata').import.status,
+      'not_submitted'
+    );
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

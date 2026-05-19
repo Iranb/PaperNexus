@@ -15,8 +15,9 @@ import {
 } from '../src/core/discovery/request-scheduler.js';
 import { mergeDiscoveryCandidates } from '../src/core/discovery/merge.js';
 import { resolveDiscoverySources } from '../src/core/discovery/source-resolution.js';
+import { submitDiscoveryImports } from '../src/core/discovery/import-bridge.js';
 import { buildLiteratureDiscoveryRunPlan, runLiteratureDiscovery } from '../src/core/discovery/workflow.js';
-import { loadDiscoveryRun } from '../src/core/discovery/store.js';
+import { loadDiscoveryRun, saveDiscoveryRun } from '../src/core/discovery/store.js';
 import { handleMessage } from '../src/mcp/core.js';
 import { executeLiteratureDiscoveryTool } from '../src/mcp/tool-literature-discovery.js';
 import { createContentSha256, createPaperIdentity } from '../src/lib/paper-identifiers.js';
@@ -2669,6 +2670,48 @@ test('literature_discovery ingest processes downloaded Markdown into the graph',
   }
 });
 
+test('submitDiscoveryImports preserves top-level candidate identifiers in import tasks', async () => {
+  const rootPath = await createTempCorpus();
+  const sourcePath = path.join(rootPath, 'top-level-identifiers.md');
+
+  try {
+    await fs.writeFile(sourcePath, [
+      '# Top-Level Identifier Import',
+      '',
+      '## Abstract',
+      '',
+      'This fixture validates direct literature discovery import metadata.'
+    ].join('\n'), 'utf8');
+
+    const result = await submitDiscoveryImports({
+      corpus: rootPath,
+      maxImported: 1,
+      candidates: [{
+        id: 'candidate:top-level-identifiers',
+        title: 'Top-Level Identifier Import',
+        doi: 'https://doi.org/10.5555/top-level-import',
+        arxiv_id: '2403.01234',
+        source: {
+          resolution_status: 'fulltext_ready',
+          source_path: sourcePath,
+          source_provider: 'fixture-provider'
+        }
+      }]
+    });
+
+    assert.equal(result.submitted, 1);
+    assert.equal(result.results[0].identifiers.doi, '10.5555/top-level-import');
+    assert.equal(result.results[0].identifiers.arxivId, '2403.01234');
+
+    const { loadImportTask } = await import('../src/storage/import-store.js');
+    const task = await loadImportTask(rootPath, result.results[0].taskId);
+    assert.equal(task.files[0].paperMetadata.identifiers.doi, '10.5555/top-level-import');
+    assert.equal(task.files[0].paperMetadata.identifiers.arxivId, '2403.01234');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('literature_discovery inline import processing batches multiple imports by default', async () => {
   const rootPath = await createTempCorpus();
   const inputRoot = path.join(rootPath, 'seed-input');
@@ -2835,6 +2878,77 @@ test('literature_discovery supplement attaches a later Markdown source to a meta
     assert.equal(supplementedRun.metadataGraph.partialPaperCount, 0);
   } finally {
     globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('literature_discovery supplement import does not fan out across candidates without canonical ids', async () => {
+  const rootPath = await createTempCorpus();
+  const supplementalMarkdownPath = path.join(rootPath, 'supplemental-no-canonical.md');
+
+  try {
+    const run = {
+      runId: 'disc-no-canonical-import-map',
+      generatedAt: new Date('2026-05-19T00:00:00.000Z').toISOString(),
+      topic: 'supplement import mapping without canonical ids',
+      candidates: [{
+        candidate_id: '10.5555/candidate-id-collision',
+        title: 'Title Collision Without Canonical Id',
+        identifiers: {
+          doi: '10.5555/no-canonical-importable'
+        },
+        providers: ['fixture-provider'],
+        source: {
+          resolutionStatus: 'metadata_only',
+          sourceKind: 'metadata_only',
+          fullTextStatus: 'unknown'
+        }
+      }, {
+        id: 'candidate:no-canonical-metadata',
+        title: 'Title Collision Without Canonical Id',
+        identifiers: {
+          doi: '10.5555/candidate-id-collision'
+        },
+        providers: ['fixture-provider'],
+        source: {
+          resolutionStatus: 'metadata_only',
+          sourceKind: 'metadata_only',
+          fullTextStatus: 'unknown'
+        }
+      }],
+      coverage: {
+        candidateCount: 2,
+        resolvedFullTextCount: 0,
+        metadataOnlyCount: 2
+      }
+    };
+    await saveDiscoveryRun(rootPath, run);
+    await fs.writeFile(supplementalMarkdownPath, [
+      '# Title Collision Without Canonical Id',
+      '',
+      '## Abstract',
+      '',
+      'This Markdown source lets the supplement import path submit one candidate only.',
+      '',
+      '## Introduction',
+      '',
+      'The second candidate has no canonical id and must not inherit the import result.'
+    ].join('\n'));
+
+    const supplementedRun = JSON.parse(await executeLiteratureDiscoveryTool({
+      operation: 'supplement',
+      corpus: rootPath,
+      runId: run.runId,
+      candidateId: '10.5555/candidate-id-collision',
+      sourcePath: supplementalMarkdownPath,
+      sourceProvider: 'manual_test',
+      importResolved: true
+    }));
+
+    assert.equal(supplementedRun.candidates[0].import.status, 'submitted');
+    assert.ok(supplementedRun.candidates[0].import.taskId);
+    assert.equal(supplementedRun.candidates[1].import, undefined);
+  } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });

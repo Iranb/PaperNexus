@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,10 +9,27 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const examplesRoot = path.join(__dirname, '..', 'examples');
 
+async function canListenOnPort(port) {
+  return await new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => server.close(() => resolve(true)));
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+async function pickAvailablePort(min, span = 1000) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const port = min + Math.floor(Math.random() * span);
+    if (await canListenOnPort(port)) return port;
+  }
+  throw new Error(`No free test port found in ${min}-${min + span - 1}`);
+}
+
 test('serveCommand requires a token for all API routes while keeping static UI reachable', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-auth-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 49000 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(49000);
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -69,7 +87,7 @@ test('serveCommand requires a token for all API routes while keeping static UI r
 test('serveCommand returns client errors for malformed and oversized JSON API bodies', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-json-body-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 50500 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(50500);
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -121,7 +139,7 @@ test('serveCommand returns client errors for malformed and oversized JSON API bo
 test('serveCommand returns 503 for API routes when no token is configured', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-auth-missing-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 50000 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(50000);
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -159,7 +177,7 @@ test('serveCommand API routes prefer the configured storage index over stale reg
   const inputRoot = path.join(workspaceRoot, 'papers');
   const indexRoot = path.join(workspaceRoot, 'index-store');
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 51000 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(51000);
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -240,7 +258,7 @@ test('serveCommand API routes prefer the configured storage index over stale reg
 test('serveCommand logs background worker startup states', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-worker-log-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 52000 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(52000);
   const logs = [];
   const logger = {
     log(message) {
@@ -289,7 +307,7 @@ test('serveCommand logs background worker startup states', async () => {
 test('serveCommand warms MinerU backends in the background when imports are enabled', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-mineru-warmup-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 53000 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(53000);
   const calls = [];
   const logs = [];
   const logger = {
@@ -353,7 +371,7 @@ test('serveCommand warms MinerU backends in the background when imports are enab
 test('serveCommand forwards analyze parser config into the import worker', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-import-worker-config-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 53100 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(53100);
   const calls = [];
 
   try {
@@ -424,7 +442,7 @@ test('serveCommand forwards analyze parser config into the import worker', async
 test('serveCommand enables import batching by default for MCP serve workers', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-import-worker-batch-default-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 53200 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(53200);
   const calls = [];
 
   try {
@@ -472,7 +490,7 @@ test('serveCommand enables import batching by default for MCP serve workers', as
 test('serveCommand warms Docling runtime in the background when imports are enabled', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-docling-warmup-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 53400 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(53400);
   const calls = [];
   const logs = [];
   const logger = {
@@ -535,7 +553,7 @@ test('serveCommand warms Docling runtime in the background when imports are enab
 test('serveCommand keeps background Docling warmup failure logs compact', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-docling-warmup-fail-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 53500 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(53500);
   const logs = [];
   const logger = {
     log(message) {
@@ -596,7 +614,7 @@ test('serveCommand forwards paddleocr-vl parser config into the import worker', 
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-worker-paddleocr-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
   const calls = [];
-  const port = 54000 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(54000);
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -648,7 +666,7 @@ test('serveCommand forwards Docling GPU config into the import worker', async ()
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-worker-docling-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
   const calls = [];
-  const port = 54150 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(54150);
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -716,7 +734,7 @@ test('serveCommand accepts server-side single file path imports over HTTP', asyn
   const uploadRoot = path.join(workspaceRoot, 'uploads');
   const uploadPath = path.join(uploadRoot, 'server-side-upload.md');
   const previousHome = process.env.PAPERNEXUS_HOME;
-  const port = 54000 + Math.floor(Math.random() * 1000);
+  const port = await pickAvailablePort(54000);
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;

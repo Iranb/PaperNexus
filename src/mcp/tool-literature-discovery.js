@@ -14,7 +14,7 @@ import {
   createDiscoverySupplementationInterface,
   resolveDiscoverySources
 } from '../core/discovery/source-resolution.js';
-import { createContentSha256, createSourceIdentity } from '../lib/paper-identifiers.js';
+import { createContentSha256, createSourceIdentity, normalizePaperIdentifiers } from '../lib/paper-identifiers.js';
 
 function normalizeOperation(value) {
   return String(value || '').trim().toLowerCase().replace(/-/g, '_');
@@ -22,6 +22,82 @@ function normalizeOperation(value) {
 
 function normalizeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function compactText(value = '') {
+  return String(value || '').trim();
+}
+
+function unique(values = []) {
+  return [...new Set(values)];
+}
+
+function identifiersOf(entry = {}) {
+  const identifiers = normalizeObject(entry.identifiers);
+  return {
+    ...identifiers,
+    ...normalizePaperIdentifiers({ ...entry, identifiers })
+  };
+}
+
+function sourceResolutionStatus(candidate = {}) {
+  return candidate.source?.resolutionStatus || candidate.source?.resolution_status || '';
+}
+
+function importKey(type = '', value = '', options = {}) {
+  const text = compactText(value);
+  if (!text) return '';
+  return `${type}:${options.caseSensitive ? text : text.toLowerCase()}`;
+}
+
+function importKeysFromCandidate(candidate = {}) {
+  const identifiers = identifiersOf(candidate);
+  const source = normalizeObject(candidate.source);
+  return unique([
+    importKey('canonical', candidate.canonicalId),
+    importKey('canonical', candidate.canonical_id),
+    importKey('source_path', source.sourcePath, { caseSensitive: true }),
+    importKey('source_path', source.source_path, { caseSensitive: true }),
+    importKey('candidate', candidate.id, { caseSensitive: true }),
+    importKey('candidate', candidate.candidateId, { caseSensitive: true }),
+    importKey('candidate', candidate.candidate_id, { caseSensitive: true }),
+    importKey('doi', identifiers.doi),
+    importKey('arxiv', identifiers.arxivId),
+    importKey('pmid', identifiers.pmid),
+    importKey('pmcid', identifiers.pmcid)
+  ].filter(Boolean));
+}
+
+function importKeysFromResult(entry = {}) {
+  const identifiers = identifiersOf(entry);
+  return unique([
+    importKey('canonical', entry.canonicalId),
+    importKey('canonical', entry.canonical_id),
+    importKey('source_path', entry.sourcePath, { caseSensitive: true }),
+    importKey('source_path', entry.source_path, { caseSensitive: true }),
+    importKey('candidate', entry.candidateId, { caseSensitive: true }),
+    importKey('candidate', entry.candidate_id, { caseSensitive: true }),
+    importKey('doi', identifiers.doi),
+    importKey('arxiv', identifiers.arxivId),
+    importKey('pmid', identifiers.pmid),
+    importKey('pmcid', identifiers.pmcid)
+  ].filter(Boolean));
+}
+
+function importResultsByKey(importResult = {}) {
+  const importsByKey = new Map();
+  for (const entry of importResult.results || []) {
+    for (const key of importKeysFromResult(entry)) {
+      if (!importsByKey.has(key)) importsByKey.set(key, entry);
+    }
+  }
+  return importsByKey;
+}
+
+function findImportResultForCandidate(candidate = {}, importsByKey = new Map()) {
+  return importKeysFromCandidate(candidate)
+    .map((key) => importsByKey.get(key))
+    .find(Boolean);
 }
 
 function firstDefined(...values) {
@@ -286,13 +362,11 @@ function buildDiscoveryParams(rootPath, args = {}, options = {}) {
 }
 
 function applyImportResultsToRun(run, importResult) {
-  const importsByCanonicalId = new Map(
-    (importResult.results || []).map((entry) => [entry.canonicalId, entry])
-  );
+  const importsByKey = importResultsByKey(importResult);
   return {
     ...run,
     candidates: (run.candidates || []).map((candidate) => {
-      const importEntry = importsByCanonicalId.get(candidate.canonicalId);
+      const importEntry = findImportResultForCandidate(candidate, importsByKey);
       return {
         ...candidate,
         import: importEntry
@@ -323,8 +397,8 @@ function resolveSupplementTarget(run = {}, args = {}) {
   const canonicalId = String(args.canonicalId || args.canonical_id || '').trim();
   const title = String(args.title || args.paperTitle || args.paper_title || '').trim().toLowerCase();
   return (run.candidates || []).find((candidate) => {
-    if (candidateId && (candidate.id === candidateId || candidate.candidateId === candidateId)) return true;
-    if (canonicalId && candidate.canonicalId === canonicalId) return true;
+    if (candidateId && (candidate.id === candidateId || candidate.candidateId === candidateId || candidate.candidate_id === candidateId)) return true;
+    if (canonicalId && (candidate.canonicalId === canonicalId || candidate.canonical_id === canonicalId)) return true;
     if (title && String(candidate.title || '').trim().toLowerCase() === title) return true;
     return false;
   }) || null;
@@ -463,8 +537,11 @@ function applySupplementCandidate(run = {}, candidate = {}) {
     ...run,
     candidates: (run.candidates || []).map((entry) => (
       entry === candidate
-        || (candidate.canonicalId && entry.canonicalId === candidate.canonicalId)
-        || (candidate.id && entry.id === candidate.id)
+        || (candidate.canonicalId && (entry.canonicalId === candidate.canonicalId || entry.canonical_id === candidate.canonicalId))
+        || (candidate.canonical_id && (entry.canonicalId === candidate.canonical_id || entry.canonical_id === candidate.canonical_id))
+        || (candidate.id && (entry.id === candidate.id || entry.candidateId === candidate.id || entry.candidate_id === candidate.id))
+        || (candidate.candidateId && (entry.id === candidate.candidateId || entry.candidateId === candidate.candidateId || entry.candidate_id === candidate.candidateId))
+        || (candidate.candidate_id && (entry.id === candidate.candidate_id || entry.candidateId === candidate.candidate_id || entry.candidate_id === candidate.candidate_id))
         ? candidate
         : entry
     ))
@@ -472,13 +549,11 @@ function applySupplementCandidate(run = {}, candidate = {}) {
 }
 
 function applySupplementImportResultsToRun(run = {}, importResult = {}) {
-  const importsByCanonicalId = new Map(
-    (importResult.results || []).map((entry) => [entry.canonicalId, entry])
-  );
+  const importsByKey = importResultsByKey(importResult);
   return {
     ...run,
     candidates: (run.candidates || []).map((candidate) => {
-      const importEntry = importsByCanonicalId.get(candidate.canonicalId);
+      const importEntry = findImportResultForCandidate(candidate, importsByKey);
       if (!importEntry) return candidate;
       return {
         ...candidate,
@@ -594,8 +669,8 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
     nextRun.metadataGraph = buildDiscoveryMetadataGraph(nextRun.candidates);
     nextRun.coverage = {
       ...nextRun.coverage,
-      resolvedFullTextCount: nextRun.candidates.filter((candidate) => candidate.source?.resolutionStatus === 'fulltext_ready').length,
-      metadataOnlyCount: nextRun.candidates.filter((candidate) => candidate.source?.resolutionStatus !== 'fulltext_ready').length
+      resolvedFullTextCount: nextRun.candidates.filter((candidate) => sourceResolutionStatus(candidate) === 'fulltext_ready').length,
+      metadataOnlyCount: nextRun.candidates.filter((candidate) => sourceResolutionStatus(candidate) !== 'fulltext_ready').length
     };
 
     if (enabledFlag(firstDefined(args.importResolved, args.import_resolved, args.processImports, args.process_imports))) {

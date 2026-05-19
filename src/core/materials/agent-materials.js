@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 
 import { ensureDir, fileExists, readText, writeJson, writeText } from '../../lib/fs.js';
 import { stableHash, truncate, unique } from '../../lib/utils.js';
+import { normalizePaperIdentifierQuery, normalizePaperIdentifiers } from '../../lib/paper-identifiers.js';
 import { searchGraph } from '../search/search.js';
 import { getDefaultLlmApiKeyEnv, loadLlmApiKey, resolveLlmConfig } from '../llm/ollama.js';
 import {
@@ -233,10 +234,7 @@ function identifiersOf(entry = {}) {
   const identifiers = entry.identifiers && typeof entry.identifiers === 'object' ? entry.identifiers : {};
   return {
     ...identifiers,
-    ...(entry.doi ? { doi: entry.doi } : {}),
-    ...(entry.arxivId ? { arxivId: entry.arxivId } : {}),
-    ...(entry.pmid ? { pmid: entry.pmid } : {}),
-    ...(entry.pmcid ? { pmcid: entry.pmcid } : {})
+    ...normalizePaperIdentifiers({ ...entry, identifiers })
   };
 }
 
@@ -244,17 +242,57 @@ function sourceMatchesSelector(entry = {}, selector = {}) {
   const paperId = compactText(selector.paperId || selector.paper_id);
   const sourceKey = compactText(selector.sourceKey || selector.source_key);
   const title = normalizeTitle(selector.paperTitle || selector.title || selector.query);
-  const identifier = compactText(selector.identifier || selector.doi || selector.arxivId || selector.pmid || selector.pmcid);
+  const explicitIdentifier = compactText(selector.identifier);
+  const identifier = compactText(explicitIdentifier || selector.doi || selector.arxivId || selector.pmid || selector.pmcid);
   const identifiers = identifiersOf(entry);
+  const values = identifierValues(identifiers);
+  const identifierConflict = selectorHasIdentifierConflict(entry, selector);
 
   if (paperId && paperIdFromEntry(entry) === paperId) return true;
   if (sourceKey && sourceKeyFromEntry(entry) === sourceKey) return true;
-  if (title && normalizeTitle(paperTitleFromEntry(entry)) === title) return true;
-  if (identifier) {
-    const values = Object.values(identifiers).map((value) => compactText(value).toLowerCase()).filter(Boolean);
-    if (values.includes(identifier.toLowerCase())) return true;
+  if (title && normalizeTitle(paperTitleFromEntry(entry)) === title && !identifierConflict) return true;
+  if (identifier && genericIdentifierValues(identifier).some((value) => values.includes(value))) return true;
+  const selectorValues = identifierValues(identifiersOf(selector));
+  if (selectorValues.length) {
+    const valueSet = new Set(values);
+    if (selectorValues.some((value) => valueSet.has(value))) return true;
   }
   return false;
+}
+
+function identifierValues(identifiers = {}) {
+  return Object.values(identifiers).map((value) => compactText(value).toLowerCase()).filter(Boolean);
+}
+
+function genericIdentifierValues(value = '') {
+  const text = compactText(value);
+  if (!text) return [];
+  return identifierValues({
+    identifier: text,
+    ...normalizePaperIdentifierQuery({ identifier: text })
+  });
+}
+
+function selectorHasIdentifierConflict(entry = {}, selector = {}) {
+  const identifiers = identifiersOf(entry);
+  const selectorIdentifiers = identifiersOf(selector);
+  const typedIdentifierConflict = Object.entries(selectorIdentifiers).some(([key, selectorValue]) => {
+    const normalizedSelectorValue = compactText(selectorValue).toLowerCase();
+    const normalizedEntryValue = compactText(identifiers[key]).toLowerCase();
+    return normalizedSelectorValue && normalizedEntryValue && normalizedSelectorValue !== normalizedEntryValue;
+  });
+  const explicitIdentifier = compactText(selector.identifier);
+  const values = identifierValues(identifiers);
+  const genericIdentifierConflict = explicitIdentifier
+    && values.length
+    && !genericIdentifierValues(explicitIdentifier).some((value) => values.includes(value));
+  return typedIdentifierConflict || genericIdentifierConflict;
+}
+
+function importKey(type = '', value = '', options = {}) {
+  const text = compactText(value);
+  if (!text) return '';
+  return `${type}:${options.caseSensitive ? text : text.toLowerCase()}`;
 }
 
 function graphPaperNodeMatches(node = {}, selector = {}) {
@@ -263,7 +301,22 @@ function graphPaperNodeMatches(node = {}, selector = {}) {
   const title = normalizeTitle(selector.paperTitle || selector.title || selector.query);
   if (node.type !== NODE_TYPES.PAPER) return false;
   if (paperId && (node.id === paperId || props.paperId === paperId)) return true;
-  if (title && normalizeTitle(node.name || props.paperTitle) === title) return true;
+  const nodeEntry = {
+    ...props,
+    paperId: props.paperId || node.id,
+    paperTitle: props.paperTitle || node.name
+  };
+  const identifiers = identifiersOf(nodeEntry);
+  const values = identifierValues(identifiers);
+  const explicitIdentifier = compactText(selector.identifier);
+  const identifier = compactText(explicitIdentifier || selector.doi || selector.arxivId || selector.pmid || selector.pmcid);
+  if (title && normalizeTitle(node.name || props.paperTitle) === title && !selectorHasIdentifierConflict(nodeEntry, selector)) return true;
+  if (identifier && genericIdentifierValues(identifier).some((value) => values.includes(value))) return true;
+  const selectorValues = identifierValues(identifiersOf(selector));
+  if (selectorValues.length) {
+    const valueSet = new Set(values);
+    if (selectorValues.some((value) => valueSet.has(value))) return true;
+  }
   return false;
 }
 
@@ -286,7 +339,7 @@ function findSourceEntries(manifest = {}, selector = {}) {
   const title = normalizeTitle(selector.paperTitle || selector.title || selector.query);
   return sources.filter((entry) => {
     if (paperId && paperIdFromEntry(entry) === paperId) return true;
-    return title && normalizeTitle(paperTitleFromEntry(entry)).includes(title);
+    return title && !selectorHasIdentifierConflict(entry, selector) && normalizeTitle(paperTitleFromEntry(entry)).includes(title);
   });
 }
 
@@ -619,6 +672,18 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
   });
   const availability = buildAvailability(entries, paperNode, chunks, structuredMaterials);
   const status = materialStatus(availability, entries);
+  const representativeIdentifiers = identifiersOf(representative);
+  const paperNodeProperties = paperNode?.properties || {};
+  const paperNodeIdentifiers = paperNode
+    ? identifiersOf({
+        ...paperNodeProperties,
+        paperId: paperNodeProperties.paperId || paperNode.id,
+        paperTitle: paperNodeProperties.paperTitle || paperNode.name
+      })
+    : {};
+  const paperIdentifiers = Object.keys(representativeIdentifiers).length
+    ? representativeIdentifiers
+    : (Object.keys(paperNodeIdentifiers).length ? paperNodeIdentifiers : identifiersOf(selector));
   const projectOverlay = await loadProjectOverlaySummary(context.rootPath, args.project);
   const sources = entries.map((entry) => ({
     source_key: sourceKeyFromEntry(entry) || null,
@@ -628,7 +693,7 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
     active_in_graph: entry.activeInGraph !== false && entry.active_in_graph !== false
   }));
   const importRequisitions = status === 'material_unavailable' || (!availability.markdown && !availability.graph_context)
-    ? [requisitionForPaper({ title, identifiers: identifiersOf(representative), role: args.role }, availability.graph_context ? 'markdown source missing for paper material view' : 'paper is not graph-visible or source-backed')]
+    ? [requisitionForPaper({ title, identifiers: paperIdentifiers, role: args.role }, availability.graph_context ? 'markdown source missing for paper material view' : 'paper is not graph-visible or source-backed')]
     : [];
 
   return {
@@ -639,7 +704,7 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
     paper: {
       paper_id: paperId,
       title,
-      identifiers: identifiersOf(representative),
+      identifiers: paperIdentifiers,
       status,
       availability
     },
@@ -1691,15 +1756,16 @@ function literatureDiscoveryRunParams(args = {}, context = {}, planning = {}, co
 function normalizeLiteratureDiscoveryCandidate(candidate = {}, manifest = {}) {
   const identifiers = identifiersOf(candidate);
   const source = normalizeObject(candidate.source);
+  const candidateId = candidate.id || candidate.candidateId || candidate.candidate_id || null;
   const materialized = findSourceEntries(manifest, {
-    paperId: candidate.canonicalId || candidate.id,
+    paperId: candidate.canonicalId || candidate.canonical_id || candidateId,
     title: candidate.title,
     identifiers,
     ...identifiers
   }).length > 0;
   return {
-    candidate_id: candidate.id || null,
-    canonical_id: candidate.canonicalId || null,
+    candidate_id: candidateId,
+    canonical_id: candidate.canonicalId || candidate.canonical_id || null,
     title: compactText(candidate.title),
     authors: asArray(candidate.authors),
     year: candidate.year || null,
@@ -1710,13 +1776,13 @@ function normalizeLiteratureDiscoveryCandidate(candidate = {}, manifest = {}) {
     provider_agreement_count: candidate.providerAgreementCount || null,
     identity_confidence: candidate.identityConfidence || null,
     source: {
-      resolution_status: source.resolutionStatus || 'metadata_only',
-      source_kind: source.sourceKind || 'metadata_only',
-      full_text_status: source.fullTextStatus || 'unknown',
-      source_provider: source.sourceProvider || '',
-      source_path: source.sourcePath || '',
-      markdown_url: source.markdownUrl || candidate.markdownUrl || '',
-      pdf_url: source.pdfUrl || candidate.pdfUrl || ''
+      resolution_status: source.resolutionStatus || source.resolution_status || 'metadata_only',
+      source_kind: source.sourceKind || source.source_kind || 'metadata_only',
+      full_text_status: source.fullTextStatus || source.full_text_status || 'unknown',
+      source_provider: source.sourceProvider || source.source_provider || '',
+      source_path: source.sourcePath || source.source_path || '',
+      markdown_url: source.markdownUrl || source.markdown_url || candidate.markdownUrl || candidate.markdown_url || '',
+      pdf_url: source.pdfUrl || source.pdf_url || candidate.pdfUrl || candidate.pdf_url || ''
     },
     materialized,
     import: candidate.import || { status: 'not_submitted' }
@@ -1932,12 +1998,53 @@ async function submitLiteratureDiscoveryImports(run = {}, args = {}, context = {
   };
 }
 
+function literatureImportKeysFromCandidate(candidate = {}) {
+  const identifiers = identifiersOf(candidate);
+  const source = normalizeObject(candidate.source);
+  return unique([
+    importKey('canonical', candidate.canonicalId),
+    importKey('canonical', candidate.canonical_id),
+    importKey('source_path', source.sourcePath, { caseSensitive: true }),
+    importKey('source_path', source.source_path, { caseSensitive: true }),
+    importKey('candidate', candidate.id, { caseSensitive: true }),
+    importKey('candidate', candidate.candidateId, { caseSensitive: true }),
+    importKey('candidate', candidate.candidate_id, { caseSensitive: true }),
+    importKey('doi', identifiers.doi),
+    importKey('arxiv', identifiers.arxivId),
+    importKey('pmid', identifiers.pmid),
+    importKey('pmcid', identifiers.pmcid)
+  ].filter(Boolean));
+}
+
+function literatureImportKeysFromResult(entry = {}) {
+  const identifiers = identifiersOf(entry);
+  return unique([
+    importKey('canonical', entry.canonicalId),
+    importKey('canonical', entry.canonical_id),
+    importKey('source_path', entry.sourcePath, { caseSensitive: true }),
+    importKey('source_path', entry.source_path, { caseSensitive: true }),
+    importKey('candidate', entry.candidateId, { caseSensitive: true }),
+    importKey('candidate', entry.candidate_id, { caseSensitive: true }),
+    importKey('doi', identifiers.doi),
+    importKey('arxiv', identifiers.arxivId),
+    importKey('pmid', identifiers.pmid),
+    importKey('pmcid', identifiers.pmcid)
+  ].filter(Boolean));
+}
+
 function applyLiteratureDiscoveryImportsToRun(run = {}, importResult = {}) {
-  const importsByCanonicalId = new Map(asArray(importResult.results).map((entry) => [entry.canonicalId, entry]));
+  const importsByKey = new Map();
+  for (const entry of asArray(importResult.results)) {
+    for (const key of literatureImportKeysFromResult(entry)) {
+      if (!importsByKey.has(key)) importsByKey.set(key, entry);
+    }
+  }
   return {
     ...run,
     candidates: asArray(run.candidates).map((candidate) => {
-      const importEntry = importsByCanonicalId.get(candidate.canonicalId);
+      const importEntry = literatureImportKeysFromCandidate(candidate)
+        .map((key) => importsByKey.get(key))
+        .find(Boolean);
       return {
         ...candidate,
         import: importEntry

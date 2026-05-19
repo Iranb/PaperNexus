@@ -1,14 +1,31 @@
 import { createImportTaskPayload } from '../../server/api.js';
+import { normalizePaperIdentifiers } from '../../lib/paper-identifiers.js';
 
 function candidateHasResolvedSource(candidate = {}) {
-  return candidate.source?.resolutionStatus === 'fulltext_ready' && candidate.source?.sourcePath;
+  const resolutionStatus = candidate.source?.resolutionStatus || candidate.source?.resolution_status || '';
+  return resolutionStatus === 'fulltext_ready' && sourcePathOf(candidate);
+}
+
+function sourcePathOf(candidate = {}) {
+  return candidate.source?.sourcePath || candidate.source?.source_path || '';
+}
+
+function sourceProviderOf(candidate = {}) {
+  return candidate.source?.sourceProvider || candidate.source?.source_provider || candidate.providers?.[0] || 'literature-discovery';
+}
+
+function identifiersOf(candidate = {}) {
+  const identifiers = candidate.identifiers && typeof candidate.identifiers === 'object' ? candidate.identifiers : {};
+  return normalizePaperIdentifiers({ ...candidate, identifiers });
 }
 
 function buildImportBody(candidate = {}) {
-  const identifiers = candidate.identifiers || {};
+  const identifiers = identifiersOf(candidate);
+  const sourcePath = sourcePathOf(candidate);
+  const sourceProvider = sourceProviderOf(candidate);
   return {
     trigger: 'literature_discovery',
-    serverFilePath: candidate.source.sourcePath,
+    serverFilePath: sourcePath,
     identifiers,
     doi: identifiers.doi,
     arxivId: identifiers.arxivId,
@@ -16,13 +33,13 @@ function buildImportBody(candidate = {}) {
     pmcid: identifiers.pmcid,
     isbn: identifiers.isbn,
     issn: identifiers.issn,
-    sourceProvider: candidate.source.sourceProvider || candidate.providers?.[0] || 'literature-discovery',
+    sourceProvider,
     paperMetadata: {
       title: candidate.title,
       authors: candidate.authors,
       year: candidate.year,
       identifiers,
-      sourceProvider: candidate.source.sourceProvider || candidate.providers?.[0] || 'literature-discovery'
+      sourceProvider
     }
   };
 }
@@ -34,19 +51,28 @@ export async function submitDiscoveryImports(params = {}) {
   const results = [];
 
   for (const candidate of candidates.filter(candidateHasResolvedSource).slice(0, limit)) {
+    const candidateId = candidate.id || candidate.candidateId || candidate.candidate_id || null;
+    const sourcePath = sourcePathOf(candidate);
+    const identifiers = identifiersOf(candidate);
     try {
       const payload = await createImportTaskPayload(corpus, buildImportBody(candidate), params.options || {});
       results.push({
-        canonicalId: candidate.canonicalId,
-        sourcePath: candidate.source.sourcePath,
+        candidateId,
+        canonicalId: candidate.canonicalId || candidate.canonical_id,
+        sourcePath,
+        title: candidate.title || '',
+        identifiers,
         status: payload?.deduped ? 'deduped' : 'submitted',
         taskId: payload?.task?.id || null,
         payload
       });
     } catch (error) {
       results.push({
-        canonicalId: candidate.canonicalId,
-        sourcePath: candidate.source.sourcePath,
+        candidateId,
+        canonicalId: candidate.canonicalId || candidate.canonical_id,
+        sourcePath,
+        title: candidate.title || '',
+        identifiers,
         status: 'failed',
         error: error?.message || 'import-failed'
       });
@@ -60,4 +86,3 @@ export async function submitDiscoveryImports(params = {}) {
     results
   };
 }
-
