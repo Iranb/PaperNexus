@@ -140,6 +140,34 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
     assert.ok(tools.result.tools.some((tool) => tool.name === 'import_workflow'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'idea_catalyst'));
 
+    const streamController = new AbortController();
+    const eventStream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/event-stream',
+        Authorization: 'Bearer test',
+        'Mcp-Session-Id': sessionId
+      },
+      signal: streamController.signal
+    });
+    assert.equal(eventStream.status, 200);
+    assert.match(eventStream.headers.get('content-type') || '', /text\/event-stream/);
+    assert.equal(eventStream.headers.get('mcp-session-id'), sessionId);
+    const streamReader = eventStream.body.getReader();
+    const streamChunk = await streamReader.read();
+    assert.match(new TextDecoder().decode(streamChunk.value), /papernexus stream opened/);
+    await streamReader.cancel();
+    streamController.abort();
+
+    const deleted = await postMcp(port, '', {
+      token: 'test',
+      method: 'DELETE',
+      headers: { 'Mcp-Session-Id': sessionId }
+    });
+    assert.equal(deleted.status, 202);
+    assert.equal(deleted.headers.get('mcp-session-id'), sessionId);
+    assert.equal(await deleted.text(), '');
+
     const prompt = await postMcp(port, {
       jsonrpc: '2.0',
       id: 3,
@@ -282,9 +310,17 @@ test('serveCommand rejects unauthorized, disabled, invalid, and unsupported HTTP
     const invalidJsonPayload = await invalidJsonResponse.json();
     assert.equal(invalidJsonPayload.error.code, -32700);
 
-    const unsupportedMethod = await postMcp(enabledPort, '', {
+    const missingSessionStream = await postMcp(enabledPort, '', {
       token: 'test',
       method: 'GET'
+    });
+    assert.equal(missingSessionStream.status, 400);
+    const missingSessionPayload = await missingSessionStream.json();
+    assert.equal(missingSessionPayload.error.code, -32600);
+
+    const unsupportedMethod = await postMcp(enabledPort, '', {
+      token: 'test',
+      method: 'PUT'
     });
     assert.equal(unsupportedMethod.status, 405);
 

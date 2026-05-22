@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createJsonRpcError, createJsonRpcSuccess, handleMessage } from './core.js';
 
 const JSON_MIME_TYPE = 'application/json; charset=utf-8';
+const SSE_MIME_TYPE = 'text/event-stream; charset=utf-8';
 const DEFAULT_MCP_JSON_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 const MCP_SESSION_ID_HEADER = 'Mcp-Session-Id';
 
@@ -37,6 +38,29 @@ function sendEmpty(response, statusCode, headers = {}) {
     ...headers
   });
   response.end();
+}
+
+async function sendEventStream(request, response, headers = {}) {
+  response.writeHead(200, {
+    'Content-Type': SSE_MIME_TYPE,
+    'Cache-Control': 'no-store, no-transform',
+    Connection: 'keep-alive',
+    ...headers
+  });
+  response.write(': papernexus stream opened\n\n');
+  response.flushHeaders?.();
+
+  await new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    request.once('close', done);
+    request.once('aborted', done);
+    response.once('close', done);
+  });
 }
 
 function normalizeHeaderValue(value) {
@@ -118,6 +142,31 @@ export function getMcpHttpConfig(options = {}) {
 }
 
 export async function handleMcpHttpRequest(request, response, options = {}) {
+  if (request.method === 'GET') {
+    const sessionHeaders = resolveMcpSessionHeaders(request);
+    if (!sessionHeaders[MCP_SESSION_ID_HEADER]) {
+      sendJson(response, 400, createJsonRpcError(null, -32600, 'Mcp-Session-Id header is required for MCP event streams.'));
+      return {
+        rpcMethod: 'GET',
+        statusCode: 400
+      };
+    }
+
+    await sendEventStream(request, response, sessionHeaders);
+    return {
+      rpcMethod: 'GET',
+      statusCode: 200
+    };
+  }
+
+  if (request.method === 'DELETE') {
+    sendEmpty(response, 202, resolveMcpSessionHeaders(request));
+    return {
+      rpcMethod: 'DELETE',
+      statusCode: 202
+    };
+  }
+
   if (request.method !== 'POST') {
     sendJson(response, 405, { error: 'Method Not Allowed' });
     return {
