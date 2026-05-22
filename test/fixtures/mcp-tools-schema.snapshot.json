@@ -17,15 +17,58 @@
           "type": "string",
           "enum": [
             "add",
+            "compose_innovation_briefs",
+            "compose_solutions",
+            "design_review",
+            "execute_material_requests",
+            "expand_evidence",
             "export",
+            "generate_candidates",
+            "generate_decomposition",
+            "generate_experiment_plan",
             "get",
+            "init_task",
+            "judge_batch",
             "list",
+            "propose_edges",
+            "record_material_results",
             "remove",
+            "review_decomposition",
+            "run_round",
+            "select_batch",
+            "status",
+            "validate_gcd_mvp",
             "update"
           ]
         },
         "actor": {
           "type": "string"
+        },
+        "allowImportProcessing": {
+          "type": "boolean",
+          "default": false
+        },
+        "allowImportSubmission": {
+          "type": "boolean",
+          "default": false
+        },
+        "allowProviderMaterialOptIns": {
+          "type": "boolean",
+          "default": false
+        },
+        "approvedMaterialRequestIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approveExperimentPlanning": {
+          "type": "boolean",
+          "default": false
+        },
+        "approveMaterialRequestExecution": {
+          "type": "boolean",
+          "default": false
         },
         "arxivId": {
           "type": "string"
@@ -33,6 +76,10 @@
         "autoDiscoverSources": {
           "type": "boolean",
           "default": true
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": true
         },
         "chunkLimit": {
           "type": "number",
@@ -111,6 +158,14 @@
             }
           ]
         },
+        "experimentPlanApproval": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "externalInputs": {
+          "type": "object",
+          "additionalProperties": true
+        },
         "farSourceDomains": {
           "oneOf": [
             {
@@ -148,6 +203,10 @@
         },
         "itemType": {
           "type": "string"
+        },
+        "judge": {
+          "type": "object",
+          "additionalProperties": true
         },
         "judgmentType": {
           "type": "string"
@@ -259,6 +318,26 @@
           "type": "number",
           "default": 12000
         },
+        "materialRequestExecutionApproval": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "maxExperimentPlans": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxGpuHours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxMaterialRequests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxPairwisePreferences": {
+          "type": "integer",
+          "minimum": 0
+        },
         "maxProximalResults": {
           "type": "number",
           "default": 2
@@ -266,6 +345,19 @@
         "minDomainDistance": {
           "type": "number",
           "default": 0
+        },
+        "mmrLambda": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "deep",
+            "planning",
+            "quick"
+          ]
         },
         "nearSourceDomains": {
           "oneOf": [
@@ -304,6 +396,7 @@
             "negative_evidence_pack",
             "paper_material_view",
             "paper_role_overlay",
+            "research_controller",
             "research_material_pack",
             "source_discovery_plan",
             "workflow_state"
@@ -311,6 +404,10 @@
         },
         "outputDir": {
           "type": "string"
+        },
+        "overwrite": {
+          "type": "boolean",
+          "default": false
         },
         "paperId": {
           "type": "string"
@@ -379,6 +476,10 @@
           "type": "number",
           "default": 12000
         },
+        "providerPolicy": {
+          "type": "object",
+          "additionalProperties": true
+        },
         "query": {
           "type": "string"
         },
@@ -422,6 +523,10 @@
             "additionalProperties": true
           }
         },
+        "selector": {
+          "type": "object",
+          "additionalProperties": true
+        },
         "sourceDomainLimit": {
           "type": "number",
           "default": 8
@@ -438,6 +543,12 @@
         "submitLiteratureDiscoveryImports": {
           "type": "boolean",
           "default": false
+        },
+        "subproblemHints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "supportingEvidenceIds": {
           "type": "array",

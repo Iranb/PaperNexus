@@ -1266,19 +1266,19 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'agent_materials',
-    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, and import requisitions without making novelty judgments; overlay operations store paper roles, evidence carts, and workflow state outside the raw corpus graph.',
+    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, import requisitions, and research-controller artifacts without making novelty judgments; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['research_material_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack'],
+          enum: ['research_material_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack', 'research_controller'],
           description: 'Material backend operation to run. Overlay operations write only project overlay files, never the raw corpus graph.'
         },
         action: {
           type: 'string',
-          enum: ['add', 'update', 'list', 'remove', 'get', 'export'],
-          description: 'Sub-action for paper_role_overlay, evidence_cart, or workflow_state. Defaults: list for role/evidence operations, get for workflow_state.'
+          enum: ['add', 'update', 'list', 'remove', 'get', 'export', 'status', 'init_task', 'run_round', 'generate_decomposition', 'review_decomposition', 'generate_candidates', 'propose_edges', 'judge_batch', 'select_batch', 'expand_evidence', 'execute_material_requests', 'record_material_results', 'compose_solutions', 'design_review', 'compose_innovation_briefs', 'generate_experiment_plan', 'validate_gcd_mvp'],
+          description: 'Sub-action for paper_role_overlay, evidence_cart, workflow_state, or research_controller. Defaults: list for role/evidence operations, get for workflow_state, status for research_controller.'
         },
         dryRun: {
           type: 'boolean',
@@ -1291,7 +1291,7 @@ export const PAPERNEXUS_TOOLS = [
         },
         project: {
           type: 'string',
-          description: 'Research project id used to label material packs and isolate project overlay memory.'
+          description: 'Research project id used to label material packs and isolate project overlay memory. For research_controller, omitted GCD tasks default to gcd-research-controller and other tasks default to research-controller.'
         },
         targetDomain: {
           type: 'string',
@@ -1314,6 +1314,112 @@ export const PAPERNEXUS_TOOLS = [
             }
           ],
           description: 'Venue, compute, data, task, or application constraints used when generating material queries.'
+        },
+        mode: {
+          type: 'string',
+          enum: ['quick', 'planning', 'deep'],
+          description: 'Research-controller mode. quick initializes graph-only scouting artifacts, planning is the default controller pass, and deep is reserved for explicitly enabled evidence expansion.'
+        },
+        selector: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Optional research-controller selector settings. The MVP writes top-k, MMR, and greedy-submodular selection traces; set mmr_lambda to tune the MMR ablation/fallback.'
+        },
+        mmrLambda: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description: 'Optional lambda for the research-controller MMR selector trace. Higher values favor utility over diversity.'
+        },
+        budget: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Research-controller budget caps, for example max_candidate_nodes, max_edge_judgments, max_agent_calls, max_provider_queries, max_imports, and max_selected_candidates.'
+        },
+        judge: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Research-controller judge configuration. MVP uses a single model and stores judge output as evidence only.'
+        },
+        maxPairwisePreferences: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Maximum bounded pairwise preference comparisons requested from the research-controller judge batch.'
+        },
+        externalInputs: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Research-controller external inputs such as subproblem_hints, seed_papers, human_notes, and rejected_directions.'
+        },
+        approveExperimentPlanning: {
+          type: 'boolean',
+          description: 'For research_controller action=generate_experiment_plan, explicit approval to write a plan-only experiment artifact. This does not run experiments.',
+          default: false
+        },
+        approveMaterialRequestExecution: {
+          type: 'boolean',
+          description: 'For research_controller action=execute_material_requests, explicit approval to execute planned agent_materials material requests. Provider/live/literature/import opt-ins still require the separate allow* approval flags.',
+          default: false
+        },
+        allowProviderMaterialOptIns: {
+          type: 'boolean',
+          description: 'For research_controller action=execute_material_requests, allow approved material requests to pass requested provider evidence, live discovery, or literature-discovery evidence opt-ins to the nested material executor. Does not permit import submission.',
+          default: false
+        },
+        allowImportSubmission: {
+          type: 'boolean',
+          description: 'For research_controller action=execute_material_requests, allow approved import_requisition/literature material requests to submit imports when the request explicitly asked for import submission.',
+          default: false
+        },
+        allowImportProcessing: {
+          type: 'boolean',
+          description: 'For research_controller action=execute_material_requests, allow approved literature material requests to process submitted imports when the request explicitly asked for import processing.',
+          default: false
+        },
+        materialRequestExecutionApproval: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Approval metadata for research_controller material request execution, such as approver, source, note, and granular allow_provider_evidence / allow_live_discovery_evidence / allow_literature_discovery / allow_import_submission / allow_import_processing flags.'
+        },
+        approvedMaterialRequestIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional allow-list of planned material request ids that may be executed by research_controller action=execute_material_requests.'
+        },
+        maxMaterialRequests: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Maximum material requests to execute in one research_controller action=execute_material_requests call.'
+        },
+        experimentPlanApproval: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Approval metadata for research_controller experiment-plan generation, such as approver, source, and note.'
+        },
+        maxExperimentPlans: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Maximum number of plan-only experiment plans generated from reviewed solution sketches.'
+        },
+        maxGpuHours: {
+          type: 'number',
+          minimum: 0,
+          description: 'Optional planning budget constraint recorded in experiment plans. No compute is launched.'
+        },
+        providerPolicy: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Research-controller provider policy. Provider evidence, literature discovery, import submission, and configured controller LLM calls default to disabled unless explicitly enabled. For single-model provider calls, set enable_controller_llm=true plus controller_llm model/base_url or environment equivalents and a positive max_provider_queries budget.'
+        },
+        subproblemHints: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional research-controller subproblem hints used during deterministic foundation initialization.'
+        },
+        overwrite: {
+          type: 'boolean',
+          description: 'When research_controller action=init_task, regenerate foundation artifacts even when controller-state.json already exists.',
+          default: false
         },
         autoDiscoverSources: {
           type: 'boolean',

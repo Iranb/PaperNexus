@@ -96,21 +96,42 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
   });
 
   try {
-    const initialized = await postMcp(port, {
+    const initializedResponse = await postMcp(port, {
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
       params: {}
-    }, { token: 'test' }).then((response) => response.json());
+    }, { token: 'test' });
+    const sessionId = initializedResponse.headers.get('mcp-session-id');
+    assert.match(sessionId, /^pn-[0-9a-f-]+$/i);
+    const initialized = await initializedResponse.json();
     assert.equal(initialized.result.serverInfo.name, 'papernexus');
     assert.equal(initialized.result.protocolVersion, '2024-11-05');
+
+    const notification = await postMcp(port, {
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+      params: {}
+    }, {
+      token: 'test',
+      headers: { 'Mcp-Session-Id': sessionId }
+    });
+    assert.equal(notification.status, 202);
+    assert.equal(notification.headers.get('mcp-session-id'), sessionId);
+    assert.equal(await notification.text(), '');
 
     const tools = await postMcp(port, {
       jsonrpc: '2.0',
       id: 2,
       method: 'tools/list',
       params: {}
-    }, { token: 'test' }).then((response) => response.json());
+    }, {
+      token: 'test',
+      headers: { 'Mcp-Session-Id': sessionId }
+    }).then((response) => {
+      assert.equal(response.headers.get('mcp-session-id'), sessionId);
+      return response.json();
+    });
     assert.ok(tools.result.tools.some((tool) => tool.name === 'refresh_corpus'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'mutate_graph'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'corpus_sources'));
@@ -138,9 +159,17 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
     assert.equal(methods.result.contents[0].mimeType, 'text/markdown');
     assert.match(methods.result.contents[0].text, /Methods:/);
 
-    const query = await postMcp(port, {
+    const resourceTemplates = await postMcp(port, {
       jsonrpc: '2.0',
       id: 5,
+      method: 'resources/templates/list',
+      params: {}
+    }, { token: 'test' }).then((response) => response.json());
+    assert.deepEqual(resourceTemplates.result.resourceTemplates, []);
+
+    const query = await postMcp(port, {
+      jsonrpc: '2.0',
+      id: 6,
       method: 'tools/call',
       params: {
         name: 'query',
@@ -155,7 +184,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
 
     const aggregatedLookup = await postMcp(port, {
       jsonrpc: '2.0',
-      id: 6,
+      id: 7,
       method: 'tools/call',
       params: {
         name: 'research_lookup',
@@ -175,7 +204,7 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
 
     const corpusSources = await postMcp(port, {
       jsonrpc: '2.0',
-      id: 7,
+      id: 8,
       method: 'tools/call',
       params: {
         name: 'corpus_sources',

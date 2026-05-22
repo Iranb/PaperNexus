@@ -348,6 +348,8 @@ export async function handleMessage(message, options = {}) {
       };
     case 'resources/list':
       return { resources: await listResources() };
+    case 'resources/templates/list':
+      return { resourceTemplates: [] };
     case 'resources/read':
       {
         const payload = await readResourcePayload(message.params?.uri);

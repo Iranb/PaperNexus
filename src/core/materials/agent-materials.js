@@ -29,6 +29,7 @@ import {
   loadProjectOverlaySummary,
   overlayRolesForPaper
 } from './project-overlay.js';
+import { executeResearchController } from './research-controller.js';
 import {
   loadCorpusLite,
   loadCorpusMeta,
@@ -2889,6 +2890,32 @@ export async function buildWorkflowState(args = {}, options = {}) {
   });
 }
 
+export async function buildResearchController(args = {}, options = {}) {
+  const context = await loadMaterialContext(args, options);
+  const materialOperationExecutor = async (operationArgs = {}) => {
+    const operation = String(operationArgs.operation || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+    const nestedArgs = {
+      ...operationArgs,
+      corpus: context.rootPath
+    };
+    if (operation === 'research_material_pack') return buildResearchMaterialPack(nestedArgs, options);
+    if (operation === 'negative_evidence_pack') return buildNegativeEvidencePack(nestedArgs, options);
+    if (operation === 'import_requisition_pack') return buildImportRequisitionPack(nestedArgs, options);
+    throw new Error(`Unsupported nested research_controller material operation: ${operation || '<missing>'}`);
+  };
+  return executeResearchController({
+    ...args,
+    corpus: context.meta.name || args.corpus || context.rootPath
+  }, {
+    rootPath: context.rootPath,
+    meta: context.meta,
+    manifest: context.manifest,
+    graph: context.graph,
+    materialOperationExecutor,
+    options
+  });
+}
+
 export async function buildImportRequisitionPack(args = {}, options = {}) {
   const plan = await buildSourceDiscoveryPlan(args, options);
   const payload = {
@@ -3598,5 +3625,6 @@ export async function executeAgentMaterialsOperation(args = {}, options = {}) {
   if (operation === 'paper_role_overlay') return buildPaperRoleOverlay(args, options);
   if (operation === 'evidence_cart') return buildEvidenceCart(args, options);
   if (operation === 'workflow_state') return buildWorkflowState(args, options);
+  if (operation === 'research_controller') return buildResearchController(args, options);
   throw new Error(`Unknown agent_materials operation: ${args.operation || '<missing>'}`);
 }

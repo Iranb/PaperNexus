@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
+
 import { createJsonRpcError, createJsonRpcSuccess, handleMessage } from './core.js';
 
 const JSON_MIME_TYPE = 'application/json; charset=utf-8';
 const DEFAULT_MCP_JSON_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+const MCP_SESSION_ID_HEADER = 'Mcp-Session-Id';
 
 function firstDefined(...values) {
   for (const value of values) {
@@ -16,14 +19,39 @@ function normalizeMcpPath(value) {
   return raw.startsWith('/') ? raw : `/${raw}`;
 }
 
-function sendJson(response, statusCode, payload) {
+function sendJson(response, statusCode, payload, headers = {}) {
   const body = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   response.writeHead(statusCode, {
     'Content-Type': JSON_MIME_TYPE,
     'Content-Length': body.length,
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...headers
   });
   response.end(body);
+}
+
+function sendEmpty(response, statusCode, headers = {}) {
+  response.writeHead(statusCode, {
+    'Content-Length': 0,
+    'Cache-Control': 'no-store',
+    ...headers
+  });
+  response.end();
+}
+
+function normalizeHeaderValue(value) {
+  if (Array.isArray(value)) return value[0] || '';
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function createMcpSessionId() {
+  return `pn-${randomUUID()}`;
+}
+
+function resolveMcpSessionHeaders(request, message) {
+  const incomingSessionId = normalizeHeaderValue(request.headers['mcp-session-id']);
+  const sessionId = incomingSessionId || (message?.method === 'initialize' ? createMcpSessionId() : '');
+  return sessionId ? { [MCP_SESSION_ID_HEADER]: sessionId } : {};
 }
 
 function resolveMcpJsonBodyLimitBytes(options = {}) {
@@ -127,9 +155,17 @@ export async function handleMcpHttpRequest(request, response, options = {}) {
     };
   }
 
+  if (!Object.prototype.hasOwnProperty.call(message, 'id')) {
+    sendEmpty(response, 202, resolveMcpSessionHeaders(request, message));
+    return {
+      rpcMethod: message.method,
+      statusCode: 202
+    };
+  }
+
   try {
     const result = await handleMessage(message, options);
-    sendJson(response, 200, createJsonRpcSuccess(message.id ?? null, result));
+    sendJson(response, 200, createJsonRpcSuccess(message.id ?? null, result), resolveMcpSessionHeaders(request, message));
     return {
       rpcMethod: message.method,
       statusCode: 200

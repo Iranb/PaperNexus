@@ -1260,6 +1260,889 @@ test('agent_materials stores project overlays and merges paper roles into materi
   }
 });
 
+test('agent_materials research_controller initializes status and export artifacts', async () => {
+  const rootPath = await createMaterialCorpus();
+  try {
+    const emptyStatus = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'status',
+      corpus: rootPath,
+      project: 'GCD Research Controller'
+    });
+
+    assert.equal(emptyStatus.operation, 'research_controller');
+    assert.equal(emptyStatus.status, 'needs_input');
+    assert.equal(emptyStatus.controller_state_summary.empty, true);
+    assert.ok(emptyStatus.user_decision_needed.includes('Initialize the research controller with init_task or run_round.'));
+
+    const init = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'init_task',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      targetDomain: 'Generalized Category Discovery',
+      targetProblem: 'known-class bias, class-count estimation, confidence calibration, and pseudo-label generation',
+      mode: 'planning',
+      subproblemHints: ['known-class bias', 'class number estimation', 'confidence calibration', 'pseudo-label generation']
+    });
+
+    assert.equal(init.status, 'ok');
+    assert.equal(init.controller_state_summary.lifecycle, 'initialized');
+    assert.equal(init.controller_state_summary.mode, 'planning');
+    assert.equal(init.controller_state_summary.task_family, 'gcd');
+    assert.equal(init.controller_state_summary.budget_profile, 'gcd_mvp_planning');
+    assert.equal(init.controller_state_summary.candidate_node_count, 0);
+    assert.ok(init.artifact_paths.controller_state.endsWith('controller-state.json'));
+
+    const controllerState = JSON.parse(await fs.readFile(init.artifact_paths.controller_state, 'utf8'));
+    assert.equal(controllerState.target_domain, 'Generalized Category Discovery');
+    assert.equal(controllerState.budget.profile, 'gcd_mvp_planning');
+    assert.equal(controllerState.budget.max_candidate_nodes, 72);
+    assert.equal(controllerState.budget.max_edge_judgments, 96);
+    assert.equal(controllerState.budget.max_agent_calls, 18);
+    assert.equal(controllerState.budget.max_selected_candidates, 3);
+    assert.equal(controllerState.budget.max_solution_sketches, 3);
+    assert.equal(controllerState.budget.max_experiment_plans, 2);
+    assert.equal(controllerState.budget.max_provider_queries, 0);
+    assert.equal(controllerState.budget.max_imports, 0);
+    assert.equal(controllerState.provider_policy.submit_imports, false);
+    assert.ok(controllerState.next_actions.includes('generate_candidates'));
+
+    const taskSpecs = JSON.parse(await fs.readFile(init.artifact_paths.task_spec_variants, 'utf8'));
+    assert.equal(taskSpecs.variants.length, 3);
+    assert.ok(taskSpecs.variants.some((variant) => variant.status === 'selected'));
+
+    const subproblemGraph = JSON.parse(await fs.readFile(init.artifact_paths.subproblem_graph, 'utf8'));
+    assert.equal(subproblemGraph.subproblems.length, 4);
+    assert.ok(subproblemGraph.subproblems.some((entry) => entry.name === 'confidence calibration'));
+
+    const generatedDecomposition = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'generate_decomposition',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      targetDomain: 'Generalized Category Discovery',
+      targetProblem: 'known-class bias, class-count estimation, confidence calibration, and pseudo-label generation'
+    }, {
+      async llmJson({ task }) {
+        assert.equal(task, 'research_controller.generate_decomposition');
+        return {
+          task_spec_variants: {
+            selected_task_spec_id: 'task-spec:agent-primary-gcd',
+            variants: [
+              {
+                task_spec_id: 'task-spec:agent-primary-gcd',
+                variant_key: 'agent_primary',
+                target_domain: 'Generalized Category Discovery',
+                target_problem: 'known-class bias and calibrated pseudo-label generation',
+                task_goal: 'Improve novel-class discovery without leaking unknown labels.',
+                evaluation_metrics: ['known accuracy', 'novel accuracy', 'NMI'],
+                design_boundaries: ['Do not use unknown-class labels during method design or validation.'],
+                uncertainty_notes: ['Class-count assumptions need evidence.'],
+                status: 'selected'
+              },
+              {
+                variant_key: 'agent_protocol_stress',
+                task_goal: 'Stress-test fair protocol boundaries for calibrated GCD.',
+                evaluation_metrics: ['protocol compliance'],
+                uncertainty_notes: ['Benchmark protocol may dominate apparent gains.'],
+                status: 'proposed'
+              }
+            ]
+          },
+          subproblem_graph: {
+            decomposition_version: 'decomp:agent-gcd-v1',
+            task_spec_id: 'task-spec:agent-primary-gcd',
+            subproblems: [
+              {
+                name: 'known-class bias',
+                abstract_challenge: 'Known classifiers can absorb novel unlabeled structure.',
+                failure_modes: ['novel samples collapse into known classes'],
+                metrics: ['known accuracy', 'novel accuracy'],
+                query_plan: ['known class bias generalized category discovery']
+              },
+              {
+                name: 'confidence calibration',
+                abstract_challenge: 'Pseudo labels need uncertainty-aware acceptance.',
+                failure_modes: ['overconfident wrong pseudo labels'],
+                metrics: ['calibration error', 'pseudo-label precision'],
+                query_plan: ['confidence calibration pseudo labels generalized category discovery']
+              },
+              {
+                name: 'class number estimation',
+                abstract_challenge: 'Novel class counts should remain bounded and testable.',
+                failure_modes: ['over-estimated novel class count'],
+                metrics: ['class count error', 'NMI'],
+                query_plan: ['generalized category discovery class number estimation']
+              }
+            ],
+            dependencies: [
+              {
+                source: 'known-class bias',
+                target: 'confidence calibration',
+                relation_type: 'CONTEXT_FOR',
+                confidence: 0.71
+              }
+            ],
+            uncertainty_notes: ['External Agent generated this decomposition for controller review.']
+          }
+        };
+      }
+    });
+    assert.equal(generatedDecomposition.status, 'ok');
+    assert.equal(generatedDecomposition.controller_state_summary.lifecycle, 'decomposition_generated');
+    assert.equal(generatedDecomposition.decomposition_run.backend, 'single_model_llm_json');
+    assert.equal(generatedDecomposition.task_spec_variants.selected_task_spec_id, 'task-spec:agent-primary-gcd');
+    assert.equal(generatedDecomposition.subproblem_graph.decomposition_version, 'decomp:agent-gcd-v1');
+
+    const generatedTaskSpecs = JSON.parse(await fs.readFile(generatedDecomposition.artifact_paths.task_spec_variants, 'utf8'));
+    assert.equal(generatedTaskSpecs.variants.length, 2);
+    assert.ok(generatedTaskSpecs.variants.some((variant) => variant.variant_key === 'agent_primary'));
+
+    const generatedSubproblemGraph = JSON.parse(await fs.readFile(generatedDecomposition.artifact_paths.subproblem_graph, 'utf8'));
+    assert.equal(generatedSubproblemGraph.subproblems.length, 3);
+    assert.ok(generatedSubproblemGraph.dependencies.some((edge) => edge.relation_type === 'CONTEXT_FOR'));
+
+    const reviewedDecomposition = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'review_decomposition',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      externalInputs: {
+        decomposition_review_payload: {
+          recommendation: 'accept',
+          confidence: 0.82,
+          missing_subproblem_risk: 'medium',
+          over_decomposition_risk: 'low',
+          dependency_error_risk: 'low',
+          metric_mismatch_risk: 'medium',
+          alternative_decompositions: ['Split class-count estimation from calibration if evidence volume is high.'],
+          critic_questions: ['Does calibration improve novel accuracy without hurting known accuracy?']
+        }
+      }
+    });
+    assert.equal(reviewedDecomposition.status, 'ok');
+    assert.equal(reviewedDecomposition.controller_state_summary.lifecycle, 'decomposition_reviewed');
+    assert.equal(reviewedDecomposition.decomposition_review_run.backend, 'external_agent_inputs');
+    assert.equal(reviewedDecomposition.decomposition_review.recommendation, 'accept');
+
+    const generated = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'generate_candidates',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      maxCandidateNodes: 8
+    });
+    assert.equal(generated.status, 'ok');
+    assert.equal(generated.controller_state_summary.lifecycle, 'candidates_generated');
+    assert.ok(generated.controller_state_summary.candidate_node_count > 0);
+
+    const candidateGraphText = await fs.readFile(generated.artifact_paths.candidate_graph, 'utf8');
+    const candidateRecords = candidateGraphText.trim().split('\n').map((line) => JSON.parse(line));
+    assert.ok(candidateRecords.some((record) => record.record_type === 'candidate_node'));
+    assert.ok(candidateRecords[0].evidence.graph_refs.length > 0);
+    assert.equal(candidateRecords[0].status, 'proposed');
+    const generatedCandidateNodes = candidateRecords.filter((record) => record.record_type === 'candidate_node');
+    assert.ok(generatedCandidateNodes.length >= 2);
+    const producerCandidateId = generatedCandidateNodes[0].candidate_id;
+    const consumerCandidateId = generatedCandidateNodes[1].candidate_id;
+    const farSourceCandidateId = producerCandidateId;
+    const enrichedCandidateRecords = candidateRecords.map((record) => {
+      if (record.candidate_id === producerCandidateId) {
+        return {
+          ...record,
+          source_domain: 'Distant Control Theory',
+          source_layer: 'far_source',
+          method_card: {
+            ...(record.method_card || {}),
+            output_signal: 'calibrated confidence score',
+            training_objective: 'shared A100 backbone budget',
+            assumptions: [
+              ...(record.method_card?.assumptions || []),
+              'requires known class count'
+            ]
+          },
+          evaluation_plan: {
+            ...(record.evaluation_plan || {}),
+            baseline: 'matched backbone and A100 budget'
+          },
+          scores: {
+            ...(record.scores || {}),
+            graph_evidence_strength: 0.95,
+            mechanism_fit: 0.22
+          }
+        };
+      }
+      if (record.candidate_id === consumerCandidateId) {
+        return {
+          ...record,
+          method_card: {
+            ...(record.method_card || {}),
+            input_signal: 'calibrated confidence score',
+            training_objective: 'shared A100 backbone budget',
+            assumptions: [
+              ...(record.method_card?.assumptions || []),
+              'unknown class count estimation'
+            ]
+          },
+          evaluation_plan: {
+            ...(record.evaluation_plan || {}),
+            baseline: 'matched backbone and A100 budget'
+          }
+        };
+      }
+      return record;
+    });
+    await fs.writeFile(
+      generated.artifact_paths.candidate_graph,
+      `${enrichedCandidateRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf8'
+    );
+
+    const edgeProposal = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'propose_edges',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      maxEdgeJudgments: 12
+    });
+    assert.equal(edgeProposal.status, 'ok');
+    assert.equal(edgeProposal.controller_state_summary.lifecycle, 'candidate_edges_proposed');
+    assert.ok(edgeProposal.controller_state_summary.candidate_edge_count > 0);
+
+    const candidateGraphWithEdgesText = await fs.readFile(edgeProposal.artifact_paths.candidate_graph, 'utf8');
+    const candidateRecordsWithEdges = candidateGraphWithEdgesText.trim().split('\n').map((line) => JSON.parse(line));
+    const candidateEdges = candidateRecordsWithEdges.filter((record) => record.record_type === 'candidate_edge');
+    assert.ok(candidateEdges.length > 0);
+    assert.ok(candidateEdges.some((record) => record.relation_types.includes('COMPLEMENTS')));
+    assert.ok(candidateEdges.some((record) => record.relation_types.includes('SHARES_MECHANISM')));
+    assert.ok(candidateEdges.some((record) => record.relation_types.includes('PREREQUISITE')));
+    assert.ok(candidateEdges.some((record) => record.relation_types.includes('CONFLICTS_WITH')));
+    assert.ok(candidateEdges.some((record) => record.relation_types.includes('COST_COUPLED')));
+    assert.ok(candidateEdges.some((record) => record.evidence.prerequisite_signals?.includes('confidence')));
+    assert.ok(candidateEdges.some((record) => record.evidence.conflict_phrases?.length));
+    assert.ok(candidateEdges.some((record) => record.evidence.shared_cost_terms?.includes('a100')));
+    assert.ok(candidateEdges.every((record) => record.status === 'proposed'));
+
+    const judged = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'judge_batch',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      judge: { model: 'fixture-judge' },
+      maxJudgeItems: 6,
+      judgeConsistencyChecks: 3
+    }, {
+      async llmJson({ task, candidates, edges, candidatePairs, consistencyProbe }) {
+        assert.ok(['research_controller.judge_batch', 'research_controller.judge_batch_consistency_probe'].includes(task));
+        if (task === 'research_controller.judge_batch_consistency_probe') {
+          assert.equal(consistencyProbe.probe_type, 'order_swap');
+        }
+        return {
+          summary: task === 'research_controller.judge_batch_consistency_probe'
+            ? 'Fixture consistency probe keeps the same judgments under reversed order.'
+            : 'Fixture judge accepts graph-backed candidates and relations for later selection.',
+          node_judgments: candidates.map((candidate) => ({
+            candidate_id: candidate.candidate_id,
+            verdict: 'needs_evidence',
+            scores: {
+              evidence_support: 0.72,
+              mechanism_fit: candidate.candidate_id === farSourceCandidateId ? 0.31 : 0.68,
+              feasibility: 0.51,
+              novelty_potential: 0.46,
+              risk: 0.42,
+              evaluation_readiness: 0.38
+            },
+            rationale: 'Useful graph-backed candidate, but method-card details and baseline plan need extraction.',
+            missing_evidence: ['method-card details', 'baseline plan']
+          })),
+          edge_judgments: edges.map((edge) => ({
+            edge_id: edge.edge_id,
+            verdict: 'keep',
+            valid_relation_types: edge.relation_types,
+            confidence: 0.66,
+            rationale: 'Relation is useful as bounded graph-search evidence.'
+          })),
+          pairwise_preferences: candidatePairs.map((pair) => ({
+            pair_id: pair.pair_id,
+            candidate_a_id: pair.candidate_a_id,
+            candidate_b_id: pair.candidate_b_id,
+            winner: task === 'research_controller.judge_batch_consistency_probe' ? 'B' : 'A',
+            confidence: 0.7,
+            decision_basis: {
+              evidence: 'Candidate A has stronger graph-backed evidence in the fixture order.',
+              feasibility: 'Both candidates remain feasible after method-card expansion.',
+              novelty: 'Candidate A keeps slightly more novelty potential.',
+              expected_gain: 'Expected gain is still speculative.',
+              risk: 'No pair-specific blocker was found.'
+            },
+            missing_evidence: ['pairwise preference calibration']
+          }))
+        };
+      }
+    });
+    assert.equal(judged.status, 'ok');
+    assert.equal(judged.controller_state_summary.lifecycle, 'judged');
+    assert.ok(judged.controller_state_summary.judge_decision_count > 0);
+    assert.equal(judged.judge_run.backend, 'single_model_llm_json');
+    assert.equal(judged.judge_run.model, 'fixture-judge');
+    assert.equal(judged.judge_run.self_consistency.status, 'consistent');
+    assert.equal(judged.judge_run.self_consistency.probe_type, 'order_swap');
+    assert.ok(judged.judge_run.self_consistency.checked_count > 0);
+    assert.ok(judged.judge_run.self_consistency.pairwise_checked_count > 0);
+    assert.ok(judged.consistency_probe_decisions.length > 0);
+    assert.ok(judged.judge_request.judge_method.output_schema.node_judgments.length > 0);
+    assert.ok(judged.judge_request.candidate_pairs.length > 0);
+
+    const judgeDecisionText = await fs.readFile(judged.artifact_paths.judge_decisions, 'utf8');
+    const judgeDecisionRecords = judgeDecisionText.trim().split('\n').map((line) => JSON.parse(line));
+    assert.ok(judgeDecisionRecords.some((record) => record.decision_scope === 'candidate_node'));
+    assert.ok(judgeDecisionRecords.some((record) => record.decision_scope === 'candidate_edge'));
+    assert.ok(judgeDecisionRecords.some((record) => record.decision_scope === 'candidate_pairwise_preference'));
+    assert.ok(judgeDecisionRecords.some((record) => record.decision_scope === 'consistency_probe_candidate_node'));
+    assert.ok(judgeDecisionRecords.some((record) => record.decision_scope === 'consistency_probe_candidate_pairwise_preference'));
+    assert.ok(judgeDecisionRecords.every((record) => record.judge.mode === 'single_model'));
+
+    const selected = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'select_batch',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      maxSelectedCandidates: 2
+    });
+    assert.equal(selected.status, 'ok');
+    assert.equal(selected.controller_state_summary.lifecycle, 'batch_selected');
+    assert.equal(selected.selection.subgraphs.length, 2);
+    assert.ok(selected.selection.diagnostics.selected_subproblem_count >= 1);
+    assert.ok(selected.selection.diagnostics.pairwise_preference_count > 0);
+    assert.ok(selected.selection.diagnostics.pairwise_candidate_count > 0);
+    assert.ok(selected.selection.diagnostics.far_source_gated_count > 0);
+    assert.ok(selected.selection.diagnostics.selected_mechanism_count >= 1);
+    assert.ok(selected.selection.diagnostics.selected_source_domain_count >= 1);
+    assert.ok(selected.selection.diagnostics.batch_objective_score > 0);
+    assert.ok(selected.selection.selection_policy.utility_terms.includes('agent_preference'));
+    assert.equal(selected.selection.selection_policy.preference_aggregation.backend, 'bradley_terry_mm');
+    assert.equal(selected.selection.selection_policy.batch_objective.backend, 'greedy_submodular_marginal_gain');
+    assert.ok(selected.selection.selection_policy.batch_objective.coverage_terms.includes('mechanism'));
+    assert.ok(selected.selection.selection_policy.batch_objective.negative_relation_terms.includes('CONFLICTS_WITH'));
+    assert.ok(selected.selection.selection_policy.hard_gates.includes('far_source_requires_mechanism_fit_or_bridge_evidence'));
+    assert.ok(selected.selection.subgraphs.every((subgraph) => subgraph.primary_candidate_id));
+    assert.ok(selected.selection.subgraphs.every((subgraph) => typeof subgraph.marginal_gain === 'number'));
+    assert.ok(selected.selection.subgraphs.every((subgraph) => subgraph.selection_reasons.length > 0));
+    assert.ok([
+      ...selected.selection.subgraphs,
+      ...selected.selection.parked
+    ].some((entry) => entry.pairwise_preference?.aggregation === 'bradley_terry_mm'));
+    assert.ok(selected.selection.parked.length > 0);
+    assert.ok(!selected.selection.subgraphs.some((subgraph) => subgraph.candidate_ids.includes(farSourceCandidateId)));
+    assert.ok(selected.selection.parked.some((entry) => (
+      entry.candidate_id === farSourceCandidateId
+      && entry.reason === 'far_source_requires_mechanism_fit_or_bridge_evidence'
+    )));
+
+    const selectedSubgraphs = JSON.parse(await fs.readFile(selected.artifact_paths.selected_subgraphs, 'utf8'));
+    assert.equal(selectedSubgraphs.record_type, 'selected_subgraphs');
+    assert.equal(selectedSubgraphs.subgraphs.length, 2);
+    const candidateGraphAfterSelectionText = await fs.readFile(selected.artifact_paths.candidate_graph, 'utf8');
+    const candidateRecordsAfterSelection = candidateGraphAfterSelectionText.trim().split('\n').map((line) => JSON.parse(line));
+    assert.ok(candidateRecordsAfterSelection.some((record) => record.record_type === 'candidate_node' && record.status === 'selected'));
+    assert.ok(candidateRecordsAfterSelection.some((record) => (
+      record.record_type === 'candidate_node'
+      && record.candidate_id === farSourceCandidateId
+      && record.status === 'needs_evidence'
+    )));
+
+    const expanded = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'expand_evidence',
+      corpus: rootPath,
+      project: 'GCD Research Controller'
+    });
+    assert.equal(expanded.status, 'ok');
+    assert.equal(expanded.controller_state_summary.lifecycle, 'evidence_expanded');
+    assert.equal(expanded.method_card_pack.method_cards.length, 2);
+    assert.equal(expanded.method_card_pack.expansion_policy.provider_evidence_enabled, false);
+    assert.equal(expanded.method_card_pack.expansion_policy.material_pack_requests_enabled, true);
+    assert.equal(expanded.method_card_pack.material_expansion_requests.length, 6);
+    assert.deepEqual(
+      [...new Set(expanded.method_card_pack.material_expansion_requests.map((request) => request.operation))].sort(),
+      ['import_requisition_pack', 'negative_evidence_pack', 'research_material_pack']
+    );
+    assert.ok(expanded.method_card_pack.material_expansion_requests.every((request) => request.execution_status === 'not_run'));
+    assert.ok(expanded.method_card_pack.material_expansion_requests.every((request) => request.arguments.includeProviderEvidence === false));
+    assert.ok(expanded.method_card_pack.material_expansion_requests.some((request) => (
+      request.operation === 'import_requisition_pack'
+      && request.approval_required === true
+      && request.status === 'approval_required'
+    )));
+    assert.ok(expanded.method_card_pack.material_expansion_requests.some((request) => (
+      request.operation === 'research_material_pack'
+      && request.approval_required === false
+      && request.status === 'planned'
+    )));
+    assert.ok(expanded.method_card_pack.method_cards.every((card) => card.candidate_id));
+    assert.ok(expanded.method_card_pack.method_cards.every((card) => card.baseline_comparability));
+    assert.ok(expanded.method_card_pack.method_cards.some((card) => (
+      card.method_card.paper_material_extraction?.backend === 'local_source_span_heuristic'
+      && card.method_card.paper_material_extraction.extracted_fields.includes('inference_behavior')
+    )));
+    assert.ok(expanded.method_card_pack.method_cards.some((card) => (
+      card.method_card.output_signal
+      && card.method_card.training_objective
+      && card.method_card.inference_behavior
+    )));
+    assert.ok(expanded.method_card_pack.method_cards.some((card) => (
+      card.method_card.cost_terms?.includes('a100')
+      || card.method_card.cost_terms?.includes('batch')
+      || card.method_card.cost_terms?.includes('epochs')
+    )));
+    assert.ok(expanded.method_card_pack.missing_evidence.includes('baseline plan'));
+    const methodCardPackMarkdown = await fs.readFile(expanded.artifact_paths.method_card_pack, 'utf8');
+    assert.match(methodCardPackMarkdown, /Selected Method Cards/);
+    assert.match(methodCardPackMarkdown, /Missing evidence/);
+    assert.match(methodCardPackMarkdown, /Local material extraction/);
+    assert.match(methodCardPackMarkdown, /Planned Material Expansion Requests/);
+
+    const materialRequests = expanded.method_card_pack.material_expansion_requests;
+    const executableRequests = materialRequests
+      .filter((request) => request.operation !== 'import_requisition_pack')
+      .slice(0, 2);
+    const executedMaterials = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'execute_material_requests',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      approveMaterialRequestExecution: true,
+      approvedMaterialRequestIds: executableRequests.map((request) => request.request_id),
+      maxMaterialRequests: 2,
+      materialRequestExecutionApproval: {
+        approver: 'fixture-human',
+        source: 'unit-test'
+      }
+    });
+    assert.equal(executedMaterials.status, 'ok');
+    assert.equal(executedMaterials.controller_state_summary.lifecycle, 'material_requests_executed');
+    assert.equal(executedMaterials.material_result_count, 2);
+    assert.equal(executedMaterials.material_results.length, 2);
+    assert.ok(executedMaterials.material_results.every((record) => record.source === 'research_controller.execute_material_requests'));
+    assert.ok(executedMaterials.method_card_pack.material_expansion_requests.some((request) => (
+      request.execution_status === 'executed'
+      && request.status === 'result_recorded'
+      && request.result_id
+    )));
+    const executedMaterialResultText = await fs.readFile(executedMaterials.artifact_paths.material_expansion_results, 'utf8');
+    assert.equal(executedMaterialResultText.trim().split('\n').length, 2);
+
+    const remainingMaterialRequests = executedMaterials.method_card_pack.material_expansion_requests
+      .filter((request) => !request.result_id)
+      .slice(0, 2);
+    const recorded = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'record_material_results',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      externalInputs: {
+        material_expansion_results: remainingMaterialRequests.map((request) => ({
+          request_id: request.request_id,
+          operation: request.operation,
+          candidate_id: request.candidate_id,
+          status: 'ok',
+          source: 'fixture-external-agent',
+          summary: {
+            evidence_items: 2,
+            finding: 'Fixture material result recorded for selected candidate; one metric mismatch may require decomposition review.',
+            unresolved: ['full paper-material extraction still needed']
+          },
+          artifact_paths: {
+            source: `/tmp/${request.request_id}.json`
+          },
+          missing_evidence_resolved: ['paper material span'],
+          remaining_missing_evidence: ['baseline plan']
+        }))
+      }
+    });
+    assert.equal(recorded.status, 'ok');
+    assert.equal(recorded.controller_state_summary.lifecycle, 'material_results_recorded');
+    assert.equal(recorded.controller_state_summary.material_expansion_result_count, 4);
+    assert.equal(recorded.controller_state_summary.decomposition_drift_status, 'possible');
+    assert.equal(recorded.decomposition_drift_review.status, 'possible');
+    assert.equal(recorded.decomposition_drift_review.requires_revisit, true);
+    assert.equal(recorded.material_result_count, 4);
+    assert.equal(recorded.method_card_pack.material_result_count, 4);
+    assert.equal(recorded.method_card_pack.fulfilled_material_expansion_request_count, 4);
+    assert.ok(recorded.method_card_pack.material_expansion_requests.some((request) => (
+      request.status === 'result_recorded'
+      && request.execution_status === 'recorded'
+      && request.result_id
+    )));
+    const materialResultText = await fs.readFile(recorded.artifact_paths.material_expansion_results, 'utf8');
+    const materialResultRecords = materialResultText.trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(materialResultRecords.length, 4);
+    assert.ok(materialResultRecords.every((record) => record.record_type === 'material_expansion_result'));
+    const driftReview = JSON.parse(await fs.readFile(recorded.artifact_paths.decomposition_review, 'utf8')).post_evidence_drift_review;
+    assert.equal(driftReview.status, 'possible');
+    assert.ok(driftReview.critic_questions.some((question) => question.includes('selected candidates')));
+    const recordedMethodCardMarkdown = await fs.readFile(recorded.artifact_paths.method_card_pack, 'utf8');
+    assert.match(recordedMethodCardMarkdown, /Material expansion results: 4/);
+
+    const composed = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'compose_solutions',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      judge: { model: 'fixture-solution-agent' },
+      maxSolutionSketches: 3
+    }, {
+      async llmJson({ task, methodCards, candidateRelations }) {
+        assert.equal(task, 'research_controller.compose_solutions');
+        assert.ok(methodCards.length > 0);
+        return {
+          solution_sketches: methodCards.slice(0, 2).map((card, index) => ({
+            variant_key: `agent_revision_${index + 1}`,
+            source_candidate_ids: [card.candidate_id],
+            source_edge_ids: candidateRelations.map((edge) => edge.edge_id).slice(0, 2),
+            problem_claim: `Agent-refined solution for ${card.subproblem?.name || 'selected subproblem'}.`,
+            core_idea: `Agent-refined mechanism using ${card.mechanism || card.candidate_id} without claiming final novelty.`,
+            algorithm_flow: ['Prepare selected evidence.', 'Instantiate bounded module.', 'Evaluate with declared metrics.'],
+            module_interfaces: [{
+              module_id: `agent-module-${index + 1}`,
+              candidate_id: card.candidate_id,
+              input_signal: 'representation features',
+              output_signal: 'calibrated assignment score'
+            }],
+            training_objective: 'bounded agent-refined objective',
+            inference_behavior: 'produce calibrated assignments without evaluation-only labels',
+            expected_observations: ['novel accuracy should improve under fair baselines'],
+            ablation_suggestions: ['Remove the agent-refined module and compare against the same backbone.'],
+            discard_conditions: ['Discard if evidence remains missing or fair-baseline gains disappear.'],
+            evidence_boundaries: {
+              evidence_supported: ['source_candidate_ids'],
+              agent_inferred: ['core_idea', 'algorithm_flow'],
+              speculative: ['expected_observations']
+            },
+            missing_evidence: ['closest prior novelty check'],
+            status: 'proposed'
+          }))
+        };
+      }
+    });
+    assert.equal(composed.status, 'ok');
+    assert.equal(composed.controller_state_summary.lifecycle, 'solutions_composed');
+    assert.equal(composed.solution_composition_run.backend, 'single_model_llm_json');
+    assert.equal(composed.solution_composition_run.model, 'fixture-solution-agent');
+    assert.ok(composed.solution_sketches.length >= 2);
+    assert.ok(composed.solution_sketches.every((sketch) => sketch.generated_by === 'research_controller.compose_solutions.single_model_revision'));
+    assert.ok(composed.solution_sketches.every((sketch) => sketch.core_idea.includes('Agent-refined')));
+    assert.ok(composed.solution_sketches.every((sketch) => sketch.discard_conditions.length > 0));
+    assert.ok(composed.solution_sketches.every((sketch) => sketch.ablation_suggestions.length > 0));
+    const solutionSketchesMarkdown = await fs.readFile(composed.artifact_paths.solution_sketches_md, 'utf8');
+    assert.match(solutionSketchesMarkdown, /Solution Sketches/);
+    assert.match(solutionSketchesMarkdown, /Discard conditions/);
+
+    const designReview = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'design_review',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      judge: { model: 'fixture-design-reviewer' }
+    }, {
+      async llmJson({ task, solutionSketches }) {
+        assert.equal(task, 'research_controller.design_review');
+        assert.ok(solutionSketches.length > 0);
+        return {
+          summary: 'Fixture design reviewer keeps sketches as revise-only user decision artifacts.',
+          reviews: solutionSketches.map((sketch) => ({
+            solution_id: sketch.solution_id,
+            decision: 'revise',
+            novelty_risk: 'medium',
+            novelty_claim_status: 'not_claimed',
+            evidence_coverage: 'low',
+            feasibility: 'medium',
+            evaluation_suggestion_quality: 'medium',
+            decomposition_drift: 'none',
+            design_boundary_review: {
+              status: 'needs_human_review',
+              violations: []
+            },
+            closest_prior_checks: ['closest prior novelty check is still missing'],
+            main_reason: 'Agent review requires closest-prior evidence before promotion.',
+            missing_evidence: ['closest prior novelty check'],
+            highest_risk_assumption: 'expected gain remains speculative',
+            suggested_revision: 'Run closest-prior evidence expansion before experiment planning.',
+            user_decision_needed: ['Decide whether to request closest-prior evidence expansion.']
+          })),
+          user_decision_needed: ['Decide whether to request closest-prior evidence expansion.']
+        };
+      }
+    });
+    assert.equal(designReview.status, 'ok');
+    assert.equal(designReview.controller_state_summary.lifecycle, 'design_reviewed');
+    assert.equal(designReview.design_review_run.backend, 'single_model_llm_json');
+    assert.equal(designReview.design_review_run.model, 'fixture-design-reviewer');
+    assert.equal(designReview.design_review.review_policy.backend, 'single_model_llm_json');
+    assert.equal(designReview.design_review.reviews.length, composed.solution_sketches.length);
+    assert.ok(designReview.design_review.reviews.every((review) => ['recommend', 'revise', 'reject'].includes(review.decision)));
+    assert.ok(designReview.design_review.reviews.every((review) => review.closest_prior_checks.includes('closest prior novelty check is still missing')));
+    assert.ok(designReview.design_review.reviews.some((review) => review.closest_prior_evidence?.length > 0));
+    assert.ok(designReview.design_review.reviews
+      .flatMap((review) => review.closest_prior_evidence || [])
+      .some((entry) => entry.status === 'graph_prior_found'));
+    assert.ok(designReview.design_review.reviews.every((review) => review.closest_prior_request_ids?.length > 0));
+    assert.ok(designReview.design_review.closest_prior_expansion_requests.length > 0);
+    assert.ok(designReview.design_review.closest_prior_expansion_requests.every((request) => request.approval_required === true));
+    assert.ok(designReview.design_review.closest_prior_expansion_requests.every((request) => request.execution_status === 'not_run'));
+    assert.ok(designReview.design_review.closest_prior_expansion_requests.every((request) => request.status === 'opt_in_requested_not_executed'));
+    assert.ok(designReview.design_review.closest_prior_expansion_requests.every((request) => request.arguments.includeProviderEvidence === false));
+    assert.ok(designReview.design_review.closest_prior_expansion_requests.every((request) => request.requested_opt_ins.include_provider_evidence === true));
+    assert.ok(designReview.design_review.closest_prior_expansion_requests.every((request) => request.requested_opt_ins.include_literature_discovery === true));
+    assert.equal(designReview.design_review.decomposition_drift_review.status, 'possible');
+    assert.ok(designReview.controller_state_summary.next_actions.includes('review_decomposition'));
+    assert.ok(designReview.design_review.reviews.every((review) => review.design_boundary_review));
+    const designReviewMarkdown = await fs.readFile(designReview.artifact_paths.design_review_md, 'utf8');
+    assert.match(designReviewMarkdown, /Design Review/);
+    assert.match(designReviewMarkdown, /Decision/);
+    assert.match(designReviewMarkdown, /Closest prior evidence/);
+    assert.match(designReviewMarkdown, /Decomposition Drift Review/);
+    assert.match(designReviewMarkdown, /Closest Prior Expansion Requests/);
+
+    const closestPriorRequest = designReview.design_review.closest_prior_expansion_requests[0];
+    const recordedClosestPrior = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'record_material_results',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      externalInputs: {
+        material_expansion_results: [{
+          request_id: closestPriorRequest.request_id,
+          request_type: closestPriorRequest.request_type,
+          operation: closestPriorRequest.operation,
+          solution_id: closestPriorRequest.solution_id,
+          review_id: closestPriorRequest.review_id,
+          status: 'ok',
+          source: 'fixture-closest-prior-agent',
+          summary: {
+            closest_prior_hits: 1,
+            finding: 'Fixture closest-prior material check was recorded for design review.',
+            unresolved: ['manual novelty interpretation is still required']
+          },
+          artifact_paths: {
+            source: `/tmp/${closestPriorRequest.request_id}.json`
+          },
+          remaining_missing_evidence: ['manual novelty interpretation']
+        }]
+      }
+    });
+    assert.equal(recordedClosestPrior.status, 'ok');
+    assert.equal(recordedClosestPrior.material_result_count, 5);
+    assert.equal(recordedClosestPrior.design_review.fulfilled_closest_prior_expansion_request_count, 1);
+    assert.ok(recordedClosestPrior.design_review.closest_prior_expansion_requests.some((request) => (
+      request.request_id === closestPriorRequest.request_id
+      && request.status === 'result_recorded'
+      && request.execution_status === 'recorded'
+      && request.result_id
+    )));
+    assert.ok(recordedClosestPrior.design_review.reviews.some((review) => (
+      review.closest_prior_material_result_count === 1
+      && review.closest_prior_result_ids.length === 1
+      && review.closest_prior_expansion_status === 'external_results_recorded'
+    )));
+    const recordedDesignReviewMarkdown = await fs.readFile(recordedClosestPrior.artifact_paths.design_review_md, 'utf8');
+    assert.match(recordedDesignReviewMarkdown, /Closest prior material results/);
+
+    const innovationBriefs = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'compose_innovation_briefs',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      maxInnovationBriefs: 2
+    });
+    assert.equal(innovationBriefs.status, 'ok');
+    assert.equal(innovationBriefs.controller_state_summary.lifecycle, 'innovation_briefs_composed');
+    assert.equal(innovationBriefs.controller_state_summary.innovation_brief_count, 2);
+    assert.equal(innovationBriefs.innovation_briefs.record_type, 'innovation_brief_pack');
+    assert.equal(innovationBriefs.innovation_briefs.briefs.length, 2);
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.idea_id));
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.source_candidate_ids.length > 0));
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.what_is_evidence_supported.length > 0));
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.what_is_agent_inferred.includes('innovation brief synthesis from selected subgraphs')));
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.what_is_speculative.includes('actual metric gain until experiments are run')));
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.evaluation_plan.metrics.length > 0));
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.discard_conditions.length > 0));
+    assert.ok(innovationBriefs.innovation_briefs.briefs.every((brief) => brief.next_action.includes('Resolve missing materials')));
+    const innovationBriefsMarkdown = await fs.readFile(innovationBriefs.artifact_paths.innovation_briefs_md, 'utf8');
+    assert.match(innovationBriefsMarkdown, /Innovation Briefs/);
+    assert.match(innovationBriefsMarkdown, /Evidence-supported/);
+    assert.match(innovationBriefsMarkdown, /Speculative/);
+
+    const experimentPlanWithoutApproval = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'generate_experiment_plan',
+      corpus: rootPath,
+      project: 'GCD Research Controller'
+    });
+    assert.equal(experimentPlanWithoutApproval.status, 'needs_approval');
+    assert.ok(experimentPlanWithoutApproval.user_decision_needed.some((item) => item.includes('approveExperimentPlanning=true')));
+
+    const experimentPlan = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'generate_experiment_plan',
+      corpus: rootPath,
+      project: 'GCD Research Controller',
+      approveExperimentPlanning: true,
+      experimentPlanApproval: {
+        approver: 'fixture-human',
+        source: 'fixture-test',
+        note: 'Plan only; do not execute.'
+      },
+      maxExperimentPlans: 2,
+      maxGpuHours: 12
+    });
+    assert.equal(experimentPlan.status, 'ok');
+    assert.equal(experimentPlan.controller_state_summary.lifecycle, 'experiment_plan_generated');
+    assert.equal(experimentPlan.controller_state_summary.experiment_plan_count, 2);
+    assert.equal(experimentPlan.experiment_plan.execution_status, 'not_executed');
+    assert.equal(experimentPlan.experiment_plan.approval.approved, true);
+    assert.equal(experimentPlan.experiment_plan.approval.approver, 'fixture-human');
+    assert.equal(experimentPlan.experiment_plan.plans.length, 2);
+    assert.ok(experimentPlan.experiment_plan.plans.every((plan) => plan.status === 'planned_not_executed'));
+    assert.ok(experimentPlan.experiment_plan.plans.every((plan) => plan.execution_policy.execution_status === 'not_executed'));
+    assert.ok(experimentPlan.experiment_plan.plans.every((plan) => plan.execution_policy.forbidden_actions.includes('train_model')));
+    assert.ok(experimentPlan.experiment_plan.plans.every((plan) => plan.execution_policy.forbidden_actions.includes('submit_job')));
+    assert.ok(experimentPlan.experiment_plan.plans.every((plan) => plan.budget.max_gpu_hours === 12));
+    const experimentPlanMarkdown = await fs.readFile(experimentPlan.artifact_paths.experiment_plan_md, 'utf8');
+    assert.match(experimentPlanMarkdown, /Experiment Plan/);
+    assert.match(experimentPlanMarkdown, /Execution status: not_executed/);
+
+    const exported = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'export',
+      corpus: rootPath,
+      project: 'GCD Research Controller'
+    });
+
+    assert.equal(exported.status, 'ok');
+    assert.equal(exported.export.record_type, 'controller_export');
+    assert.equal(exported.export.budget.profile, 'gcd_mvp_planning');
+    assert.equal(exported.export.task_spec.summary.target_domain, 'Generalized Category Discovery');
+    assert.ok(exported.export.subproblem_graph.subproblem_summaries.length >= 3);
+    assert.ok(exported.export.method_cards.length > 0);
+    assert.equal(exported.export.candidate_subgraphs.selected.length, 2);
+    assert.ok(exported.export.candidate_subgraphs.parked.length > 0);
+    assert.ok(exported.export.candidate_relations.length > 0);
+    assert.equal(exported.export.method_card_pack.available, true);
+    assert.equal(exported.export.method_card_pack.material_result_count, 5);
+    assert.equal(exported.export.material_expansion_results.length, 5);
+    assert.equal(exported.export.selected_method_cards.length, 2);
+    assert.ok(exported.export.solution_sketches.length >= 2);
+    assert.equal(exported.export.design_reviews.length, exported.export.solution_sketches.length);
+    assert.equal(exported.export.innovation_briefs.length, 2);
+    assert.equal(exported.export.innovation_brief_pack.brief_policy.authority, 'downstream_ideation_seed_only');
+    assert.ok(exported.export.innovation_briefs.every((brief) => brief.status === 'candidate_brief_for_human_review'));
+    assert.ok(exported.export.closest_prior_expansion_requests.length > 0);
+    assert.equal(exported.export.fulfilled_closest_prior_expansion_request_count, 1);
+    assert.ok(exported.export.closest_prior_expansion_requests.some((request) => (
+      request.request_id === closestPriorRequest.request_id
+      && request.execution_status === 'recorded'
+    )));
+    assert.ok(exported.export.next_material_requests.some((request) => (
+      typeof request === 'object'
+      && request.request_id?.startsWith('cpreq:')
+      && request.operation === 'research_material_pack'
+    )));
+    assert.equal(exported.export.experiment_plans.length, 2);
+    assert.equal(exported.export.experiment_plan_pack.execution_status, 'not_executed');
+    assert.equal(exported.export.decomposition_drift_review.status, 'possible');
+    assert.ok(exported.export.user_decision_needed.some((item) => item.includes('Post-evidence drift signals')));
+    assert.ok(exported.export.judge_trace_summary.decision_count > 0);
+    assert.ok(exported.export.judge_trace_summary.latest_decisions.length > 0);
+    assert.ok(exported.artifact_paths.controller_export_json.endsWith('controller-export.json'));
+    const exportMarkdown = await fs.readFile(exported.artifact_paths.controller_export_md, 'utf8');
+    assert.match(exportMarkdown, /Candidate Method Cards/);
+    assert.match(exportMarkdown, /Selected Method Card Pack/);
+    assert.match(exportMarkdown, /Post-Evidence Decomposition Drift/);
+    assert.match(exportMarkdown, /Material Expansion Results/);
+    assert.match(exportMarkdown, /Solution Sketches/);
+    assert.match(exportMarkdown, /Design Reviews/);
+    assert.match(exportMarkdown, /Innovation Briefs/);
+    assert.match(exportMarkdown, /Closest prior evidence/);
+    assert.match(exportMarkdown, /Closest Prior Expansion Requests/);
+    assert.match(exportMarkdown, /Experiment Plans/);
+    assert.match(exportMarkdown, /Candidate Relations/);
+    assert.match(exportMarkdown, /Judge Decisions/);
+    assert.match(exportMarkdown, /Selected Subgraphs/);
+
+    const runRound = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'run_round',
+      corpus: rootPath,
+      project: 'Fresh Controller',
+      targetDomain: 'Generalized Category Discovery',
+      targetProblem: 'domain-shift robust generalized category discovery'
+    });
+    assert.equal(runRound.status, 'ok');
+    assert.equal(runRound.action, 'run_round');
+    assert.equal(runRound.action_completed, 'run_round_planning_full_design_packet');
+    assert.equal(runRound.export.record_type, 'controller_export');
+    assert.ok(runRound.export.method_cards.length > 0);
+    assert.ok(runRound.export.candidate_relations.length > 0);
+    assert.ok(runRound.export.selected_method_cards.length > 0);
+    assert.ok(runRound.export.solution_sketches.length > 0);
+    assert.ok(runRound.export.design_reviews.length > 0);
+    assert.ok(runRound.export.innovation_briefs.length > 0);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('agent_materials research_controller applies non-GCD task-family defaults', async () => {
+  const rootPath = await createMaterialCorpus();
+  try {
+    const domainAdaptation = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'init_task',
+      corpus: rootPath,
+      project: 'Domain Adaptation Controller',
+      targetDomain: 'Unsupervised Domain Adaptation',
+      targetProblem: 'robust image classification under source to target domain shift',
+      mode: 'quick'
+    });
+
+    assert.equal(domainAdaptation.status, 'ok');
+    assert.equal(domainAdaptation.controller_state_summary.task_family, 'domain_adaptation');
+    assert.equal(domainAdaptation.controller_state_summary.budget_profile, 'domain_adaptation_quick');
+
+    const domainState = JSON.parse(await fs.readFile(domainAdaptation.artifact_paths.controller_state, 'utf8'));
+    assert.ok(domainState.constraints.design_boundaries.some((entry) => entry.includes('source/target labels')));
+
+    const domainSubproblems = JSON.parse(await fs.readFile(domainAdaptation.artifact_paths.subproblem_graph, 'utf8'));
+    assert.ok(domainSubproblems.subproblems.some((entry) => entry.name === 'domain protocol and split control'));
+    assert.ok(domainSubproblems.subproblems.some((entry) => entry.query_plan.some((query) => query.includes('source target split'))));
+
+    const retrieval = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'init_task',
+      corpus: rootPath,
+      project: 'Retrieval Controller',
+      targetDomain: 'Retrieval-Augmented Generation',
+      targetProblem: 'reduce hallucination in RAG question answering with reranking and evidence grounding',
+      mode: 'planning'
+    });
+
+    assert.equal(retrieval.status, 'ok');
+    assert.equal(retrieval.controller_state_summary.task_family, 'retrieval');
+    assert.equal(retrieval.controller_state_summary.budget_profile, 'retrieval_planning');
+
+    const retrievalState = JSON.parse(await fs.readFile(retrieval.artifact_paths.controller_state, 'utf8'));
+    assert.ok(retrievalState.constraints.design_boundaries.some((entry) => entry.includes('Do not index test answers')));
+
+    const retrievalSubproblems = JSON.parse(await fs.readFile(retrieval.artifact_paths.subproblem_graph, 'utf8'));
+    assert.ok(retrievalSubproblems.subproblems.some((entry) => entry.name === 'first-stage recall'));
+    assert.ok(retrievalSubproblems.metrics.includes('Recall@k'));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('agent_materials returns negative evidence and experiment cost materials', async () => {
   const rootPath = await createMaterialCorpus();
   try {

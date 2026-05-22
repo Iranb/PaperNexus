@@ -203,6 +203,9 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(resources.resources.some((resource) => resource.uri.includes('/context')));
   assert.ok(resources.resources.some((resource) => resource.uri.includes('/methods')));
   assert.ok(resources.resources.some((resource) => resource.uri.includes('/domain-taxonomy')));
+
+  const resourceTemplates = await pending.request('resources/templates/list', {});
+  assert.deepEqual(resourceTemplates.resourceTemplates, []);
 });
 
 test('MCP tool calls and resource reads work against an indexed corpus', async () => {
