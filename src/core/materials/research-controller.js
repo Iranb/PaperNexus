@@ -485,6 +485,8 @@ function controllerPaths(rootPath, projectValue) {
     experimentPlanMarkdownPath: path.join(base.root, 'experiment-plan.md'),
     gcdMvpValidationPath: path.join(base.root, 'gcd-mvp-validation.json'),
     gcdMvpValidationMarkdownPath: path.join(base.root, 'gcd-mvp-validation.md'),
+    icmlMainTablePath: path.join(base.root, 'icml-main-table.json'),
+    icmlMainTableMarkdownPath: path.join(base.root, 'icml-main-table.md'),
     riskNotesPath: path.join(base.root, 'risk-notes.jsonl'),
     controllerExportJsonPath: path.join(base.root, 'controller-export.json'),
     controllerExportMarkdownPath: path.join(base.root, 'controller-export.md')
@@ -518,6 +520,8 @@ function publicArtifactPaths(paths) {
     experiment_plan_md: paths.experimentPlanMarkdownPath,
     gcd_mvp_validation: paths.gcdMvpValidationPath,
     gcd_mvp_validation_md: paths.gcdMvpValidationMarkdownPath,
+    icml_main_table: paths.icmlMainTablePath,
+    icml_main_table_md: paths.icmlMainTableMarkdownPath,
     risk_notes: paths.riskNotesPath,
     controller_export_json: paths.controllerExportJsonPath,
     controller_export_md: paths.controllerExportMarkdownPath
@@ -602,6 +606,7 @@ async function loadControllerOverlay(paths) {
     innovationBriefs,
     experimentPlan,
     gcdMvpValidation,
+    icmlMainTable,
     riskNotes
   ] = await Promise.all([
     readJson(paths.taskSpecVariantsPath, null),
@@ -622,6 +627,7 @@ async function loadControllerOverlay(paths) {
     readJson(paths.innovationBriefsPath, null),
     readJson(paths.experimentPlanPath, null),
     readJson(paths.gcdMvpValidationPath, null),
+    readJson(paths.icmlMainTablePath, null),
     readJsonl(paths.riskNotesPath)
   ]);
   const candidateGraph = splitCandidateGraph(candidateGraphRecords);
@@ -645,6 +651,7 @@ async function loadControllerOverlay(paths) {
     innovationBriefs,
     experimentPlan,
     gcdMvpValidation,
+    icmlMainTable,
     riskNotes
   };
 }
@@ -8007,7 +8014,24 @@ function selectedCandidateCount(selectedSubgraphs = {}) {
   return unique((selectedSubgraphs.subgraphs || []).flatMap((subgraph) => subgraph.candidate_ids || [])).length;
 }
 
-function externalRemoteValidationStatus(args = {}, validationContract = {}) {
+function mcpInvocationRemoteValidationStatus(context = {}, validationContract = {}) {
+  const invocation = normalizeObject(context.mcpInvocation || context.options?.mcpInvocation);
+  const method = compactText(invocation.method).toLowerCase();
+  const toolName = compactText(invocation.toolName || invocation.tool_name).toLowerCase();
+  if (method !== 'tools/call' || (toolName && toolName !== 'agent_materials')) return null;
+  const transport = compactText(invocation.transport) || 'mcp';
+  return {
+    status: 'pass',
+    source: 'mcp_tool_invocation',
+    validation_surface: validationContract.validation_policy?.validation_surface || 'papernexus-remote.agent_materials(operation="research_controller")',
+    local_substitute_allowed: false,
+    checked_at: nowIso(),
+    transport,
+    note: `validate_gcd_mvp was executed through the MCP tool surface (${transport}).`
+  };
+}
+
+function externalRemoteValidationStatus(args = {}, validationContract = {}, context = {}) {
   const externalInputs = normalizeObject(args.externalInputs || args.external_inputs);
   const payload = normalizeObject(
     externalInputs.gcd_mvp_remote_validation
@@ -8017,7 +8041,32 @@ function externalRemoteValidationStatus(args = {}, validationContract = {}) {
     || args.remoteValidation
     || args.remote_validation
   );
-  if (!Object.keys(payload).length) {
+  const mcpInvocationStatus = mcpInvocationRemoteValidationStatus(context, validationContract);
+  const hasPayload = Object.keys(payload).length > 0;
+  const payloadStatus = hasPayload
+    ? (() => {
+        const rawStatus = compactText(payload.status || payload.remote_validation_status || (payload.callable ? 'pass' : '')).toLowerCase();
+        return ['pass', 'passed', 'ok', 'callable', 'success', 'succeeded'].includes(rawStatus)
+          ? 'pass'
+          : (['blocked', 'failed', 'fail', 'error'].includes(rawStatus) ? rawStatus.replace('failed', 'fail') : 'unknown');
+      })()
+    : null;
+  const callerSuppliedRemoteValidation = hasPayload
+    ? {
+        status: payloadStatus,
+        source: compactText(payload.source) || 'caller_supplied',
+        validation_surface: compactText(payload.validation_surface || payload.surface) || validationContract.validation_policy?.validation_surface || 'papernexus-remote.agent_materials(operation="research_controller")',
+        local_substitute_allowed: false,
+        checked_at: payload.checked_at || payload.checkedAt || null,
+        note: compactText(payload.note) || 'Caller-supplied remote validation metadata; keep evidence separate from current MCP invocation checks.'
+      }
+    : null;
+  if (mcpInvocationStatus) {
+    return callerSuppliedRemoteValidation
+      ? { ...mcpInvocationStatus, caller_supplied_remote_validation: callerSuppliedRemoteValidation }
+      : mcpInvocationStatus;
+  }
+  if (!hasPayload) {
     return {
       status: validationContract.validation_policy?.live_validation_required_for_completion
         ? 'blocked_unless_remote_mcp_callable'
@@ -8028,17 +8077,16 @@ function externalRemoteValidationStatus(args = {}, validationContract = {}) {
       note: 'This report does not substitute for a successful papernexus-remote MCP call.'
     };
   }
-  const rawStatus = compactText(payload.status || payload.remote_validation_status || (payload.callable ? 'pass' : '')).toLowerCase();
-  const status = ['pass', 'passed', 'ok', 'callable', 'success', 'succeeded'].includes(rawStatus)
-    ? 'pass'
-    : (['blocked', 'failed', 'fail', 'error'].includes(rawStatus) ? rawStatus.replace('failed', 'fail') : 'unknown');
   return {
-    status,
-    source: compactText(payload.source) || 'caller_supplied',
-    validation_surface: compactText(payload.validation_surface || payload.surface) || validationContract.validation_policy?.validation_surface || 'papernexus-remote.agent_materials(operation="research_controller")',
+    status: validationContract.validation_policy?.live_validation_required_for_completion
+      ? 'blocked_unless_remote_mcp_callable'
+      : 'not_required',
+    source: 'caller_supplied_without_current_mcp_invocation',
+    validation_surface: callerSuppliedRemoteValidation.validation_surface,
     local_substitute_allowed: false,
-    checked_at: payload.checked_at || payload.checkedAt || null,
-    note: compactText(payload.note) || 'Caller-supplied remote validation metadata; keep evidence separate from local artifact checks.'
+    checked_at: callerSuppliedRemoteValidation.checked_at,
+    caller_supplied_remote_validation: callerSuppliedRemoteValidation,
+    note: 'Caller-supplied remote validation metadata was recorded, but this validate_gcd_mvp call did not arrive through the MCP tool surface; remote smoke remains blocked.'
   };
 }
 
@@ -8065,7 +8113,306 @@ function validationRecommendedActions(criteria = []) {
     .flatMap((criterion) => actionMap[criterion.criterion_id] || []));
 }
 
-async function buildGcdMvpValidationReport(paths, overlay = {}, args = {}) {
+function ratio(count = 0, total = 0) {
+  if (!total) return 0;
+  return Number((count / total).toFixed(3));
+}
+
+function candidateEvaluationMetricCount(candidate = {}) {
+  return asArray(candidate.evaluation_plan?.metrics || candidate.evaluationPlan?.metrics).filter(Boolean).length;
+}
+
+function methodCardByCandidateId(selectedSubgraphs = {}) {
+  return new Map((selectedSubgraphs.method_card_pack?.method_cards || [])
+    .map((card) => [card.candidate_id, card]));
+}
+
+function selectedSubgraphByCandidateId(selectedSubgraphs = {}) {
+  const byId = new Map();
+  for (const subgraph of selectedSubgraphs.subgraphs || []) {
+    for (const candidateId of subgraph.candidate_ids || []) byId.set(candidateId, subgraph);
+  }
+  return byId;
+}
+
+function selectorSelectedCandidateIds(selector = {}) {
+  return unique((selector.selected || [])
+    .map((entry) => entry.candidate_id)
+    .filter(Boolean));
+}
+
+function selectorRelevanceByCandidateId(selector = {}) {
+  return new Map((selector.selected || [])
+    .filter((entry) => entry.candidate_id)
+    .map((entry) => [entry.candidate_id, normalizeScore(entry.relevance_score ?? entry.utility ?? entry.marginal_gain, 0)]));
+}
+
+function mean(values = []) {
+  const finite = values.map(Number).filter(Number.isFinite);
+  if (!finite.length) return 0;
+  return Number((finite.reduce((sum, value) => sum + value, 0) / finite.length).toFixed(3));
+}
+
+function averagePairwiseSimilarity(candidateIds = [], candidateById = new Map()) {
+  const ids = unique(candidateIds).filter((id) => candidateById.has(id));
+  if (ids.length < 2) return 0;
+  const similarities = [];
+  for (let i = 0; i < ids.length; i += 1) {
+    for (let j = i + 1; j < ids.length; j += 1) {
+      similarities.push(candidateSimilarity(candidateById.get(ids[i]) || {}, candidateById.get(ids[j]) || {}));
+    }
+  }
+  return mean(similarities);
+}
+
+function missingEvidenceForCandidate(candidateId, candidate = {}, cardById = new Map(), subgraphById = new Map()) {
+  return unique([
+    ...normalizeStringArray(candidate.missing_evidence || candidate.missingEvidence),
+    ...normalizeStringArray(cardById.get(candidateId)?.missing_evidence || cardById.get(candidateId)?.missingEvidence),
+    ...normalizeStringArray(subgraphById.get(candidateId)?.missing_evidence || subgraphById.get(candidateId)?.missingEvidence)
+  ]);
+}
+
+function candidateEvidencePass(candidate = {}) {
+  const hasGraphEvidence = (candidate.evidence?.graph_refs || []).length > 0
+    || (candidate.evidence?.paper_ids || []).length > 0
+    || (candidate.source_papers || []).length > 0;
+  const hasMechanism = Boolean(compactText(candidate.mechanism));
+  const hasMetrics = candidateEvaluationMetricCount(candidate) > 0;
+  const tier = compactText(candidate.evidence?.evidence_tier || candidate.evidenceTier).toLowerCase();
+  const evidenceTierPass = !tier || !['none', 'unsupported'].includes(tier);
+  return hasGraphEvidence && hasMechanism && hasMetrics && evidenceTierPass;
+}
+
+function candidateUnsupportedBridgeClaim(candidate = {}) {
+  return candidateSourceLayer(candidate) === 'far_source' && !candidateHasBridgeEvidence(candidate);
+}
+
+function candidateUsableIdeaProxy(candidateId, candidate = {}, cardById = new Map(), subgraphById = new Map()) {
+  const missingEvidence = missingEvidenceForCandidate(candidateId, candidate, cardById, subgraphById);
+  const subgraph = subgraphById.get(candidateId) || {};
+  const hasEvaluation = candidateEvaluationMetricCount(candidate) > 0;
+  const hasMechanism = Boolean(compactText(candidate.mechanism));
+  const notUnsupportedBridge = !candidateUnsupportedBridgeClaim(candidate);
+  const selectedForComposition = !subgraph.selected_for || subgraph.selected_for === 'solution_composition';
+  return hasEvaluation && hasMechanism && notUnsupportedBridge && selectedForComposition && missingEvidence.length <= 4;
+}
+
+function buildIcmlSelectorRow(selector = {}, overlay = {}, context = {}) {
+  const candidateById = context.candidateById || new Map();
+  const cardById = context.cardById || new Map();
+  const subgraphById = context.subgraphById || new Map();
+  const candidateIds = selectorSelectedCandidateIds(selector);
+  const candidates = candidateIds.map((id) => candidateById.get(id)).filter(Boolean);
+  const relevanceById = selectorRelevanceByCandidateId(selector);
+  const missingEvidenceCounts = candidateIds.map((id) => missingEvidenceForCandidate(id, candidateById.get(id) || {}, cardById, subgraphById).length);
+  const coverageSets = {
+    subproblems: new Set(),
+    mechanisms: new Set(),
+    source_domains: new Set(),
+    challenge_aspects: new Set(),
+    evidence_clusters: new Set()
+  };
+  for (const candidate of candidates) {
+    const keys = candidateCoverageKeys({ candidate_id: candidate.candidate_id }, candidate);
+    if (keys.subproblem) coverageSets.subproblems.add(keys.subproblem);
+    if (keys.mechanism) coverageSets.mechanisms.add(keys.mechanism);
+    if (keys.source_domain) coverageSets.source_domains.add(keys.source_domain);
+    if (keys.challenge_aspect) coverageSets.challenge_aspects.add(keys.challenge_aspect);
+    if (keys.evidence_cluster) coverageSets.evidence_clusters.add(keys.evidence_cluster);
+  }
+  const selectedCount = Math.max(1, candidateIds.length);
+  return {
+    row_type: 'selector_ablation',
+    strategy: selector.selector || 'unknown_selector',
+    k: selector.k ?? candidateIds.length,
+    candidate_pool_size: overlay.candidateGraph?.nodes?.length || 0,
+    selected_candidate_count: candidateIds.length,
+    selected_candidate_ids: candidateIds,
+    mean_relevance_score: mean(candidateIds.map((id) => relevanceById.get(id) || 0)),
+    evidence_contract_pass_rate: ratio(candidates.filter(candidateEvidencePass).length, selectedCount),
+    usable_idea_rate_proxy: ratio(candidateIds.filter((id) => candidateUsableIdeaProxy(id, candidateById.get(id) || {}, cardById, subgraphById)).length, selectedCount),
+    unsupported_bridge_claim_count: candidates.filter(candidateUnsupportedBridgeClaim).length,
+    diversity: {
+      distinct_subproblem_count: coverageSets.subproblems.size,
+      distinct_mechanism_count: coverageSets.mechanisms.size,
+      distinct_source_domain_count: coverageSets.source_domains.size,
+      distinct_challenge_aspect_count: coverageSets.challenge_aspects.size,
+      distinct_evidence_cluster_count: coverageSets.evidence_clusters.size,
+      average_pairwise_similarity: averagePairwiseSimilarity(candidateIds, candidateById)
+    },
+    evidence_closure: {
+      mean_missing_evidence_count: mean(missingEvidenceCounts),
+      candidates_with_open_missing_evidence: missingEvidenceCounts.filter((count) => count > 0).length,
+      method_card_coverage_rate: ratio(candidateIds.filter((id) => cardById.has(id)).length, selectedCount)
+    },
+    budget_proxy: {
+      estimated_followup_material_requests: missingEvidenceCounts.filter((count) => count > 0).length,
+      selector_trace_entry_count: selector.selected?.length || 0,
+      material_result_count: overlay.materialExpansionResults?.length || 0
+    },
+    metric_source: 'selection-trace.json + candidate-graph.jsonl + method-card-pack.md',
+    limitations: [
+      'Usable idea rate is an artifact-derived proxy, not a human acceptance score.',
+      'Evidence pass checks graph refs, mechanism text, and evaluation metrics; it does not prove novelty or empirical gain.'
+    ]
+  };
+}
+
+function buildIcmlBeamSearchRow(overlay = {}, context = {}) {
+  const trace = overlay.searchTrace || {};
+  const candidateBySearchStateId = new Map((overlay.candidateGraph?.nodes || [])
+    .filter((candidate) => candidate.search_state_id)
+    .map((candidate) => [candidate.search_state_id, candidate]));
+  const finalizedIds = trace.finalized_state_ids || [];
+  const finalizedCandidateIds = unique(finalizedIds
+    .map((id) => candidateBySearchStateId.get(id)?.candidate_id)
+    .filter(Boolean));
+  const candidateById = context.candidateById || new Map();
+  const candidates = finalizedCandidateIds.map((id) => candidateById.get(id)).filter(Boolean);
+  const selectedCount = Math.max(1, finalizedCandidateIds.length);
+  return {
+    row_type: 'search_trace',
+    strategy: 'beam_graph_search',
+    k: null,
+    candidate_pool_size: trace.candidate_count || overlay.candidateGraph?.nodes?.length || 0,
+    selected_candidate_count: finalizedCandidateIds.length,
+    selected_candidate_ids: finalizedCandidateIds,
+    mean_relevance_score: mean(candidates.map((candidate) => candidate.score_trace?.total || candidate.scores?.graph_evidence_strength || 0)),
+    evidence_contract_pass_rate: ratio(candidates.filter(candidateEvidencePass).length, selectedCount),
+    usable_idea_rate_proxy: ratio(candidates.filter((candidate) => candidateUsableIdeaProxy(candidate.candidate_id, candidate, context.cardById, context.subgraphById)).length, selectedCount),
+    unsupported_bridge_claim_count: candidates.filter(candidateUnsupportedBridgeClaim).length,
+    diversity: {
+      distinct_subproblem_count: new Set(candidates.map((candidate) => compactText(candidate.subproblem?.name || candidate.subproblem_name)).filter(Boolean)).size,
+      distinct_mechanism_count: new Set(candidates.map((candidate) => candidateMechanismTokens(candidate).slice(0, 4).join(' ')).filter(Boolean)).size,
+      distinct_source_domain_count: new Set(candidates.map((candidate) => compactText(candidate.source_domain || candidate.evidence?.source_domain)).filter(Boolean)).size,
+      distinct_challenge_aspect_count: trace.distinct_challenge_aspect_count || 0,
+      distinct_evidence_cluster_count: new Set(candidates.map(evidenceClusterKey).filter(Boolean)).size,
+      average_pairwise_similarity: averagePairwiseSimilarity(finalizedCandidateIds, candidateById)
+    },
+    evidence_closure: {
+      finalized_state_count: finalizedIds.length,
+      requisition_state_count: trace.requisition_state_ids?.length || 0,
+      requisition_rate: trace.requisition_rate || 0
+    },
+    budget_proxy: {
+      estimated_followup_material_requests: trace.requisition_state_ids?.length || 0,
+      depth_count: trace.depths?.length || 0,
+      expansion_count: (trace.depths || []).reduce((sum, depth) => sum + (depth.expansion_count || depth.expanded_count || 0), 0),
+      pruned_count: (trace.depths || []).reduce((sum, depth) => sum + (depth.pruned_count || 0), 0)
+    },
+    metric_source: 'search-trace.json + candidate-graph.jsonl',
+    limitations: [
+      'Beam graph search row measures search-state closure, not downstream method quality.',
+      'Finalized states are graph-evidence states, not accepted research ideas.'
+    ]
+  };
+}
+
+function buildIcmlMainTable(paths, overlay = {}) {
+  const candidateById = new Map((overlay.candidateGraph?.nodes || []).map((candidate) => [candidate.candidate_id, candidate]));
+  const context = {
+    candidateById,
+    cardById: methodCardByCandidateId(overlay.selectedSubgraphs || {}),
+    subgraphById: selectedSubgraphByCandidateId(overlay.selectedSubgraphs || {})
+  };
+  const selectorRows = (overlay.selectionTrace?.selectors || [])
+    .map((selector) => buildIcmlSelectorRow(selector, overlay, context));
+  const rows = [
+    ...(overlay.searchTrace ? [buildIcmlBeamSearchRow(overlay, context)] : []),
+    ...selectorRows
+  ];
+  return {
+    record_type: 'icml_main_table_artifact',
+    version: RESEARCH_CONTROLLER_CONTRACT_VERSION,
+    project: paths.project,
+    round_id: overlay.controllerState?.current_round !== undefined ? `round:${overlay.controllerState.current_round}` : null,
+    status: rows.length ? 'ok' : 'needs_input',
+    table_id: `icml-main-table:${stableHash(`${paths.project}:${overlay.controllerState?.current_round ?? 'empty'}:${rows.map((row) => `${row.strategy}:${row.selected_candidate_count}`).join('|')}`, 16)}`,
+    title: 'ICML workshop artifact-derived selector and search comparison',
+    claim_boundary: {
+      evidence_supported: 'Rows summarize existing controller artifacts for audit and paper-table drafting.',
+      agent_inferred: 'Usable idea and evidence-closure rates are proxy metrics derived from artifact fields.',
+      speculative: 'Rows do not prove novelty, correctness, or empirical performance.'
+    },
+    columns: [
+      'strategy',
+      'candidate_pool_size',
+      'selected_candidate_count',
+      'evidence_contract_pass_rate',
+      'usable_idea_rate_proxy',
+      'unsupported_bridge_claim_count',
+      'distinct_subproblem_count',
+      'distinct_mechanism_count',
+      'distinct_source_domain_count',
+      'average_pairwise_similarity',
+      'mean_missing_evidence_count',
+      'estimated_followup_material_requests'
+    ],
+    rows,
+    source_artifacts: {
+      candidate_graph: paths.candidateGraphPath,
+      search_trace: paths.searchTracePath,
+      selection_trace: paths.selectionTracePath,
+      bandit_simulation: paths.banditSimulationPath,
+      method_card_pack: paths.methodCardPackPath,
+      validation: paths.gcdMvpValidationPath
+    },
+    limitations: [
+      'This table is for manuscript artifact preparation and controller comparison only.',
+      'Human or LLM usefulness scores must be reported separately from graph/evidence metrics.',
+      'Provider/literature-backed material expansion may change evidence-closure values.'
+    ],
+    generatedAt: nowIso()
+  };
+}
+
+function renderIcmlMainTableMarkdown(table = {}) {
+  const safeCell = (value) => String(value ?? '').replace(/\|/g, '/');
+  const lines = [
+    '# ICML Main Table Artifact',
+    '',
+    `- Project: ${table.project || ''}`,
+    `- Round: ${table.round_id || ''}`,
+    `- Status: ${table.status || ''}`,
+    '',
+    '## Claim Boundary',
+    '',
+    `- Evidence-supported: ${table.claim_boundary?.evidence_supported || ''}`,
+    `- Agent-inferred: ${table.claim_boundary?.agent_inferred || ''}`,
+    `- Speculative: ${table.claim_boundary?.speculative || ''}`,
+    '',
+    '## Table',
+    '',
+    '| Strategy | Pool | Selected | Evidence pass | Usable proxy | Unsupported bridge | Subproblems | Mechanisms | Source domains | Avg similarity | Missing evidence | Follow-up requests |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
+  ];
+  for (const row of table.rows || []) {
+    lines.push([
+      safeCell(row.strategy),
+      row.candidate_pool_size ?? 0,
+      row.selected_candidate_count ?? 0,
+      row.evidence_contract_pass_rate ?? 0,
+      row.usable_idea_rate_proxy ?? 0,
+      row.unsupported_bridge_claim_count ?? 0,
+      row.diversity?.distinct_subproblem_count ?? 0,
+      row.diversity?.distinct_mechanism_count ?? 0,
+      row.diversity?.distinct_source_domain_count ?? 0,
+      row.diversity?.average_pairwise_similarity ?? 0,
+      row.evidence_closure?.mean_missing_evidence_count ?? row.evidence_closure?.requisition_rate ?? 0,
+      row.budget_proxy?.estimated_followup_material_requests ?? row.budget_proxy?.requisition_state_count ?? 0
+    ].join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
+  }
+  lines.push('', '## Limitations', '');
+  for (const limitation of table.limitations || []) lines.push(`- ${limitation}`);
+  lines.push('', '## Source Artifacts', '');
+  for (const [key, value] of Object.entries(table.source_artifacts || {})) {
+    lines.push(`- ${key}: ${value}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+async function buildGcdMvpValidationReport(paths, overlay = {}, args = {}, context = {}) {
   const state = overlay.controllerState || {};
   const validationContract = state.mvp_contract || mvpContractFor(args, paths, overlay.subproblemGraph || {});
   const isGcd = isGcdMvpState(state, validationContract);
@@ -8078,7 +8425,8 @@ async function buildGcdMvpValidationReport(paths, overlay = {}, args = {}) {
   const controllerExport = await readJson(paths.controllerExportJsonPath, null);
   const requiredCandidateNodes = validationContract.required_min_candidate_nodes || 30;
   const requiredSubproblems = validationContract.required_min_subproblems || 5;
-  const remoteValidationStatus = externalRemoteValidationStatus(args, validationContract);
+  const remoteValidationStatus = externalRemoteValidationStatus(args, validationContract, context);
+  const icmlMainTable = overlay.icmlMainTable || buildIcmlMainTable(paths, overlay);
   const artifactCounts = {
     task_spec_variant_count: overlay.taskSpecVariants?.variants?.length || 0,
     subproblem_count: overlay.subproblemGraph?.subproblems?.length || 0,
@@ -8093,6 +8441,7 @@ async function buildGcdMvpValidationReport(paths, overlay = {}, args = {}) {
     innovation_brief_count: overlay.innovationBriefs?.briefs?.length || 0,
     material_result_count: overlay.materialExpansionResults?.length || 0,
     method_card_count: methodCardPack.method_cards?.length || 0,
+    icml_main_table_row_count: icmlMainTable.rows?.length || 0,
     risk_note_count: overlay.riskNotes?.length || 0
   };
   if (!isGcd) {
@@ -8240,6 +8589,12 @@ async function buildGcdMvpValidationReport(paths, overlay = {}, args = {}) {
       local_failed_criteria: localFailed.map((criterion) => criterion.criterion_id),
       blocked_criteria: blocked.map((criterion) => criterion.criterion_id)
     },
+    icml_main_table_summary: {
+      status: icmlMainTable.status,
+      row_count: icmlMainTable.rows?.length || 0,
+      artifact_path: paths.icmlMainTablePath,
+      markdown_path: paths.icmlMainTableMarkdownPath
+    },
     remote_validation_status: remoteValidationStatus,
     recommended_next_actions: recommendedNextActions,
     user_decision_needed: unique([
@@ -8275,6 +8630,14 @@ function renderGcdMvpValidationMarkdown(validationReport = {}) {
     if (criterion.required !== undefined) lines.push(`  - Required: ${criterion.required}`);
     if (criterion.artifact_path) lines.push(`  - Artifact: ${criterion.artifact_path}`);
     if (criterion.note) lines.push(`  - Note: ${criterion.note}`);
+  }
+  if (validationReport.icml_main_table_summary) {
+    const table = validationReport.icml_main_table_summary;
+    lines.push('', '## ICML Main Table Artifact', '');
+    lines.push(`- Status: ${table.status || ''}`);
+    lines.push(`- Rows: ${table.row_count ?? 0}`);
+    lines.push(`- JSON: ${table.artifact_path || ''}`);
+    lines.push(`- Markdown: ${table.markdown_path || ''}`);
   }
   lines.push('', '## Recommended Next Actions', '');
   for (const action of validationReport.recommended_next_actions || []) {
@@ -8328,6 +8691,7 @@ function controllerExportFromOverlay(paths, overlay = {}) {
   const selectedSubgraphs = overlay.selectedSubgraphs?.subgraphs || [];
   const candidateNodes = overlay.candidateGraph?.nodes || [];
   const methodCardPack = overlay.selectedSubgraphs?.method_card_pack || null;
+  const icmlMainTable = overlay.icmlMainTable || buildIcmlMainTable(paths, overlay);
   const decompositionBackend = state.decomposition_generation?.backend
     || state.llm_assistance?.decomposition_generation
     || 'deterministic_or_unrecorded';
@@ -8451,6 +8815,7 @@ function controllerExportFromOverlay(paths, overlay = {}) {
     experiment_plan_pack: overlay.experimentPlan || null,
     experiment_plans: overlay.experimentPlan?.plans || [],
     gcd_mvp_validation: overlay.gcdMvpValidation || null,
+    icml_main_table: icmlMainTable,
     judge_trace_summary: {
       decision_count: overlay.judgeDecisions?.length || 0,
       latest_decisions: (overlay.judgeDecisions || []).slice(-20).map((decision) => ({
@@ -8650,6 +9015,14 @@ function renderControllerExportMarkdown(exportPayload = {}) {
     lines.push(`- Failed criteria: ${validation.summary?.failed_criteria_count ?? 0}`);
     lines.push(`- Blocked criteria: ${validation.summary?.blocked_criteria_count ?? 0}`);
   }
+  if (exportPayload.icml_main_table?.rows?.length) {
+    lines.push('', '## ICML Main Table Artifact', '');
+    lines.push(`- Status: ${exportPayload.icml_main_table.status || ''}`);
+    lines.push(`- Rows: ${exportPayload.icml_main_table.rows.length}`);
+    for (const row of exportPayload.icml_main_table.rows) {
+      lines.push(`- ${row.strategy}: evidence_pass=${row.evidence_contract_pass_rate ?? 0}, usable_proxy=${row.usable_idea_rate_proxy ?? 0}, unsupported_bridge=${row.unsupported_bridge_claim_count ?? 0}`);
+    }
+  }
   if (exportPayload.judge_trace_summary?.latest_decisions?.length) {
     lines.push('', '## Judge Decisions', '');
     for (const decision of exportPayload.judge_trace_summary.latest_decisions.slice(0, 20)) {
@@ -8677,7 +9050,10 @@ function renderControllerExportMarkdown(exportPayload = {}) {
 }
 
 async function writeControllerExport(paths, overlay = {}) {
-  const exportPayload = controllerExportFromOverlay(paths, overlay);
+  const icmlMainTable = buildIcmlMainTable(paths, overlay);
+  const exportPayload = controllerExportFromOverlay(paths, { ...overlay, icmlMainTable });
+  await writeJson(paths.icmlMainTablePath, icmlMainTable);
+  await writeText(paths.icmlMainTableMarkdownPath, renderIcmlMainTableMarkdown(icmlMainTable));
   await writeJson(paths.controllerExportJsonPath, exportPayload);
   await writeText(paths.controllerExportMarkdownPath, renderControllerExportMarkdown(exportPayload));
   return exportPayload;
@@ -10159,7 +10535,7 @@ async function executeGenerateExperimentPlan(paths, args = {}) {
   };
 }
 
-async function executeValidateGcdMvp(paths, args = {}) {
+async function executeValidateGcdMvp(paths, args = {}, context = {}) {
   await ensureInitialized(paths, args);
   const dryRun = booleanFlag(args.dryRun || args.dry_run, false);
   const overlay = await loadControllerOverlay(paths);
@@ -10172,7 +10548,8 @@ async function executeValidateGcdMvp(paths, args = {}) {
     });
   }
 
-  const validationReport = await buildGcdMvpValidationReport(paths, overlay, args);
+  const validationReport = await buildGcdMvpValidationReport(paths, overlay, args, context);
+  const icmlMainTable = buildIcmlMainTable(paths, { ...overlay, gcdMvpValidation: validationReport });
   const nextState = updateStateAfterGcdMvpValidation(state, validationReport, validationReport.warnings || []);
   const nextRoundReport = {
     ...buildRoundReport(
@@ -10188,6 +10565,8 @@ async function executeValidateGcdMvp(paths, args = {}) {
     await withFileLock(paths.lockPath, async () => {
       await writeJson(paths.gcdMvpValidationPath, validationReport);
       await writeText(paths.gcdMvpValidationMarkdownPath, renderGcdMvpValidationMarkdown(validationReport));
+      await writeJson(paths.icmlMainTablePath, icmlMainTable);
+      await writeText(paths.icmlMainTableMarkdownPath, renderIcmlMainTableMarkdown(icmlMainTable));
       await writeJson(paths.controllerStatePath, nextState);
       await writeJson(paths.roundReportPath, nextRoundReport);
       await writeText(paths.roundReportMarkdownPath, renderRoundReportMarkdown(nextState, overlay.subproblemGraph || {}, overlay.decompositionReview || {}));
@@ -10198,6 +10577,7 @@ async function executeValidateGcdMvp(paths, args = {}) {
     ? {
         ...overlay,
         gcdMvpValidation: validationReport,
+        icmlMainTable,
         controllerState: nextState,
         roundReport: nextRoundReport
       }
@@ -10218,7 +10598,8 @@ async function executeValidateGcdMvp(paths, args = {}) {
       },
       user_decision_needed: validationReport.user_decision_needed || []
     }),
-    gcd_mvp_validation: validationReport
+    gcd_mvp_validation: validationReport,
+    icml_main_table: icmlMainTable
   };
 }
 

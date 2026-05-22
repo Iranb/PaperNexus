@@ -55,7 +55,14 @@ export function startMcpServer(options = {}) {
       }
 
       try {
-        const result = await withToolStdoutRedirected(() => handleMessage(message, options));
+        const result = await withToolStdoutRedirected(() => handleMessage(message, {
+          ...options,
+          mcpInvocation: {
+            transport: 'stdio',
+            method: message.method,
+            toolName: message.params?.name || null
+          }
+        }));
         sendMessage(createJsonRpcSuccess(message.id, result));
       } catch (error) {
         sendMessage(createJsonRpcError(message.id, -32603, error.message));

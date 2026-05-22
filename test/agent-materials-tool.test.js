@@ -2051,11 +2051,23 @@ test('agent_materials research_controller initializes status and export artifact
     )));
     assert.equal(exported.export.experiment_plans.length, 2);
     assert.equal(exported.export.experiment_plan_pack.execution_status, 'not_executed');
+    assert.equal(exported.export.icml_main_table.record_type, 'icml_main_table_artifact');
+    assert.ok(exported.export.icml_main_table.rows.some((row) => row.strategy === 'topk'));
+    assert.ok(exported.export.icml_main_table.rows.some((row) => row.strategy === 'mmr'));
+    assert.ok(exported.export.icml_main_table.rows.some((row) => row.strategy === 'greedy_submodular'));
+    assert.ok(exported.export.icml_main_table.rows.some((row) => row.strategy === 'beam_graph_search'));
     assert.equal(exported.export.decomposition_drift_review.status, 'possible');
     assert.ok(exported.export.user_decision_needed.some((item) => item.includes('Post-evidence drift signals')));
     assert.ok(exported.export.judge_trace_summary.decision_count > 0);
     assert.ok(exported.export.judge_trace_summary.latest_decisions.length > 0);
     assert.ok(exported.artifact_paths.controller_export_json.endsWith('controller-export.json'));
+    assert.ok(exported.artifact_paths.icml_main_table.endsWith('icml-main-table.json'));
+    const icmlMainTable = JSON.parse(await fs.readFile(exported.artifact_paths.icml_main_table, 'utf8'));
+    assert.equal(icmlMainTable.record_type, 'icml_main_table_artifact');
+    assert.ok(icmlMainTable.rows.every((row) => row.metric_source));
+    const icmlMainTableMarkdown = await fs.readFile(exported.artifact_paths.icml_main_table_md, 'utf8');
+    assert.match(icmlMainTableMarkdown, /ICML Main Table Artifact/);
+    assert.match(icmlMainTableMarkdown, /Usable proxy/);
     const exportMarkdown = await fs.readFile(exported.artifact_paths.controller_export_md, 'utf8');
     assert.match(exportMarkdown, /Candidate Method Cards/);
     assert.match(exportMarkdown, /Selected Method Card Pack/);
@@ -2070,6 +2082,7 @@ test('agent_materials research_controller initializes status and export artifact
     assert.match(exportMarkdown, /Candidate Relations/);
     assert.match(exportMarkdown, /Judge Decisions/);
     assert.match(exportMarkdown, /Selected Subgraphs/);
+    assert.match(exportMarkdown, /ICML Main Table Artifact/);
 
     const runRound = await executeAgentMaterialsTool({
       operation: 'research_controller',
@@ -2089,6 +2102,59 @@ test('agent_materials research_controller initializes status and export artifact
     assert.ok(runRound.export.solution_sketches.length > 0);
     assert.ok(runRound.export.design_reviews.length > 0);
     assert.ok(runRound.export.innovation_briefs.length > 0);
+
+    const directValidation = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'validate_gcd_mvp',
+      corpus: rootPath,
+      project: 'Fresh Controller'
+    });
+    assert.ok(['blocked', 'needs_input'].includes(directValidation.status));
+    assert.equal(directValidation.gcd_mvp_validation.remote_validation_status.status, 'blocked_unless_remote_mcp_callable');
+    assert.equal(
+      directValidation.gcd_mvp_validation.criteria.find((criterion) => criterion.criterion_id === 'remote_mcp_smoke')?.status,
+      'blocked'
+    );
+
+    const directPayloadValidation = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'validate_gcd_mvp',
+      corpus: rootPath,
+      project: 'Fresh Controller',
+      remoteValidation: {
+        status: 'pass',
+        source: 'caller_supplied_fixture'
+      }
+    });
+    assert.equal(directPayloadValidation.gcd_mvp_validation.remote_validation_status.status, 'blocked_unless_remote_mcp_callable');
+    assert.equal(
+      directPayloadValidation.gcd_mvp_validation.remote_validation_status.caller_supplied_remote_validation.status,
+      'pass'
+    );
+    assert.equal(
+      directPayloadValidation.gcd_mvp_validation.criteria.find((criterion) => criterion.criterion_id === 'remote_mcp_smoke')?.status,
+      'blocked'
+    );
+
+    const mcpValidation = await executeAgentMaterialsTool({
+      operation: 'research_controller',
+      action: 'validate_gcd_mvp',
+      corpus: rootPath,
+      project: 'Fresh Controller'
+    }, {
+      mcpInvocation: {
+        transport: 'streamable-http',
+        method: 'tools/call',
+        toolName: 'agent_materials'
+      }
+    });
+    assert.ok(['ok', 'needs_input'].includes(mcpValidation.status));
+    assert.equal(mcpValidation.gcd_mvp_validation.remote_validation_status.status, 'pass');
+    assert.equal(mcpValidation.gcd_mvp_validation.remote_validation_status.source, 'mcp_tool_invocation');
+    assert.equal(
+      mcpValidation.gcd_mvp_validation.criteria.find((criterion) => criterion.criterion_id === 'remote_mcp_smoke')?.status,
+      'pass'
+    );
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

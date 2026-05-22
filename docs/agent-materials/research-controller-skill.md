@@ -113,6 +113,12 @@ mutation.
    pool. Also read `bandit-simulation.json` when planning future exploration;
    it is an offline UCB/Thompson proxy over source-domain and mechanism arms,
    not a human novelty or experiment score.
+   For manuscript-table preparation, read `icml-main-table.json` or
+   `icml-main-table.md` after export or GCD validation. These files compare
+   beam graph search, top-k, MMR, and greedy submodular traces using
+   artifact-derived proxy metrics for evidence pass, usable idea rate,
+   unsupported bridge claims, diversity, and follow-up cost. They are table
+   scaffolds, not novelty, correctness, or empirical-performance evidence.
    Read `selection_policy.batch_objective` and each selected subgraph's
    `marginal_gain` before explaining why a batch was chosen.
    Also read `selection_policy.posterior_update` and `controller-state.json`
@@ -188,9 +194,11 @@ mutation.
    `gcd-mvp-validation.json` and `gcd-mvp-validation.md`, checks local overlay
    artifact coverage such as 30+ candidates across 5+ subproblems, and keeps
    remote MCP smoke validation separate. It is complete only after the action is
-   successfully run through `papernexus-remote`.
+   successfully run through the MCP tool surface exposed by `papernexus-remote`.
 18. Call `action=export` again if downstream Agents need the validation report
-   included in `controller-export.json`.
+   included in `controller-export.json`. Export also refreshes
+   `icml-main-table.json` and `icml-main-table.md` from the current controller
+   artifacts.
 19. Read `controller-export.json` first. Use `controller-export.md` only for
    human-facing synthesis.
 20. Generate or revise downstream innovation briefs from selected subgraphs and evidence
@@ -235,9 +243,10 @@ mutation.
   run an experiment. Experiment plans are design artifacts and still require a
   separate approved execution workflow before any training, job submission,
   import, or graph mutation.
-- Do not treat `gcd-mvp-validation.json` as remote smoke evidence unless the
-  validation action itself succeeded through the configured `papernexus-remote`
-  MCP server.
+- Do not treat `gcd-mvp-validation.json` as remote smoke evidence unless its
+  `remote_mcp_smoke` criterion is `pass`. Direct/local function calls stay
+  blocked; MCP tool calls record an invocation marker, and caller-supplied
+  remote-validation metadata must remain auditable.
 
 ## Innovation Brief Schema
 
@@ -294,7 +303,8 @@ post-evidence decomposition drift surfacing from design reviews and material
 results,
 bounded innovation brief generation from selected subgraphs and design reviews,
 plan-only experiment-plan generation after explicit approval, export,
-GCD MVP validation/retrospective report generation through `validate_gcd_mvp`, and a
+GCD MVP validation/retrospective report generation through `validate_gcd_mvp`
+with direct-call blocking and MCP invocation detection, and a
 safe `run_round` path. In
 `quick` mode `run_round` refreshes and reviews decomposition when needed, then
 stops after graph candidates and relations; in default `planning` mode it also
@@ -305,4 +315,4 @@ separately after approval. Solution sketches, innovation briefs, and experiment
 plans remain user decision artifacts and are not final research directions or
 executable run instructions. `validate_gcd_mvp` can be called at any time after
 initialization, but a passing local report is still not a substitute for a
-successful `papernexus-remote` MCP smoke run.
+successful MCP-smoke criterion in `gcd-mvp-validation.json`.

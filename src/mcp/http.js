@@ -213,7 +213,14 @@ export async function handleMcpHttpRequest(request, response, options = {}) {
   }
 
   try {
-    const result = await handleMessage(message, options);
+    const result = await handleMessage(message, {
+      ...options,
+      mcpInvocation: {
+        transport: 'streamable-http',
+        method: message.method,
+        toolName: message.params?.name || null
+      }
+    });
     sendJson(response, 200, createJsonRpcSuccess(message.id ?? null, result), resolveMcpSessionHeaders(request, message));
     return {
       rpcMethod: message.method,
