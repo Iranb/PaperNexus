@@ -42,6 +42,11 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=8)
     parser.add_argument("--mechanisms", action="append", default=[])
     parser.add_argument("--output-mode", choices=["idea_fragments", "packet_bundle"], default="idea_fragments")
+    parser.add_argument("--selection-mode", choices=["default", "topk", "mmr", "submodular", "dpp"], default="default")
+    parser.add_argument("--selection-k", type=int, default=3)
+    parser.add_argument("--mmr-lambda", type=float, default=0.65)
+    parser.add_argument("--min-evidence-tier", choices=["strong", "moderate"], default="moderate")
+    parser.add_argument("--require-bridge-path", action="store_true")
     parser.add_argument("--include-analysis", action="store_true")
     return parser.parse_args()
 
@@ -67,6 +72,11 @@ def main() -> int:
             "limit": args.limit,
             "mechanisms": args.mechanisms,
             "outputMode": args.output_mode,
+            "selectionMode": args.selection_mode,
+            "selectionK": args.selection_k,
+            "mmrLambda": args.mmr_lambda,
+            "minEvidenceTier": args.min_evidence_tier,
+            "requireBridgePath": args.require_bridge_path,
             "includeAnalysis": args.include_analysis,
         }
         payload = call_mcp_tool_json(

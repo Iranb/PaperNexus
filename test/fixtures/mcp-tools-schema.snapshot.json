@@ -37,8 +37,8 @@
             "run_round",
             "select_batch",
             "status",
-            "validate_gcd_mvp",
-            "update"
+            "update",
+            "validate_gcd_mvp"
           ]
         },
         "actor": {
@@ -786,6 +786,18 @@
             }
           ]
         },
+        "minEvidenceTier": {
+          "type": "string",
+          "default": "moderate",
+          "enum": [
+            "moderate",
+            "strong"
+          ]
+        },
+        "mmrLambda": {
+          "type": "number",
+          "default": 0.65
+        },
         "mode": {
           "type": "string",
           "default": "graph",
@@ -820,6 +832,25 @@
         "relevanceThreshold": {
           "type": "number",
           "default": 3
+        },
+        "requireBridgePath": {
+          "type": "boolean",
+          "default": false
+        },
+        "selectionK": {
+          "type": "number",
+          "default": 3
+        },
+        "selectionMode": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "default",
+            "dpp",
+            "mmr",
+            "submodular",
+            "topk"
+          ]
         },
         "sourceRelevanceThreshold": {
           "type": "number",

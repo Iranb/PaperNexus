@@ -1256,6 +1256,33 @@ export const PAPERNEXUS_TOOLS = [
           enum: ['idea_fragments', 'packet_bundle'],
           default: 'idea_fragments'
         },
+        selectionMode: {
+          type: 'string',
+          enum: ['default', 'topk', 'mmr', 'submodular', 'dpp'],
+          default: 'default',
+          description: 'Optional post-generation selector. Use mmr, submodular, or dpp to return a graph-grounded diversity rerank with selection_trace.'
+        },
+        selectionK: {
+          type: 'number',
+          default: 3,
+          description: 'Maximum idea fragments returned when selectionMode is topk, mmr, submodular, or dpp.'
+        },
+        mmrLambda: {
+          type: 'number',
+          default: 0.65,
+          description: 'MMR relevance/diversity tradeoff for selectionMode=mmr. Higher values favor utility over diversity.'
+        },
+        minEvidenceTier: {
+          type: 'string',
+          enum: ['strong', 'moderate'],
+          default: 'moderate',
+          description: 'Minimum evidence tier admitted by the selector evidence gate.'
+        },
+        requireBridgePath: {
+          type: 'boolean',
+          default: false,
+          description: 'When true, the selector rejects candidates without bridge path provenance.'
+        },
         includeAnalysis: {
           type: 'boolean',
           default: false

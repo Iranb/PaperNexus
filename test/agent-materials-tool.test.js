@@ -1444,6 +1444,22 @@ test('agent_materials research_controller initializes status and export artifact
     assert.equal(candidateRecords[0].status, 'proposed');
     const generatedCandidateNodes = candidateRecords.filter((record) => record.record_type === 'candidate_node');
     assert.ok(generatedCandidateNodes.length >= 2);
+    const searchTrace = JSON.parse(await fs.readFile(generated.artifact_paths.search_trace, 'utf8'));
+    assert.equal(searchTrace.record_type, 'search_trace');
+    assert.equal(searchTrace.policy, 'beam_graph_search_mvp');
+    assert.ok(searchTrace.budget.maxCandidates >= generatedCandidateNodes.length);
+    assert.ok(searchTrace.layers.some((layer) => (
+      layer.name === 'bridge'
+      && typeof layer.inputStates === 'number'
+      && typeof layer.pruneReasons === 'object'
+    )));
+    assert.ok(searchTrace.search_states.every((state) => (
+      state.record_type === 'idea_search_state'
+      && state.target_challenge
+      && state.target_domain
+      && Array.isArray(state.bridge_path_refs)
+      && Array.isArray(state.evidence_span_refs)
+    )));
     const producerCandidateId = generatedCandidateNodes[0].candidate_id;
     const consumerCandidateId = generatedCandidateNodes[1].candidate_id;
     const farSourceCandidateId = producerCandidateId;
@@ -1629,6 +1645,22 @@ test('agent_materials research_controller initializes status and export artifact
     assert.ok(selected.selection.subgraphs.every((subgraph) => subgraph.primary_candidate_id));
     assert.ok(selected.selection.subgraphs.every((subgraph) => typeof subgraph.marginal_gain === 'number'));
     assert.ok(selected.selection.subgraphs.every((subgraph) => subgraph.selection_reasons.length > 0));
+    assert.ok(selected.selection.subgraphs.every((subgraph) => subgraph.search_trace_ref?.trace_id));
+    assert.deepEqual(
+      selected.selection.selection_trace.selectors.map((selector) => selector.selector),
+      ['topk', 'mmr', 'greedy_submodular']
+    );
+    assert.ok(selected.selection.bandit_state_summary.reward_ledger.length > 0);
+    assert.ok(selected.selection.bandit_state_summary.updates.every((update) => update.reward_components.reward >= 0));
+    assert.deepEqual(
+      selected.selection.bandit_state_summary.policy_comparison.policies.map((policy) => policy.policy),
+      ['random', 'fixed_prior', 'ucb', 'thompson']
+    );
+    assert.equal(selected.selection.bandit_state_summary.cost_normalized_metrics.metric_source, 'offline_candidate_scoring_proxy');
+    assert.ok(selected.selection.bandit_state_summary.cost_normalized_metrics.evidence_pass_per_call >= 0);
+    assert.ok(selected.selection.bandit_state_summary.cost_normalized_metrics.usable_idea_per_call >= 0);
+    assert.ok(selected.artifact_paths.bandit_state.endsWith('bandit-state.json'));
+    assert.ok(selected.artifact_paths.bandit_simulation_report.endsWith('bandit-simulation-report.md'));
     assert.ok([
       ...selected.selection.subgraphs,
       ...selected.selection.parked
@@ -1643,6 +1675,24 @@ test('agent_materials research_controller initializes status and export artifact
     const selectedSubgraphs = JSON.parse(await fs.readFile(selected.artifact_paths.selected_subgraphs, 'utf8'));
     assert.equal(selectedSubgraphs.record_type, 'selected_subgraphs');
     assert.equal(selectedSubgraphs.subgraphs.length, 2);
+    assert.ok(selectedSubgraphs.subgraphs.every((subgraph) => subgraph.search_trace_ref?.search_state_id));
+    const selectionTrace = JSON.parse(await fs.readFile(selected.artifact_paths.selection_trace, 'utf8'));
+    assert.equal(selectionTrace.record_type, 'selection_trace');
+    assert.equal(selectionTrace.search_trace_ref.trace_id, searchTrace.trace_id);
+    assert.ok(selectionTrace.ablation_summary.mmr_selected_candidate_ids.length > 0);
+    const searchTraceAfterSelection = JSON.parse(await fs.readFile(selected.artifact_paths.search_trace, 'utf8'));
+    assert.equal(searchTraceAfterSelection.final_selector.trace_id, selectionTrace.trace_id);
+    assert.equal(searchTraceAfterSelection.selection_trace_ref.trace_id, selectionTrace.trace_id);
+    const banditState = JSON.parse(await fs.readFile(selected.artifact_paths.bandit_state, 'utf8'));
+    assert.equal(banditState.record_type, 'bandit_state');
+    assert.ok(banditState.updates.length > 0);
+    assert.equal(banditState.policy_comparison.policies.length, 4);
+    assert.ok(banditState.cost_normalized_metrics.proxy_call_count > 0);
+    const banditReport = await fs.readFile(selected.artifact_paths.bandit_simulation_report, 'utf8');
+    assert.match(banditReport, /Bandit Simulation Report/);
+    assert.match(banditReport, /Reward Components/);
+    assert.match(banditReport, /Offline Policy Comparison/);
+    assert.match(banditReport, /Cost-Normalized Proxy Metrics/);
     const candidateGraphAfterSelectionText = await fs.readFile(selected.artifact_paths.candidate_graph, 'utf8');
     const candidateRecordsAfterSelection = candidateGraphAfterSelectionText.trim().split('\n').map((line) => JSON.parse(line));
     assert.ok(candidateRecordsAfterSelection.some((record) => record.record_type === 'candidate_node' && record.status === 'selected'));

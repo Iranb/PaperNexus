@@ -3,6 +3,7 @@ import {
 } from '../server/api.js';
 import { runLiveIdeaCatalyst } from '../core/graph/idea-catalyst-live.js';
 import { buildIdeaCatalystEvidenceExport } from '../core/graph/idea-catalyst-evidence-export.js';
+import { selectIdeas } from '../core/graph/diversity-selection.js';
 
 function clampScore(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -38,6 +39,36 @@ function normalizeMode(args = {}) {
   if (raw === 'live' || raw === 'snippets' || raw === 'paper_faithful') return 'live_discovery';
   if (raw === 'live_discovery' || raw === 'hybrid' || raw === 'graph') return raw;
   return 'graph';
+}
+
+function normalizeSelectionParams(args = {}, problem = '') {
+  const mode = String(args.selectionMode || args.selection_mode || 'default').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  return {
+    mode: ['topk', 'mmr', 'submodular', 'greedy_submodular', 'dpp'].includes(mode) ? mode : 'default',
+    k: Math.max(1, Number(args.selectionK || args.selection_k || args.k || 3)),
+    lambda: args.mmrLambda ?? args.mmr_lambda,
+    minEvidenceTier: args.minEvidenceTier || args.min_evidence_tier || 'moderate',
+    requireBridgePath: enabledFlag(args.requireBridgePath ?? args.require_bridge_path),
+    context: { problem }
+  };
+}
+
+function applyIdeaSelection(fragments = [], selectionParams = {}) {
+  if (!['topk', 'mmr', 'submodular', 'greedy_submodular', 'dpp'].includes(selectionParams.mode)) return null;
+  return selectIdeas(fragments, selectionParams);
+}
+
+function applyPacketBundleSelection(packetBundle = {}, selectionParams = {}) {
+  const selection = applyIdeaSelection(packetBundle.idea_fragments || [], selectionParams);
+  if (!selection) return { packetBundle, selectionTrace: null };
+  return {
+    packetBundle: {
+      ...packetBundle,
+      idea_fragments: selection.selected,
+      selection_trace: selection.selection_trace
+    },
+    selectionTrace: selection.selection_trace
+  };
 }
 
 function buildLiveLlmParams(args = {}, options = {}) {
@@ -158,6 +189,7 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
   const outputMode = String(args.outputMode || args.output_mode || 'idea_fragments').trim() || 'idea_fragments';
   const includeAnalysis = args.includeAnalysis === true || args.include_analysis === true;
   const mode = normalizeMode(args);
+  const selectionParams = normalizeSelectionParams(args, problem);
 
   if (!problem) {
     throw new Error('problem is required.');
@@ -181,9 +213,11 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
     });
 
     if (outputMode === 'packet_bundle') {
+      const { packetBundle, selectionTrace } = applyPacketBundleSelection(live.packetBundle || {}, selectionParams);
       return {
         mode,
-        packet_bundle: live.packetBundle,
+        packet_bundle: packetBundle,
+        selection_trace: selectionTrace || undefined,
         evidence_export: evidenceExport,
         run_id: evidenceExport.run_id,
         trace_id: evidenceExport.trace_id,
@@ -192,9 +226,11 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       };
     }
 
+    const liveSelection = applyIdeaSelection(live.idea_fragments || [], selectionParams);
     return {
       mode,
-      idea_fragments: live.idea_fragments || [],
+      idea_fragments: liveSelection?.selected || live.idea_fragments || [],
+      selection_trace: liveSelection?.selection_trace || undefined,
       faithfulness_report: live.faithfulness_report,
       evidence_export: evidenceExport,
       run_id: evidenceExport.run_id,
@@ -219,6 +255,7 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
   }, options);
 
   if (outputMode === 'packet_bundle') {
+    const { packetBundle, selectionTrace } = applyPacketBundleSelection(payload.packetBundle || {}, selectionParams);
     const graphEvidenceExport = buildIdeaCatalystEvidenceExport({
       mode,
       problem,
@@ -229,7 +266,8 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
     });
     const graphResponse = {
       rootPath: payload.rootPath,
-      packet_bundle: payload.packetBundle,
+      packet_bundle: packetBundle,
+      selection_trace: selectionTrace || undefined,
       evidence_export: graphEvidenceExport,
       run_id: graphEvidenceExport.run_id,
       trace_id: graphEvidenceExport.trace_id,
@@ -256,18 +294,25 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       runId: args.runId || args.run_id || null,
       traceId: args.traceId || args.trace_id || null
     });
+    const livePacketSelection = applyPacketBundleSelection(live.packetBundle || {}, selectionParams);
     return {
       ...graphResponse,
       mode,
       evidence_export: hybridEvidenceExport,
       run_id: hybridEvidenceExport.run_id,
       trace_id: hybridEvidenceExport.trace_id,
-      live_packet_bundle: live.packetBundle,
+      live_packet_bundle: livePacketSelection.packetBundle,
+      live_selection_trace: livePacketSelection.selectionTrace || undefined,
       live_discovery: includeAnalysis ? live : undefined
     };
   }
 
   const legacy = buildLegacyIdeaCatalystResponse(payload, problem, relevanceThreshold);
+  const legacySelection = applyIdeaSelection(legacy.idea_fragments || [], selectionParams);
+  if (legacySelection) {
+    legacy.idea_fragments = legacySelection.selected;
+    legacy.selection_trace = legacySelection.selection_trace;
+  }
   legacy.mode = mode;
   legacy.evidence_export = buildIdeaCatalystEvidenceExport({
     mode,
@@ -284,7 +329,9 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       buildLiveCatalystParams(args, problem, targetDomain, options),
       options
     );
-    legacy.live_idea_fragments = live.idea_fragments || [];
+    const liveSelection = applyIdeaSelection(live.idea_fragments || [], selectionParams);
+    legacy.live_idea_fragments = liveSelection?.selected || live.idea_fragments || [];
+    if (liveSelection) legacy.live_selection_trace = liveSelection.selection_trace;
     legacy.faithfulness_report = live.faithfulness_report;
     legacy.evidence_export = buildIdeaCatalystEvidenceExport({
       mode,

@@ -473,6 +473,8 @@ function controllerPaths(rootPath, projectValue) {
     selectedSubgraphsPath: path.join(base.root, 'selected-subgraphs.json'),
     selectionTracePath: path.join(base.root, 'selection-trace.json'),
     banditSimulationPath: path.join(base.root, 'bandit-simulation.json'),
+    banditStatePath: path.join(base.root, 'bandit-state.json'),
+    banditSimulationReportPath: path.join(base.root, 'bandit-simulation-report.md'),
     methodCardPackPath: path.join(base.root, 'method-card-pack.md'),
     materialExpansionResultsPath: path.join(base.root, 'material-expansion-results.jsonl'),
     solutionSketchesPath: path.join(base.root, 'solution-sketches.jsonl'),
@@ -508,6 +510,8 @@ function publicArtifactPaths(paths) {
     selected_subgraphs: paths.selectedSubgraphsPath,
     selection_trace: paths.selectionTracePath,
     bandit_simulation: paths.banditSimulationPath,
+    bandit_state: paths.banditStatePath,
+    bandit_simulation_report: paths.banditSimulationReportPath,
     method_card_pack: paths.methodCardPackPath,
     material_expansion_results: paths.materialExpansionResultsPath,
     solution_sketches: paths.solutionSketchesPath,
@@ -599,6 +603,8 @@ async function loadControllerOverlay(paths) {
     selectedSubgraphs,
     selectionTrace,
     banditSimulation,
+    banditState,
+    banditSimulationReport,
     methodCardPackText,
     materialExpansionResults,
     solutionSketches,
@@ -620,6 +626,8 @@ async function loadControllerOverlay(paths) {
     readJson(paths.selectedSubgraphsPath, null),
     readJson(paths.selectionTracePath, null),
     readJson(paths.banditSimulationPath, null),
+    readJson(paths.banditStatePath, null),
+    readOptionalText(paths.banditSimulationReportPath),
     readOptionalText(paths.methodCardPackPath),
     readJsonl(paths.materialExpansionResultsPath),
     readJsonl(paths.solutionSketchesPath),
@@ -644,6 +652,8 @@ async function loadControllerOverlay(paths) {
     selectedSubgraphs,
     selectionTrace,
     banditSimulation,
+    banditState,
+    banditSimulationReport,
     methodCardPackText,
     materialExpansionResults,
     solutionSketches,
@@ -2653,6 +2663,7 @@ function collectCandidateSearchForSubproblem(graph, subproblem = {}, state = {},
       depths: [
         {
           depth: 'source_domain',
+          input_count: 1,
           expanded_count: counters.query_count,
           kept_count: counters.query_count,
           pruned_count: 0,
@@ -2660,6 +2671,7 @@ function collectCandidateSearchForSubproblem(graph, subproblem = {}, state = {},
         },
         {
           depth: 'mechanism',
+          input_count: counters.query_count,
           expanded_count: counters.expanded_groups,
           kept_count: counters.paper_groups,
           pruned_count: counters.non_paper_groups,
@@ -2667,6 +2679,7 @@ function collectCandidateSearchForSubproblem(graph, subproblem = {}, state = {},
         },
         {
           depth: 'bridge',
+          input_count: counters.paper_groups,
           expanded_count: counters.paper_groups,
           kept_count: candidates.length,
           pruned_count: counters.duplicate_papers + counters.beam_pruned,
@@ -2677,6 +2690,7 @@ function collectCandidateSearchForSubproblem(graph, subproblem = {}, state = {},
         },
         {
           depth: 'evidence',
+          input_count: candidates.length,
           expanded_count: candidates.length,
           kept_count: counters.finalized,
           pruned_count: 0,
@@ -2685,6 +2699,7 @@ function collectCandidateSearchForSubproblem(graph, subproblem = {}, state = {},
         },
         {
           depth: 'idea',
+          input_count: candidates.length,
           expanded_count: candidates.length,
           kept_count: candidates.length,
           pruned_count: 0,
@@ -2697,12 +2712,48 @@ function collectCandidateSearchForSubproblem(graph, subproblem = {}, state = {},
   };
 }
 
+function searchTraceLayersFromDepths(depths = []) {
+  const layerNames = {
+    source_domain: 'domain',
+    mechanism: 'mechanism',
+    bridge: 'bridge',
+    evidence: 'evidence',
+    idea: 'idea'
+  };
+  return (depths || []).map((depth) => {
+    const inputStates = depth.input_count || 0;
+    const expandedStates = depth.expanded_count || depth.expansion_count || 0;
+    const prunedStates = depth.pruned_count || 0;
+    const keptStates = depth.kept_count || 0;
+    const pruneReasons = depth.prune_reasons || {};
+    return {
+      name: layerNames[depth.depth] || depth.depth || 'unknown',
+      depth: depth.depth || null,
+      inputStates,
+      input_states: inputStates,
+      expandedStates,
+      expanded_states: expandedStates,
+      prunedStates,
+      pruned_states: prunedStates,
+      keptStates,
+      kept_states: keptStates,
+      requisitionedStates: depth.requisitioned_count || 0,
+      requisitioned_states: depth.requisitioned_count || 0,
+      finalizedStates: depth.finalized_count || 0,
+      finalized_states: depth.finalized_count || 0,
+      pruneReasons,
+      prune_reasons: pruneReasons
+    };
+  });
+}
+
 function mergeIdeaSearchTraces(subproblemRuns = [], state = {}, args = {}) {
   const depths = new Map();
   const addDepth = (depthEntry = {}) => {
     const key = depthEntry.depth || 'unknown';
     const current = depths.get(key) || {
       depth: key,
+      input_count: 0,
       expanded_count: 0,
       kept_count: 0,
       pruned_count: 0,
@@ -2710,6 +2761,7 @@ function mergeIdeaSearchTraces(subproblemRuns = [], state = {}, args = {}) {
       finalized_count: 0,
       prune_reasons: {}
     };
+    current.input_count += depthEntry.input_count || 0;
     current.expanded_count += depthEntry.expanded_count || 0;
     current.kept_count += depthEntry.kept_count || 0;
     current.pruned_count += depthEntry.pruned_count || 0;
@@ -2724,15 +2776,48 @@ function mergeIdeaSearchTraces(subproblemRuns = [], state = {}, args = {}) {
     for (const depth of run.subproblem_trace?.depths || []) addDepth(depth);
   }
   const searchStates = subproblemRuns.flatMap((run) => run.search_states || []);
+  const mergedDepths = [...depths.values()];
+  const beamWidth = boundedInteger(
+    args.beamWidth ?? args.beam_width ?? args.candidatesPerSubproblem ?? args.candidates_per_subproblem,
+    0,
+    { min: 0, max: 100 }
+  ) || null;
+  const maxCandidates = boundedInteger(
+    args.maxCandidates ?? args.maxCandidateNodes ?? args.max_candidate_nodes ?? state.budget?.max_candidate_nodes,
+    Math.max(searchStates.length, 0),
+    { min: 0, max: 500 }
+  );
+  const maxProviderQueries = boundedInteger(
+    args.maxProviderQueries ?? args.max_provider_queries ?? state.budget?.max_provider_queries,
+    0,
+    { min: 0, max: 10000 }
+  );
+  const maxDepth = mergedDepths.length;
+  const budget = {
+    maxCandidates,
+    max_candidates: maxCandidates,
+    beamWidth,
+    beam_width: beamWidth,
+    maxDepth,
+    max_depth: maxDepth,
+    maxProviderQueries,
+    max_provider_queries: maxProviderQueries
+  };
   return {
     record_type: 'search_trace',
     version: RESEARCH_CONTROLLER_CONTRACT_VERSION,
     trace_id: `search-trace:${stableHash(`${state.project || ''}:${state.task_id || ''}:${state.current_round ?? 0}:${searchStates.length}`, 16)}`,
     project: state.project || null,
     round_id: `round:${state.current_round ?? 0}`,
+    targetChallenge: state.target_problem || null,
+    target_challenge: state.target_problem || null,
+    targetDomain: state.target_domain || null,
+    target_domain: state.target_domain || null,
+    budget,
     policy: 'beam_graph_search_mvp',
-    beam_width: boundedInteger(args.beamWidth ?? args.beam_width ?? args.candidatesPerSubproblem ?? args.candidates_per_subproblem, 0, { min: 0, max: 100 }) || null,
-    depths: [...depths.values()],
+    beam_width: beamWidth,
+    layers: searchTraceLayersFromDepths(mergedDepths),
+    depths: mergedDepths,
     subproblem_traces: subproblemRuns.map((run) => run.subproblem_trace),
     search_states: searchStates,
     finalized_state_ids: searchStates
@@ -4839,6 +4924,10 @@ function selectorAblationTrace(scoredCandidates = [], maxSelected = 3, options =
   const topk = topKSelectorTrace(scoredCandidates, maxSelected, candidateById);
   const mmr = mmrSelectCandidates(scoredCandidates, maxSelected, options);
   const greedy = options.greedyResult || { selected: [], trace: [], coverage: {} };
+  const searchTraceRef = options.searchTrace ? {
+    trace_id: options.searchTrace.trace_id || null,
+    policy: options.searchTrace.policy || null
+  } : null;
   return {
     record_type: 'selection_trace',
     version: RESEARCH_CONTROLLER_CONTRACT_VERSION,
@@ -4847,6 +4936,8 @@ function selectorAblationTrace(scoredCandidates = [], maxSelected = 3, options =
     round_id: `round:${options.state?.current_round ?? 0}`,
     selector: 'greedy_submodular',
     k: maxSelected,
+    search_trace_ref: searchTraceRef,
+    searchTraceRef,
     hard_gates: ['judge_reject', 'risk>=0.85_and_feasibility<0.35', 'far_source_requires_mechanism_fit_or_bridge_evidence'],
     feature_universe: selectionFeatureUniverse(scoredCandidates, candidateById),
     selectors: [
@@ -4898,6 +4989,36 @@ function selectorAblationTrace(scoredCandidates = [], maxSelected = 3, options =
   };
 }
 
+function finalSelectorSummary(selectionTrace = {}) {
+  return {
+    trace_id: selectionTrace.trace_id || null,
+    selector: selectionTrace.selector || null,
+    k: selectionTrace.k || 0,
+    selected_candidate_ids: selectionTrace.ablation_summary?.greedy_submodular_selected_candidate_ids || [],
+    selectedCandidateIds: selectionTrace.ablation_summary?.greedy_submodular_selected_candidate_ids || [],
+    comparison_selectors: (selectionTrace.selectors || []).map((selector) => selector.selector).filter(Boolean),
+    comparisonSelectors: (selectionTrace.selectors || []).map((selector) => selector.selector).filter(Boolean)
+  };
+}
+
+function attachFinalSelectorToSearchTrace(searchTrace = null, selectionTrace = null) {
+  if (!searchTrace || !selectionTrace) return searchTrace;
+  const finalSelector = finalSelectorSummary(selectionTrace);
+  const selectionTraceRef = {
+    trace_id: selectionTrace.trace_id || null,
+    selector: selectionTrace.selector || null
+  };
+  return {
+    ...searchTrace,
+    final_selector: finalSelector,
+    finalSelector,
+    selection_trace_ref: selectionTraceRef,
+    selectionTraceRef,
+    generatedAt: searchTrace.generatedAt || nowIso(),
+    updatedAt: nowIso()
+  };
+}
+
 function nearestSelectedCandidateId(entry = {}, selected = [], candidateById = new Map()) {
   const candidate = candidateById.get(entry.candidate_id) || {};
   let nearest = null;
@@ -4912,7 +5033,7 @@ function nearestSelectedCandidateId(entry = {}, selected = [], candidateById = n
   return nearest;
 }
 
-function candidateProxyReward(entry = {}, candidate = {}) {
+function candidateProxyRewardComponents(entry = {}, candidate = {}) {
   const evidenceContractPass = normalizeScore(entry.scores?.evidence_support, 0) >= 0.45 ? 1 : 0;
   const humanOrJudgeUsefulness = normalizeScore(entry.utility, 0);
   const challengeAlignment = normalizeScore(entry.scores?.mechanism_fit, 0.35);
@@ -4933,7 +5054,30 @@ function candidateProxyReward(entry = {}, candidate = {}) {
     - (0.2 * evidenceMismatch)
     - (0.1 * ocrNoise)
   ));
-  return Number(reward.toFixed(3));
+  return {
+    evidencePass: evidenceContractPass,
+    evidence_pass: evidenceContractPass,
+    usefulness: Number(humanOrJudgeUsefulness.toFixed(3)),
+    usefulness_proxy: Number(humanOrJudgeUsefulness.toFixed(3)),
+    challengeAlignment: Number(challengeAlignment.toFixed(3)),
+    challenge_alignment: Number(challengeAlignment.toFixed(3)),
+    diversityGain: Number(diversityGain.toFixed(3)),
+    diversity_gain: Number(diversityGain.toFixed(3)),
+    noveltyProxy: Number(noveltyProxy.toFixed(3)),
+    novelty_proxy: Number(noveltyProxy.toFixed(3)),
+    feasibility: Number(feasibility.toFixed(3)),
+    unsupportedPenalty: Number((unsupportedBridgeClaim * 0.3).toFixed(3)),
+    unsupported_penalty: Number((unsupportedBridgeClaim * 0.3).toFixed(3)),
+    evidenceMismatchPenalty: Number((evidenceMismatch * 0.2).toFixed(3)),
+    evidence_mismatch_penalty: Number((evidenceMismatch * 0.2).toFixed(3)),
+    ocrNoisePenalty: Number((ocrNoise * 0.1).toFixed(3)),
+    ocr_noise_penalty: Number((ocrNoise * 0.1).toFixed(3)),
+    reward: Number(reward.toFixed(3))
+  };
+}
+
+function candidateProxyReward(entry = {}, candidate = {}) {
+  return candidateProxyRewardComponents(entry, candidate).reward;
 }
 
 function addBanditArm(arms = new Map(), armType = '', key = '', entry = {}, candidate = {}, selectedIds = new Set()) {
@@ -4961,13 +5105,149 @@ function addBanditArm(arms = new Map(), armType = '', key = '', entry = {}, cand
   arms.set(armId, arm);
 }
 
+function candidateBanditArmIds(candidate = {}, state = {}) {
+  const sourceDomainKey = candidate.source_domain || candidate.evidence?.source_domain || state.target_domain || '';
+  const mechanismKey = candidateMechanismTokens(candidate).slice(0, 4).join(' ') || candidate.mechanism || '';
+  return [
+    ['source_domain', sourceDomainKey],
+    ['mechanism', mechanismKey]
+  ].map(([armType, key]) => {
+    const normalizedKey = normalizeComparable(key);
+    return normalizedKey ? `${armType}:${normalizedKey}` : null;
+  }).filter(Boolean);
+}
+
+function deterministicPolicyScore(policy = '', entry = {}, candidate = {}, armById = new Map(), state = {}) {
+  if (policy === 'random') {
+    return parseInt(stableHash(`random:${entry.candidate_id}`, 8), 16) / 0xffffffff;
+  }
+  if (policy === 'ucb') {
+    return Math.max(
+      normalizeScore(entry.utility, 0),
+      ...candidateBanditArmIds(candidate, state).map((armId) => armById.get(armId)?.ucb_index || 0)
+    );
+  }
+  if (policy === 'thompson') {
+    return Math.max(
+      normalizeScore(entry.utility, 0),
+      ...candidateBanditArmIds(candidate, state).map((armId) => armById.get(armId)?.thompson_mean_proxy || 0)
+    );
+  }
+  return normalizeScore(entry.utility, 0);
+}
+
+function summarizeBanditPolicy(policy = '', scoredCandidates = [], candidateById = new Map(), rewardById = new Map(), armById = new Map(), state = {}, k = 3) {
+  const ranked = scoredCandidates
+    .map((entry) => {
+      const candidate = candidateById.get(entry.candidate_id) || {};
+      return {
+        entry,
+        candidate,
+        score: deterministicPolicyScore(policy, entry, candidate, armById, state)
+      };
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      if ((right.entry.utility || 0) !== (left.entry.utility || 0)) return (right.entry.utility || 0) - (left.entry.utility || 0);
+      return String(left.entry.candidate_id).localeCompare(String(right.entry.candidate_id));
+    })
+    .slice(0, k);
+  const rewards = ranked.map(({ entry, candidate }) => (
+    rewardById.get(entry.candidate_id) || candidateProxyRewardComponents(entry, candidate)
+  ));
+  const average = (values = []) => values.length
+    ? Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3))
+    : 0;
+  return {
+    policy,
+    k,
+    selected_candidate_ids: ranked.map(({ entry }) => entry.candidate_id),
+    average_reward: average(rewards.map((reward) => reward.reward || 0)),
+    evidence_pass_rate: average(rewards.map((reward) => reward.evidence_pass ?? reward.evidencePass ?? 0)),
+    unsupported_penalty_sum: Number(rewards.reduce((sum, reward) => (
+      sum + (reward.unsupported_penalty ?? reward.unsupportedPenalty ?? 0)
+    ), 0).toFixed(3)),
+    distinct_source_domain_count: new Set(ranked.map(({ candidate }) => (
+      normalizeComparable(candidate.source_domain || candidate.evidence?.source_domain || '')
+    )).filter(Boolean)).size,
+    distinct_mechanism_count: new Set(ranked.flatMap(({ candidate }) => candidateMechanismTokens(candidate))).size,
+    score_trace: ranked.map(({ entry, score }) => ({
+      candidate_id: entry.candidate_id,
+      score: Number(score.toFixed(3))
+    }))
+  };
+}
+
+function offlineBanditPolicyComparison(scoredCandidates = [], candidateById = new Map(), rewardLedger = [], finalizedArms = [], state = {}, selectedCount = 3) {
+  const rewardById = new Map(rewardLedger.map((entry) => [entry.selected_candidate_id, entry.reward_components]));
+  const armById = new Map(finalizedArms.map((arm) => [arm.arm_id, arm]));
+  const k = Math.max(1, Math.min(scoredCandidates.length || 1, selectedCount || 3));
+  return {
+    policies: ['random', 'fixed_prior', 'ucb', 'thompson'].map((policy) => (
+      summarizeBanditPolicy(policy, scoredCandidates, candidateById, rewardById, armById, state, k)
+    )),
+    limitations: [
+      'Random is deterministic by candidate id so regression tests remain stable.',
+      'Fixed-prior ranks by controller utility; UCB and Thompson use offline source-domain/mechanism arm proxies.',
+      'These rows are offline diagnostics, not evidence that an online exploration policy improves idea quality.'
+    ]
+  };
+}
+
+function offlineBanditCostNormalizedMetrics(rewardLedger = [], scoredCandidates = []) {
+  const proxyCallCount = scoredCandidates.length;
+  const denominator = Math.max(1, proxyCallCount);
+  const rewards = rewardLedger.map((entry) => entry.reward_components || entry.rewardComponents || {});
+  const evidencePassCount = rewards.filter((reward) => (
+    (reward.evidence_pass ?? reward.evidencePass ?? 0) >= 1
+  )).length;
+  const usableIdeaCount = rewards.filter((reward) => (
+    (reward.evidence_pass ?? reward.evidencePass ?? 0) >= 1
+    && normalizeScore(reward.usefulness ?? reward.usefulness_proxy ?? 0, 0) >= 0.45
+    && (reward.unsupported_penalty ?? reward.unsupportedPenalty ?? 0) <= 0
+  )).length;
+  const firstUsableIndex = rewards.findIndex((reward) => (
+    (reward.evidence_pass ?? reward.evidencePass ?? 0) >= 1
+    && normalizeScore(reward.usefulness ?? reward.usefulness_proxy ?? 0, 0) >= 0.45
+    && (reward.unsupported_penalty ?? reward.unsupportedPenalty ?? 0) <= 0
+  ));
+  return {
+    metric_source: 'offline_candidate_scoring_proxy',
+    proxy_call_count: proxyCallCount,
+    proxyCallCount,
+    evidence_pass_per_call: Number((evidencePassCount / denominator).toFixed(3)),
+    evidencePassPerCall: Number((evidencePassCount / denominator).toFixed(3)),
+    usable_idea_per_call: Number((usableIdeaCount / denominator).toFixed(3)),
+    usableIdeaPerCall: Number((usableIdeaCount / denominator).toFixed(3)),
+    time_to_first_usable_idea: firstUsableIndex >= 0 ? firstUsableIndex + 1 : null,
+    timeToFirstUsableIdea: firstUsableIndex >= 0 ? firstUsableIndex + 1 : null,
+    limitations: [
+      'Each call is an offline candidate scoring event, not a live provider invocation.',
+      'Usable idea is a proxy requiring evidence pass, judge/controller usefulness >= 0.45, and no unsupported bridge penalty.'
+    ]
+  };
+}
+
 function offlineBanditSimulation(scoredCandidates = [], candidateById = new Map(), selectedIds = new Set(), state = {}) {
   const arms = new Map();
+  const rewardLedger = [];
   for (const entry of scoredCandidates) {
     const candidate = candidateById.get(entry.candidate_id) || {};
-    addBanditArm(arms, 'source_domain', candidate.source_domain || candidate.evidence?.source_domain || state.target_domain || '', entry, candidate, selectedIds);
+    const sourceDomainKey = candidate.source_domain || candidate.evidence?.source_domain || state.target_domain || '';
+    addBanditArm(arms, 'source_domain', sourceDomainKey, entry, candidate, selectedIds);
     const mechanismKey = candidateMechanismTokens(candidate).slice(0, 4).join(' ') || candidate.mechanism || '';
     addBanditArm(arms, 'mechanism', mechanismKey, entry, candidate, selectedIds);
+    const contributingArms = candidateBanditArmIds(candidate, state);
+    const rewardComponents = candidateProxyRewardComponents(entry, candidate);
+    rewardLedger.push({
+      selectedCandidateId: entry.candidate_id,
+      selected_candidate_id: entry.candidate_id,
+      selected: selectedIds.has(entry.candidate_id),
+      contributingArms,
+      contributing_arms: contributingArms,
+      rewardComponents,
+      reward_components: rewardComponents
+    });
   }
   const totalPulls = [...arms.values()].reduce((sum, arm) => sum + arm.pulls, 0);
   const finalizedArms = [...arms.values()].map((arm) => {
@@ -4989,6 +5269,15 @@ function offlineBanditSimulation(scoredCandidates = [], candidateById = new Map(
     if (right.ucb_index !== left.ucb_index) return right.ucb_index - left.ucb_index;
     return left.arm_id.localeCompare(right.arm_id);
   });
+  const policyComparison = offlineBanditPolicyComparison(
+    scoredCandidates,
+    candidateById,
+    rewardLedger,
+    finalizedArms,
+    state,
+    Math.max(1, selectedIds.size || 3)
+  );
+  const costNormalizedMetrics = offlineBanditCostNormalizedMetrics(rewardLedger, scoredCandidates);
   return {
     record_type: 'bandit_state_summary',
     version: RESEARCH_CONTROLLER_CONTRACT_VERSION,
@@ -5006,6 +5295,18 @@ function offlineBanditSimulation(scoredCandidates = [], candidateById = new Map(
       evidence_mismatch_penalty: -0.2,
       ocr_noise_penalty: -0.1
     },
+    reward_ledger: rewardLedger,
+    updates: rewardLedger.map((entry) => ({
+      selectedCandidateId: entry.selectedCandidateId,
+      selected_candidate_id: entry.selected_candidate_id,
+      contributingArms: entry.contributingArms,
+      contributing_arms: entry.contributing_arms,
+      rewardComponents: entry.rewardComponents,
+      reward_components: entry.reward_components
+    })),
+    policy_comparison: policyComparison,
+    cost_normalized_metrics: costNormalizedMetrics,
+    costNormalizedMetrics,
     arms: finalizedArms,
     top_ucb_arms: finalizedArms.slice(0, 10).map((arm) => ({
       arm_id: arm.arm_id,
@@ -5031,6 +5332,73 @@ function offlineBanditSimulation(scoredCandidates = [], candidateById = new Map(
     ],
     generatedAt: nowIso()
   };
+}
+
+function buildBanditStateArtifact(summary = {}) {
+  return {
+    record_type: 'bandit_state',
+    version: summary.version || RESEARCH_CONTROLLER_CONTRACT_VERSION,
+    policy: summary.policy || 'offline_proxy_ucb_thompson_mvp',
+    project: summary.project || null,
+    round_id: summary.round_id || null,
+    arms: summary.arms || [],
+    updates: summary.updates || [],
+    policy_comparison: summary.policy_comparison || null,
+    cost_normalized_metrics: summary.cost_normalized_metrics || summary.costNormalizedMetrics || null,
+    costNormalizedMetrics: summary.costNormalizedMetrics || summary.cost_normalized_metrics || null,
+    reward_definition: summary.reward_definition || {},
+    top_ucb_arms: summary.top_ucb_arms || [],
+    top_thompson_arms: summary.top_thompson_arms || [],
+    limitations: summary.limitations || [],
+    generatedAt: nowIso()
+  };
+}
+
+function renderBanditSimulationMarkdown(summary = {}) {
+  const lines = [
+    '# Bandit Simulation Report',
+    '',
+    `Policy: ${summary.policy || 'offline_proxy_ucb_thompson_mvp'}`,
+    `Round: ${summary.round_id || 'unknown'}`,
+    `Arm count: ${(summary.arms || []).length}`,
+    `Reward updates: ${(summary.updates || summary.reward_ledger || []).length}`,
+    '',
+    '## Reward Components',
+    '',
+    ...Object.entries(summary.reward_definition || {}).map(([key, value]) => `- ${key}: ${value}`),
+    '',
+    '## Top UCB Arms',
+    '',
+    ...((summary.top_ucb_arms || []).slice(0, 10).map((arm) => (
+      `- ${arm.arm_id}: ucb=${arm.ucb_index}, mean=${arm.mean_reward}, uncertainty=${arm.uncertainty}`
+    )) || ['- none']),
+    '',
+    '## Top Thompson Proxy Arms',
+    '',
+    ...((summary.top_thompson_arms || []).slice(0, 10).map((arm) => (
+      `- ${arm.arm_id}: thompson_mean=${arm.thompson_mean_proxy}, pulls=${arm.pulls}, successes=${arm.successes}`
+    )) || ['- none']),
+    '',
+    '## Offline Policy Comparison',
+    '',
+    ...((summary.policy_comparison?.policies || []).map((policy) => (
+      `- ${policy.policy}: avg_reward=${policy.average_reward}, evidence_pass=${policy.evidence_pass_rate}, selected=${(policy.selected_candidate_ids || []).join(', ')}`
+    )) || ['- none']),
+    '',
+    '## Cost-Normalized Proxy Metrics',
+    '',
+    `- metric_source: ${summary.cost_normalized_metrics?.metric_source || summary.costNormalizedMetrics?.metric_source || 'offline_candidate_scoring_proxy'}`,
+    `- proxy_call_count: ${summary.cost_normalized_metrics?.proxy_call_count ?? summary.costNormalizedMetrics?.proxyCallCount ?? 0}`,
+    `- evidence_pass_per_call: ${summary.cost_normalized_metrics?.evidence_pass_per_call ?? summary.costNormalizedMetrics?.evidencePassPerCall ?? 0}`,
+    `- usable_idea_per_call: ${summary.cost_normalized_metrics?.usable_idea_per_call ?? summary.costNormalizedMetrics?.usableIdeaPerCall ?? 0}`,
+    `- time_to_first_usable_idea: ${summary.cost_normalized_metrics?.time_to_first_usable_idea ?? summary.costNormalizedMetrics?.timeToFirstUsableIdea ?? 'none'}`,
+    ...((summary.cost_normalized_metrics?.limitations || summary.costNormalizedMetrics?.limitations || []).map((entry) => `- ${entry}`)),
+    '',
+    '## Limitations',
+    '',
+    ...((summary.limitations || []).map((entry) => `- ${entry}`))
+  ];
+  return `${lines.join('\n')}\n`;
 }
 
 function buildSelectedSubgraphs(overlay = {}, state = {}, args = {}) {
@@ -5062,9 +5430,16 @@ function buildSelectedSubgraphs(overlay = {}, state = {}, args = {}) {
     args,
     candidateById,
     greedyResult: selectionResult,
+    searchTrace: overlay.searchTrace,
     state
   });
   const banditStateSummary = offlineBanditSimulation(scoredCandidates, candidateById, selectedIds, state);
+  const banditState = buildBanditStateArtifact(banditStateSummary);
+  const banditSimulationReport = renderBanditSimulationMarkdown(banditStateSummary);
+  const baseSearchTraceRef = {
+    trace_id: overlay.searchTrace?.trace_id || state.search_trace_summary?.trace_id || null,
+    policy: overlay.searchTrace?.policy || state.search_trace_summary?.policy || null
+  };
   const selectedEdges = candidateEdgesForSelection(edges, selectedIds, edgeDecisionById);
   const selectedEdgeByCandidate = new Map();
   for (const edge of selectedEdges) {
@@ -5077,6 +5452,7 @@ function buildSelectedSubgraphs(overlay = {}, state = {}, args = {}) {
   const subgraphs = selected.map((entry, index) => {
     const candidate = candidateById.get(entry.candidate_id) || {};
     const connectedEdges = selectedEdgeByCandidate.get(entry.candidate_id) || [];
+    const searchStateId = candidate.search_state_id || candidate.evidence?.search_state_id || null;
     return {
       subgraph_id: `selected-subgraph:${stableHash(`${state.project || ''}:${state.task_id || ''}:${entry.candidate_id}`, 18)}`,
       rank: index + 1,
@@ -5099,8 +5475,12 @@ function buildSelectedSubgraphs(overlay = {}, state = {}, args = {}) {
         graph_refs: candidate.evidence?.graph_refs || [],
         connected_edges: connectedEdges
       },
+      search_trace_ref: {
+        ...baseSearchTraceRef,
+        search_state_id: searchStateId
+      },
       candidate_summary: {
-        search_state_id: candidate.search_state_id || candidate.evidence?.search_state_id || null,
+        search_state_id: searchStateId,
         mechanism: candidate.mechanism || null,
         method_summary: candidate.method_summary || null,
         evaluation_plan: candidate.evaluation_plan || null
@@ -5190,6 +5570,8 @@ function buildSelectedSubgraphs(overlay = {}, state = {}, args = {}) {
     },
     selection_trace: selectionTrace,
     bandit_state_summary: banditStateSummary,
+    bandit_state: banditState,
+    bandit_simulation_report: banditSimulationReport,
     generatedAt: nowIso()
   };
 }
@@ -9695,6 +10077,7 @@ async function executeSelectBatch(paths, args = {}) {
   }
 
   const selectionPayload = buildSelectedSubgraphs(overlay, state, args);
+  const linkedSearchTrace = attachFinalSelectorToSearchTrace(overlay.searchTrace, selectionPayload.selection_trace);
   const warnings = [];
   if (!selectionPayload.subgraphs.length) {
     warnings.push('Selection produced no eligible candidates; all candidates were gated or unavailable.');
@@ -9718,7 +10101,10 @@ async function executeSelectBatch(paths, args = {}) {
     await withFileLock(paths.lockPath, async () => {
       await writeJson(paths.selectedSubgraphsPath, selectionPayload);
       await writeJson(paths.selectionTracePath, selectionPayload.selection_trace);
+      if (linkedSearchTrace) await writeJson(paths.searchTracePath, linkedSearchTrace);
       await writeJson(paths.banditSimulationPath, selectionPayload.bandit_state_summary);
+      await writeJson(paths.banditStatePath, selectionPayload.bandit_state);
+      await writeText(paths.banditSimulationReportPath, selectionPayload.bandit_simulation_report);
       await writeJsonl(paths.candidateGraphPath, nextRecords);
       await writeJson(paths.controllerStatePath, nextState);
       await writeJson(paths.roundReportPath, nextRoundReport);
@@ -9732,6 +10118,9 @@ async function executeSelectBatch(paths, args = {}) {
         selectedSubgraphs: selectionPayload,
         selectionTrace: selectionPayload.selection_trace,
         banditSimulation: selectionPayload.bandit_state_summary,
+        banditState: selectionPayload.bandit_state,
+        banditSimulationReport: selectionPayload.bandit_simulation_report,
+        searchTrace: linkedSearchTrace || overlay.searchTrace,
         candidateGraphRecords: nextRecords,
         candidateGraph: nextCandidateGraph,
         controllerState: nextState,
@@ -9756,7 +10145,9 @@ async function executeSelectBatch(paths, args = {}) {
     }),
     selection: selectionPayload,
     selection_trace: selectionPayload.selection_trace,
-    bandit_state_summary: selectionPayload.bandit_state_summary
+    search_trace: nextOverlay.searchTrace || linkedSearchTrace || null,
+    bandit_state_summary: selectionPayload.bandit_state_summary,
+    bandit_state: selectionPayload.bandit_state
   };
 }
 

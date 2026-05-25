@@ -86,12 +86,14 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/catalyst-adapter.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/catalyst-adapter.js) | Idea-Catalyst graph adapter and higher-order ideation contract. |
 | [`src/core/graph/challenges.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/challenges.js) | Challenge normalization and graph projection helpers. |
 | [`src/core/graph/delta-commit.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/delta-commit.js) | Delta Commit implementation. |
+| [`src/core/graph/diversity-selection.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/diversity-selection.js) | Diversity Selection implementation. |
 | [`src/core/graph/domain-bridges.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/domain-bridges.js) | Cross-domain bridge construction, takeaways, and transferable edge enrichment. |
 | [`src/core/graph/domain-taxonomy.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/domain-taxonomy.js) | Graph-derived domain taxonomy and distance computation. |
 | [`src/core/graph/graph.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/graph.js) | Graph implementation. |
 | [`src/core/graph/idea-catalyst-evidence-export.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-evidence-export.js) | Idea Catalyst Evidence Export implementation. |
 | [`src/core/graph/idea-catalyst-live.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-live.js) | Idea Catalyst Live implementation. |
 | [`src/core/graph/idea-catalyst-packets.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-catalyst-packets.js) | Idea Catalyst Packets implementation. |
+| [`src/core/graph/idea-scoring.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/idea-scoring.js) | Idea Scoring implementation. |
 | [`src/core/graph/interdisciplinary-potential.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/interdisciplinary-potential.js) | Interdisciplinary Potential implementation. |
 | [`src/core/graph/interdisciplinary-ranking.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/interdisciplinary-ranking.js) | Explainable interdisciplinary potential ranking. |
 | [`src/core/graph/lite.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/lite.js) | Lite implementation. |

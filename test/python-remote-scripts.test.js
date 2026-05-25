@@ -903,6 +903,9 @@ test('pn_idea_catalyst.py forwards fine-grained domain and bundle mode through r
         '--target-domain', 'Computer Science',
         '--fine-grained-domain', 'Generalized Category Discovery',
         '--output-mode', 'packet_bundle',
+        '--selection-mode', 'dpp',
+        '--selection-k', '2',
+        '--mmr-lambda', '0.55',
         '--include-analysis',
         '--limit', '5'
       ]);
@@ -910,8 +913,12 @@ test('pn_idea_catalyst.py forwards fine-grained domain and bundle mode through r
       assert.equal(payload.request.tool, 'idea_catalyst');
       assert.equal(payload.request.arguments.fineGrainedDomain, 'Generalized Category Discovery');
       assert.equal(payload.request.arguments.outputMode, 'packet_bundle');
+      assert.equal(payload.request.arguments.selectionMode, 'dpp');
+      assert.equal(payload.request.arguments.selectionK, 2);
+      assert.equal(payload.request.arguments.mmrLambda, 0.55);
       assert.equal(payload.request.arguments.includeAnalysis, true);
       assert.ok(payload.packet_bundle);
+      assert.equal(payload.selection_trace?.mode, 'dpp');
       assert.ok(payload.analysis);
     } finally {
       await server.stop();

@@ -110,9 +110,10 @@ mutation.
    coverage, and positive/negative candidate-edge relations. Read
    `selection-trace.json` before explaining why a batch was chosen: it contains
    top-k, MMR, and greedy-submodular selector traces over the same eligible
-   pool. Also read `bandit-simulation.json` when planning future exploration;
-   it is an offline UCB/Thompson proxy over source-domain and mechanism arms,
-   not a human novelty or experiment score.
+   pool. Also read `bandit-simulation.json` and `bandit-state.json` when
+   planning future exploration; they include offline random/fixed/UCB/Thompson
+   proxy comparisons and cost-normalized proxy metrics over source-domain and
+   mechanism arms, not human novelty or experiment scores.
    For manuscript-table preparation, read `icml-main-table.json` or
    `icml-main-table.md` after export or GCD validation. These files compare
    beam graph search, top-k, MMR, and greedy submodular traces using
@@ -287,7 +288,8 @@ selection with a submodular marginal-gain objective, Beta-Bernoulli dueling
 posterior state for pairwise preference exploration, explicit GCD MVP budget
 profiles and `mvp_contract` metadata, selector ablation traces for top-k,
 MMR, and greedy submodular selection,
-offline source-domain/mechanism UCB/Thompson proxy simulation,
+offline source-domain/mechanism UCB/Thompson proxy simulation with
+cost-normalized proxy metrics,
 profiles for quick/planning/deep modes, conservative non-GCD task-family
 defaults for design boundaries and initial subproblem seeds, far-source bridge gating,
 selected-only graph/material evidence expansion, method-card pack generation

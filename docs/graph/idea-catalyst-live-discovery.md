@@ -154,6 +154,7 @@ The existing `idea_catalyst` tool now accepts:
 - `mode: "live_discovery"`: online Semantic Scholar Snippets workflow.
 - `mode: "hybrid"`: returns the graph result plus live discovery output.
 - `liveDiscovery: true`: alias for `mode: "live_discovery"`.
+- `selectionMode: "topk" | "mmr" | "submodular" | "dpp"`: optional post-generation selector that returns selected idea fragments and a `selection_trace`; omitted/default keeps the legacy output unchanged.
 
 The remote wrapper `SKILL/PaperNexusIdeaCatalyst/scripts/pn_idea_catalyst.py` exposes:
 
