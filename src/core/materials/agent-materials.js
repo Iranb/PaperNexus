@@ -3879,6 +3879,502 @@ function buildInnovationEvidenceBoundaries(ideaCards = []) {
   };
 }
 
+function normalizeListArg(value) {
+  return unique(asArray(value)
+    .flatMap((entry) => String(entry || '').split(','))
+    .map(compactText)
+    .filter(Boolean));
+}
+
+const DEFAULT_COVERAGE_AREAS = [{
+  area: 'generalized category discovery',
+  label: 'GCD / generalized category discovery',
+  keywords: ['generalized category discovery', 'gcd', 'known novel', 'known/novel', 'category discovery'],
+  critical: true
+}, {
+  area: 'domain-shift gcd',
+  label: 'domain-shift GCD',
+  keywords: ['domain shift', 'domain-shift', 'cross-domain', 'distribution shift'],
+  critical: true
+}, {
+  area: 'open-world discovery',
+  label: 'open-world discovery',
+  keywords: ['open-world', 'open world', 'open-set', 'open set', 'novel class discovery'],
+  critical: true
+}, {
+  area: 'selective prediction',
+  label: 'selective prediction',
+  keywords: ['selective prediction', 'selective classification', 'reject option', 'abstain', 'abstention'],
+  critical: true
+}, {
+  area: 'conformal risk',
+  label: 'conformal risk / conformal prediction',
+  keywords: ['conformal risk', 'conformal prediction', 'risk control', 'prediction set'],
+  critical: true
+}, {
+  area: 'certified decision',
+  label: 'certified decision / abstention',
+  keywords: ['certified decision', 'certificate', 'certified', 'guarantee', 'abstention'],
+  critical: true
+}, {
+  area: 'label-shift-aware tta',
+  label: 'label-shift-aware TTA',
+  keywords: ['label shift', 'label-shift', 'test-time adaptation', 'tta', 'test time adaptation'],
+  critical: true
+}, {
+  area: 'calibration',
+  label: 'calibration / uncertainty estimation',
+  keywords: ['calibration', 'uncertainty', 'confidence', 'ece'],
+  critical: false
+}];
+
+function coverageAreaSpecs(args = {}) {
+  const customAreas = normalizeListArg(args.coverageAreas || args.coverage_areas);
+  if (!customAreas.length) return DEFAULT_COVERAGE_AREAS;
+  return customAreas.map((area) => ({
+    area: normalizeTitle(area),
+    label: area,
+    keywords: normalizeListArg(area),
+    critical: true
+  }));
+}
+
+function textMatchesKeywords(text = '', keywords = []) {
+  const normalized = normalizeTitle(text);
+  return keywords.some((keyword) => {
+    const key = normalizeTitle(keyword);
+    if (!key) return false;
+    return normalized.includes(key);
+  });
+}
+
+function textRecordForMaterialItem(item = {}) {
+  return unique([
+    item.title,
+    item.paper_id,
+    item.role,
+    item.source_domain,
+    ...(item.materials?.chunks || []).map((chunk) => chunk.text),
+    ...(item.materials?.source_spans || []).map((span) => span.text),
+    ...(item.materials?.tables || []).map((table) => table.text || table.caption),
+    ...(item.materials?.figures || []).map((figure) => figure.text || figure.caption),
+    ...(item.materials?.provider_snippets || []).map((snippet) => snippet.snippet_text || snippet.text || snippet.abstract),
+    ...(item.graph_context || []).map((entry) => entry.node_name)
+  ].map(compactText).filter(Boolean)).join(' ');
+}
+
+function graphCoverageEntries(materialPack = {}, area = {}) {
+  const itemHits = (materialPack.groups || []).flatMap((group) => group.items || [])
+    .filter((item) => !item.provenance?.some((entry) => entry.source_type === 'provider_search' || entry.source_type === 'literature_discovery'))
+    .filter((item) => textMatchesKeywords(textRecordForMaterialItem(item), area.keywords))
+    .map((item) => ({
+      paper_id: item.paper_id || null,
+      title: item.title || null,
+      role: item.role || null,
+      source: 'material_pack'
+    }));
+  const candidateHits = (materialPack.source_discovery?.candidate_papers || [])
+    .filter((candidate) => candidate.status === 'in_graph')
+    .filter((candidate) => textMatchesKeywords([
+      candidate.title,
+      candidate.paper_id,
+      ...(candidate.matches || []).map((match) => match.text || match.node_name || match.excerpt || '')
+    ].map(compactText).filter(Boolean).join(' '), area.keywords))
+    .map((candidate) => ({
+      paper_id: candidate.paper_id || null,
+      title: candidate.title || null,
+      role: candidate.role || null,
+      source: 'source_discovery'
+    }));
+  const byKey = new Map();
+  for (const hit of [...itemHits, ...candidateHits]) {
+    const key = hit.paper_id || normalizeTitle(hit.title);
+    if (key && !byKey.has(key)) byKey.set(key, hit);
+  }
+  return [...byKey.values()];
+}
+
+function providerFailureModes(providerEvidence = {}) {
+  return unique((providerEvidence.query_runs || [])
+    .filter((run) => run.status === 'error' || run.error)
+    .map((run) => compactText(run.error || `provider error for ${run.query || 'query'}`))
+    .filter(Boolean));
+}
+
+function providerHitsForArea(providerEvidence = {}, area = {}) {
+  return flattenProviderHits(providerEvidence)
+    .filter((hit) => textMatchesKeywords([
+      hit.title,
+      hit.text,
+      hit.role,
+      hit.source_domain
+    ].map(compactText).filter(Boolean).join(' '), area.keywords));
+}
+
+function providerImportPriorities(materialPack = {}) {
+  const requisitions = materialPack.import_requisitions || materialPack.source_discovery?.import_requisitions || [];
+  return dedupeRequisitions(requisitions)
+    .filter((req) => req.status === 'material_unavailable')
+    .map((req) => {
+      const role = req.expected_role || null;
+      const priority = role === 'target_prior' || role === 'novelty_risk' || req.priority === 'high' ? 'P0' : (req.priority === 'low' ? 'P2' : 'P1');
+      return {
+        requisition_id: req.requisition_id,
+        title: req.title || null,
+        identifiers: req.identifiers || {},
+        expected_role: role,
+        priority,
+        materialization_status: 'provider_or_discovery_only',
+        why_needed: req.why_needed || 'Discovery hit is not materialized in the committed graph.',
+        source_hints: req.source_hints || [],
+        after_import: 'wait for import_workflow status=completed and graph sync, then rerun innovation_evidence_pack before upgrading evidence strength'
+      };
+    });
+}
+
+function buildCoverageMatrix(materialPack = {}, args = {}) {
+  const providerEvidence = materialPack.source_discovery?.provider_evidence || {};
+  const importPriorities = providerImportPriorities(materialPack);
+  return coverageAreaSpecs(args).map((area) => {
+    const graphHits = graphCoverageEntries(materialPack, area);
+    const providerHits = providerHitsForArea(providerEvidence, area);
+    const failures = providerFailureModes(providerEvidence);
+    const requiredImports = importPriorities
+      .filter((req) => textMatchesKeywords([
+        req.title,
+        req.expected_role,
+        req.why_needed,
+        JSON.stringify(req.identifiers || {})
+      ].join(' '), area.keywords))
+      .slice(0, 6);
+    const graphCoverage = graphHits.length >= 3 ? 'strong' : (graphHits.length >= 1 ? 'partial' : 'none');
+    let providerCoverage = 'not_seen';
+    if (providerHits.length) providerCoverage = 'seen';
+    if (failures.length) providerCoverage = providerCoverage === 'seen' ? 'seen_with_failures' : 'failed';
+    return {
+      area: area.label,
+      area_key: area.area,
+      critical: area.critical,
+      graph_coverage: graphCoverage,
+      provider_coverage: providerCoverage,
+      materialized_paper_count: graphHits.length,
+      provider_only_paper_count: unique(providerHits.map((hit) => hit.paper_id || hit.title).filter(Boolean)).length,
+      graph_papers: graphHits.slice(0, 8),
+      provider_only_papers: providerHits.slice(0, 8).map((hit) => ({
+        paper_id: hit.paper_id || null,
+        title: hit.title || null,
+        provider: hit.provider || null,
+        query: hit.query || null,
+        materialization_status: 'provider_only'
+      })),
+      failure_modes: failures,
+      required_queries: graphHits.length ? [] : unique([
+        `${materialPack.target_problem || materialPack.target_domain || ''} ${area.label} survey`,
+        `${materialPack.target_problem || materialPack.target_domain || ''} ${area.label} benchmark`,
+        `${materialPack.target_problem || materialPack.target_domain || ''} ${area.label} method`
+      ].map(compactText).filter(Boolean)).slice(0, 3),
+      required_imports: requiredImports
+    };
+  });
+}
+
+function componentTerms(component = '') {
+  const text = normalizeTitle(component).replace(/[+/]/g, ' ');
+  return unique(text.split(/[^a-z0-9]+/i)
+    .map(compactText)
+    .filter((term) => term.length > 2 && !['and', 'the', 'for', 'with'].includes(term)));
+}
+
+function textMatchesComponent(text = '', component = '') {
+  const normalized = normalizeTitle(text);
+  const componentText = normalizeTitle(component);
+  if (!componentText) return false;
+  if (normalized.includes(componentText)) return true;
+  const terms = componentTerms(componentText);
+  if (!terms.length) return false;
+  const hits = terms.filter((term) => normalized.includes(term)).length;
+  return hits >= Math.min(2, terms.length);
+}
+
+function inferIdeaComponents(args = {}) {
+  const explicit = normalizeListArg(args.ideaComponents || args.idea_components);
+  if (explicit.length) return explicit;
+  const text = normalizeTitle([
+    args.targetProblem || args.target_problem || args.query || args.problem,
+    args.targetDomain || args.target_domain
+  ].map(compactText).filter(Boolean).join(' '));
+  const inferred = [];
+  for (const phrase of [
+    'Absorb',
+    'Separate',
+    'Buffer',
+    'non-identifiable reporting',
+    'prior/capacity calibration',
+    'certified decision',
+    'selective prediction',
+    'conformal risk',
+    'label-shift-aware TTA',
+    'generalized category discovery'
+  ]) {
+    if (textMatchesComponent(text, phrase)) inferred.push(phrase);
+  }
+  return inferred.length ? inferred : normalizeListArg(args.targetProblem || args.target_problem || args.query || args.problem).slice(0, 6);
+}
+
+function collisionPaperRecords(materialPack = {}, providerImports = []) {
+  const materialRecords = (materialPack.groups || []).flatMap((group) => group.items || []).map((item) => ({
+    paper_id: item.paper_id || null,
+    title: item.title || null,
+    role: item.role || null,
+    materialization_status: item.provenance?.some((entry) => entry.source_type === 'provider_search' || entry.source_type === 'literature_discovery') ? 'provider_only' : 'graph',
+    text: textRecordForMaterialItem(item)
+  }));
+  const candidateRecords = (materialPack.source_discovery?.candidate_papers || []).map((candidate) => ({
+    paper_id: candidate.paper_id || null,
+      title: candidate.title || null,
+      role: candidate.role || null,
+      materialization_status: candidate.status === 'in_graph' ? 'graph' : 'provider_only',
+      text: [
+        candidate.title,
+        candidate.paper_id,
+        ...(candidate.matches || []).map((match) => match.text || match.node_name || match.excerpt || '')
+      ].map(compactText).filter(Boolean).join(' ')
+  }));
+  const importRecords = providerImports.map((req) => ({
+    paper_id: null,
+    title: req.title || null,
+    role: req.expected_role || null,
+    materialization_status: 'provider_only',
+    text: [req.title, req.why_needed, req.expected_role].map(compactText).filter(Boolean).join(' ')
+  }));
+  const byKey = new Map();
+  for (const record of [...materialRecords, ...candidateRecords, ...importRecords]) {
+    const key = `${record.materialization_status}:${record.paper_id || normalizeTitle(record.title)}`;
+    if (key && !byKey.has(key)) byKey.set(key, record);
+  }
+  return [...byKey.values()];
+}
+
+function buildCompositionCollisionMatrix(materialPack = {}, closestPriorMap = [], args = {}) {
+  const ideaComponents = inferIdeaComponents(args);
+  const providerImports = providerImportPriorities(materialPack);
+  const records = collisionPaperRecords(materialPack, providerImports);
+  const hitSummary = (matchedRecords = []) => matchedRecords.slice(0, 8).map((record) => ({
+    paper_id: record.paper_id,
+    title: record.title,
+    role: record.role,
+    materialization_status: record.materialization_status
+  }));
+  const singleComponentHits = ideaComponents.map((component) => {
+    const hits = records.filter((record) => textMatchesComponent(record.text, component));
+    const graphHits = hits.filter((hit) => hit.materialization_status === 'graph');
+    const providerHits = hits.filter((hit) => hit.materialization_status !== 'graph');
+    return {
+      component,
+      graph_hit_count: graphHits.length,
+      provider_only_hit_count: providerHits.length,
+      status: graphHits.length >= 2 ? 'crowded_component' : (graphHits.length === 1 ? 'seen_in_graph' : (providerHits.length ? 'provider_only_seen' : 'not_seen_in_graph_scope')),
+      hits: hitSummary(hits)
+    };
+  });
+  const pairs = [];
+  for (let left = 0; left < ideaComponents.length; left += 1) {
+    for (let right = left + 1; right < ideaComponents.length; right += 1) {
+      const components = [ideaComponents[left], ideaComponents[right]];
+      const hits = records.filter((record) => components.every((component) => textMatchesComponent(record.text, component)));
+      const graphHits = hits.filter((hit) => hit.materialization_status === 'graph');
+      pairs.push({
+        components,
+        graph_hit_count: graphHits.length,
+        provider_only_hit_count: hits.length - graphHits.length,
+        status: graphHits.length ? 'pair_seen_in_graph' : (hits.length ? 'pair_provider_only_seen' : 'pair_not_seen_in_graph_scope'),
+        hits: hitSummary(hits)
+      });
+    }
+  }
+  const fullHits = ideaComponents.length
+    ? records.filter((record) => ideaComponents.every((component) => textMatchesComponent(record.text, component)))
+    : [];
+  const fullGraphHits = fullHits.filter((hit) => hit.materialization_status === 'graph');
+  const crowdedComponents = singleComponentHits.filter((entry) => entry.status === 'crowded_component');
+  const providerOnlyComponents = singleComponentHits.filter((entry) => entry.provider_only_hit_count > 0 && entry.graph_hit_count === 0);
+  const negativePriorRisk = closestPriorMap.some((prior) => prior.risk_level === 'high');
+  let collisionRisk = 'not_audited';
+  if (ideaComponents.length) {
+    if (fullGraphHits.length) collisionRisk = 'full_combination_seen_in_graph';
+    else if (negativePriorRisk || crowdedComponents.length) collisionRisk = 'crowded_components_with_unseen_full_combination';
+    else if (providerOnlyComponents.length) collisionRisk = 'provider_only_components_need_import';
+    else collisionRisk = 'full_combination_not_seen_in_graph_scope';
+  }
+  return {
+    idea_components: ideaComponents,
+    single_component_hits: singleComponentHits,
+    pairwise_combination_hits: pairs,
+    full_combination_hits: {
+      graph_hit_count: fullGraphHits.length,
+      provider_only_hit_count: fullHits.length - fullGraphHits.length,
+      status: fullGraphHits.length ? 'full_combination_seen_in_graph' : 'full_combination_not_seen_in_graph_scope',
+      hits: hitSummary(fullHits)
+    },
+    collision_risk: collisionRisk,
+    graph_scope_limit: 'Graph hits only cover papers materialized in the committed PaperNexus corpus; absence is not novelty proof.',
+    provider_scope_limit: 'Provider-only hits require import/materialization before they can upgrade collision evidence.'
+  };
+}
+
+function negativeEvidenceAssessment(negativeEvidence = {}, materialPack = {}) {
+  const records = negativeEvidence.records || [];
+  const sourceProviderEvidence = materialPack.source_discovery?.provider_evidence || {};
+  const failedRecords = records.filter((record) => (
+    record.provider_absence_scope === 'partial_provider_errors'
+    || Number(record.provider_evidence?.error_count || 0) > 0
+    || (record.provider_evidence?.query_runs || []).some((run) => run.status === 'error' || run.error)
+  ));
+  const sourceFailures = providerFailureModes(sourceProviderEvidence);
+  if (failedRecords.length || sourceFailures.length) {
+    return {
+      status: 'negative_inconclusive',
+      confidence: 'low',
+      reason_codes: ['provider_failure'],
+      failed_record_count: failedRecords.length,
+      failure_modes: unique([
+        ...failedRecords.flatMap((record) => providerFailureModes(record.provider_evidence || {})),
+        ...sourceFailures
+      ]),
+      interpretation_limit: 'Provider 429/timeout/error means absence evidence is inconclusive and must not support a novelty claim.'
+    };
+  }
+  const providerRequested = records.some((record) => record.provider_absence_scope && record.provider_absence_scope !== 'not_requested');
+  return {
+    status: providerRequested ? 'bounded_provider_search' : 'bounded_graph_only',
+    confidence: records.some((record) => record.absence_confidence === 'low') ? 'low' : 'none',
+    reason_codes: [],
+    failed_record_count: 0,
+    failure_modes: [],
+    interpretation_limit: 'Absence evidence records bounded search scope only and is not a novelty proof.'
+  };
+}
+
+function buildRequiredFollowup({
+  materialPack = {},
+  coverageMatrix = [],
+  compositionCollisionMatrix = {},
+  negativeEvidenceAssessment: negativeAssessment = {},
+  providerImportPriorities = []
+} = {}) {
+  const followups = [];
+  const missingCoverage = coverageMatrix.filter((row) => row.critical && ['none', 'sparse'].includes(row.graph_coverage));
+  if (missingCoverage.length) {
+    followups.push({
+      reason: 'missing_cross_domain_coverage',
+      next_tool: 'literature_discovery',
+      query_family: missingCoverage.flatMap((row) => row.required_queries || []).slice(0, 12),
+      candidate_papers: [],
+      approval_required: true,
+      side_effects: ['provider_network_search', 'source_resolution_optional', 'download_optional'],
+      after_success: 'submit import requisitions for canonical papers, wait for graph sync, then rerun innovation_evidence_pack',
+      stop_condition: 'all critical coverage rows are at least partial in graph coverage or explicitly reported as blocked'
+    });
+  }
+  if (providerImportPriorities.length) {
+    followups.push({
+      reason: 'provider_only_key_prior',
+      next_tool: 'import_requisition_pack',
+      query_family: providerImportPriorities.map((req) => req.title).filter(Boolean).slice(0, 12),
+      candidate_papers: providerImportPriorities.slice(0, 12),
+      approval_required: true,
+      side_effects: ['import_queue_submit_after_user_approval', 'graph_mutation_after_import_worker'],
+      after_success: 'wait for import_workflow status=completed and rerun innovation_evidence_pack',
+      stop_condition: 'P0/P1 provider-only priors are materialized or explicitly rejected with rationale'
+    });
+  }
+  if (negativeAssessment.status === 'negative_inconclusive') {
+    followups.push({
+      reason: 'negative_inconclusive',
+      next_tool: 'negative_evidence_pack',
+      query_family: unique((materialPack.negative_evidence || []).flatMap((record) => record.searched_queries || [])).slice(0, 12),
+      candidate_papers: [],
+      approval_required: true,
+      side_effects: ['provider_network_search'],
+      after_success: 'rerun with successful provider responses or record provider outage as blocker',
+      stop_condition: 'provider failure modes are cleared or negative evidence remains explicitly inconclusive'
+    });
+  }
+  for (const missing of materialPack.missing_materials || []) {
+    followups.push({
+      reason: `sparse_${missing.role || 'material'}`,
+      next_tool: 'source_discovery_plan',
+      query_family: querySetForRole(missing.role || 'target_prior', {
+        targetDomain: materialPack.target_domain,
+        targetProblem: materialPack.target_problem,
+        constraints: materialPack.constraints
+      }),
+      candidate_papers: [],
+      approval_required: false,
+      side_effects: ['read_only_graph_query'],
+      after_success: 'inspect import_requisitions and route unresolved papers through literature_discovery/import_workflow',
+      stop_condition: `${missing.role || 'material'} has committed-graph material or a tracked import requisition`
+    });
+  }
+  if (compositionCollisionMatrix.collision_risk === 'provider_only_components_need_import') {
+    followups.push({
+      reason: 'composition_collision_provider_only',
+      next_tool: 'import_workflow',
+      query_family: compositionCollisionMatrix.idea_components || [],
+      candidate_papers: providerImportPriorities.slice(0, 8),
+      approval_required: true,
+      side_effects: ['import_queue_submit_after_user_approval', 'graph_mutation_after_import_worker'],
+      after_success: 'rerun composition collision audit after graph sync',
+      stop_condition: 'provider-only component hits are either graph-visible or rejected'
+    });
+  }
+  const seen = new Set();
+  return followups.filter((entry) => {
+    const key = `${entry.reason}:${entry.next_tool}:${(entry.query_family || []).join('|')}:${(entry.candidate_papers || []).map((paper) => paper.title || paper.requisition_id).join('|')}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildEvidenceSufficiency({
+  materialPack = {},
+  coverageMatrix = [],
+  compositionCollisionMatrix = {},
+  negativeEvidenceAssessment: negativeAssessment = {},
+  providerImportPriorities = [],
+  requiredFollowup = []
+} = {}) {
+  const reasonCodes = [];
+  const missingCriticalCoverage = coverageMatrix.filter((row) => row.critical && ['none', 'sparse'].includes(row.graph_coverage));
+  if (missingCriticalCoverage.length) reasonCodes.push('missing_cross_domain_coverage');
+  if ((materialPack.missing_materials || []).some((entry) => entry.role === 'near_source_method')) reasonCodes.push('sparse_near_source_material');
+  if ((materialPack.missing_materials || []).some((entry) => entry.role === 'far_source_story')) reasonCodes.push('sparse_far_source_material');
+  if ((materialPack.missing_materials || []).some((entry) => entry.role === 'negative_evidence')) reasonCodes.push('sparse_negative_evidence_material');
+  if (providerImportPriorities.some((req) => req.priority === 'P0')) reasonCodes.push('provider_only_key_prior');
+  if (providerImportPriorities.length) reasonCodes.push('unmaterialized_prior');
+  if (negativeAssessment.status === 'negative_inconclusive') reasonCodes.push('negative_evidence_inconclusive');
+  if (compositionCollisionMatrix.collision_risk === 'provider_only_components_need_import') reasonCodes.push('provider_only_component_collision');
+  if (compositionCollisionMatrix.collision_risk === 'full_combination_seen_in_graph') reasonCodes.push('full_combination_collision');
+  const criticalReasonCodes = unique(reasonCodes);
+  const status = negativeAssessment.status === 'negative_inconclusive'
+    ? 'inconclusive'
+    : (criticalReasonCodes.length ? 'insufficient' : 'sufficient');
+  return {
+    status,
+    novelty_claim_allowed: status === 'sufficient' && !criticalReasonCodes.length,
+    experiment_planning_allowed: status === 'sufficient' && requiredFollowup.length === 0,
+    reason_codes: criticalReasonCodes,
+    summary: status === 'sufficient'
+      ? 'Committed-graph coverage meets the current novelty-audit gate; this is still not a novelty proof.'
+      : 'Current evidence is not enough for a final novelty claim; follow required_followup or report a blocker.',
+    coverage_gaps: missingCriticalCoverage.map((row) => row.area),
+    provider_only_prior_count: providerImportPriorities.length,
+    required_followup_count: requiredFollowup.length,
+    interpretation_limit: 'Evidence sufficiency gates AutoResearch handoff. It does not certify novelty or empirical improvement.'
+  };
+}
+
 function jsonlText(records = []) {
   return records.length ? `${records.map((record) => JSON.stringify(record)).join('\n')}\n` : '';
 }
@@ -3937,13 +4433,18 @@ function renderStorylineChainsMarkdown(chains = []) {
 
 function renderAutoresearchHandoffMarkdown(payload = {}) {
   const handoff = payload.autoresearch_handoff || {};
+  const sufficiency = payload.evidence_sufficiency || {};
   const lines = [
     '# PaperNexus AutoResearch Handoff',
     '',
     `- Status: ${handoff.status || ''}`,
+    `- Evidence sufficiency: ${sufficiency.status || ''}`,
+    `- Novelty claim allowed: ${sufficiency.novelty_claim_allowed === true ? 'true' : 'false'}`,
+    `- Experiment planning allowed: ${sufficiency.experiment_planning_allowed === true ? 'true' : 'false'}`,
     `- Idea cards: ${handoff.idea_card_count ?? 0}`,
     `- Storylines: ${handoff.storyline_count ?? 0}`,
     `- Missing materials: ${handoff.missing_material_count ?? 0}`,
+    `- Required follow-up actions: ${handoff.required_followup_count ?? payload.required_followup?.length ?? 0}`,
     '',
     'PaperNexus provides evidence and storyline materials only. It does not choose the final research idea, prove novelty, or execute experiments.',
     '',
@@ -3964,6 +4465,42 @@ function renderAutoresearchHandoffMarkdown(payload = {}) {
   return `${lines.join('\n')}\n`;
 }
 
+function renderNoveltyAuditPackMarkdown(payload = {}) {
+  const sufficiency = payload.evidence_sufficiency || {};
+  const lines = [
+    '# PaperNexus Novelty Audit Pack',
+    '',
+    `- Status: ${sufficiency.status || ''}`,
+    `- Novelty claim allowed: ${sufficiency.novelty_claim_allowed === true ? 'true' : 'false'}`,
+    `- Reason codes: ${(sufficiency.reason_codes || []).join(', ') || 'none'}`,
+    '',
+    'This audit is a coverage and collision gate. It is not a proof of novelty.',
+    '',
+    '## Coverage Matrix',
+    ''
+  ];
+  for (const row of payload.coverage_matrix || []) {
+    lines.push(`- ${row.area}: graph=${row.graph_coverage}, provider=${row.provider_coverage}, graph papers=${row.materialized_paper_count}, provider-only=${row.provider_only_paper_count}`);
+  }
+  lines.push('', '## Composition Collision', '');
+  const collision = payload.composition_collision_matrix || {};
+  lines.push(`- Components: ${(collision.idea_components || []).join(', ') || 'none'}`);
+  lines.push(`- Collision risk: ${collision.collision_risk || 'not_audited'}`);
+  if (collision.full_combination_hits) {
+    lines.push(`- Full combination: ${collision.full_combination_hits.status || ''} (graph=${collision.full_combination_hits.graph_hit_count || 0}, provider-only=${collision.full_combination_hits.provider_only_hit_count || 0})`);
+  }
+  lines.push('', '## Required Follow-up', '');
+  if (!payload.required_followup?.length) {
+    lines.push('- None required by the current gate.', '');
+  } else {
+    for (const action of payload.required_followup) {
+      lines.push(`- ${action.reason}: run ${action.next_tool}; approval_required=${action.approval_required === true ? 'true' : 'false'}; stop=${action.stop_condition || ''}`);
+    }
+    lines.push('');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 function renderInnovationEvidencePackMarkdown(payload = {}) {
   const lines = [
     '# PaperNexus Innovation Evidence Pack',
@@ -3974,6 +4511,29 @@ function renderInnovationEvidencePackMarkdown(payload = {}) {
     `- Target problem: ${payload.target_problem || ''}`,
     '',
     'This pack is evidence for AutoResearch review. It is not a novelty proof, experiment result, or final research recommendation.',
+    '',
+    '## Evidence Sufficiency',
+    '',
+    `- Status: ${payload.evidence_sufficiency?.status || ''}`,
+    `- Novelty claim allowed: ${payload.evidence_sufficiency?.novelty_claim_allowed === true ? 'true' : 'false'}`,
+    `- Experiment planning allowed: ${payload.evidence_sufficiency?.experiment_planning_allowed === true ? 'true' : 'false'}`,
+    `- Reason codes: ${(payload.evidence_sufficiency?.reason_codes || []).join(', ') || 'none'}`,
+    '',
+    '## Coverage Matrix',
+    '',
+    ...(payload.coverage_matrix || []).map((row) => `- ${row.area}: graph=${row.graph_coverage}, provider=${row.provider_coverage}, graph papers=${row.materialized_paper_count}, provider-only=${row.provider_only_paper_count}`),
+    '',
+    '## Composition Collision',
+    '',
+    `- Components: ${(payload.composition_collision_matrix?.idea_components || []).join(', ') || 'none'}`,
+    `- Collision risk: ${payload.composition_collision_matrix?.collision_risk || 'not_audited'}`,
+    `- Full combination status: ${payload.composition_collision_matrix?.full_combination_hits?.status || 'not_audited'}`,
+    '',
+    '## Required Follow-up',
+    '',
+    ...(payload.required_followup?.length
+      ? payload.required_followup.map((action) => `- ${action.reason}: run ${action.next_tool}; approval_required=${action.approval_required === true ? 'true' : 'false'}`)
+      : ['- None required by the current gate.']),
     '',
     '## Idea Evidence Cards',
     ''
@@ -4051,6 +4611,28 @@ export async function buildInnovationEvidencePack(args = {}, options = {}) {
   const storylineChains = buildStorylineChains(materialPack, ideaEvidenceCards, noveltyBaseline);
   const evidenceBoundaries = buildInnovationEvidenceBoundaries(ideaEvidenceCards);
   const missingMaterials = innovationMissingMaterials(materialPack, ideaEvidenceCards, storylineChains);
+  const coverageMatrix = buildCoverageMatrix(materialPack, args);
+  const compositionCollisionMatrix = buildCompositionCollisionMatrix(materialPack, closestPriorMap, args);
+  const negativeEvidenceAudit = negativeEvidenceAssessment(negativeEvidence, materialPack);
+  const providerToImportPriority = providerImportPriorities(materialPack);
+  const requiredFollowup = buildRequiredFollowup({
+    materialPack,
+    coverageMatrix,
+    compositionCollisionMatrix,
+    negativeEvidenceAssessment: negativeEvidenceAudit,
+    providerImportPriorities: providerToImportPriority
+  });
+  const evidenceSufficiency = buildEvidenceSufficiency({
+    materialPack,
+    coverageMatrix,
+    compositionCollisionMatrix,
+    negativeEvidenceAssessment: negativeEvidenceAudit,
+    providerImportPriorities: providerToImportPriority,
+    requiredFollowup
+  });
+  const handoffStatus = !ideaEvidenceCards.length
+    ? 'needs_more_materials'
+    : (evidenceSufficiency.status === 'sufficient' ? 'ready_for_autoresearch_review' : 'needs_followup_research');
   const payload = {
     contractVersion: AGENT_MATERIALS_CONTRACT_VERSION,
     operation: 'innovation_evidence_pack',
@@ -4074,6 +4656,12 @@ export async function buildInnovationEvidencePack(args = {}, options = {}) {
     gap_map: gapMap,
     closest_prior_map: closestPriorMap,
     mechanism_to_intervention_map: mechanismToInterventionMap,
+    evidence_sufficiency: evidenceSufficiency,
+    coverage_matrix: coverageMatrix,
+    composition_collision_matrix: compositionCollisionMatrix,
+    negative_evidence_assessment: negativeEvidenceAudit,
+    required_followup: requiredFollowup,
+    provider_to_import_priority: providerToImportPriority,
     negative_evidence: negativeEvidence.records || [],
     experiment_anchors: experimentAnchors,
     idea_evidence_cards: ideaEvidenceCards,
@@ -4086,16 +4674,23 @@ export async function buildInnovationEvidencePack(args = {}, options = {}) {
       import_requisitions: materialPack.import_requisitions || []
     },
     autoresearch_handoff: {
-      status: ideaEvidenceCards.length ? 'ready_for_autoresearch_review' : 'needs_more_materials',
+      status: handoffStatus,
+      novelty_claim_allowed: evidenceSufficiency.novelty_claim_allowed,
+      experiment_planning_allowed: evidenceSufficiency.experiment_planning_allowed,
+      evidence_sufficiency_status: evidenceSufficiency.status,
+      evidence_sufficiency_reason_codes: evidenceSufficiency.reason_codes,
       required_consumer_checks: [
         'Run human or AutoResearch proposal review before treating any card as a research direction.',
-        'Resolve missing materials before experiment planning.',
+        'If evidence_sufficiency.status is insufficient or inconclusive, run required_followup actions when approved or report the blocker.',
+        'Resolve missing materials and provider-only priors before experiment planning.',
         'Do not treat closest-prior or negative-evidence signals as novelty proof.',
+        'Do not write a final novelty claim when novelty_claim_allowed=false.',
         'Use falsifiers and experiment anchors to design bounded validation.'
       ],
       idea_card_count: ideaEvidenceCards.length,
       storyline_count: storylineChains.length,
-      missing_material_count: missingMaterials.length
+      missing_material_count: missingMaterials.length,
+      required_followup_count: requiredFollowup.length
     },
     generatedAt: nowIso()
   };
@@ -4208,6 +4803,13 @@ async function maybeExportPayload(payload = {}, args = {}) {
     const markdownPath = path.join(resolvedDir, 'innovation_evidence_pack.md');
     const canonicalJsonPath = path.join(resolvedDir, 'innovation-evidence-pack.json');
     const canonicalMarkdownPath = path.join(resolvedDir, 'innovation-evidence-pack.md');
+    const evidenceSufficiencyPath = path.join(resolvedDir, 'evidence_sufficiency.json');
+    const coverageMatrixPath = path.join(resolvedDir, 'coverage_matrix.json');
+    const compositionCollisionPath = path.join(resolvedDir, 'composition_collision_matrix.json');
+    const requiredFollowupPath = path.join(resolvedDir, 'required_followup.json');
+    const providerImportPriorityPath = path.join(resolvedDir, 'provider_to_import_priority.json');
+    const noveltyAuditPath = path.join(resolvedDir, 'novelty_audit_pack.json');
+    const noveltyAuditMarkdownPath = path.join(resolvedDir, 'novelty_audit_pack.md');
     const ideaCardsPath = path.join(resolvedDir, 'idea_evidence_cards.json');
     const ideaCardsJsonlPath = path.join(resolvedDir, 'idea-evidence-cards.jsonl');
     const ideaCardsMarkdownPath = path.join(resolvedDir, 'idea-evidence-cards.md');
@@ -4220,6 +4822,29 @@ async function maybeExportPayload(payload = {}, args = {}) {
     fullPayloadAliasPaths.push(canonicalJsonPath);
     await writeText(markdownPath, renderInnovationEvidencePackMarkdown(payload));
     await writeText(canonicalMarkdownPath, renderInnovationEvidencePackMarkdown(payload));
+    await writeJson(evidenceSufficiencyPath, namedExportPayload(payload, 'evidence_sufficiency', 'evidence_sufficiency', null));
+    await writeJson(coverageMatrixPath, namedExportPayload(payload, 'coverage_matrix', 'coverage_matrix', []));
+    await writeJson(compositionCollisionPath, namedExportPayload(payload, 'composition_collision_matrix', 'composition_collision_matrix', null));
+    await writeJson(requiredFollowupPath, namedExportPayload(payload, 'required_followup', 'required_followup', []));
+    await writeJson(providerImportPriorityPath, namedExportPayload(payload, 'provider_to_import_priority', 'provider_to_import_priority', []));
+    await writeJson(noveltyAuditPath, {
+      contractVersion: payload.contractVersion,
+      operation: 'novelty_audit_pack',
+      run_id: payload.run_id,
+      rootPath: payload.rootPath,
+      corpus: payload.corpus,
+      project: payload.project,
+      target_domain: payload.target_domain,
+      target_problem: payload.target_problem,
+      evidence_sufficiency: payload.evidence_sufficiency,
+      coverage_matrix: payload.coverage_matrix || [],
+      composition_collision_matrix: payload.composition_collision_matrix || null,
+      negative_evidence_assessment: payload.negative_evidence_assessment || null,
+      required_followup: payload.required_followup || [],
+      provider_to_import_priority: payload.provider_to_import_priority || [],
+      generatedAt: payload.generatedAt || nowIso()
+    });
+    await writeText(noveltyAuditMarkdownPath, renderNoveltyAuditPackMarkdown(payload));
     await writeJson(ideaCardsPath, namedExportPayload(payload, 'idea_evidence_cards', 'idea_evidence_cards', []));
     await writeText(ideaCardsJsonlPath, jsonlText(payload.idea_evidence_cards || []));
     await writeText(ideaCardsMarkdownPath, renderIdeaEvidenceCardsMarkdown(payload.idea_evidence_cards || []));
@@ -4232,6 +4857,13 @@ async function maybeExportPayload(payload = {}, args = {}) {
     exports.markdown_path = markdownPath;
     exports.canonical_json_path = canonicalJsonPath;
     exports.canonical_markdown_path = canonicalMarkdownPath;
+    exports.evidence_sufficiency_path = evidenceSufficiencyPath;
+    exports.coverage_matrix_path = coverageMatrixPath;
+    exports.composition_collision_matrix_path = compositionCollisionPath;
+    exports.required_followup_path = requiredFollowupPath;
+    exports.provider_to_import_priority_path = providerImportPriorityPath;
+    exports.novelty_audit_pack_path = noveltyAuditPath;
+    exports.novelty_audit_pack_markdown_path = noveltyAuditMarkdownPath;
     exports.idea_evidence_cards_path = ideaCardsPath;
     exports.idea_evidence_cards_jsonl_path = ideaCardsJsonlPath;
     exports.idea_evidence_cards_markdown_path = ideaCardsMarkdownPath;

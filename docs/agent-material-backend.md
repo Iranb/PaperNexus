@@ -9,7 +9,7 @@ Read-only material operations:
 - `paper_material_view`: returns one paper's source availability, graph context, chunks, source spans, lightweight markdown table/figure materials, and matching project overlay roles.
 - `source_discovery_plan`: generates target, near-source, and far-source queries, committed-graph candidates, optional provider snippet evidence, optional live-discovery evidence, optional literature-discovery resolve/import readiness, sparse-role negative evidence, and import requisitions.
 - `research_material_pack`: returns role-grouped materials plus source discovery metadata, source-domain item annotations, optional provider/live-discovery/literature-discovery materials, missing materials, import requisitions, and project overlay summary.
-- `innovation_evidence_pack`: compiles AutoResearch handoff materials from existing material packs into novelty baselines, gap maps, closest-prior risk signals, mechanism-to-intervention maps, experiment anchors, idea evidence cards, and storyline chains. It is an evidence compiler only: it does not prove novelty, choose the final idea, or run experiments.
+- `innovation_evidence_pack`: compiles AutoResearch handoff materials from existing material packs into novelty baselines, gap maps, closest-prior risk signals, mechanism-to-intervention maps, experiment anchors, idea evidence cards, storyline chains, evidence sufficiency, coverage matrix, composition-collision matrix, provider-to-import priorities, and required follow-up actions. It is an evidence compiler and novelty auditor only: it does not prove novelty, choose the final idea, or run experiments.
 - `import_requisition_pack`: returns missing-but-useful import requests, generated queries, and optional literature-discovery import readiness.
 - `negative_evidence_pack`: records searched queries, filters, direct hits, adjacent hits, absence confidence, and recommended next queries from committed graph state; with `includeProviderEvidence=true`, it also records bounded Semantic Scholar snippet query runs and direct/adjacent provider hit counts. Live-discovery evidence is exposed through `source_discovery_plan` and `research_material_pack`, not persisted by this negative-evidence operation.
 - `experiment_cost_materials`: extracts GPU/runtime/epoch/batch-size/dataset/backbone/code-availability snippets from chunks, source spans, markdown tables, table captions, and figure captions with provenance for Agent inspection.
@@ -207,10 +207,22 @@ Compile an AutoResearch innovation evidence handoff through MCP:
 
 Its output groups the same underlying materials into:
 
+- `evidence_sufficiency`: `status`, `reason_codes`, `novelty_claim_allowed`, and `experiment_planning_allowed`. If the status is `insufficient` or `inconclusive`, the consumer must continue approved follow-up research or report a blocker.
+- `coverage_matrix`: committed-graph coverage, provider-only coverage, provider failures, required queries, and required imports by coverage area.
+- `composition_collision_matrix`: single-component, pairwise-combination, and full-combination collision audit without treating graph-scope absence as novelty proof.
+- `negative_evidence_assessment`: emits `negative_inconclusive` when provider 429/timeout/error weakens absence evidence.
+- `required_followup`: executable next actions such as `literature_discovery`, `import_requisition_pack`, `import_workflow`, or rerunning `innovation_evidence_pack`.
+- `provider_to_import_priority`: P0/P1/P2 import priorities for provider-only or discovery-only priors that are not yet graph evidence.
 - `idea_evidence_cards`: candidate problem/gap/mechanism/intervention/falsifier cards for AutoResearch review.
 - `storyline_chains`: status-quo, tension, gap, mechanism, intervention, validation, contribution-boundary, and risk beats.
 - `evidence_boundaries`: what is evidence-supported, Agent-inferred, and speculative.
 - `autoresearch_handoff`: required consumer checks before experiment planning.
+
+Guardrail:
+
+- If `evidence_sufficiency.novelty_claim_allowed=false`, do not write a final novelty claim. Treat the idea as an open hypothesis until `required_followup` is completed or explicitly blocked.
+- Provider-only papers and literature-discovery candidates remain discovery evidence until import tasks complete and graph sync is visible through `import_workflow`.
+- `negative_inconclusive` means provider failures weakened absence evidence; it is not a weak novelty proof.
 
 When `outputDir` is provided through MCP, the backend writes machine-readable and human-readable handoff artifacts:
 
@@ -219,6 +231,13 @@ innovation_evidence_pack.json
 innovation_evidence_pack.md
 innovation-evidence-pack.json
 innovation-evidence-pack.md
+evidence_sufficiency.json
+coverage_matrix.json
+composition_collision_matrix.json
+required_followup.json
+provider_to_import_priority.json
+novelty_audit_pack.json
+novelty_audit_pack.md
 idea_evidence_cards.json
 idea-evidence-cards.jsonl
 idea-evidence-cards.md

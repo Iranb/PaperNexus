@@ -2386,6 +2386,13 @@ test('agent_materials builds innovation evidence cards and storyline chains for 
     assert.ok(payload.exports.markdown_path.endsWith('innovation_evidence_pack.md'));
     assert.ok(payload.exports.canonical_json_path.endsWith('innovation-evidence-pack.json'));
     assert.ok(payload.exports.canonical_markdown_path.endsWith('innovation-evidence-pack.md'));
+    assert.ok(payload.exports.evidence_sufficiency_path.endsWith('evidence_sufficiency.json'));
+    assert.ok(payload.exports.coverage_matrix_path.endsWith('coverage_matrix.json'));
+    assert.ok(payload.exports.composition_collision_matrix_path.endsWith('composition_collision_matrix.json'));
+    assert.ok(payload.exports.required_followup_path.endsWith('required_followup.json'));
+    assert.ok(payload.exports.provider_to_import_priority_path.endsWith('provider_to_import_priority.json'));
+    assert.ok(payload.exports.novelty_audit_pack_path.endsWith('novelty_audit_pack.json'));
+    assert.ok(payload.exports.novelty_audit_pack_markdown_path.endsWith('novelty_audit_pack.md'));
     assert.ok(payload.exports.idea_evidence_cards_path.endsWith('idea_evidence_cards.json'));
     assert.ok(payload.exports.idea_evidence_cards_jsonl_path.endsWith('idea-evidence-cards.jsonl'));
     assert.ok(payload.exports.idea_evidence_cards_markdown_path.endsWith('idea-evidence-cards.md'));
@@ -2395,6 +2402,11 @@ test('agent_materials builds innovation evidence cards and storyline chains for 
     assert.ok(payload.exports.autoresearch_handoff_markdown_path.endsWith('autoresearch-handoff.md'));
     const markdown = await fs.readFile(payload.exports.markdown_path, 'utf8');
     assert.ok(markdown.includes('not a novelty proof'));
+    assert.ok(markdown.includes('Evidence Sufficiency'));
+    const sufficiencyExport = JSON.parse(await fs.readFile(payload.exports.evidence_sufficiency_path, 'utf8'));
+    assert.equal(sufficiencyExport.evidence_sufficiency.novelty_claim_allowed, false);
+    const noveltyAuditMarkdown = await fs.readFile(payload.exports.novelty_audit_pack_markdown_path, 'utf8');
+    assert.ok(noveltyAuditMarkdown.includes('Coverage Matrix'));
     const ideaCardsJsonl = await fs.readFile(payload.exports.idea_evidence_cards_jsonl_path, 'utf8');
     assert.ok(ideaCardsJsonl.trim().split('\n').every((line) => JSON.parse(line).idea_id));
   } finally {

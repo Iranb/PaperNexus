@@ -449,6 +449,8 @@ Assemble Agent-facing research materials from committed graph/source state and m
 | `project` | optional | string | Research project id used to label material packs and isolate project overlay memory. For research_controller, omitted GCD tasks default to gcd-research-controller and other tasks default to research-controller. |
 | `targetDomain` | optional | string | Target research domain for source discovery and material pack grouping. |
 | `targetProblem` | optional | string | Research problem statement used to generate target, near-source, and far-source material queries. |
+| `ideaComponents` | optional | string \| array | Optional components for innovation_evidence_pack composition-collision audit, for example Absorb, Separate, Buffer, non-identifiable reporting, or prior/capacity calibration. |
+| `coverageAreas` | optional | string \| array | Optional coverage taxonomy override for innovation_evidence_pack evidence-sufficiency audit. Defaults to GCD, domain-shift GCD, open-world discovery, selective prediction, conformal risk, certified decision, label-shift-aware TTA, and calibration. |
 | `query` | optional | string | Alias or fallback query for operations that accept targetProblem or paper lookup text. |
 | `constraints` | optional | string \| array | Venue, compute, data, task, or application constraints used when generating material queries. |
 | `mode` | optional | string (quick, planning, deep) | Research-controller mode. quick initializes graph-only scouting artifacts, planning is the default controller pass, and deep is reserved for explicitly enabled evidence expansion. |

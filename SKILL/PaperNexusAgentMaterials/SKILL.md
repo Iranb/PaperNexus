@@ -146,12 +146,20 @@ Canonical MCP payload shape:
   "project": "<project>",
   "targetDomain": "<target scientific or engineering domain>",
   "targetProblem": "<research problem>",
+  "ideaComponents": ["<optional component for collision audit>"],
+  "coverageAreas": ["<optional coverage area override>"],
   "outputDir": "/tmp/papernexus-innovation-evidence"
 }
 ```
 
 Read:
 
+- `evidence_sufficiency`: the direct gate for whether the current material set can support novelty or experiment-planning claims.
+- `coverage_matrix`: graph coverage, provider coverage, missing areas, provider failures, required queries, and required imports.
+- `composition_collision_matrix`: single component, pairwise combination, and full-combination collision signals.
+- `negative_evidence_assessment`: `negative_inconclusive` when provider 429/timeout/error makes absence evidence unreliable.
+- `required_followup`: concrete next actions. Run them when approved, or report the missing approvals/blockers.
+- `provider_to_import_priority`: provider-only or discovery-only prior papers that need materialization before they count as graph evidence.
 - `novelty_baseline`: prior coverage, not novelty proof
 - `gap_map`: limitation, missing experiment, claim-evidence mismatch, benchmark failure, or assumption risk
 - `closest_prior_map`: collision and overlap risk signals
@@ -161,6 +169,13 @@ Read:
 - `evidence_boundaries`: evidence-supported vs Agent-inferred vs speculative material
 
 Do not treat this pack as a final research decision. Use it as AutoResearch input for proposal review, novelty checks, and experiment planning.
+
+Gate rule:
+
+- If `evidence_sufficiency.status` is `insufficient` or `inconclusive`, do not produce a final novelty judgment.
+- If `novelty_claim_allowed=false`, write only an open hypothesis or blocker report.
+- Continue through `required_followup` when the needed provider/literature/import actions are approved.
+- If approval is missing, stop with the exact missing action and why it matters.
 
 ### Phase 5: Submit Or Process Imports Only On Explicit Request
 
@@ -229,6 +244,10 @@ python3 SKILL/PaperNexus/scripts/pn_agent_materials.py \
   --project "<project>" \
   --target-domain "<target domain>" \
   --target-problem "<research problem>" \
+  --idea-component "Absorb" \
+  --idea-component "Separate" \
+  --idea-component "Buffer" \
+  --idea-component "non-identifiable reporting" \
   --constraint "<constraint>" \
   --auto-discover-sources \
   --role target_prior \
@@ -261,6 +280,9 @@ Add these only when import submission is explicitly requested:
 - `literature_discovery_evidence` may include resolved sources and importable candidates, but those are not graph-visible until import completion.
 - `negative_evidence_pack` records committed-graph misses and optional provider snippet hits; live-discovery evidence is exposed through source/material packs instead.
 - `innovation_evidence_pack` compiles idea evidence cards and storyline chains, but still does not prove novelty or experimental success.
+- `evidence_sufficiency.status=insufficient` or `inconclusive` means continue approved follow-up research or report a blocker; do not stop at “graph scope did not see it”.
+- `provider_only` and `discovery_only` papers must become completed imports before they are treated as committed graph evidence.
+- `negative_inconclusive` means provider failures weakened absence evidence and cannot support a novelty claim.
 - `import_requisitions` are work items for graph materialization, not proof that the papers are already indexed.
 - `paper_role_overlay` and `evidence_cart` are Agent memory, not raw graph facts.
 

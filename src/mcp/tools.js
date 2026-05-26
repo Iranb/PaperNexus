@@ -1328,6 +1328,26 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Research problem statement used to generate target, near-source, and far-source material queries.'
         },
+        ideaComponents: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Optional components for innovation_evidence_pack composition-collision audit, for example Absorb, Separate, Buffer, non-identifiable reporting, or prior/capacity calibration.'
+        },
+        coverageAreas: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Optional coverage taxonomy override for innovation_evidence_pack evidence-sufficiency audit. Defaults to GCD, domain-shift GCD, open-world discovery, selective prediction, conformal risk, certified decision, label-shift-aware TTA, and calibration.'
+        },
         query: {
           type: 'string',
           description: 'Alias or fallback query for operations that accept targetProblem or paper lookup text.'

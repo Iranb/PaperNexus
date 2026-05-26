@@ -132,6 +132,19 @@
           "type": "number",
           "default": 45000
         },
+        "coverageAreas": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
         "currentStage": {
           "type": "string"
         },
@@ -181,6 +194,19 @@
         },
         "hypothesis": {
           "type": "string"
+        },
+        "ideaComponents": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         },
         "identifier": {
           "type": "string"
