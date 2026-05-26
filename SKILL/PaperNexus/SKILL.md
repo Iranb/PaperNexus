@@ -90,7 +90,7 @@ For OpenClaw-native use, call these tools on the configured `papernexus-remote` 
 - `list_corpora`
   Use to resolve the current corpus when the active corpus is not explicit
 - `agent_materials`
-  Use for multi-domain Agent material workflows: `research_material_pack`, `source_discovery_plan`, `paper_material_view`, `import_requisition_pack`, `negative_evidence_pack`, `paper_role_overlay`, `evidence_cart`, and `workflow_state`. Prefer graph-first packs, then explicitly opt into provider evidence, live discovery, literature-discovery source resolution, and import submission only when the task requires those phases.
+  Use for multi-domain Agent material workflows: `research_material_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `import_requisition_pack`, `negative_evidence_pack`, `paper_role_overlay`, `evidence_cart`, and `workflow_state`. Prefer graph-first packs, then explicitly opt into provider evidence, live discovery, literature-discovery source resolution, and import submission only when the task requires those phases.
 - `literature_discovery`
   Use for keyword/topic literature survey, provider search, legal full-text resolution, discovery reports, and optional import submission.
   Important operations: `plan`, `search`, `resolve`, `run`, `import`, `ingest`, `import_and_process`, `status`, `report`, `list`, `supplement`

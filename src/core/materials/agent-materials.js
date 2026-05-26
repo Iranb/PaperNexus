@@ -3504,6 +3504,604 @@ export async function buildExperimentCostMaterials(args = {}, options = {}) {
   return maybeExportPayload(payload, args);
 }
 
+function materialGroupsByRole(pack = {}) {
+  const groups = new Map();
+  for (const group of pack.groups || []) {
+    groups.set(group.role, group.items || []);
+  }
+  return groups;
+}
+
+function materialItemsForRoles(pack = {}, roles = []) {
+  const byRole = materialGroupsByRole(pack);
+  return roles.flatMap((role) => byRole.get(role) || []);
+}
+
+function materialPaperRef(item = {}) {
+  return {
+    paper_id: item.paper_id || null,
+    title: item.title || null,
+    role: item.role || null,
+    status: item.status || null,
+    source_domain: item.source_domain || null,
+    domain_distance: item.domain_distance ?? null
+  };
+}
+
+function materialSourceRefs(item = {}, limit = 8) {
+  const refs = [];
+  for (const entry of item.provenance || []) {
+    refs.push({
+      source_type: entry.source_type || null,
+      source_id: entry.source_id || null,
+      query: entry.query || null,
+      provider: entry.provider || null,
+      source_domain: entry.source_domain || null
+    });
+  }
+  for (const chunk of item.materials?.chunks || []) {
+    refs.push({
+      source_type: 'chunk',
+      source_id: chunk.chunk_id || null,
+      source_key: chunk.source_key || null,
+      section: chunk.section_heading || chunk.section_role || null
+    });
+  }
+  for (const span of item.materials?.source_spans || []) {
+    refs.push({
+      source_type: span.role || 'source_span',
+      source_id: span.source_key || span.source_path || null,
+      source_path: span.source_path || null
+    });
+  }
+  return refs.slice(0, limit);
+}
+
+function materialText(item = {}, limit = 1600) {
+  const parts = [
+    item.title,
+    item.match?.query,
+    ...(item.materials?.chunks || []).map((chunk) => chunk.text),
+    ...(item.materials?.source_spans || []).map((span) => span.text),
+    ...(item.materials?.tables || []).map((table) => table.text || table.caption),
+    ...(item.materials?.figures || []).map((figure) => figure.text || figure.caption),
+    ...(item.materials?.provider_snippets || []).map((snippet) => snippet.snippet_text || snippet.text || snippet.abstract),
+    ...(item.graph_context || []).map((entry) => entry.node_name)
+  ].map(compactText).filter(Boolean);
+  return truncate(unique(parts).join(' '), limit);
+}
+
+function graphContextNames(item = {}, types = []) {
+  const typeSet = new Set(types);
+  return unique((item.graph_context || [])
+    .filter((entry) => !typeSet.size || typeSet.has(entry.node_type))
+    .map((entry) => compactText(entry.node_name))
+    .filter(Boolean));
+}
+
+function firstGraphContextName(item = {}, types = []) {
+  return graphContextNames(item, types)[0] || '';
+}
+
+function gapTypeFromText(text = '', role = '') {
+  const normalized = compactText(text).toLowerCase();
+  if (role === 'baseline_candidate' || /\bbaseline|benchmark|dataset|metric|evaluation\b/.test(normalized)) return 'missing_baseline';
+  if (/\bablation\b/.test(normalized)) return 'missing_ablation';
+  if (/\bcost|latency|runtime|gpu|memory|efficient\b/.test(normalized)) return 'missing_cost';
+  if (/\bclaim|general|robust|state-of-the-art|sota\b/.test(normalized)) return 'claim_evidence_mismatch';
+  if (/\bfail|failure|struggle|error|weak|poor\b/.test(normalized)) return 'benchmark_failure';
+  if (/\bassum|requires?|depends\b/.test(normalized)) return 'assumption_risk';
+  if (/\bmechanism|why|explain|causal\b/.test(normalized)) return 'mechanism_uncertainty';
+  return 'limitation';
+}
+
+function buildNoveltyBaseline(pack = {}, gapMap = []) {
+  const items = materialItemsForRoles(pack, ['target_prior', 'baseline_candidate', 'novelty_risk']);
+  return items.slice(0, 12).map((item) => {
+    const paperRef = materialPaperRef(item);
+    const text = materialText(item);
+    const matchingGaps = gapMap
+      .filter((gap) => (gap.supporting_papers || []).some((paper) => paper.paper_id === item.paper_id || paper.title === item.title))
+      .slice(0, 3);
+    return {
+      baseline_id: `nb:${stableHash(`${item.paper_id || item.title}:${item.role}`, 14)}`,
+      paper: paperRef,
+      task: pack.target_problem || pack.target_domain || null,
+      method_core: firstGraphContextName(item, [NODE_TYPES.METHOD, NODE_TYPES.ABSTRACT_MECHANISM]) || truncate(text, 180),
+      key_assumption: firstGraphContextName(item, [NODE_TYPES.ASSUMPTION]) || null,
+      experiment_coverage: {
+        datasets: graphContextNames(item, [NODE_TYPES.DATASET]),
+        benchmarks: graphContextNames(item, [NODE_TYPES.BENCHMARK]),
+        metrics: graphContextNames(item, [NODE_TYPES.METRIC])
+      },
+      reported_limitation: firstGraphContextName(item, [NODE_TYPES.LIMITATION]) || null,
+      claimed_contribution: firstGraphContextName(item, [NODE_TYPES.CLAIM, NODE_TYPES.FINDING]) || null,
+      available_gap_ids: matchingGaps.map((gap) => gap.gap_id),
+      collision_relevance: item.role === 'target_prior' ? 'target_prior' : (item.role === 'novelty_risk' ? 'novelty_risk' : 'baseline_anchor'),
+      source_span_refs: materialSourceRefs(item)
+    };
+  });
+}
+
+function buildGapMap(pack = {}) {
+  const items = materialItemsForRoles(pack, ['novelty_risk', 'target_prior', 'baseline_candidate', 'near_source_method', 'far_source_story']);
+  const gaps = [];
+  const seen = new Set();
+  for (const item of items) {
+    const limitationNames = graphContextNames(item, [NODE_TYPES.LIMITATION, NODE_TYPES.ASSUMPTION, NODE_TYPES.CHALLENGE]);
+    const claimNames = graphContextNames(item, [NODE_TYPES.CLAIM, NODE_TYPES.FINDING]);
+    const candidates = [
+      ...limitationNames.map((name) => ({ statement: name, type: name.toLowerCase().includes('assum') ? 'assumption_risk' : 'limitation' })),
+      ...claimNames.map((name) => ({ statement: `Evidence boundary for claim: ${name}`, type: 'claim_evidence_mismatch' }))
+    ];
+    if (!candidates.length) {
+      const text = materialText(item, 420);
+      if (text) candidates.push({ statement: text, type: gapTypeFromText(text, item.role) });
+    }
+    for (const candidate of candidates) {
+      const key = `${candidate.type}:${normalizeTitle(candidate.statement)}:${item.paper_id || item.title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      gaps.push({
+        gap_id: `gap:${stableHash(key, 14)}`,
+        gap_type: candidate.type,
+        statement: truncate(candidate.statement, 320),
+        supporting_papers: [materialPaperRef(item)],
+        source_spans: materialSourceRefs(item),
+        affected_tasks: unique([pack.target_problem, pack.target_domain].map(compactText).filter(Boolean)),
+        existing_methods: graphContextNames(item, [NODE_TYPES.METHOD, NODE_TYPES.ABSTRACT_MECHANISM]).slice(0, 5),
+        why_it_matters: 'Potential AutoResearch opportunity: this gap needs a mechanism, intervention, evaluator, and falsifier before it can become a research idea.',
+        followup_queries: unique([
+          `${pack.target_problem || pack.target_domain || ''} ${candidate.statement} baseline`,
+          `${pack.target_problem || pack.target_domain || ''} ${candidate.statement} ablation`
+        ].map(compactText).filter(Boolean)).slice(0, 3)
+      });
+      if (gaps.length >= 12) return gaps;
+    }
+  }
+  return gaps;
+}
+
+function buildClosestPriorMap(pack = {}, negativePack = {}) {
+  const priorItems = materialItemsForRoles(pack, ['target_prior', 'novelty_risk']).slice(0, 10);
+  const priors = priorItems.map((item) => ({
+    prior_id: `prior:${stableHash(`${item.paper_id || item.title}:${item.role}`, 14)}`,
+    prior_paper: materialPaperRef(item),
+    risk_level: item.role === 'novelty_risk' ? 'medium' : 'low',
+    collision_relevance: item.role === 'novelty_risk' ? 'adjacent_or_direct_risk' : 'target_domain_coverage',
+    overlap_basis: unique([
+      ...(item.match?.matches || []).map((match) => match.text || match.excerpt || match),
+      ...graphContextNames(item, [NODE_TYPES.METHOD, NODE_TYPES.CLAIM, NODE_TYPES.LIMITATION]).slice(0, 5)
+    ].map((entry) => truncate(compactText(entry), 180)).filter(Boolean)),
+    source_refs: materialSourceRefs(item),
+    interpretation_limit: 'Closest-prior evidence is an overlap and risk signal, not a novelty proof.'
+  }));
+
+  const negativeRecords = (negativePack.records || []).map((record) => ({
+    prior_id: `prior-negative:${stableHash(`${record.role}:${(record.searched_queries || []).join('|')}`, 14)}`,
+    prior_paper: null,
+    risk_level: record.direct_hit_count || record.direct_provider_hit_count ? 'high' : 'open_with_constraints',
+    collision_relevance: 'negative_evidence_search_scope',
+    searched_queries: record.searched_queries || [],
+    direct_hit_count: record.direct_hit_count || 0,
+    adjacent_hit_count: record.adjacent_hit_count || 0,
+    absence_confidence: record.absence_confidence || 'none',
+    interpretation_limit: 'Absence confidence records bounded search scope only and must not be treated as proof of novelty.'
+  }));
+  return [...priors, ...negativeRecords].slice(0, 16);
+}
+
+function costSignalsForItem(item = {}) {
+  const view = {
+    paper: {
+      paper_id: item.paper_id || null,
+      title: item.title || null
+    },
+    materials: item.materials || {}
+  };
+  return extractCostSignals(collectCostSignalTexts(view));
+}
+
+function buildExperimentAnchors(pack = {}) {
+  const items = materialItemsForRoles(pack, ['baseline_candidate', 'target_prior']).slice(0, 10);
+  return items.map((item) => {
+    const signals = costSignalsForItem(item);
+    const datasets = graphContextNames(item, [NODE_TYPES.DATASET]);
+    const benchmarks = graphContextNames(item, [NODE_TYPES.BENCHMARK]);
+    const metrics = graphContextNames(item, [NODE_TYPES.METRIC]);
+    return {
+      anchor_id: `anchor:${stableHash(`${item.paper_id || item.title}:${item.role}`, 14)}`,
+      paper: materialPaperRef(item),
+      baseline_candidate: item.title || item.paper_id || null,
+      datasets,
+      benchmarks,
+      metrics,
+      evaluator: metrics[0] || benchmarks[0] || 'missing_metric_anchor',
+      ablation_hint: 'Keep baseline, dataset, metric, and budget fixed while removing or replacing the proposed intervention.',
+      guard_metrics: unique(['cost', 'latency', 'robustness', ...metrics]).slice(0, 6),
+      cost_signals: {
+        hardware: signals.hardware || { status: 'not_reported', count: 0, snippets: [] },
+        runtime: signals.runtime || { status: 'not_reported', count: 0, snippets: [] },
+        epochs: signals.epochs || { status: 'not_reported', count: 0, snippets: [] },
+        batch_size: signals.batch_size || { status: 'not_reported', count: 0, snippets: [] },
+        code_availability: signals.code_availability || { status: 'not_reported', count: 0, snippets: [] }
+      },
+      source_refs: materialSourceRefs(item)
+    };
+  });
+}
+
+function buildMechanismToInterventionMap(pack = {}, gapMap = []) {
+  const methodItems = materialItemsForRoles(pack, ['near_source_method', 'far_source_story', 'target_prior']);
+  const fallbackMethods = methodItems.length ? methodItems : materialItemsForRoles(pack, ['baseline_candidate']);
+  return gapMap.slice(0, 8).map((gap, index) => {
+    const item = fallbackMethods[index % Math.max(fallbackMethods.length, 1)] || {};
+    const mechanism = firstGraphContextName(item, [NODE_TYPES.ABSTRACT_MECHANISM, NODE_TYPES.METHOD, NODE_TYPES.TAKEAWAY])
+      || item.title
+      || 'missing mechanism anchor';
+    return {
+      map_id: `mi:${stableHash(`${gap.gap_id}:${mechanism}`, 14)}`,
+      gap_id: gap.gap_id,
+      failure_signature: gap.statement,
+      suspected_mechanism: truncate(mechanism, 220),
+      supporting_evidence: [
+        ...gap.source_spans,
+        ...materialSourceRefs(item)
+      ].slice(0, 10),
+      candidate_intervention: mechanism === 'missing mechanism anchor'
+        ? 'Collect a mechanism-bearing near-source or far-source method before proposing an intervention.'
+        : `Test whether ${truncate(mechanism, 120)} can address the gap under the target evaluation protocol.`,
+      expected_signal: 'The gap-specific failure mode should improve on a fixed evaluator without unacceptable guard-metric regression.',
+      guard_metrics: ['baseline performance', 'cost', 'robustness'],
+      falsifier: 'If the failure mode does not improve under a fixed baseline/evaluator, or improvement appears only in a narrow train-like slice, treat the mechanism hypothesis as unsupported.',
+      transfer_conditions: unique([item.source_domain, pack.target_domain].map(compactText).filter(Boolean)),
+      main_risks: mechanism === 'missing mechanism anchor'
+        ? ['missing_mechanism_evidence']
+        : ['closest_prior_collision', 'weak_target_domain_evidence']
+    };
+  });
+}
+
+function missingMaterialsForCard({ closestPrior, anchor, mechanismMap } = {}) {
+  return unique([
+    closestPrior ? '' : 'closest prior novelty evidence',
+    anchor ? '' : 'baseline/evaluator anchor',
+    mechanismMap?.suspected_mechanism === 'missing mechanism anchor' ? 'mechanism evidence' : ''
+  ].map(compactText).filter(Boolean));
+}
+
+function buildIdeaEvidenceCards(pack = {}, gapMap = [], closestPriorMap = [], mechanismMap = [], experimentAnchors = []) {
+  return mechanismMap.map((entry, index) => {
+    const gap = gapMap.find((candidate) => candidate.gap_id === entry.gap_id) || {};
+    const closestPrior = closestPriorMap.find((prior) => prior.prior_paper) || null;
+    const anchor = experimentAnchors[index % Math.max(experimentAnchors.length, 1)] || null;
+    const missingMaterials = missingMaterialsForCard({ closestPrior, anchor, mechanismMap: entry });
+    const title = truncate(`Address ${gap.gap_type || 'gap'} with ${entry.suspected_mechanism}`, 140);
+    return {
+      idea_id: `idea-card:${stableHash(`${entry.map_id}:${index}`, 14)}`,
+      title,
+      status: missingMaterials.length ? 'open_with_missing_materials' : 'ready_for_autoresearch_review',
+      problem: pack.target_problem || pack.target_domain || 'unspecified target problem',
+      failure_signature: entry.failure_signature,
+      evidence: entry.supporting_evidence,
+      gap: {
+        gap_id: gap.gap_id || null,
+        gap_type: gap.gap_type || null,
+        statement: gap.statement || entry.failure_signature
+      },
+      hypothesis: `The target failure may be reduced by applying the mechanism: ${entry.suspected_mechanism}.`,
+      intervention: entry.candidate_intervention,
+      expected_signal: entry.expected_signal,
+      baseline: anchor?.baseline_candidate || 'missing baseline anchor',
+      evaluator: anchor?.evaluator || 'missing evaluator anchor',
+      ablation: anchor?.ablation_hint || 'missing ablation anchor',
+      guard_metrics: anchor?.guard_metrics || entry.guard_metrics,
+      falsifier: entry.falsifier,
+      closest_prior: closestPrior ? [closestPrior] : [],
+      novelty_risk: closestPrior?.risk_level || 'not_checked',
+      feasibility_risk: missingMaterials.length ? 'needs_materials_before_experiment_planning' : 'bounded_plan_only',
+      cost_anchor: anchor?.cost_signals || null,
+      what_is_evidence_supported: unique([
+        gap.statement,
+        ...(gap.supporting_papers || []).map((paper) => paper.title || paper.paper_id),
+        closestPrior?.prior_paper?.title
+      ].map(compactText).filter(Boolean)),
+      what_is_agent_inferred: [
+        `Hypothesis: The mechanism ${entry.suspected_mechanism} can address this gap.`,
+        `Intervention candidate: ${entry.candidate_intervention}`
+      ],
+      what_is_speculative: [
+        'Expected improvement signal is not experimentally verified by PaperNexus.',
+        'Novelty remains a risk signal until closest-prior expansion and human review are complete.'
+      ],
+      missing_materials: missingMaterials,
+      next_questions: unique([
+        ...(gap.followup_queries || []),
+        missingMaterials.includes('closest prior novelty evidence') ? 'Run closest-prior expansion with provider/literature evidence.' : '',
+        missingMaterials.includes('baseline/evaluator anchor') ? 'Collect baseline, dataset, metric, and ablation anchors before experiment planning.' : ''
+      ].map(compactText).filter(Boolean))
+    };
+  }).slice(0, 8);
+}
+
+function buildStorylineChains(pack = {}, ideaCards = [], noveltyBaseline = []) {
+  return ideaCards.map((card, index) => {
+    const statusQuo = noveltyBaseline[index % Math.max(noveltyBaseline.length, 1)] || null;
+    const chain = {
+      storyline_id: `story:${stableHash(`${card.idea_id}:${index}`, 14)}`,
+      target_problem: card.problem,
+      idea_id: card.idea_id,
+      status_quo: statusQuo
+        ? `${statusQuo.paper?.title || 'Prior work'} covers ${statusQuo.task || 'the target task'} through ${statusQuo.method_core || 'an existing method'}.`
+        : '',
+      tension: card.failure_signature || '',
+      gap: card.gap?.statement || '',
+      mechanism: card.hypothesis || '',
+      intervention: card.intervention || '',
+      validation: `Evaluate against ${card.baseline} using ${card.evaluator}; ablation: ${card.ablation}`,
+      contribution: 'Potential contribution boundary: a mechanism-grounded intervention for the specified gap, pending AutoResearch review and empirical validation.',
+      risk_and_boundary: unique([
+        `Novelty risk: ${card.novelty_risk}`,
+        ...(card.missing_materials || []).map((item) => `Missing material: ${item}`),
+        'PaperNexus provides storyline evidence only; it does not claim final novelty or experimental success.'
+      ]),
+      supporting_papers: unique([
+        ...(card.what_is_evidence_supported || []),
+        statusQuo?.paper?.title
+      ].map(compactText).filter(Boolean)).slice(0, 8),
+      source_spans: (card.evidence || []).slice(0, 8),
+      missing_beats: [],
+      story_risks: []
+    };
+    for (const beat of ['status_quo', 'tension', 'gap', 'mechanism', 'intervention', 'validation', 'contribution', 'risk_and_boundary']) {
+      const value = chain[beat];
+      if (Array.isArray(value) ? !value.length : !compactText(value)) chain.missing_beats.push(beat);
+    }
+    if (card.missing_materials?.length) chain.story_risks.push('missing_materials_before_strong_claim');
+    if (card.novelty_risk === 'not_checked') chain.story_risks.push('closest_prior_not_checked');
+    return chain;
+  });
+}
+
+function innovationMissingMaterials(pack = {}, ideaCards = [], storylines = []) {
+  return unique([
+    ...(pack.missing_materials || []).map((entry) => `${entry.role || 'material'}: ${entry.reason || entry.next_action || 'missing'}`),
+    ...ideaCards.flatMap((card) => card.missing_materials || []),
+    ...storylines.flatMap((chain) => chain.missing_beats || []).map((beat) => `storyline missing beat: ${beat}`)
+  ].map(compactText).filter(Boolean));
+}
+
+function buildInnovationEvidenceBoundaries(ideaCards = []) {
+  return {
+    evidence_supported: unique(ideaCards.flatMap((card) => card.what_is_evidence_supported || [])).slice(0, 20),
+    agent_inferred: unique(ideaCards.flatMap((card) => card.what_is_agent_inferred || [])).slice(0, 20),
+    speculative: unique(ideaCards.flatMap((card) => card.what_is_speculative || [])).slice(0, 20)
+  };
+}
+
+function jsonlText(records = []) {
+  return records.length ? `${records.map((record) => JSON.stringify(record)).join('\n')}\n` : '';
+}
+
+function renderIdeaEvidenceCardsMarkdown(cards = []) {
+  const lines = ['# PaperNexus Idea Evidence Cards', ''];
+  if (!cards.length) {
+    lines.push('- No idea evidence cards generated.', '');
+    return `${lines.join('\n')}\n`;
+  }
+  for (const card of cards) {
+    lines.push(`## ${card.title || card.idea_id}`);
+    lines.push(`- Idea id: ${card.idea_id || ''}`);
+    lines.push(`- Status: ${card.status || ''}`);
+    lines.push(`- Problem: ${card.problem || ''}`);
+    lines.push(`- Gap: ${card.gap?.statement || ''}`);
+    lines.push(`- Hypothesis: ${card.hypothesis || ''}`);
+    lines.push(`- Intervention: ${card.intervention || ''}`);
+    lines.push(`- Expected signal: ${card.expected_signal || ''}`);
+    lines.push(`- Baseline: ${card.baseline || ''}`);
+    lines.push(`- Evaluator: ${card.evaluator || ''}`);
+    lines.push(`- Ablation: ${card.ablation || ''}`);
+    lines.push(`- Falsifier: ${card.falsifier || ''}`);
+    lines.push(`- Novelty risk: ${card.novelty_risk || ''}`);
+    if (card.missing_materials?.length) lines.push(`- Missing materials: ${card.missing_materials.join('; ')}`);
+    if (card.next_questions?.length) lines.push(`- Next questions: ${card.next_questions.join('; ')}`);
+    lines.push('');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function renderStorylineChainsMarkdown(chains = []) {
+  const lines = ['# PaperNexus Storyline Chains', ''];
+  if (!chains.length) {
+    lines.push('- No storyline chains generated.', '');
+    return `${lines.join('\n')}\n`;
+  }
+  for (const chain of chains) {
+    lines.push(`## ${chain.storyline_id || 'storyline'}`);
+    lines.push(`- Target problem: ${chain.target_problem || ''}`);
+    lines.push(`- Idea id: ${chain.idea_id || ''}`);
+    lines.push(`- Status quo: ${chain.status_quo || ''}`);
+    lines.push(`- Tension: ${chain.tension || ''}`);
+    lines.push(`- Gap: ${chain.gap || ''}`);
+    lines.push(`- Mechanism: ${chain.mechanism || ''}`);
+    lines.push(`- Intervention: ${chain.intervention || ''}`);
+    lines.push(`- Validation: ${chain.validation || ''}`);
+    lines.push(`- Contribution boundary: ${chain.contribution || ''}`);
+    if (chain.risk_and_boundary?.length) lines.push(`- Risk and boundary: ${chain.risk_and_boundary.join('; ')}`);
+    if (chain.missing_beats?.length) lines.push(`- Missing beats: ${chain.missing_beats.join(', ')}`);
+    if (chain.story_risks?.length) lines.push(`- Story risks: ${chain.story_risks.join(', ')}`);
+    lines.push('');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function renderAutoresearchHandoffMarkdown(payload = {}) {
+  const handoff = payload.autoresearch_handoff || {};
+  const lines = [
+    '# PaperNexus AutoResearch Handoff',
+    '',
+    `- Status: ${handoff.status || ''}`,
+    `- Idea cards: ${handoff.idea_card_count ?? 0}`,
+    `- Storylines: ${handoff.storyline_count ?? 0}`,
+    `- Missing materials: ${handoff.missing_material_count ?? 0}`,
+    '',
+    'PaperNexus provides evidence and storyline materials only. It does not choose the final research idea, prove novelty, or execute experiments.',
+    '',
+    '## Required Consumer Checks',
+    ''
+  ];
+  for (const check of handoff.required_consumer_checks || []) lines.push(`- ${check}`);
+  lines.push('', '## Evidence Boundaries', '');
+  for (const [key, values] of Object.entries(payload.evidence_boundaries || {})) {
+    lines.push(`### ${key}`, '');
+    if (!values?.length) {
+      lines.push('- None recorded.', '');
+      continue;
+    }
+    for (const value of values) lines.push(`- ${value}`);
+    lines.push('');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function renderInnovationEvidencePackMarkdown(payload = {}) {
+  const lines = [
+    '# PaperNexus Innovation Evidence Pack',
+    '',
+    `- Project: ${payload.project || ''}`,
+    `- Corpus: ${payload.corpus || ''}`,
+    `- Target domain: ${payload.target_domain || ''}`,
+    `- Target problem: ${payload.target_problem || ''}`,
+    '',
+    'This pack is evidence for AutoResearch review. It is not a novelty proof, experiment result, or final research recommendation.',
+    '',
+    '## Idea Evidence Cards',
+    ''
+  ];
+  if (!payload.idea_evidence_cards?.length) {
+    lines.push('- No idea evidence cards generated.', '');
+  }
+  for (const card of payload.idea_evidence_cards || []) {
+    lines.push(`### ${card.title}`);
+    lines.push(`- Status: ${card.status}`);
+    lines.push(`- Gap: ${card.gap?.statement || ''}`);
+    lines.push(`- Hypothesis: ${card.hypothesis}`);
+    lines.push(`- Intervention: ${card.intervention}`);
+    lines.push(`- Expected signal: ${card.expected_signal}`);
+    lines.push(`- Baseline: ${card.baseline}`);
+    lines.push(`- Evaluator: ${card.evaluator}`);
+    lines.push(`- Falsifier: ${card.falsifier}`);
+    lines.push(`- Novelty risk: ${card.novelty_risk}`);
+    if (card.missing_materials?.length) {
+      lines.push(`- Missing materials: ${card.missing_materials.join('; ')}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('## Storyline Chains', '');
+  for (const chain of payload.storyline_chains || []) {
+    lines.push(`### ${chain.storyline_id}`);
+    lines.push(`- Status quo: ${chain.status_quo}`);
+    lines.push(`- Tension: ${chain.tension}`);
+    lines.push(`- Gap: ${chain.gap}`);
+    lines.push(`- Mechanism: ${chain.mechanism}`);
+    lines.push(`- Intervention: ${chain.intervention}`);
+    lines.push(`- Validation: ${chain.validation}`);
+    lines.push(`- Contribution boundary: ${chain.contribution}`);
+    if (chain.missing_beats?.length) lines.push(`- Missing beats: ${chain.missing_beats.join(', ')}`);
+    if (chain.story_risks?.length) lines.push(`- Story risks: ${chain.story_risks.join(', ')}`);
+    lines.push('');
+  }
+
+  if (payload.missing_materials?.length) {
+    lines.push('## Missing Materials', '');
+    for (const item of payload.missing_materials) lines.push(`- ${item}`);
+    lines.push('');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export async function buildInnovationEvidencePack(args = {}, options = {}) {
+  const roles = normalizeRoles(args.roles || args.role || DEFAULT_ROLES);
+  const packArgs = {
+    ...args,
+    roles: unique([...roles, 'target_prior', 'near_source_method', 'far_source_story', 'novelty_risk', 'baseline_candidate'])
+  };
+  const materialPack = await buildResearchMaterialPack({
+    ...packArgs,
+    outputDir: ''
+  }, options);
+  const negativeEvidence = await buildNegativeEvidencePack({
+    ...args,
+    outputDir: '',
+    roles: ['negative_evidence', 'novelty_risk']
+  }, options);
+  const gapMap = buildGapMap(materialPack);
+  const noveltyBaseline = buildNoveltyBaseline(materialPack, gapMap);
+  const closestPriorMap = buildClosestPriorMap(materialPack, negativeEvidence);
+  const experimentAnchors = buildExperimentAnchors(materialPack);
+  const mechanismToInterventionMap = buildMechanismToInterventionMap(materialPack, gapMap);
+  const ideaEvidenceCards = buildIdeaEvidenceCards(
+    materialPack,
+    gapMap,
+    closestPriorMap,
+    mechanismToInterventionMap,
+    experimentAnchors
+  );
+  const storylineChains = buildStorylineChains(materialPack, ideaEvidenceCards, noveltyBaseline);
+  const evidenceBoundaries = buildInnovationEvidenceBoundaries(ideaEvidenceCards);
+  const missingMaterials = innovationMissingMaterials(materialPack, ideaEvidenceCards, storylineChains);
+  const payload = {
+    contractVersion: AGENT_MATERIALS_CONTRACT_VERSION,
+    operation: 'innovation_evidence_pack',
+    run_id: `agent-materials-innovation:${stableHash(`${materialPack.target_domain}:${materialPack.target_problem}:${nowIso()}`, 16)}`,
+    rootPath: materialPack.rootPath,
+    corpus: materialPack.corpus,
+    project: materialPack.project,
+    target_domain: materialPack.target_domain,
+    target_problem: materialPack.target_problem,
+    constraints: materialPack.constraints || [],
+    policy: {
+      role: 'autoresearch_evidence_compiler',
+      final_idea_judge: false,
+      novelty_proof: false,
+      experiment_execution: false,
+      provider_evidence_opt_in: booleanFlag(args.includeProviderEvidence ?? args.include_provider_evidence, false),
+      live_discovery_opt_in: booleanFlag(args.includeLiveDiscoveryEvidence ?? args.include_live_discovery_evidence, false),
+      literature_discovery_opt_in: booleanFlag(args.includeLiteratureDiscoveryEvidence ?? args.include_literature_discovery_evidence, false)
+    },
+    novelty_baseline: noveltyBaseline,
+    gap_map: gapMap,
+    closest_prior_map: closestPriorMap,
+    mechanism_to_intervention_map: mechanismToInterventionMap,
+    negative_evidence: negativeEvidence.records || [],
+    experiment_anchors: experimentAnchors,
+    idea_evidence_cards: ideaEvidenceCards,
+    storyline_chains: storylineChains,
+    missing_materials: missingMaterials,
+    evidence_boundaries: evidenceBoundaries,
+    source_materials: {
+      material_pack_run_id: materialPack.run_id,
+      source_discovery: materialPack.source_discovery,
+      import_requisitions: materialPack.import_requisitions || []
+    },
+    autoresearch_handoff: {
+      status: ideaEvidenceCards.length ? 'ready_for_autoresearch_review' : 'needs_more_materials',
+      required_consumer_checks: [
+        'Run human or AutoResearch proposal review before treating any card as a research direction.',
+        'Resolve missing materials before experiment planning.',
+        'Do not treat closest-prior or negative-evidence signals as novelty proof.',
+        'Use falsifiers and experiment anchors to design bounded validation.'
+      ],
+      idea_card_count: ideaEvidenceCards.length,
+      storyline_count: storylineChains.length,
+      missing_material_count: missingMaterials.length
+    },
+    generatedAt: nowIso()
+  };
+  return maybeExportPayload(payload, args);
+}
+
 function renderMaterialPackMarkdown(payload = {}) {
   const lines = [
     `# PaperNexus Material Pack`,
@@ -3589,6 +4187,7 @@ async function maybeExportPayload(payload = {}, args = {}) {
   await ensureDir(resolvedDir);
   const jsonPath = path.join(resolvedDir, `${baseName}.json`);
   const exports = { json_path: jsonPath };
+  const fullPayloadAliasPaths = [];
   if (payload.operation === 'research_material_pack') {
     const markdownPath = path.join(resolvedDir, 'material_pack.md');
     const sourceDiscoveryPath = path.join(resolvedDir, 'source_discovery_plan.json');
@@ -3605,12 +4204,52 @@ async function maybeExportPayload(payload = {}, args = {}) {
     exports.missing_materials_path = missingMaterialsPath;
     exports.negative_evidence_path = negativeEvidencePath;
     exports.overlay_summary_path = overlaySummaryPath;
+  } else if (payload.operation === 'innovation_evidence_pack') {
+    const markdownPath = path.join(resolvedDir, 'innovation_evidence_pack.md');
+    const canonicalJsonPath = path.join(resolvedDir, 'innovation-evidence-pack.json');
+    const canonicalMarkdownPath = path.join(resolvedDir, 'innovation-evidence-pack.md');
+    const ideaCardsPath = path.join(resolvedDir, 'idea_evidence_cards.json');
+    const ideaCardsJsonlPath = path.join(resolvedDir, 'idea-evidence-cards.jsonl');
+    const ideaCardsMarkdownPath = path.join(resolvedDir, 'idea-evidence-cards.md');
+    const storylineChainsPath = path.join(resolvedDir, 'storyline_chains.json');
+    const storylineChainsCanonicalPath = path.join(resolvedDir, 'storyline-chains.json');
+    const storylineChainsMarkdownPath = path.join(resolvedDir, 'storyline-chains.md');
+    const handoffPath = path.join(resolvedDir, 'autoresearch_handoff.json');
+    const handoffCanonicalPath = path.join(resolvedDir, 'autoresearch-handoff.json');
+    const handoffMarkdownPath = path.join(resolvedDir, 'autoresearch-handoff.md');
+    fullPayloadAliasPaths.push(canonicalJsonPath);
+    await writeText(markdownPath, renderInnovationEvidencePackMarkdown(payload));
+    await writeText(canonicalMarkdownPath, renderInnovationEvidencePackMarkdown(payload));
+    await writeJson(ideaCardsPath, namedExportPayload(payload, 'idea_evidence_cards', 'idea_evidence_cards', []));
+    await writeText(ideaCardsJsonlPath, jsonlText(payload.idea_evidence_cards || []));
+    await writeText(ideaCardsMarkdownPath, renderIdeaEvidenceCardsMarkdown(payload.idea_evidence_cards || []));
+    await writeJson(storylineChainsPath, namedExportPayload(payload, 'storyline_chains', 'storyline_chains', []));
+    await writeJson(storylineChainsCanonicalPath, namedExportPayload(payload, 'storyline_chains', 'storyline_chains', []));
+    await writeText(storylineChainsMarkdownPath, renderStorylineChainsMarkdown(payload.storyline_chains || []));
+    await writeJson(handoffPath, namedExportPayload(payload, 'autoresearch_handoff', 'autoresearch_handoff', null));
+    await writeJson(handoffCanonicalPath, namedExportPayload(payload, 'autoresearch_handoff', 'autoresearch_handoff', null));
+    await writeText(handoffMarkdownPath, renderAutoresearchHandoffMarkdown(payload));
+    exports.markdown_path = markdownPath;
+    exports.canonical_json_path = canonicalJsonPath;
+    exports.canonical_markdown_path = canonicalMarkdownPath;
+    exports.idea_evidence_cards_path = ideaCardsPath;
+    exports.idea_evidence_cards_jsonl_path = ideaCardsJsonlPath;
+    exports.idea_evidence_cards_markdown_path = ideaCardsMarkdownPath;
+    exports.storyline_chains_path = storylineChainsPath;
+    exports.storyline_chains_canonical_path = storylineChainsCanonicalPath;
+    exports.storyline_chains_markdown_path = storylineChainsMarkdownPath;
+    exports.autoresearch_handoff_path = handoffPath;
+    exports.autoresearch_handoff_canonical_path = handoffCanonicalPath;
+    exports.autoresearch_handoff_markdown_path = handoffMarkdownPath;
   }
   const exportedPayload = {
     ...payload,
     exports
   };
   await writeJson(jsonPath, exportedPayload);
+  for (const aliasPath of unique(fullPayloadAliasPaths.filter(Boolean))) {
+    if (aliasPath !== jsonPath) await writeJson(aliasPath, exportedPayload);
+  }
   return exportedPayload;
 }
 
@@ -3619,6 +4258,7 @@ export async function executeAgentMaterialsOperation(args = {}, options = {}) {
   if (operation === 'paper_material_view') return buildPaperMaterialView(args, options);
   if (operation === 'source_discovery_plan') return maybeExportPayload(await buildSourceDiscoveryPlan(args, options), args);
   if (operation === 'research_material_pack') return buildResearchMaterialPack(args, options);
+  if (operation === 'innovation_evidence_pack') return buildInnovationEvidencePack(args, options);
   if (operation === 'import_requisition_pack') return buildImportRequisitionPack(args, options);
   if (operation === 'negative_evidence_pack') return buildNegativeEvidencePack(args, options);
   if (operation === 'experiment_cost_materials') return buildExperimentCostMaterials(args, options);

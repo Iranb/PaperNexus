@@ -2342,11 +2342,74 @@ test('agent_materials returns negative evidence and experiment cost materials', 
   }
 });
 
+test('agent_materials builds innovation evidence cards and storyline chains for AutoResearch handoff', async () => {
+  const rootPath = await createMaterialCorpus();
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-innovation-evidence-'));
+  try {
+    const payload = await executeAgentMaterialsTool({
+      operation: 'innovation_evidence_pack',
+      corpus: rootPath,
+      project: 'CrossDomainGCD',
+      targetDomain: 'Generalized Category Discovery',
+      targetProblem: 'known novel prior shift calibration',
+      outputDir
+    });
+
+    assert.equal(payload.operation, 'innovation_evidence_pack');
+    assert.equal(payload.policy.final_idea_judge, false);
+    assert.equal(payload.policy.novelty_proof, false);
+    assert.equal(payload.policy.experiment_execution, false);
+    assert.ok(Array.isArray(payload.novelty_baseline));
+    assert.ok(Array.isArray(payload.gap_map));
+    assert.ok(Array.isArray(payload.closest_prior_map));
+    assert.ok(Array.isArray(payload.mechanism_to_intervention_map));
+    assert.ok(Array.isArray(payload.negative_evidence));
+    assert.ok(Array.isArray(payload.experiment_anchors));
+    assert.ok(Array.isArray(payload.idea_evidence_cards));
+    assert.ok(Array.isArray(payload.storyline_chains));
+    assert.ok(payload.idea_evidence_cards.length > 0);
+    assert.ok(payload.storyline_chains.length > 0);
+
+    const card = payload.idea_evidence_cards[0];
+    assert.equal(typeof card.falsifier, 'string');
+    assert.ok(Array.isArray(card.what_is_evidence_supported));
+    assert.ok(Array.isArray(card.what_is_agent_inferred));
+    assert.ok(Array.isArray(card.what_is_speculative));
+    assert.ok(card.what_is_speculative.some((entry) => entry.includes('Novelty remains a risk signal')));
+
+    const storyline = payload.storyline_chains[0];
+    assert.ok(Array.isArray(storyline.missing_beats));
+    assert.ok(Array.isArray(storyline.story_risks));
+    assert.ok(storyline.risk_and_boundary.some((entry) => entry.includes('does not claim final novelty')));
+    assert.equal(payload.autoresearch_handoff.idea_card_count, payload.idea_evidence_cards.length);
+
+    assert.ok(payload.exports.markdown_path.endsWith('innovation_evidence_pack.md'));
+    assert.ok(payload.exports.canonical_json_path.endsWith('innovation-evidence-pack.json'));
+    assert.ok(payload.exports.canonical_markdown_path.endsWith('innovation-evidence-pack.md'));
+    assert.ok(payload.exports.idea_evidence_cards_path.endsWith('idea_evidence_cards.json'));
+    assert.ok(payload.exports.idea_evidence_cards_jsonl_path.endsWith('idea-evidence-cards.jsonl'));
+    assert.ok(payload.exports.idea_evidence_cards_markdown_path.endsWith('idea-evidence-cards.md'));
+    assert.ok(payload.exports.storyline_chains_path.endsWith('storyline_chains.json'));
+    assert.ok(payload.exports.storyline_chains_canonical_path.endsWith('storyline-chains.json'));
+    assert.ok(payload.exports.storyline_chains_markdown_path.endsWith('storyline-chains.md'));
+    assert.ok(payload.exports.autoresearch_handoff_markdown_path.endsWith('autoresearch-handoff.md'));
+    const markdown = await fs.readFile(payload.exports.markdown_path, 'utf8');
+    assert.ok(markdown.includes('not a novelty proof'));
+    const ideaCardsJsonl = await fs.readFile(payload.exports.idea_evidence_cards_jsonl_path, 'utf8');
+    assert.ok(ideaCardsJsonl.trim().split('\n').every((line) => JSON.parse(line).idea_id));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+    await fs.rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 test('MCP exposes agent_materials and dispatches read-only material operations', async () => {
   const rootPath = await createMaterialCorpus();
   try {
     const tools = await handleMessage({ method: 'tools/list' });
     assert.ok(tools.tools.some((tool) => tool.name === 'agent_materials'));
+    const agentMaterials = tools.tools.find((tool) => tool.name === 'agent_materials');
+    assert.ok(agentMaterials.inputSchema.properties.operation.enum.includes('innovation_evidence_pack'));
 
     const result = await handleMessage({
       method: 'tools/call',

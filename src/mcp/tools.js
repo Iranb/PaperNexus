@@ -1293,13 +1293,13 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'agent_materials',
-    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, import requisitions, and research-controller artifacts without making novelty judgments; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.',
+    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, and research-controller artifacts without making novelty judgments; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['research_material_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack', 'research_controller'],
+          enum: ['research_material_pack', 'innovation_evidence_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack', 'research_controller'],
           description: 'Material backend operation to run. Overlay operations write only project overlay files, never the raw corpus graph.'
         },
         action: {

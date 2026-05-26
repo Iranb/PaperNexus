@@ -11,6 +11,7 @@ PaperNexus is the material backend:
 
 - it finds, organizes, resolves, imports, and tracks paper materials
 - it separates target prior, near-source method, far-source story, novelty-risk, baseline, negative evidence, and missing-paper roles
+- it can compile innovation evidence packs with idea evidence cards, storyline chains, falsifiers, experiment anchors, and explicit evidence boundaries for AutoResearch handoff
 - it records provenance, availability, import status, and project overlay state
 
 The Agent or user remains responsible for final novelty, method, story, reviewer, and experiment judgments.
@@ -132,7 +133,36 @@ Read:
 
 Do not call a paper graph-visible until its import task is completed and graph-synced.
 
-### Phase 4: Submit Or Process Imports Only On Explicit Request
+### Phase 4: Compile AutoResearch Innovation Evidence
+
+Call `agent_materials` with `operation=innovation_evidence_pack` when AutoResearch needs grounded idea inputs rather than another material list.
+
+Canonical MCP payload shape:
+
+```json
+{
+  "operation": "innovation_evidence_pack",
+  "corpus": "<corpus>",
+  "project": "<project>",
+  "targetDomain": "<target scientific or engineering domain>",
+  "targetProblem": "<research problem>",
+  "outputDir": "/tmp/papernexus-innovation-evidence"
+}
+```
+
+Read:
+
+- `novelty_baseline`: prior coverage, not novelty proof
+- `gap_map`: limitation, missing experiment, claim-evidence mismatch, benchmark failure, or assumption risk
+- `closest_prior_map`: collision and overlap risk signals
+- `experiment_anchors`: baseline, evaluator, ablation, guard metric, and cost/code signals
+- `idea_evidence_cards`: gap/hypothesis/intervention/expected signal/falsifier cards
+- `storyline_chains`: status-quo, tension, gap, mechanism, intervention, validation, contribution-boundary, and risk beats
+- `evidence_boundaries`: evidence-supported vs Agent-inferred vs speculative material
+
+Do not treat this pack as a final research decision. Use it as AutoResearch input for proposal review, novelty checks, and experiment planning.
+
+### Phase 5: Submit Or Process Imports Only On Explicit Request
 
 By default, `agent_materials` does not submit imports.
 
@@ -166,7 +196,7 @@ Only claim graph visibility when the relevant task reports:
 
 MCP/serve workers default logical batching on with `imports.batchEnabled=true` and `batchMaxTasks=8`, so several task ids may complete from one shared graph commit. Continue tracking every task id.
 
-### Phase 5: Preserve Project Memory
+### Phase 6: Preserve Project Memory
 
 Use project overlay operations when a research workflow should resume later.
 
@@ -178,7 +208,7 @@ Operations:
 
 Keep these as project-local overlay records. They must not mutate the raw corpus graph.
 
-### Phase 6: Re-read After Graph Sync
+### Phase 7: Re-read After Graph Sync
 
 After imports finish, rerun:
 
@@ -194,7 +224,7 @@ Use the wrapper only when shell execution is needed.
 
 ```bash
 python3 SKILL/PaperNexus/scripts/pn_agent_materials.py \
-  research-material-pack \
+  innovation-evidence-pack \
   --corpus "<corpus>" \
   --project "<project>" \
   --target-domain "<target domain>" \
@@ -212,7 +242,7 @@ python3 SKILL/PaperNexus/scripts/pn_agent_materials.py \
   --include-literature-discovery-evidence \
   --literature-discovery-seed-provider-papers \
   --literature-discovery-seed-live-papers \
-  --output-dir /tmp/papernexus-material-pack
+  --output-dir /tmp/papernexus-innovation-evidence
 ```
 
 Add these only when import submission is explicitly requested:
@@ -230,6 +260,7 @@ Add these only when import submission is explicitly requested:
 - `live_discovery_evidence` is source-domain evidence and candidate material, not graph evidence.
 - `literature_discovery_evidence` may include resolved sources and importable candidates, but those are not graph-visible until import completion.
 - `negative_evidence_pack` records committed-graph misses and optional provider snippet hits; live-discovery evidence is exposed through source/material packs instead.
+- `innovation_evidence_pack` compiles idea evidence cards and storyline chains, but still does not prove novelty or experimental success.
 - `import_requisitions` are work items for graph materialization, not proof that the papers are already indexed.
 - `paper_role_overlay` and `evidence_cart` are Agent memory, not raw graph facts.
 

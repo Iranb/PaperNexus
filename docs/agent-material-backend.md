@@ -9,6 +9,7 @@ Read-only material operations:
 - `paper_material_view`: returns one paper's source availability, graph context, chunks, source spans, lightweight markdown table/figure materials, and matching project overlay roles.
 - `source_discovery_plan`: generates target, near-source, and far-source queries, committed-graph candidates, optional provider snippet evidence, optional live-discovery evidence, optional literature-discovery resolve/import readiness, sparse-role negative evidence, and import requisitions.
 - `research_material_pack`: returns role-grouped materials plus source discovery metadata, source-domain item annotations, optional provider/live-discovery/literature-discovery materials, missing materials, import requisitions, and project overlay summary.
+- `innovation_evidence_pack`: compiles AutoResearch handoff materials from existing material packs into novelty baselines, gap maps, closest-prior risk signals, mechanism-to-intervention maps, experiment anchors, idea evidence cards, and storyline chains. It is an evidence compiler only: it does not prove novelty, choose the final idea, or run experiments.
 - `import_requisition_pack`: returns missing-but-useful import requests, generated queries, and optional literature-discovery import readiness.
 - `negative_evidence_pack`: records searched queries, filters, direct hits, adjacent hits, absence confidence, and recommended next queries from committed graph state; with `includeProviderEvidence=true`, it also records bounded Semantic Scholar snippet query runs and direct/adjacent provider hit counts. Live-discovery evidence is exposed through `source_discovery_plan` and `research_material_pack`, not persisted by this negative-evidence operation.
 - `experiment_cost_materials`: extracts GPU/runtime/epoch/batch-size/dataset/backbone/code-availability snippets from chunks, source spans, markdown tables, table captions, and figure captions with provenance for Agent inspection.
@@ -190,3 +191,43 @@ missing_materials.json
 negative_evidence.json
 overlay_summary.json
 ```
+
+Compile an AutoResearch innovation evidence handoff through MCP:
+
+```json
+{
+  "operation": "innovation_evidence_pack",
+  "corpus": "<corpus>",
+  "project": "<project>",
+  "targetDomain": "<target domain>",
+  "targetProblem": "<research problem>",
+  "outputDir": "/tmp/papernexus-innovation-evidence"
+}
+```
+
+Its output groups the same underlying materials into:
+
+- `idea_evidence_cards`: candidate problem/gap/mechanism/intervention/falsifier cards for AutoResearch review.
+- `storyline_chains`: status-quo, tension, gap, mechanism, intervention, validation, contribution-boundary, and risk beats.
+- `evidence_boundaries`: what is evidence-supported, Agent-inferred, and speculative.
+- `autoresearch_handoff`: required consumer checks before experiment planning.
+
+When `outputDir` is provided through MCP, the backend writes machine-readable and human-readable handoff artifacts:
+
+```text
+innovation_evidence_pack.json
+innovation_evidence_pack.md
+innovation-evidence-pack.json
+innovation-evidence-pack.md
+idea_evidence_cards.json
+idea-evidence-cards.jsonl
+idea-evidence-cards.md
+storyline_chains.json
+storyline-chains.json
+storyline-chains.md
+autoresearch_handoff.json
+autoresearch-handoff.json
+autoresearch-handoff.md
+```
+
+The hyphenated files match the AutoResearch handoff artifact names. The underscore files preserve the existing `agent_materials` operation naming convention.

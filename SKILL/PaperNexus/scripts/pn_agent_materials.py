@@ -121,6 +121,10 @@ def parse_args():
     add_project_args(pack)
     add_seed_args(pack)
 
+    innovation = subparsers.add_parser("innovation-evidence-pack")
+    add_project_args(innovation)
+    add_seed_args(innovation)
+
     discovery = subparsers.add_parser("source-discovery-plan")
     add_project_args(discovery)
     add_seed_args(discovery)

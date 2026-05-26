@@ -393,6 +393,7 @@
             "evidence_cart",
             "experiment_cost_materials",
             "import_requisition_pack",
+            "innovation_evidence_pack",
             "negative_evidence_pack",
             "paper_material_view",
             "paper_role_overlay",
