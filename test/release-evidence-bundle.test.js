@@ -1038,6 +1038,38 @@ test('release evidence bundle audit passes complete hashed bundle', async () => 
   assert.ok(report.output_artifacts.reportPath.endsWith('release-evidence-bundle-audit.json'));
 });
 
+test('release evidence bundle audit rejects artifact paths outside the bundle root', async () => {
+  const fixture = await createBundleFixture();
+  const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-release-bundle-external-'));
+  try {
+    const externalStdout = path.join(externalRoot, 'stdout.log');
+    await writeText(externalStdout, 'external release log\n');
+    const manifest = JSON.parse(await fs.readFile(fixture.bundleManifest, 'utf8'));
+    manifest.artifacts = manifest.artifacts.map((entry) => (
+      entry.role === 'stdout_log'
+        ? { ...entry, path: externalStdout }
+        : entry
+    ));
+    await writeJson(fixture.bundleManifest, manifest);
+
+    const report = await prepareReleaseEvidenceBundleAudit({
+      bundleDir: fixture.root,
+      runId: 'bundle-path-boundary'
+    });
+    const pathCheck = report.checks.find((entry) => entry.name === 'artifact_paths_inside_bundle');
+
+    assert.equal(report.status, 'failed');
+    assert.equal(report.diagnostics.out_of_bundle_artifact_count, 1);
+    assert.equal(pathCheck.status, 'failed');
+    assert.equal(pathCheck.out_of_bundle_artifacts[0].role, 'stdout_log');
+    assert.equal(pathCheck.out_of_bundle_artifacts[0].path, externalStdout);
+    assert.equal(report.artifacts.find((entry) => entry.role === 'stdout_log').inside_bundle, false);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+    await fs.rm(externalRoot, { recursive: true, force: true });
+  }
+});
+
 test('release evidence bundle skeleton creates non-passing P0/P1 manifest and checklist', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-release-bundle-skeleton-'));
   const skeleton = await createReleaseEvidenceBundleSkeleton({

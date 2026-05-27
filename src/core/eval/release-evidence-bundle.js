@@ -270,6 +270,12 @@ function resolveBundlePath(bundleRoot = '', filePath = '') {
   return path.isAbsolute(text) ? text : path.resolve(bundleRoot, text);
 }
 
+function pathInsideRoot(rootPath = '', candidatePath = '') {
+  if (!rootPath || !candidatePath) return true;
+  const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function artifactPath(entry = {}) {
   return compactText(entry.path || entry.file || entry.relative_path || entry.relativePath);
 }
@@ -326,6 +332,7 @@ async function normalizeArtifact(entry = {}, bundleRoot = '') {
   const role = canonicalRole(entry.role || entry.kind || entry.type);
   const relativePath = artifactPath(entry);
   const absolutePath = resolveBundlePath(bundleRoot, relativePath);
+  const insideBundle = pathInsideRoot(bundleRoot, absolutePath);
   const stats = absolutePath ? await fileStats(absolutePath) : { exists: false, isFile: false, size: 0, mtimeMs: null };
   const expectedSha256 = declaredHash(entry);
   const sha256 = stats.exists && stats.isFile ? await sha256File(absolutePath) : '';
@@ -341,6 +348,8 @@ async function normalizeArtifact(entry = {}, bundleRoot = '') {
     sha256: sha256 || null,
     declared_sha256: expectedSha256 || null,
     hash_matches: !expectedSha256 || expectedSha256 === sha256,
+    inside_bundle: insideBundle,
+    path_error: insideBundle ? null : 'artifact_path_outside_bundle',
     allow_empty: allowEmpty,
     non_empty: allowEmpty || stats.size > 0
   };
@@ -2735,6 +2744,7 @@ export async function prepareReleaseEvidenceBundleAudit(options = {}) {
   const missingFiles = artifacts.filter((entry) => !entry.exists || !entry.is_file);
   const emptyArtifacts = artifacts.filter((entry) => !entry.non_empty);
   const hashMismatches = artifacts.filter((entry) => entry.exists && entry.is_file && !entry.hash_matches);
+  const outOfBundleArtifacts = artifacts.filter((entry) => !entry.inside_bundle);
   const releaseGate = await readReleaseGateManifest(artifacts);
   const releaseGateManifest = asObject(releaseGate.manifest);
   const releaseGateScope = normalizeReleaseScope(
@@ -2838,6 +2848,20 @@ export async function prepareReleaseEvidenceBundleAudit(options = {}) {
       missingFiles.length === 0,
       'all bundle artifacts must resolve to files',
       { missing_files: missingFiles.map((entry) => ({ role: entry.role, path: entry.path })) }
+    ),
+    check(
+      'artifact_paths_inside_bundle',
+      outOfBundleArtifacts.length === 0,
+      'all bundle artifact paths must resolve inside the bundle root',
+      {
+        bundle_root: absoluteBundleDir,
+        out_of_bundle_artifacts: outOfBundleArtifacts.map((entry) => ({
+          role: entry.role,
+          path: entry.path,
+          relative_path: entry.relative_path
+        }))
+      },
+      'failed'
     ),
     check(
       'non_log_artifacts_non_empty',
@@ -3026,6 +3050,7 @@ export async function prepareReleaseEvidenceBundleAudit(options = {}) {
       required_role_count: REQUIRED_RELEASE_EVIDENCE_BUNDLE_ROLES.length,
       missing_roles: missingRoles,
       missing_file_count: missingFiles.length,
+      out_of_bundle_artifact_count: outOfBundleArtifacts.length,
       hash_mismatch_count: hashMismatches.length,
       release_gate_evidence_input_count: releaseGateInputs.length,
       release_gate_evidence_input_roles: releaseGateInputRoles,

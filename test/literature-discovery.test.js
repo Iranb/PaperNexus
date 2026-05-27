@@ -1343,6 +1343,55 @@ test('executeProviderQueries maps direct PASA API results to PDF-ready candidate
   }
 });
 
+test('executeProviderQueries caps PASA polling with the remaining search budget', async () => {
+  const calls = [];
+  const startedAt = Date.now();
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const endpoint = url.pathname.split('/').pop();
+    calls.push({ endpoint, body: JSON.parse(init.body || '{}') });
+    assert.equal(url.hostname, 'pasa-agent.ai');
+    if (endpoint === 'single_paper_agent') return createJsonResponse({ base_resp: { status_code: 0 } });
+    return createJsonResponse({
+      finish: false,
+      papers: JSON.stringify({})
+    });
+  };
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    const budgetStartedAt = Date.now();
+    const result = await executeProviderQueries({
+      providers: ['pasa'],
+      retryCount: 0,
+      maxResultsPerQuery: 1,
+      pasaTimeoutSeconds: 30,
+      pasaPollIntervalSeconds: 10,
+      budgetSafetyMarginMs: 0,
+      minProviderQueryBudgetMs: 1,
+      budget: {
+        startedAt: budgetStartedAt,
+        deadlineAt: budgetStartedAt + 40,
+        budgetMs: 40
+      },
+      plan: {
+        queries: [
+          { id: 'q1', query: 'budgeted pasa retrieval', family: 'direct' }
+        ]
+      }
+    });
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(result.partial, true);
+    assert.equal(result.budget.budgetExhausted, true);
+    assert.equal(result.queryResults[0].ok, true);
+    assert.ok(calls.some((entry) => entry.endpoint === 'single_paper_agent'));
+    assert.ok(calls.some((entry) => entry.endpoint === 'single_get_result'));
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('executeProviderQueries reports direct papers.cool HTTP failures without aborting discovery', async () => {
   resetDiscoveryRequestSchedulerForTests();
   globalThis.fetch = async () => ({

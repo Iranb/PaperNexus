@@ -2,9 +2,16 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { ensureDir, readJson, writeJson, writeText } from '../../lib/fs.js';
+import { ensureDir, readJson, withFileLock, writeJson, writeText } from '../../lib/fs.js';
 import { stableHash, truncate } from '../../lib/utils.js';
-import { applyCorpusMutations, loadCorpus } from '../../storage/corpus-store.js';
+import { applyGraphMutations } from '../graph/mutations.js';
+import { summarizeCorpusGraph } from '../graph/summary.js';
+import {
+  applyCorpusMutations,
+  getCorpusLockPath,
+  loadCorpus,
+  saveCorpus
+} from '../../storage/corpus-store.js';
 import {
   INGESTION_GRAPH_APPLY_PLAN_CONTRACT_VERSION,
   INGESTION_GRAPH_MUTATIONS_CONTRACT_VERSION
@@ -216,6 +223,40 @@ function buildRollbackManifest(report = {}, paths = {}) {
   };
 }
 
+async function applyIngestionMutationsUnderLock(corpusRoot, operations, options = {}) {
+  const actor = options.actor || 'ingestion-graph-mutation-executor';
+  const beforeGraphSnapshotPath = fileName(options.outputDir, 'before-graph-snapshot.json');
+  return withFileLock(getCorpusLockPath(corpusRoot), async () => {
+    const before = await loadCorpus(corpusRoot);
+    const beforeSnapshot = graphSnapshot(before.graph);
+    const mutationResult = applyGraphMutations(before.graph, operations, { actor, dryRun: false });
+    const projectedSnapshot = graphSnapshot(mutationResult.graph);
+    await writeJson(beforeGraphSnapshotPath, beforeSnapshot.json);
+    const beforeGraphSnapshotSha256 = await sha256File(beforeGraphSnapshotPath);
+    const mutationTimestamp = new Date().toISOString();
+    const nextMeta = {
+      ...before.meta,
+      indexedAt: mutationTimestamp,
+      ...summarizeCorpusGraph(mutationResult.graph),
+      lastMutationAt: mutationTimestamp,
+      lastMutationSummary: mutationResult.summary
+    };
+    await saveCorpus(corpusRoot, mutationResult.graph, nextMeta, {
+      liteViewMode: 'rebuild'
+    });
+    return {
+      rootPath: corpusRoot,
+      graph: mutationResult.graph,
+      meta: nextMeta,
+      mutationResult,
+      beforeSnapshot,
+      projectedSnapshot,
+      beforeGraphSnapshotPath,
+      beforeGraphSnapshotSha256
+    };
+  }, options.lockOptions);
+}
+
 export async function executeIngestionGraphMutations(options = {}) {
   const graphMutationsPath = compactText(options.graphMutationsPath || options.graph_mutations_path, 1000);
   const graphApplyPlanPath = compactText(options.graphApplyPlanPath || options.graph_apply_plan_path, 1000);
@@ -255,11 +296,11 @@ export async function executeIngestionGraphMutations(options = {}) {
     : [];
 
   const before = await loadCorpus(corpusRoot);
-  const beforeSnapshot = graphSnapshot(before.graph);
+  let beforeSnapshot = graphSnapshot(before.graph);
   const preview = operations.length
     ? await applyCorpusMutations(corpusRoot, operations, { actor, dryRun: true })
     : { mutationResult: null };
-  const projectedSnapshot = preview.mutationResult
+  let projectedSnapshot = preview.mutationResult
     ? graphSnapshot(preview.mutationResult.graph)
     : beforeSnapshot;
 
@@ -271,10 +312,15 @@ export async function executeIngestionGraphMutations(options = {}) {
   let authoritativeSnapshot = beforeSnapshot;
 
   if (applyRequested && canApply) {
-    beforeGraphSnapshotPath = fileName(outputDir, 'before-graph-snapshot.json');
-    await writeJson(beforeGraphSnapshotPath, beforeSnapshot.json);
-    beforeGraphSnapshotSha256 = await sha256File(beforeGraphSnapshotPath);
-    applied = await applyCorpusMutations(corpusRoot, operations, { actor, dryRun: false });
+    applied = await applyIngestionMutationsUnderLock(corpusRoot, operations, {
+      actor,
+      outputDir,
+      lockOptions: options.lockOptions || options.lock_options
+    });
+    beforeSnapshot = applied.beforeSnapshot;
+    projectedSnapshot = applied.projectedSnapshot;
+    beforeGraphSnapshotPath = applied.beforeGraphSnapshotPath;
+    beforeGraphSnapshotSha256 = applied.beforeGraphSnapshotSha256;
     authoritativeSnapshot = graphSnapshot(applied.graph);
     status = 'applied';
     applyStatus = 'applied';
@@ -333,7 +379,8 @@ export async function executeIngestionGraphMutations(options = {}) {
       planAllowsApply: canApply,
       authoritativeGraphWritePerformed: applyRequested && canApply,
       blockedActualApply: applyRequested && !canApply,
-      rollbackManifestRequired: applyRequested && canApply
+      rollbackManifestRequired: applyRequested && canApply,
+      snapshotCapturedUnderLock: applyRequested && canApply
     }
   };
 

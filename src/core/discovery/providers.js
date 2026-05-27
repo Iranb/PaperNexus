@@ -935,14 +935,17 @@ async function fetchPasa(query, planQuery, config) {
     global_id: globalId
   }, config);
 
-  const deadline = Date.now() + Math.max(1000, Number(config.pasaTimeoutSeconds || 30) * 1000);
+  const deadline = Date.now() + Math.max(1, Number(config.pasaTimeoutSeconds || 30) * 1000);
   let payload = {};
   let papers = [];
   while (true) {
     payload = await postPasaJson('single_get_result', { session_id: sessionId }, config);
     papers = collectPasaResults(payload);
     if (payload.finish || Date.now() >= deadline) break;
-    const waitMs = Math.max(0, Number(config.pasaPollIntervalSeconds || 1) * 1000);
+    const waitMs = Math.min(
+      Math.max(0, Number(config.pasaPollIntervalSeconds || 1) * 1000),
+      Math.max(0, deadline - Date.now())
+    );
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
   papers = papers.slice(0, config.maxResultsPerQuery);
@@ -1276,11 +1279,18 @@ function budgetExhausted(config = {}) {
 
 function configForBudgetedQuery(config = {}) {
   if (!config.budget) return config;
-  const safetyMarginMs = Math.max(0, Number(config.budgetSafetyMarginMs || 250));
+  const safetyMarginMs = Math.max(0, Number(config.budgetSafetyMarginMs ?? config.budget_safety_margin_ms ?? 250));
   const remaining = Math.max(1, remainingBudgetMs(config.budget) - safetyMarginMs);
+  const timeoutMs = Math.max(1, Math.min(Number(config.timeoutMs || 8000), remaining));
+  const pasaRequestTimeoutMs = Math.max(1, Math.min(Number(config.pasaRequestTimeoutMs || config.pasa_request_timeout_ms || timeoutMs), remaining));
+  const pasaTimeoutSeconds = Math.max(0.001, Math.min(Number(config.pasaTimeoutSeconds || config.pasa_timeout_seconds || 30), remaining / 1000));
+  const pasaPollIntervalSeconds = Math.max(0.001, Math.min(Number(config.pasaPollIntervalSeconds || config.pasa_poll_interval_seconds || 1), remaining / 1000));
   return {
     ...config,
-    timeoutMs: Math.max(1, Math.min(Number(config.timeoutMs || 8000), remaining))
+    timeoutMs,
+    pasaRequestTimeoutMs,
+    pasaTimeoutSeconds,
+    pasaPollIntervalSeconds
   };
 }
 

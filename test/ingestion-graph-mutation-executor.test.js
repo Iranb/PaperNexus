@@ -96,15 +96,14 @@ function applyPlan(status = 'preview_only') {
   };
 }
 
-async function writeFixtureCorpus(rootPath) {
+async function writeFixtureCorpus(rootPath, graph = createKnowledgeGraph()) {
   const corpusDir = path.join(rootPath, '.papernexus');
-  const graph = createKnowledgeGraph();
   await fs.mkdir(corpusDir, { recursive: true });
   await fs.writeFile(path.join(corpusDir, 'graph.json'), `${JSON.stringify(graph.toJSON(), null, 2)}\n`, 'utf8');
   await fs.writeFile(path.join(corpusDir, 'meta.json'), `${JSON.stringify({
     indexedAt: '2026-05-27T00:00:00.000Z',
-    nodeCount: 0,
-    relationshipCount: 0,
+    nodeCount: graph.nodeCount,
+    relationshipCount: graph.relationshipCount,
     topProblems: [],
     layers: {},
     layerPaths: {}
@@ -224,6 +223,52 @@ test('ingestion graph mutation executor applies only ready plans with explicit a
     const corpus = await loadCorpus(tempRoot);
     assert.equal(corpus.graph.nodeCount, 1);
     assert.ok(corpus.graph.getNode('claim:ingestion-executor'));
+  } finally {
+    if (previousBackend === undefined) {
+      delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    } else {
+      process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    }
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('ingestion graph mutation executor snapshots the locked graph before apply', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-ingestion-mutation-executor-locked-snapshot-'));
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  try {
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'claim:preexisting',
+      type: NODE_TYPES.CLAIM,
+      name: 'Preexisting claim',
+      properties: {
+        source_span_ids: ['span:preexisting'],
+        relationSource: 'ingestion-executor-test'
+      }
+    });
+    await writeFixtureCorpus(tempRoot, graph);
+    const { graphMutationsPath, graphApplyPlanPath } = await writeExecutorInputs(tempRoot, 'ready_to_apply');
+    const outputDir = path.join(tempRoot, 'execution');
+
+    const { report } = await executeIngestionGraphMutations({
+      graphMutationsPath,
+      graphApplyPlanPath,
+      corpusRoot: tempRoot,
+      outputDir,
+      actor: 'executor-locked-snapshot-test',
+      apply: true
+    });
+    const beforeSnapshot = JSON.parse(await fs.readFile(report.artifacts.beforeGraphSnapshot, 'utf8'));
+
+    assert.equal(report.graphBefore.nodeCount, 1);
+    assert.equal(report.projectedGraphAfter.nodeCount, 2);
+    assert.equal(report.authoritativeGraphAfter.nodeCount, 2);
+    assert.equal(report.projectedGraphAfter.checksum, report.authoritativeGraphAfter.checksum);
+    assert.equal(report.safety.snapshotCapturedUnderLock, true);
+    assert.equal(beforeSnapshot.nodes.length, 1);
+    assert.ok(beforeSnapshot.nodes.some((node) => node.id === 'claim:preexisting'));
   } finally {
     if (previousBackend === undefined) {
       delete process.env.PAPERNEXUS_GRAPH_BACKEND;
