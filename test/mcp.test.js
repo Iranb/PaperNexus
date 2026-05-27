@@ -184,6 +184,13 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   assert.ok(tools.tools.some((tool) => tool.name === 'research_briefing'));
   assert.ok(tools.tools.some((tool) => tool.name === 'import_workflow'));
   assert.ok(tools.tools.some((tool) => tool.name === 'idea_catalyst'));
+  const runtimeInitTool = tools.tools.find((tool) => tool.name === 'runtime_init');
+  assert.ok(runtimeInitTool);
+  assert.ok(Object.hasOwn(runtimeInitTool.inputSchema.properties, 'sourceInputs'));
+  assert.ok(Object.hasOwn(runtimeInitTool.inputSchema.properties, 'llm'));
+  const createCorpusTool = tools.tools.find((tool) => tool.name === 'create_corpus');
+  assert.ok(createCorpusTool);
+  assert.ok(Object.hasOwn(createCorpusTool.inputSchema.properties, 'rootPath'));
   const refreshCorpusTool = tools.tools.find((tool) => tool.name === 'refresh_corpus');
   assert.ok(refreshCorpusTool);
   assert.ok(refreshCorpusTool.inputSchema.properties.mode.enum.includes('llm_optimize'));
@@ -531,6 +538,94 @@ test('refresh_paper_graph force-refreshes one paper over MCP without rebuilding 
       await localPending.close();
     }
     await fs.rm(localCorpusRoot, { recursive: true, force: true });
+    await fs.rm(localHome, { recursive: true, force: true });
+  }
+});
+
+test('runtime_init and create_corpus expose zero-to-first-build setup over MCP', async () => {
+  const localHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-init-home-'));
+  const localSourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-init-source-'));
+  const localIndexRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-init-index-'));
+  const localConfigPath = path.join(localHome, 'config.json');
+  let localPending = null;
+
+  try {
+    await fs.writeFile(
+      path.join(localSourceRoot, 'new-paper.md'),
+      '# MCP Created Corpus\n\n## Abstract\n\nA paper about MCP-based corpus creation.\n\n## Method\n\nThe method builds a PaperNexus graph from a server-side source path.\n',
+      'utf8'
+    );
+
+    localPending = startMcpClient({
+      ...process.env,
+      PAPERNEXUS_HOME: localHome,
+      PAPERNEXUS_GRAPH_BACKEND: 'json'
+    });
+    await localPending.request('initialize', {});
+
+    const initResult = await localPending.request('tools/call', {
+      name: 'runtime_init',
+      arguments: {
+        configPath: localConfigPath,
+        sourceInputs: [localSourceRoot],
+        corpus: 'mcp-created',
+        indexDir: localIndexRoot,
+        pdfParser: 'markitdown',
+        serveMcpEnabled: true,
+        serveMcpPath: 'mcp',
+        llm: {
+          provider: 'ollama',
+          model: 'qwen2.5:0.5b',
+          relations: false
+        }
+      }
+    });
+    const initPayload = JSON.parse(initResult.content[0].text);
+    assert.equal(initPayload.contractVersion, 'papernexus-runtime-init-v1');
+    assert.equal(initPayload.configPath, localConfigPath);
+    assert.deepEqual(initPayload.resolvedSourceInputs, [localSourceRoot]);
+    assert.equal(initPayload.resolvedIndexDir, localIndexRoot);
+    assert.equal(initPayload.serve.mcp.path, '/mcp');
+
+    const savedConfig = JSON.parse(await fs.readFile(localConfigPath, 'utf8'));
+    assert.deepEqual(savedConfig.sources.inputs, [localSourceRoot]);
+    assert.equal(savedConfig.storage.indexDir, localIndexRoot);
+    assert.equal(savedConfig.analyze.name, 'mcp-created');
+    assert.equal(savedConfig.global.corpus, 'mcp-created');
+    assert.equal(savedConfig.analyze.pdfParser, 'markitdown');
+    assert.equal(savedConfig.llm.provider, 'ollama');
+    assert.equal(savedConfig.llm.model, 'qwen2.5:0.5b');
+    assert.equal(savedConfig.llm.apiKey, undefined);
+
+    const createResult = await localPending.request('tools/call', {
+      name: 'create_corpus',
+      arguments: {
+        configPath: localConfigPath,
+        semanticExtraction: 'heuristic-only',
+        force: true
+      }
+    }, { timeoutMs: 20000 });
+    const createPayload = JSON.parse(createResult.content[0].text);
+    assert.equal(createPayload.contractVersion, 'papernexus-corpus-create-v1');
+    assert.equal(createPayload.corpus, 'mcp-created');
+    assert.equal(createPayload.rootPath, localIndexRoot);
+    assert.equal(createPayload.graphCommitted, true);
+    assert.equal(createPayload.options.semanticExtraction, 'heuristic-only');
+    assert.ok(createPayload.meta.paperCount >= 1);
+
+    const statusResult = await localPending.request('tools/call', {
+      name: 'corpus_status',
+      arguments: {
+        corpus: localIndexRoot
+      }
+    });
+    assert.match(statusResult.content[0].text, /mcp-created/);
+  } finally {
+    if (localPending) {
+      await localPending.close();
+    }
+    await fs.rm(localIndexRoot, { recursive: true, force: true });
+    await fs.rm(localSourceRoot, { recursive: true, force: true });
     await fs.rm(localHome, { recursive: true, force: true });
   }
 });

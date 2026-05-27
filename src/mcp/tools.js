@@ -2135,6 +2135,215 @@ export const PAPERNEXUS_TOOLS = [
     }
   },
   {
+    name: 'runtime_init',
+    description: 'Initialize or update the PaperNexus runtime config non-interactively over MCP, equivalent to papernexus init for server-side paths. This writes config only; call create_corpus for the first graph build.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sourceInputs: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description: 'One or more PaperNexus server-visible source directories or files containing PDFs/Markdown. MCP does not upload local files; paths must already exist from the server perspective.'
+        },
+        sources: {
+          type: ['array', 'string'],
+          description: 'Alias for sourceInputs. Strings may be comma-separated.'
+        },
+        corpus: {
+          type: 'string',
+          description: 'Friendly corpus name to write into analyze.name and global.corpus.'
+        },
+        corpusName: {
+          type: 'string',
+          description: 'Alias for corpus.'
+        },
+        indexDir: {
+          type: 'string',
+          description: 'Directory where the generated .papernexus index should live. Defaults to the existing storage.indexDir or ~/.papernexus/index-store.'
+        },
+        rootPath: {
+          type: 'string',
+          description: 'Alias for indexDir.'
+        },
+        configPath: {
+          type: 'string',
+          description: 'Optional runtime config path to create or update. If omitted, the default PaperNexus runtime config is used.'
+        },
+        pdfParser: {
+          type: 'string',
+          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl'],
+          description: 'Default PDF parser to write into analyze.pdfParser.',
+          default: 'markitdown'
+        },
+        serveHost: {
+          type: 'string',
+          description: 'Default serve host to write into serve.host.',
+          default: '127.0.0.1'
+        },
+        servePort: {
+          type: 'number',
+          description: 'Default serve port to write into serve.port.',
+          default: 4821
+        },
+        serveMcpEnabled: {
+          type: 'boolean',
+          description: 'When provided, write serve.mcp.enabled for HTTP MCP serving.'
+        },
+        serveMcpPath: {
+          type: 'string',
+          description: 'When provided, write serve.mcp.path. Relative values are normalized with a leading slash.'
+        },
+        llm: {
+          type: 'object',
+          description: 'Optional LLM config metadata. Raw API keys are intentionally rejected; use apiKeyEnv or keychain metadata.',
+          properties: {
+            provider: {
+              type: 'string',
+              enum: ['ollama', 'openai', 'anthropic'],
+              description: 'LLM provider.'
+            },
+            model: {
+              type: 'string',
+              description: 'Model identifier exposed by the provider.'
+            },
+            baseUrl: {
+              type: 'string',
+              description: 'Provider API base URL.'
+            },
+            relations: {
+              type: 'boolean',
+              description: 'Enable LLM-assisted relation extraction.'
+            },
+            apiKeyEnv: {
+              type: 'string',
+              description: 'Environment variable name containing the API key.'
+            },
+            apiKeySource: {
+              type: 'string',
+              enum: ['keychain'],
+              description: 'Secure API key source metadata.'
+            },
+            apiKeyService: {
+              type: 'string',
+              description: 'Keychain service name when apiKeySource is keychain.'
+            },
+            apiKeyAccount: {
+              type: 'string',
+              description: 'Keychain account name when apiKeySource is keychain.'
+            },
+            sshHost: {
+              type: 'string',
+              description: 'Optional SSH host for remote LLM access.'
+            },
+            timeoutMs: {
+              type: 'number',
+              description: 'Optional LLM request timeout.'
+            },
+            batchSize: {
+              type: 'number',
+              description: 'Optional LLM batch size.'
+            },
+            maxTokens: {
+              type: 'number',
+              description: 'Optional LLM max tokens.'
+            }
+          },
+          additionalProperties: false
+        }
+      },
+      required: ['sourceInputs', 'corpus']
+    }
+  },
+  {
+    name: 'create_corpus',
+    description: 'Create the first committed corpus graph over MCP from server-visible source files/directories, equivalent to the first papernexus analyze --name run. Use refresh_corpus for later maintenance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sourceInputs: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description: 'One or more PaperNexus server-visible source directories or files containing PDFs/Markdown. If omitted, configured sources.inputs are used.'
+        },
+        sources: {
+          type: ['array', 'string'],
+          description: 'Alias for sourceInputs. Strings may be comma-separated.'
+        },
+        sourceRoot: {
+          type: 'string',
+          description: 'Alias for a single source input path.'
+        },
+        inputPath: {
+          type: 'string',
+          description: 'Alias for a single source input path.'
+        },
+        corpus: {
+          type: 'string',
+          description: 'Friendly corpus name. If omitted, configured analyze.name or global.corpus is used.'
+        },
+        corpusName: {
+          type: 'string',
+          description: 'Alias for corpus.'
+        },
+        rootPath: {
+          type: 'string',
+          description: 'Index root where the .papernexus directory is created. If omitted, configured storage.indexDir or the analyze default is used.'
+        },
+        indexDir: {
+          type: 'string',
+          description: 'Alias for rootPath.'
+        },
+        configPath: {
+          type: 'string',
+          description: 'Optional runtime config path to read defaults from.'
+        },
+        force: {
+          type: 'boolean',
+          description: 'Force a full build even if cached corpus state exists.',
+          default: false
+        },
+        semanticExtraction: {
+          type: 'string',
+          enum: ['auto', 'heuristic-only', 'llm-assisted', 'llm-primary'],
+          description: 'Optional semantic extraction override for the first build.'
+        },
+        rebuildPdfMarkdown: {
+          type: 'boolean',
+          description: 'When true, force PDF markdown regeneration during the first build.'
+        },
+        pdfParser: {
+          type: 'string',
+          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl'],
+          description: 'Optional PDF parser override for the first build.'
+        },
+        pdfCommand: {
+          type: 'string',
+          description: 'Optional generic PDF parser command override for the first build.'
+        },
+        concurrency: {
+          type: 'number',
+          description: 'Optional source analysis concurrency override.'
+        },
+        analyzeConcurrency: {
+          type: 'number',
+          description: 'Alias for concurrency.'
+        },
+        llmBatchSize: {
+          type: 'number',
+          description: 'Optional LLM batch size override.'
+        },
+        batchSize: {
+          type: 'number',
+          description: 'Alias for llmBatchSize.'
+        }
+      }
+    }
+  },
+  {
     name: 'refresh_corpus',
     description: 'Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots.',
     inputSchema: {

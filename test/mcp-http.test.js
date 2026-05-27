@@ -132,6 +132,8 @@ test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata,
       assert.equal(response.headers.get('mcp-session-id'), sessionId);
       return response.json();
     });
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'runtime_init'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'create_corpus'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'refresh_corpus'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'mutate_graph'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'corpus_sources'));

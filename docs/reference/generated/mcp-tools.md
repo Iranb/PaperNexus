@@ -24,6 +24,8 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle with v2 innovation artifacts: must-cite set, novelty certificate, review packet, storyline DAG, and counterfactual falsification plans. |
 | [`agent_materials`](#tool-agent_materials) | Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, and research-controller artifacts without making novelty judgments; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph. |
 | [`mutate_graph`](#tool-mutate_graph) | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
+| [`runtime_init`](#tool-runtime_init) | Initialize or update the PaperNexus runtime config non-interactively over MCP, equivalent to papernexus init for server-side paths. This writes config only; call create_corpus for the first graph build. |
+| [`create_corpus`](#tool-create_corpus) | Create the first committed corpus graph over MCP from server-visible source files/directories, equivalent to the first papernexus analyze --name run. Use refresh_corpus for later maintenance. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots. |
 | [`refresh_paper_graph`](#tool-refresh_paper_graph) | Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus. |
 
@@ -598,6 +600,59 @@ Apply an ordered batch of graph node and relationship mutations with schema-awar
 | `actor` | optional | string | Short label for the editing agent or workflow. |
 | `dryRun` | optional | boolean | When true, validate and preview the mutation without saving changes. |
 | `operations` | required | array | Mutation operations to apply in order. |
+
+## Tool: runtime_init
+
+<a id="tool-runtime_init"></a>
+
+Initialize or update the PaperNexus runtime config non-interactively over MCP, equivalent to papernexus init for server-side paths. This writes config only; call create_corpus for the first graph build.
+
+### Input Schema
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `sourceInputs` | required | array | One or more PaperNexus server-visible source directories or files containing PDFs/Markdown. MCP does not upload local files; paths must already exist from the server perspective. |
+| `sources` | optional | array,string | Alias for sourceInputs. Strings may be comma-separated. |
+| `corpus` | required | string | Friendly corpus name to write into analyze.name and global.corpus. |
+| `corpusName` | optional | string | Alias for corpus. |
+| `indexDir` | optional | string | Directory where the generated .papernexus index should live. Defaults to the existing storage.indexDir or ~/.papernexus/index-store. |
+| `rootPath` | optional | string | Alias for indexDir. |
+| `configPath` | optional | string | Optional runtime config path to create or update. If omitted, the default PaperNexus runtime config is used. |
+| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl) | Default PDF parser to write into analyze.pdfParser. |
+| `serveHost` | optional | string | Default serve host to write into serve.host. |
+| `servePort` | optional | number | Default serve port to write into serve.port. |
+| `serveMcpEnabled` | optional | boolean | When provided, write serve.mcp.enabled for HTTP MCP serving. |
+| `serveMcpPath` | optional | string | When provided, write serve.mcp.path. Relative values are normalized with a leading slash. |
+| `llm` | optional | object | Optional LLM config metadata. Raw API keys are intentionally rejected; use apiKeyEnv or keychain metadata. |
+
+## Tool: create_corpus
+
+<a id="tool-create_corpus"></a>
+
+Create the first committed corpus graph over MCP from server-visible source files/directories, equivalent to the first papernexus analyze --name run. Use refresh_corpus for later maintenance.
+
+### Input Schema
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `sourceInputs` | optional | array | One or more PaperNexus server-visible source directories or files containing PDFs/Markdown. If omitted, configured sources.inputs are used. |
+| `sources` | optional | array,string | Alias for sourceInputs. Strings may be comma-separated. |
+| `sourceRoot` | optional | string | Alias for a single source input path. |
+| `inputPath` | optional | string | Alias for a single source input path. |
+| `corpus` | optional | string | Friendly corpus name. If omitted, configured analyze.name or global.corpus is used. |
+| `corpusName` | optional | string | Alias for corpus. |
+| `rootPath` | optional | string | Index root where the .papernexus directory is created. If omitted, configured storage.indexDir or the analyze default is used. |
+| `indexDir` | optional | string | Alias for rootPath. |
+| `configPath` | optional | string | Optional runtime config path to read defaults from. |
+| `force` | optional | boolean | Force a full build even if cached corpus state exists. |
+| `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction override for the first build. |
+| `rebuildPdfMarkdown` | optional | boolean | When true, force PDF markdown regeneration during the first build. |
+| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl) | Optional PDF parser override for the first build. |
+| `pdfCommand` | optional | string | Optional generic PDF parser command override for the first build. |
+| `concurrency` | optional | number | Optional source analysis concurrency override. |
+| `analyzeConcurrency` | optional | number | Alias for concurrency. |
+| `llmBatchSize` | optional | number | Optional LLM batch size override. |
+| `batchSize` | optional | number | Alias for llmBatchSize. |
 
 ## Tool: refresh_corpus
 

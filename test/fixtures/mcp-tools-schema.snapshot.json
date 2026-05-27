@@ -717,6 +717,90 @@
     }
   },
   {
+    "name": "create_corpus",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "analyzeConcurrency": {
+          "type": "number"
+        },
+        "batchSize": {
+          "type": "number"
+        },
+        "concurrency": {
+          "type": "number"
+        },
+        "configPath": {
+          "type": "string"
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "corpusName": {
+          "type": "string"
+        },
+        "force": {
+          "type": "boolean",
+          "default": false
+        },
+        "indexDir": {
+          "type": "string"
+        },
+        "inputPath": {
+          "type": "string"
+        },
+        "llmBatchSize": {
+          "type": "number"
+        },
+        "pdfCommand": {
+          "type": "string"
+        },
+        "pdfParser": {
+          "type": "string",
+          "enum": [
+            "docling",
+            "marker",
+            "markitdown",
+            "markpdfdown",
+            "mineru",
+            "opendataloader",
+            "paddleocr-vl"
+          ]
+        },
+        "rebuildPdfMarkdown": {
+          "type": "boolean"
+        },
+        "rootPath": {
+          "type": "string"
+        },
+        "semanticExtraction": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "heuristic-only",
+            "llm-assisted",
+            "llm-primary"
+          ]
+        },
+        "sourceInputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceRoot": {
+          "type": "string"
+        },
+        "sources": {
+          "type": [
+            "array",
+            "string"
+          ]
+        }
+      }
+    }
+  },
+  {
     "name": "domain_distance",
     "inputSchema": {
       "type": "object",
@@ -2149,6 +2233,122 @@
         },
         "targetMethod": {
           "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "runtime_init",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "corpus",
+        "sourceInputs"
+      ],
+      "properties": {
+        "configPath": {
+          "type": "string"
+        },
+        "corpus": {
+          "type": "string"
+        },
+        "corpusName": {
+          "type": "string"
+        },
+        "indexDir": {
+          "type": "string"
+        },
+        "llm": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "apiKeyAccount": {
+              "type": "string"
+            },
+            "apiKeyEnv": {
+              "type": "string"
+            },
+            "apiKeyService": {
+              "type": "string"
+            },
+            "apiKeySource": {
+              "type": "string",
+              "enum": [
+                "keychain"
+              ]
+            },
+            "baseUrl": {
+              "type": "string"
+            },
+            "batchSize": {
+              "type": "number"
+            },
+            "maxTokens": {
+              "type": "number"
+            },
+            "model": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string",
+              "enum": [
+                "anthropic",
+                "ollama",
+                "openai"
+              ]
+            },
+            "relations": {
+              "type": "boolean"
+            },
+            "sshHost": {
+              "type": "string"
+            },
+            "timeoutMs": {
+              "type": "number"
+            }
+          }
+        },
+        "pdfParser": {
+          "type": "string",
+          "default": "markitdown",
+          "enum": [
+            "docling",
+            "marker",
+            "markitdown",
+            "markpdfdown",
+            "mineru",
+            "opendataloader",
+            "paddleocr-vl"
+          ]
+        },
+        "rootPath": {
+          "type": "string"
+        },
+        "serveHost": {
+          "type": "string",
+          "default": "127.0.0.1"
+        },
+        "serveMcpEnabled": {
+          "type": "boolean"
+        },
+        "serveMcpPath": {
+          "type": "string"
+        },
+        "servePort": {
+          "type": "number",
+          "default": 4821
+        },
+        "sourceInputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sources": {
+          "type": [
+            "array",
+            "string"
+          ]
         }
       }
     }
