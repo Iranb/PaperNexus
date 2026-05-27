@@ -22,6 +22,10 @@ This page is generated from route declarations in [`src/server/http.js`](https:/
 | `POST` | `/api/ideas` |
 | `POST` | `/api/brainstorm` |
 | `POST` | `/api/catalyst` |
+| `POST` | `/api/idea-catalyst-v2` |
+| `POST` | `/api/novelty-eval` |
+| `POST` | `/api/storyline` |
+| `POST` | `/api/reviewer-simulate` |
 | `POST` | `/api/path-trace` |
 | `POST` | `/api/evidence-chain` |
 | `POST` | `/api/method-lineage` |

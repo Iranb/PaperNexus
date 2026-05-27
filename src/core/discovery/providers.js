@@ -67,6 +67,16 @@ function toNonNegativeInteger(value, fallback) {
   return Math.max(0, Math.floor(parsed));
 }
 
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+}
+
+function toOptionalPositiveInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1, Math.floor(parsed));
+}
+
 function normalizeBaseUrl(value = '', fallback = '') {
   const normalized = String(value || fallback || '').trim();
   return normalized.replace(/\/+$/, '');
@@ -1207,9 +1217,15 @@ function shouldRunQueryForProvider(provider, query = {}) {
 }
 
 function providerQueryLimit(provider, config = {}) {
-  if (provider === 'papers_cool') return Math.max(1, Math.floor(Number(config.papersCoolMaxQueries || 4)));
-  if (provider === 'pasa') return Math.max(1, Math.floor(Number(config.pasaMaxQueries || 2)));
-  return Number.POSITIVE_INFINITY;
+  const providerLimit = provider === 'papers_cool'
+    ? Math.max(1, Math.floor(Number(config.papersCoolMaxQueries || 4)))
+    : provider === 'pasa'
+      ? Math.max(1, Math.floor(Number(config.pasaMaxQueries || 2)))
+      : Number.POSITIVE_INFINITY;
+  const searchLimit = toOptionalPositiveInteger(
+    firstDefined(config.maxQueriesPerProvider, config.max_queries_per_provider)
+  );
+  return searchLimit ? Math.min(providerLimit, searchLimit) : providerLimit;
 }
 
 function buildProviderQueryResult(provider, query = {}, values = {}) {
@@ -1228,13 +1244,72 @@ function buildProviderQueryResult(provider, query = {}, values = {}) {
   return queryResult;
 }
 
+function normalizeExecutionBudget(value = null) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const startedAt = Number(value.startedAt || value.started_at || Date.now());
+  const configuredBudgetMs = Number(value.budgetMs || value.budget_ms);
+  const configuredDeadlineAt = Number(value.deadlineAt || value.deadline_at);
+  const deadlineAt = Number.isFinite(configuredDeadlineAt)
+    ? configuredDeadlineAt
+    : Number.isFinite(configuredBudgetMs)
+      ? startedAt + configuredBudgetMs
+      : 0;
+  if (!Number.isFinite(deadlineAt) || deadlineAt <= 0) return null;
+  return {
+    ...value,
+    startedAt,
+    budgetMs: Number.isFinite(configuredBudgetMs) ? Math.max(0, Math.floor(configuredBudgetMs)) : Math.max(0, Math.floor(deadlineAt - startedAt)),
+    deadlineAt
+  };
+}
+
+function remainingBudgetMs(budget = null) {
+  if (!budget) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.floor(Number(budget.deadlineAt || 0) - Date.now()));
+}
+
+function budgetExhausted(config = {}) {
+  if (!config.budget) return false;
+  const minimum = Math.max(0, Number(config.minProviderQueryBudgetMs || 0));
+  return remainingBudgetMs(config.budget) <= minimum;
+}
+
+function configForBudgetedQuery(config = {}) {
+  if (!config.budget) return config;
+  const safetyMarginMs = Math.max(0, Number(config.budgetSafetyMarginMs || 250));
+  const remaining = Math.max(1, remainingBudgetMs(config.budget) - safetyMarginMs);
+  return {
+    ...config,
+    timeoutMs: Math.max(1, Math.min(Number(config.timeoutMs || 8000), remaining))
+  };
+}
+
+function isRateLimitedQueryResult(queryResult = {}) {
+  const reason = String(queryResult.reason || '').toLowerCase();
+  return /\b429\b/.test(reason)
+    || reason.includes('rate limit')
+    || reason.includes('rate-limit')
+    || reason.includes('circuit breaker open');
+}
+
+function buildSkippedQueryResult(provider, query = {}, reason = 'skipped') {
+  return buildProviderQueryResult(provider, query, {
+    ok: false,
+    skipped: true,
+    reason,
+    candidates: []
+  });
+}
+
 async function runProviderQuery(provider, fetcher, query, config) {
+  const startedAt = Date.now();
   try {
-    const providerCandidates = await fetcher(query.query, query, config);
+    const providerCandidates = await fetcher(query.query, query, configForBudgetedQuery(config));
     return {
       queryResult: buildProviderQueryResult(provider, query, {
         ok: true,
         count: providerCandidates.length,
+        elapsedMs: Date.now() - startedAt,
         candidates: providerCandidates.map((candidate) => candidate.id)
       }),
       candidates: providerCandidates
@@ -1244,6 +1319,7 @@ async function runProviderQuery(provider, fetcher, query, config) {
       queryResult: buildProviderQueryResult(provider, query, {
         ok: false,
         reason: error?.name === 'AbortError' ? 'timeout' : truncate(error?.message || 'request-failed', 200),
+        elapsedMs: Date.now() - startedAt,
         candidates: []
       }),
       candidates: []
@@ -1253,7 +1329,39 @@ async function runProviderQuery(provider, fetcher, query, config) {
 
 export async function executeProviderQueries(params = {}) {
   const plan = params.plan || {};
-  const config = resolveDiscoveryConfig(params);
+  const baseConfig = resolveDiscoveryConfig(params);
+  const config = {
+    ...baseConfig,
+    budget: normalizeExecutionBudget(params.budget || params.discoveryBudget || params.discovery_budget),
+    maxQueriesPerProvider: toOptionalPositiveInteger(firstDefined(
+      params.maxQueriesPerProvider,
+      params.max_queries_per_provider
+    )),
+    minProviderQueryBudgetMs: toNonNegativeInteger(
+      params.minProviderQueryBudgetMs ?? params.min_provider_query_budget_ms,
+      0
+    ),
+    budgetSafetyMarginMs: toNonNegativeInteger(
+      params.budgetSafetyMarginMs ?? params.budget_safety_margin_ms,
+      250
+    ),
+    returnPartial: params.returnPartial ?? params.return_partial ?? false,
+    skipRemainingProviderQueriesOnRateLimit: Boolean(
+      params.skipRemainingProviderQueriesOnRateLimit
+      ?? params.skip_remaining_provider_queries_on_rate_limit
+      ?? false
+    ),
+    discoveryCircuitBreakerFailureThreshold: toPositiveInteger(
+      params.discoveryCircuitBreakerFailureThreshold
+      ?? params.discovery_circuit_breaker_failure_threshold,
+      3
+    ),
+    discoveryCircuitBreakerCooldownMs: toNonNegativeInteger(
+      params.discoveryCircuitBreakerCooldownMs
+      ?? params.discovery_circuit_breaker_cooldown_ms,
+      0
+    )
+  };
   const providerResults = new Array(config.providers.length);
   let nextProviderIndex = 0;
 
@@ -1265,8 +1373,26 @@ export async function executeProviderQueries(params = {}) {
       const fetcher = PROVIDER_FETCHERS[provider];
       const queryResults = [];
       const candidateBatches = [];
+      const diagnostic = {
+        provider,
+        scheduledQueries: 0,
+        completedQueries: 0,
+        successfulQueries: 0,
+        failedQueries: 0,
+        skippedQueries: 0,
+        timeouts: 0,
+        rateLimited: 0,
+        elapsedMs: 0,
+        truncated: false,
+        truncationReason: ''
+      };
+      const providerStartedAt = Date.now();
 
       if (!fetcher) {
+        diagnostic.skippedQueries = 1;
+        diagnostic.truncated = true;
+        diagnostic.truncationReason = 'provider-not-implemented';
+        diagnostic.elapsedMs = Date.now() - providerStartedAt;
         providerResults[providerIndex] = {
           queryResults: [{
             provider,
@@ -1275,7 +1401,8 @@ export async function executeProviderQueries(params = {}) {
             reason: 'provider-not-implemented',
             candidates: []
           }],
-          candidateBatches
+          candidateBatches,
+          diagnostic
         };
         continue;
       }
@@ -1283,20 +1410,64 @@ export async function executeProviderQueries(params = {}) {
       let hasRunProviderQuery = false;
       let runCount = 0;
       const queryLimit = providerQueryLimit(provider, config);
-      for (const query of plan.queries || []) {
-        if (!shouldRunQueryForProvider(provider, query)) continue;
-        if (runCount >= queryLimit) break;
+      const eligibleQueries = (plan.queries || []).filter((query) => shouldRunQueryForProvider(provider, query));
+      const runnableQueries = eligibleQueries.slice(0, queryLimit);
+      const queryLimitSkipped = Math.max(0, eligibleQueries.length - runnableQueries.length);
+      if (queryLimitSkipped > 0) {
+        diagnostic.skippedQueries += queryLimitSkipped;
+        diagnostic.truncated = true;
+        diagnostic.truncationReason = 'query_limit';
+      }
+
+      for (let queryIndex = 0; queryIndex < runnableQueries.length; queryIndex += 1) {
+        const query = runnableQueries[queryIndex];
+        if (budgetExhausted(config)) {
+          const skippedQueries = runnableQueries.slice(queryIndex);
+          for (const skippedQuery of skippedQueries) {
+            queryResults.push(buildSkippedQueryResult(provider, skippedQuery, 'budget_exhausted'));
+          }
+          diagnostic.skippedQueries += skippedQueries.length;
+          diagnostic.truncated = true;
+          diagnostic.truncationReason = 'budget_exhausted';
+          break;
+        }
         if (hasRunProviderQuery) await waitForProviderRequestDelay(config);
         const result = await runProviderQuery(provider, fetcher, query, config);
         hasRunProviderQuery = true;
         runCount += 1;
+        diagnostic.completedQueries += 1;
+        if (result.queryResult.ok) {
+          diagnostic.successfulQueries += 1;
+        } else {
+          diagnostic.failedQueries += 1;
+        }
+        if (result.queryResult.reason === 'timeout') diagnostic.timeouts += 1;
+        if (isRateLimitedQueryResult(result.queryResult)) diagnostic.rateLimited += 1;
         queryResults.push(result.queryResult);
         candidateBatches.push(result.candidates);
+
+        if (
+          config.skipRemainingProviderQueriesOnRateLimit
+          && isRateLimitedQueryResult(result.queryResult)
+          && queryIndex + 1 < runnableQueries.length
+        ) {
+          const skippedQueries = runnableQueries.slice(queryIndex + 1);
+          for (const skippedQuery of skippedQueries) {
+            queryResults.push(buildSkippedQueryResult(provider, skippedQuery, 'provider_rate_limited'));
+          }
+          diagnostic.skippedQueries += skippedQueries.length;
+          diagnostic.truncated = true;
+          diagnostic.truncationReason = 'provider_rate_limited';
+          break;
+        }
       }
 
+      diagnostic.scheduledQueries = runCount;
+      diagnostic.elapsedMs = Date.now() - providerStartedAt;
       providerResults[providerIndex] = {
         queryResults,
-        candidateBatches
+        candidateBatches,
+        diagnostic
       };
     }
   }
@@ -1306,11 +1477,33 @@ export async function executeProviderQueries(params = {}) {
     () => worker()
   ));
 
+  const providerDiagnostics = providerResults
+    .map((entry) => entry?.diagnostic)
+    .filter(Boolean);
+  const budget = config.budget
+    ? {
+        ...config.budget,
+        elapsedMs: Date.now() - config.budget.startedAt,
+        remainingMs: remainingBudgetMs(config.budget),
+        budgetExhausted: remainingBudgetMs(config.budget) <= Math.max(0, Number(config.minProviderQueryBudgetMs || 0))
+      }
+    : null;
+  const partial = providerDiagnostics.some((entry) => (
+    entry.truncated
+    || entry.timeouts > 0
+    || entry.rateLimited > 0
+  )) || Boolean(budget?.budgetExhausted);
+
   return {
     providers: config.providers,
     queryResults: providerResults.flatMap((entry) => (entry?.queryResults || []).filter(Boolean)),
     candidates: providerResults.flatMap((entry) => (
       (entry?.candidateBatches || []).filter(Boolean).flat()
-    ))
+    )),
+    diagnostics: {
+      providers: providerDiagnostics
+    },
+    budget,
+    partial
   };
 }

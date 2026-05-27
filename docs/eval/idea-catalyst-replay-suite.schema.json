@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://papernexus.local/schemas/idea-catalyst-replay-suite.schema.json",
+  "title": "Idea-Catalyst Replay Suite Manifest",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "runId",
+    "status",
+    "dataset",
+    "inputs",
+    "diagnostics",
+    "artifacts"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": "idea-catalyst-replay-suite-v1"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": ["passed", "failed", "incomplete"]
+    },
+    "generatedAt": {
+      "type": "string"
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["name", "format"],
+      "properties": {
+        "name": { "type": "string" },
+        "format": { "type": "string" },
+        "source": { "type": "string" },
+        "license_scope": { "type": "string" },
+        "holdout_policy": {
+          "description": "Venue/year holdout policy used to prevent benchmark overfitting.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "additionalProperties": true },
+            { "type": "array" }
+          ]
+        },
+        "time_slice_policy": {
+          "description": "OpenAlex/S2ORC/reference time-slice policy used to prevent future leakage.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "additionalProperties": true },
+            { "type": "array" }
+          ]
+        },
+        "semantic_negative_policy": {
+          "description": "Policy or inventory for report-required semantic negative cases.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "additionalProperties": true },
+            { "type": "array" }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "contracts": {
+      "type": "object",
+      "properties": {
+        "adapter": { "type": "string" },
+        "historical_replay": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "path", "sha256"],
+        "properties": {
+          "role": {
+            "enum": [
+              "raw_dataset",
+              "candidate_packet",
+              "baseline_packet",
+              "candidate_packet_map",
+              "baseline_packet_map",
+              "thresholds",
+              "statistical_significance"
+            ]
+          },
+          "path": { "type": "string" },
+          "size_bytes": { "type": "number" },
+          "mtime": { "type": "string" },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "properties": {
+        "format": { "type": "string" },
+        "diagnostics": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "diagnostics": {
+      "type": "object",
+      "required": ["error_count", "warning_count", "messages"],
+      "properties": {
+        "case_count": { "type": "number" },
+        "missing_candidate_packet_count": { "type": "number" },
+        "missing_baseline_packet_count": { "type": "number" },
+        "missing_any_gold_label_count": { "type": "number" },
+        "missing_time_cutoff_count": { "type": "number" },
+        "semantic_negative_coverage": {
+          "type": "object",
+          "properties": {
+            "status": { "enum": ["passed", "incomplete"] },
+            "required_categories": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "covered_categories": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "missing_categories": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "semantic_negative_case_count": { "type": "number" },
+            "multi_step_failure_count": { "type": "number" }
+          },
+          "additionalProperties": true
+        },
+        "error_count": { "type": "number" },
+        "warning_count": { "type": "number" },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["severity", "code", "message"],
+            "properties": {
+              "severity": { "enum": ["error", "warning"] },
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "gates": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "statistical_significance": {
+      "description": "Paired statistical significance evidence for release-critical metric lifts.",
+      "oneOf": [
+        { "type": "object", "additionalProperties": true },
+        { "type": "array" }
+      ]
+    },
+    "releaseReadiness": {
+      "type": "object",
+      "required": ["status", "releaseCandidate", "checks", "evidenceFamilies"],
+      "properties": {
+        "status": {
+          "enum": ["ready_for_release_gate", "incomplete"]
+        },
+        "releaseCandidate": { "type": "boolean" },
+        "reason": { "type": "string" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "status", "ok"],
+            "properties": {
+              "name": { "type": "string" },
+              "status": { "enum": ["passed", "incomplete"] },
+              "ok": { "type": "boolean" },
+              "message": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "evidenceFamilies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status", "applicable"],
+            "properties": {
+              "id": {
+                "enum": ["must_cite", "novelty", "claim_grounding", "historical_replay"]
+              },
+              "label": { "type": "string" },
+              "applicable": { "type": "boolean" },
+              "status": { "enum": ["passed", "incomplete", "not_applicable"] },
+              "evaluable_case_count": { "type": "number" },
+              "gate": { "type": "string" },
+              "gate_status": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["normalizedReplayPath", "historicalReportPath", "suiteManifestPath"],
+      "properties": {
+        "outputDir": { "type": "string" },
+        "normalizedReplayPath": { "type": "string" },
+        "historicalReplayOutputDir": { "type": "string" },
+        "historicalReportPath": { "type": "string" },
+        "historicalReportMarkdownPath": { "type": "string" },
+        "historicalSummaryTsvPath": { "type": "string" },
+        "historicalManifestPath": { "type": "string" },
+        "suiteManifestPath": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

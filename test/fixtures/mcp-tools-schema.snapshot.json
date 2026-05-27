@@ -772,11 +772,19 @@
         "targetDomain"
       ],
       "properties": {
+        "allowWeakEvidence": {
+          "type": "boolean",
+          "default": false
+        },
         "coarseGrainedDomain": {
           "type": "string"
         },
         "corpus": {
           "type": "string"
+        },
+        "counterfactualBudget": {
+          "type": "number",
+          "default": 2
         },
         "fineGrainedDomain": {
           "type": "string"
@@ -834,6 +842,10 @@
             "live_discovery"
           ]
         },
+        "mustCiteK": {
+          "type": "number",
+          "default": 8
+        },
         "numQuestions": {
           "type": "number",
           "default": 4
@@ -864,6 +876,19 @@
           "type": "boolean",
           "default": false
         },
+        "reviewerPanel": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
         "selectionK": {
           "type": "number",
           "default": 3
@@ -883,11 +908,40 @@
           "type": "number",
           "default": 0.5
         },
+        "storylineMode": {
+          "type": "string"
+        },
         "targetDomain": {
           "type": "string"
         },
         "targetFieldOfStudy": {
           "type": "string"
+        },
+        "timeCutoff": {
+          "type": "string"
+        },
+        "writeBack": {
+          "type": "boolean",
+          "default": false
+        },
+        "writeBackActor": {
+          "type": "string"
+        },
+        "writeBackApply": {
+          "type": "boolean",
+          "default": false
+        },
+        "writeBackDryRun": {
+          "type": "boolean",
+          "default": true
+        },
+        "writeBackMode": {
+          "type": "string",
+          "default": "dry_run",
+          "enum": [
+            "apply",
+            "dry_run"
+          ]
         },
         "year": {
           "type": "string"
@@ -1338,6 +1392,9 @@
         "maxQueries": {
           "type": "number"
         },
+        "maxQueriesPerProvider": {
+          "type": "number"
+        },
         "maxRelatedPerSeed": {
           "type": "number",
           "default": 5
@@ -1455,6 +1512,13 @@
           "type": "boolean",
           "default": true
         },
+        "planningMode": {
+          "type": "string",
+          "enum": [
+            "llm_augmented",
+            "rule_based"
+          ]
+        },
         "preferMarkdown": {
           "type": "boolean",
           "default": true
@@ -1506,8 +1570,25 @@
           "type": "number",
           "default": 1
         },
+        "returnPartial": {
+          "type": "boolean",
+          "default": true
+        },
         "runId": {
           "type": "string"
+        },
+        "searchBudgetMs": {
+          "type": "number",
+          "default": 45000
+        },
+        "searchMode": {
+          "type": "string",
+          "default": "balanced",
+          "enum": [
+            "balanced",
+            "deep",
+            "quick"
+          ]
         },
         "seedPapers": {
           "type": "array",

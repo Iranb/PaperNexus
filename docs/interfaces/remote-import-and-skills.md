@@ -73,6 +73,8 @@ The important boundary is that discovery and graph ingestion are intentionally a
 - `import_workflow submit` only accepts tasks into the queue; the MCP serve import worker defaults to `imports.batchEnabled=true` and `batchMaxTasks=8`, so multiple pending tasks can share one graph commit unless server config explicitly disables batching.
 - `research_lookup`, `research_briefing`, and `idea_catalyst mode=graph` only see papers safely after the corresponding `import_workflow wait` has returned `status=completed`, `stage=completed`, and an authoritative sync status of `completed` or `superseded`.
 
+For interactive search, prefer `operation=search`. It is metadata-only by default and has explicit latency profiles: `quick` uses a 25s budget and 4 query cap, `balanced` is the default 45s budget and 6 query cap, and `deep` uses a broader but still bounded 90s budget and 10 query cap. Search-mode LLM query planning is rule-based by default; if explicitly enabled, it is capped to 8s/12s/18s for quick/balanced/deep and returns deterministic planning fallback on timeout or failure. This keeps discovery an optional upstream substrate instead of a 120s-blocking graph path.
+
 Agents should therefore report interim results precisely:
 
 - use "discovered" for candidates in a discovery report

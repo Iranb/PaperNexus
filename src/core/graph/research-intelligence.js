@@ -3,6 +3,7 @@ import { normalizeAbstractMechanismNames } from './abstract-mechanisms.js';
 import { buildCatalystQuery } from './catalyst-adapter.js';
 import { normalizeDomainTags, normalizeFieldOfStudy } from './domain-taxonomy.js';
 import { EDGE_TYPES, NODE_TYPES } from './schema.js';
+import { buildIdeaCatalystInnovationArtifacts } from './innovation-contracts.js';
 
 export const CROSS_DOMAIN_MECHANISM_EVIDENCE_CONTRACT_VERSION = 'papernexus-cross-domain-mechanism-evidence-v1';
 export const METHOD_EVOLUTION_LINEAGE_CONTRACT_VERSION = 'papernexus-method-evolution-lineage-v1';
@@ -384,6 +385,27 @@ export function buildCrossDomainMechanismEvidence(graph, params = {}) {
   const sourceDomainAnalyses = asArray(packetBundle.source_domain_analyses || packetBundle.sourceDomainAnalyses);
   const candidatePaths = asArray(packetBundle.bridge_retrieval?.candidate_bridge_paths || packetBundle.bridgeRetrieval?.candidateBridgePaths);
   const sourceSpans = sourceDomainAnalyses.flatMap((analysis) => asArray(analysis.source_spans || analysis.sourceSpans));
+  const innovationArtifacts = buildIdeaCatalystInnovationArtifacts({
+    problem: query,
+    targetDomain,
+    target_domain: targetDomain,
+    target_domain_analysis: packetBundle.target_domain_analysis,
+    source_domain_analyses: sourceDomainAnalyses,
+    idea_fragments: packetBundle.idea_fragments,
+    source_spans: sourceSpans,
+    timeCutoff: params.timeCutoff || params.time_cutoff,
+    mustCiteK: params.mustCiteK || params.must_cite_k,
+    reviewerPanel: params.reviewerPanel || params.reviewer_panel,
+    storylineMode: params.storylineMode || params.storyline_mode,
+    counterfactualBudget: params.counterfactualBudget || params.counterfactual_budget
+  }, {
+    timeCutoff: params.timeCutoff || params.time_cutoff,
+    mustCiteK: params.mustCiteK || params.must_cite_k,
+    reviewerPanel: params.reviewerPanel || params.reviewer_panel,
+    storylineMode: params.storylineMode || params.storyline_mode,
+    counterfactualBudget: params.counterfactualBudget || params.counterfactual_budget,
+    writeBack: params.writeBack || params.write_back
+  });
 
   return {
     contractVersion: CROSS_DOMAIN_MECHANISM_EVIDENCE_CONTRACT_VERSION,
@@ -397,6 +419,7 @@ export function buildCrossDomainMechanismEvidence(graph, params = {}) {
     targetDomain,
     targetMechanisms: mechanisms,
     mechanismBundles,
+    innovationArtifacts,
     evidenceCertificate: buildEvidenceCertificate({
       paths: candidatePaths,
       sourceSpans,
@@ -405,6 +428,12 @@ export function buildCrossDomainMechanismEvidence(graph, params = {}) {
     }),
     dataStarvation: resolveCrossDomainDataStarvation(packetBundle, mechanismBundles),
     ...(params.includePacketBundle ? { packetBundle } : {}),
+    must_cite_set: innovationArtifacts.must_cite_set,
+    novelty_certificate: innovationArtifacts.novelty_certificate,
+    review_packet: innovationArtifacts.review_packet,
+    storyline_dag: innovationArtifacts.storyline_dag,
+    counterfactuals: innovationArtifacts.counterfactuals,
+    falsification_plans: innovationArtifacts.falsification_plans,
     diagnostics: {
       queryTimeLlmCalls: 0,
       source: 'graph-only',
@@ -1277,6 +1306,7 @@ export function buildResearchIntelligenceAnswer(graph, params = {}) {
   const outputs = {};
   if (mode === 'cross_domain_evidence' || mode === 'both') {
     outputs.crossDomainMechanismEvidence = buildCrossDomainMechanismEvidence(graph, params);
+    outputs.innovationArtifacts = outputs.crossDomainMechanismEvidence.innovationArtifacts;
   }
   if (mode === 'method_lineage' || mode === 'both') {
     outputs.methodEvolutionGap = buildMethodEvolutionGapAnalysis(graph, params);

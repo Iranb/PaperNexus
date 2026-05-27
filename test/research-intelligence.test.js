@@ -274,6 +274,13 @@ test('buildCrossDomainMechanismEvidence returns mechanism evidence bundles witho
   assert.ok(result.evidenceCertificate.validation.gates.some((gate) => (
     gate.name === 'source_span_or_snippet' && gate.passed === true
   )));
+  assert.ok(result.innovationArtifacts.must_cite_set.length > 0);
+  assert.ok(result.must_cite_set.length > 0);
+  assert.ok(result.novelty_certificate.grounding > 0);
+  assert.ok(result.review_packet.reviewers.length > 0);
+  assert.ok(result.storyline_dag.beats.length > 0);
+  assert.ok(result.counterfactuals.length > 0);
+  assert.deepEqual(result.falsification_plans, result.innovationArtifacts.falsification_plans);
   assert.notEqual(result.dataStarvation.status, 'starved');
 });
 
@@ -416,5 +423,8 @@ test('buildResearchIntelligenceAnswer routes both answer paths behind one stable
   assert.equal(result.mode, 'both');
   assert.equal(result.diagnostics.noLlmQueryInvariant, true);
   assert.ok(result.crossDomainMechanismEvidence);
+  assert.ok(Array.isArray(result.innovationArtifacts.must_cite_set));
+  assert.ok(Array.isArray(result.innovationArtifacts.falsification_plans));
+  assert.ok(result.innovationArtifacts.novelty_certificate);
   assert.ok(result.methodEvolutionGap);
 });

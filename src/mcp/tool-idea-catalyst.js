@@ -3,7 +3,9 @@ import {
 } from '../server/api.js';
 import { runLiveIdeaCatalyst } from '../core/graph/idea-catalyst-live.js';
 import { buildIdeaCatalystEvidenceExport } from '../core/graph/idea-catalyst-evidence-export.js';
+import { buildInnovationArtifactGraphMutations } from '../core/graph/innovation-writeback.js';
 import { selectIdeas } from '../core/graph/diversity-selection.js';
+import { applyCorpusMutations } from '../storage/corpus-store.js';
 
 function clampScore(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -31,6 +33,80 @@ function enabledFlag(value) {
   if (value === true) return true;
   if (value === false || value === undefined || value === null) return false;
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function disabledFlag(value) {
+  if (value === false) return true;
+  if (value === true || value === undefined || value === null) return false;
+  return ['0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
+}
+
+function resolveWritebackApplyRequested(args = {}) {
+  const mode = String(args.writeBackMode || args.write_back_mode || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  return ['apply', 'commit', 'write'].includes(mode)
+    || enabledFlag(args.writeBackApply ?? args.write_back_apply)
+    || disabledFlag(args.writeBackDryRun ?? args.write_back_dry_run);
+}
+
+function serializeMutationResult(mutationResult = {}) {
+  return {
+    dryRun: mutationResult.dryRun,
+    actor: mutationResult.actor,
+    operationsCount: mutationResult.operationsCount,
+    countsBefore: mutationResult.countsBefore,
+    countsAfter: mutationResult.countsAfter,
+    summary: mutationResult.summary,
+    results: mutationResult.results
+  };
+}
+
+async function buildWritebackResult(artifact, args = {}, rootPath = null) {
+  if (!enabledFlag(args.writeBack ?? args.write_back)) return undefined;
+
+  const applyRequested = resolveWritebackApplyRequested(args);
+  const dryRun = !applyRequested;
+  const actor = String(args.writeBackActor || args.write_back_actor || args.actor || 'idea-catalyst').trim() || 'idea-catalyst';
+  const preview = buildInnovationArtifactGraphMutations(artifact, {
+    actor,
+    allowWeakEvidence: enabledFlag(args.allowWeakEvidence ?? args.allow_weak_evidence)
+  });
+  const payload = {
+    ...preview,
+    requested: true,
+    requestedMode: applyRequested ? 'apply' : 'dry_run',
+    dryRun,
+    actor,
+    applyStatus: 'not_requested',
+    graphValidationStatus: 'not_run'
+  };
+
+  if (!preview.operations.length || preview.writebackStatus !== 'ready') {
+    payload.applyStatus = 'blocked';
+    payload.dryRun = true;
+    return payload;
+  }
+
+  if (!rootPath) {
+    payload.applyStatus = applyRequested ? 'blocked' : 'preview_only';
+    payload.dryRun = true;
+    payload.warnings = [
+      ...(payload.warnings || []),
+      {
+        code: 'corpus_required_for_writeback_validation',
+        message: 'A corpus is required to validate or apply idea_catalyst writeback operations against a graph.'
+      }
+    ];
+    return payload;
+  }
+
+  const { mutationResult } = await applyCorpusMutations(rootPath, preview.operations, {
+    actor,
+    dryRun
+  });
+  payload.applyStatus = dryRun ? 'previewed' : 'applied';
+  payload.graphValidationStatus = 'validated';
+  payload.mutationResult = serializeMutationResult(mutationResult);
+  return payload;
 }
 
 function normalizeMode(args = {}) {
@@ -68,6 +144,19 @@ function applyPacketBundleSelection(packetBundle = {}, selectionParams = {}) {
       selection_trace: selection.selection_trace
     },
     selectionTrace: selection.selection_trace
+  };
+}
+
+function extractInnovationFields(source = {}) {
+  return {
+    innovation_contract_version: source.innovation_contract_version,
+    contribution_claims: source.contribution_claims,
+    must_cite_set: source.must_cite_set,
+    novelty_certificate: source.novelty_certificate,
+    review_packet: source.review_packet,
+    storyline_dag: source.storyline_dag,
+    counterfactuals: source.counterfactuals,
+    falsification_plans: source.falsification_plans
   };
 }
 
@@ -122,6 +211,12 @@ function buildLiveCatalystParams(args = {}, problem = '', targetDomain = '', opt
     retryCount: args.retryCount ?? args.retry_count,
     retryBackoffMs: args.retryBackoffMs ?? args.retry_backoff_ms,
     timeoutMs: args.timeoutMs ?? args.timeout_ms,
+    timeCutoff: args.timeCutoff || args.time_cutoff,
+    mustCiteK: args.mustCiteK || args.must_cite_k,
+    reviewerPanel: args.reviewerPanel || args.reviewer_panel,
+    storylineMode: args.storylineMode || args.storyline_mode,
+    writeBack: args.writeBack ?? args.write_back,
+    counterfactualBudget: args.counterfactualBudget ?? args.counterfactual_budget,
     ...buildLiveLlmParams(args, options)
   };
 }
@@ -214,10 +309,13 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
 
     if (outputMode === 'packet_bundle') {
       const { packetBundle, selectionTrace } = applyPacketBundleSelection(live.packetBundle || {}, selectionParams);
+      const writeback = await buildWritebackResult(packetBundle, args, null);
       return {
         mode,
         packet_bundle: packetBundle,
         selection_trace: selectionTrace || undefined,
+        ...extractInnovationFields(packetBundle),
+        writeback,
         evidence_export: evidenceExport,
         run_id: evidenceExport.run_id,
         trace_id: evidenceExport.trace_id,
@@ -227,11 +325,14 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
     }
 
     const liveSelection = applyIdeaSelection(live.idea_fragments || [], selectionParams);
+    const writeback = await buildWritebackResult(live, args, null);
     return {
       mode,
       idea_fragments: liveSelection?.selected || live.idea_fragments || [],
       selection_trace: liveSelection?.selection_trace || undefined,
       faithfulness_report: live.faithfulness_report,
+      ...extractInnovationFields(live),
+      writeback,
       evidence_export: evidenceExport,
       run_id: evidenceExport.run_id,
       trace_id: evidenceExport.trace_id,
@@ -256,6 +357,7 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
 
   if (outputMode === 'packet_bundle') {
     const { packetBundle, selectionTrace } = applyPacketBundleSelection(payload.packetBundle || {}, selectionParams);
+    const writeback = await buildWritebackResult(packetBundle, args, payload.rootPath);
     const graphEvidenceExport = buildIdeaCatalystEvidenceExport({
       mode,
       problem,
@@ -268,6 +370,8 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       rootPath: payload.rootPath,
       packet_bundle: packetBundle,
       selection_trace: selectionTrace || undefined,
+      ...extractInnovationFields(packetBundle),
+      writeback,
       evidence_export: graphEvidenceExport,
       run_id: graphEvidenceExport.run_id,
       trace_id: graphEvidenceExport.trace_id,
@@ -295,6 +399,13 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       traceId: args.traceId || args.trace_id || null
     });
     const livePacketSelection = applyPacketBundleSelection(live.packetBundle || {}, selectionParams);
+    const liveWriteback = await buildWritebackResult(livePacketSelection.packetBundle, {
+      ...args,
+      writeBackApply: false,
+      write_back_apply: false,
+      writeBackDryRun: true,
+      write_back_dry_run: true
+    }, null);
     return {
       ...graphResponse,
       mode,
@@ -303,6 +414,8 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       trace_id: hybridEvidenceExport.trace_id,
       live_packet_bundle: livePacketSelection.packetBundle,
       live_selection_trace: livePacketSelection.selectionTrace || undefined,
+      live_innovation_artifacts: extractInnovationFields(livePacketSelection.packetBundle),
+      live_writeback: liveWriteback,
       live_discovery: includeAnalysis ? live : undefined
     };
   }
@@ -322,6 +435,8 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
     runId: args.runId || args.run_id || null,
     traceId: args.traceId || args.trace_id || null
   });
+  Object.assign(legacy, extractInnovationFields(payload.packetBundle || legacy.evidence_export || {}));
+  legacy.writeback = await buildWritebackResult(payload.packetBundle || legacy.evidence_export || {}, args, payload.rootPath);
   legacy.run_id = legacy.evidence_export.run_id;
   legacy.trace_id = legacy.evidence_export.trace_id;
   if (mode === 'hybrid') {
@@ -342,6 +457,14 @@ export async function executeIdeaCatalystTool(args = {}, options = {}) {
       runId: args.runId || args.run_id || null,
       traceId: args.traceId || args.trace_id || null
     });
+    Object.assign(legacy, extractInnovationFields(legacy.evidence_export || {}));
+    legacy.live_writeback = await buildWritebackResult(legacy.evidence_export || live, {
+      ...args,
+      writeBackApply: false,
+      write_back_apply: false,
+      writeBackDryRun: true,
+      write_back_dry_run: true
+    }, null);
     legacy.run_id = legacy.evidence_export.run_id;
     legacy.trace_id = legacy.evidence_export.trace_id;
     if (includeAnalysis) legacy.live_analysis = live;

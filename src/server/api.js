@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
+  applyCorpusMutations,
   backupCorpus,
   hasCorpusGraphStore,
   loadCorpus,
@@ -45,10 +46,13 @@ import {
   buildBrainstorm
 } from '../core/search/search.js';
 import { buildCatalystQuery } from '../core/graph/catalyst-adapter.js';
+import { buildIdeaCatalystInnovationArtifacts } from '../core/graph/innovation-contracts.js';
+import { buildInnovationArtifactGraphMutations } from '../core/graph/innovation-writeback.js';
 import {
   buildMethodEvolutionEvidenceLookup,
   buildMethodEvolutionGapAnalysis
 } from '../core/graph/research-intelligence.js';
+import { loadRunReport } from '../storage/run-store.js';
 
 function countBy(items, keyFn) {
   const counts = {};
@@ -78,6 +82,11 @@ const MAX_API_PATH_DEPTH = 6;
 const MAX_API_PATHS = 25;
 const MAX_API_CATALYST_DOMAINS = 12;
 const MAX_API_CATALYST_THRESHOLD = 25;
+const IDEA_CATALYST_V2_HTTP_CONTRACT_VERSION = 'papernexus-idea-catalyst-v2-http-v1';
+const NOVELTY_EVAL_HTTP_CONTRACT_VERSION = 'papernexus-novelty-eval-http-v1';
+const STORYLINE_HTTP_CONTRACT_VERSION = 'papernexus-storyline-http-v1';
+const REVIEWER_SIMULATION_HTTP_CONTRACT_VERSION = 'papernexus-reviewer-simulation-http-v1';
+const EVAL_RUN_HTTP_CONTRACT_VERSION = 'papernexus-eval-run-http-v1';
 
 function boundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   const number = Number(value);
@@ -85,6 +94,26 @@ function boundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGE
   const integer = Math.floor(number);
   if (integer < min) return fallback;
   return Math.min(integer, max);
+}
+
+function firstConfiguredValue(...values) {
+  return values.find((value) => (
+    value !== undefined
+    && value !== null
+    && (typeof value !== 'string' || value.trim() !== '')
+  ));
+}
+
+function enabledFlag(value) {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function disabledFlag(value) {
+  if (value === false) return true;
+  if (value === true || value === undefined || value === null) return false;
+  return ['0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
 }
 
 const PORTABLE_PATH_FIELD_NAMES = new Set([
@@ -771,6 +800,254 @@ export async function catalystGraphPayload(candidate, body = {}, options = {}) {
     rootPath,
     result,
     packetBundle: result.packetBundle,
+    generatedAt: new Date().toISOString()
+  }, options);
+}
+
+function resolveInnovationHttpOptions(body = {}, request = {}) {
+  const rawOptions = request.options || {};
+  return {
+    timeCutoff: firstConfiguredValue(body.timeCutoff, body.time_cutoff, rawOptions.timeCutoff, rawOptions.time_cutoff),
+    mustCiteK: firstConfiguredValue(body.mustCiteK, body.must_cite_k, rawOptions.mustCiteK, rawOptions.must_cite_k),
+    reviewerPanel: firstConfiguredValue(body.reviewerPanel, body.reviewer_panel, rawOptions.reviewerPanel, rawOptions.reviewer_panel),
+    storylineMode: firstConfiguredValue(body.storylineMode, body.storyline_mode, rawOptions.storylineMode, rawOptions.storyline_mode),
+    counterfactualBudget: firstConfiguredValue(
+      body.counterfactualBudget,
+      body.counterfactual_budget,
+      rawOptions.counterfactualBudget,
+      rawOptions.counterfactual_budget
+    ),
+    writeBack: firstConfiguredValue(body.writeBack, body.write_back, rawOptions.writeBack, rawOptions.write_back),
+    writeBackMode: firstConfiguredValue(body.writeBackMode, body.write_back_mode, rawOptions.writeBackMode, rawOptions.write_back_mode),
+    writeBackDryRun: firstConfiguredValue(body.writeBackDryRun, body.write_back_dry_run, rawOptions.writeBackDryRun, rawOptions.write_back_dry_run),
+    writeBackApply: firstConfiguredValue(body.writeBackApply, body.write_back_apply, rawOptions.writeBackApply, rawOptions.write_back_apply),
+    writeBackActor: firstConfiguredValue(body.writeBackActor, body.write_back_actor, rawOptions.writeBackActor, rawOptions.write_back_actor, body.actor, rawOptions.actor),
+    allowWeakEvidence: firstConfiguredValue(body.allowWeakEvidence, body.allow_weak_evidence, rawOptions.allowWeakEvidence, rawOptions.allow_weak_evidence)
+  };
+}
+
+function resolveWritebackApplyRequested(options = {}) {
+  const mode = String(options.writeBackMode || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  return ['apply', 'commit', 'write'].includes(mode)
+    || enabledFlag(options.writeBackApply)
+    || disabledFlag(options.writeBackDryRun);
+}
+
+function serializeMutationResult(mutationResult = {}) {
+  return {
+    dryRun: mutationResult.dryRun,
+    actor: mutationResult.actor,
+    operationsCount: mutationResult.operationsCount,
+    countsBefore: mutationResult.countsBefore,
+    countsAfter: mutationResult.countsAfter,
+    summary: mutationResult.summary,
+    results: mutationResult.results
+  };
+}
+
+async function buildInnovationWritebackPayload(rootPath, artifact, options = {}) {
+  if (!enabledFlag(options.writeBack)) return null;
+
+  const applyRequested = resolveWritebackApplyRequested(options);
+  const dryRun = !applyRequested;
+  const actor = String(options.writeBackActor || 'idea-catalyst-v2').trim() || 'idea-catalyst-v2';
+  const preview = buildInnovationArtifactGraphMutations(artifact, {
+    actor,
+    allowWeakEvidence: enabledFlag(options.allowWeakEvidence)
+  });
+  const payload = {
+    ...preview,
+    requested: true,
+    requestedMode: applyRequested ? 'apply' : 'dry_run',
+    dryRun,
+    actor,
+    applyStatus: 'not_requested',
+    graphValidationStatus: 'not_run'
+  };
+
+  if (!preview.operations.length || preview.writebackStatus !== 'ready') {
+    payload.applyStatus = 'blocked';
+    payload.dryRun = true;
+    return payload;
+  }
+
+  const { mutationResult } = await applyCorpusMutations(rootPath, preview.operations, {
+    actor,
+    dryRun
+  });
+  payload.applyStatus = dryRun ? 'previewed' : 'applied';
+  payload.graphValidationStatus = 'validated';
+  payload.mutationResult = serializeMutationResult(mutationResult);
+  return payload;
+}
+
+async function buildIdeaCatalystV2HttpContext(candidate, body = {}, options = {}, contextOptions = {}) {
+  const request = normalizeCatalystRequestBody(body);
+  const effectiveCandidate = request.candidate || candidate;
+  const rootPath = await resolveCorpusForApi(effectiveCandidate, options);
+  const { graph } = await loadCorpusLiteForApi(rootPath, options);
+  const catalyst = buildCatalystQuery(graph, {
+    targetDomain: request.targetDomain,
+    fineGrainedDomain: request.fineGrainedDomain,
+    coarseGrainedDomain: request.coarseGrainedDomain,
+    abstractChallenge: request.abstractChallenge,
+    mechanisms: request.mechanisms,
+    numSourceDomains: request.numSourceDomains,
+    relevanceThreshold: request.relevanceThreshold,
+    limit: boundedInteger(request.options.limit, 5, { max: MAX_API_RESULT_LIMIT })
+  });
+  const basePacketBundle = catalyst.packetBundle || {};
+  const innovationOptions = resolveInnovationHttpOptions(body, request);
+  const artifacts = buildIdeaCatalystInnovationArtifacts({
+    problem: request.abstractChallenge,
+    targetDomain: catalyst.targetDomain || request.targetDomain,
+    target_domain: catalyst.targetDomain || request.targetDomain,
+    target_domain_analysis: basePacketBundle.target_domain_analysis,
+    source_domain_analyses: basePacketBundle.source_domain_analyses,
+    idea_fragments: basePacketBundle.idea_fragments,
+    timeCutoff: innovationOptions.timeCutoff,
+    mustCiteK: innovationOptions.mustCiteK,
+    reviewerPanel: innovationOptions.reviewerPanel,
+    storylineMode: innovationOptions.storylineMode,
+    counterfactualBudget: innovationOptions.counterfactualBudget
+  }, innovationOptions);
+  const packetBundle = {
+    ...basePacketBundle,
+    ...artifacts
+  };
+  const writeback = contextOptions.includeWriteback
+    ? await buildInnovationWritebackPayload(rootPath, packetBundle, innovationOptions)
+    : null;
+
+  return {
+    rootPath,
+    request,
+    catalyst,
+    packetBundle,
+    artifacts,
+    writeback,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function buildIdeaCatalystV2Summary(context = {}) {
+  const { catalyst = {}, artifacts = {}, request = {} } = context;
+  return {
+    contractVersion: IDEA_CATALYST_V2_HTTP_CONTRACT_VERSION,
+    mode: 'graph',
+    targetDomain: catalyst.targetDomain || request.targetDomain,
+    abstractChallenge: catalyst.abstractChallenge || request.abstractChallenge,
+    legacyContractVersion: catalyst.contractVersion,
+    bridgeContractVersion: catalyst.bridgeContractVersion,
+    packet_version: artifacts.packet_version,
+    innovation_contract_version: artifacts.innovation_contract_version,
+    must_cite_set: artifacts.must_cite_set,
+    contribution_claims: artifacts.contribution_claims,
+    novelty_certificate: artifacts.novelty_certificate,
+    review_packet: artifacts.review_packet,
+    storyline_dag: artifacts.storyline_dag,
+    counterfactuals: artifacts.counterfactuals,
+    falsification_plans: artifacts.falsification_plans
+  };
+}
+
+export async function ideaCatalystV2Payload(candidate, body = {}, options = {}) {
+  const context = await buildIdeaCatalystV2HttpContext(candidate, body, options, { includeWriteback: true });
+  const result = buildIdeaCatalystV2Summary(context);
+  return presentPortablePayload({
+    rootPath: context.rootPath,
+    result,
+    packetBundle: context.packetBundle,
+    must_cite_set: result.must_cite_set,
+    contribution_claims: result.contribution_claims,
+    novelty_certificate: result.novelty_certificate,
+    review_packet: result.review_packet,
+    storyline_dag: result.storyline_dag,
+    counterfactuals: result.counterfactuals,
+    falsification_plans: result.falsification_plans,
+    writeback: context.writeback || undefined,
+    generatedAt: context.generatedAt
+  }, options);
+}
+
+export async function noveltyEvalPayload(candidate, body = {}, options = {}) {
+  const context = await buildIdeaCatalystV2HttpContext(candidate, body, options);
+  const artifacts = context.artifacts;
+  return presentPortablePayload({
+    rootPath: context.rootPath,
+    result: {
+      contractVersion: NOVELTY_EVAL_HTTP_CONTRACT_VERSION,
+      mode: 'graph',
+      targetDomain: context.catalyst.targetDomain,
+      abstractChallenge: context.catalyst.abstractChallenge,
+      contribution_claims: artifacts.contribution_claims,
+      must_cite_set: artifacts.must_cite_set,
+      novelty_certificate: artifacts.novelty_certificate
+    },
+    generatedAt: context.generatedAt
+  }, options);
+}
+
+export async function storylinePayload(candidate, body = {}, options = {}) {
+  const context = await buildIdeaCatalystV2HttpContext(candidate, body, options);
+  const storyline = context.artifacts.storyline_dag;
+  return presentPortablePayload({
+    rootPath: context.rootPath,
+    result: {
+      contractVersion: STORYLINE_HTTP_CONTRACT_VERSION,
+      mode: 'graph',
+      targetDomain: context.catalyst.targetDomain,
+      abstractChallenge: context.catalyst.abstractChallenge,
+      storyline_dag: storyline,
+      beat_trace_coverage: {
+        beat_count: Array.isArray(storyline?.beats) ? storyline.beats.length : 0,
+        traceable_beat_count: Array.isArray(storyline?.beats)
+          ? storyline.beats.filter((beat) => Array.isArray(beat.trace_refs) && beat.trace_refs.length > 0).length
+          : 0,
+        unsupported_beats: storyline?.unsupported_beats || []
+      }
+    },
+    generatedAt: context.generatedAt
+  }, options);
+}
+
+export async function reviewerSimulatePayload(candidate, body = {}, options = {}) {
+  const context = await buildIdeaCatalystV2HttpContext(candidate, body, options);
+  return presentPortablePayload({
+    rootPath: context.rootPath,
+    result: {
+      contractVersion: REVIEWER_SIMULATION_HTTP_CONTRACT_VERSION,
+      mode: 'graph',
+      targetDomain: context.catalyst.targetDomain,
+      abstractChallenge: context.catalyst.abstractChallenge,
+      review_packet: context.artifacts.review_packet
+    },
+    generatedAt: context.generatedAt
+  }, options);
+}
+
+export async function evalRunPayload(candidate, runId = 'latest', options = {}) {
+  const rootPath = await resolveCorpusForApi(candidate, options);
+  let report;
+  try {
+    report = await loadRunReport(rootPath, runId, { tail: 50 });
+  } catch (error) {
+    error.statusCode = 404;
+    throw error;
+  }
+  return presentPortablePayload({
+    rootPath,
+    result: {
+      contractVersion: EVAL_RUN_HTTP_CONTRACT_VERSION,
+      run_id: report.runId,
+      kind: report.run?.kind || null,
+      status: report.state?.status || report.run?.status || null,
+      state: report.state,
+      summary: report.summary,
+      checkpoints: report.checkpoints,
+      workers: report.workers,
+      events: report.events
+    },
     generatedAt: new Date().toISOString()
   }, options);
 }

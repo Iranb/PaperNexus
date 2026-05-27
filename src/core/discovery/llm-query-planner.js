@@ -15,6 +15,16 @@ const DEPTH_LLM_QUERY_LIMITS = {
   default: 4,
   deep: 8
 };
+const SEARCH_LLM_QUERY_LIMITS = {
+  quick: 2,
+  balanced: 2,
+  deep: 4
+};
+const SEARCH_LLM_TIMEOUT_LIMITS_MS = {
+  quick: 8000,
+  balanced: 12000,
+  deep: 18000
+};
 const KNOWN_DISCIPLINES = new Set([
   'general',
   'computer-science',
@@ -56,7 +66,56 @@ function isDisabledFlag(value) {
   return ['0', 'false', 'off', 'no'].includes(String(value || '').trim().toLowerCase());
 }
 
+function firstConfigured(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+}
+
+function normalizeDiscoveryOperation(value = '') {
+  return String(value || '').trim().toLowerCase().replace(/-/g, '_');
+}
+
+function resolveSearchMode(params = {}) {
+  const explicit = compactText(params.searchMode || params.search_mode).toLowerCase();
+  if (explicit === 'quick') return 'quick';
+  if (explicit === 'balanced' || explicit === 'default') return 'balanced';
+  if (explicit === 'deep' || explicit === 'full') return 'deep';
+  const depth = compactText(params.depth).toLowerCase();
+  if (depth === 'quick') return 'quick';
+  if (depth === 'deep') return 'deep';
+  return 'balanced';
+}
+
+function resolvePlanningMode(params = {}) {
+  return compactText(params.planningMode || params.planning_mode).toLowerCase().replace(/-/g, '_');
+}
+
+function explicitLlmPlannerPreference(params = {}) {
+  return params.llmQueryPlanner !== undefined
+    || params.llm_query_planner !== undefined
+    || Boolean(resolvePlanningMode(params));
+}
+
+function searchDisablesLlmPlannerByDefault(params = {}) {
+  const operation = normalizeDiscoveryOperation(params.discoveryOperation || params.discovery_operation || params.operation);
+  if (operation !== 'search') return false;
+  if (resolveSearchMode(params) === 'deep') return false;
+  if (explicitLlmPlannerPreference(params)) return false;
+  return true;
+}
+
+function plannerModeDisablesLlm(params = {}) {
+  const mode = resolvePlanningMode(params);
+  return ['rules', 'rule_based', 'rulebased', 'off', 'disabled', 'false'].includes(mode);
+}
+
+function plannerModeEnablesLlm(params = {}) {
+  const mode = resolvePlanningMode(params);
+  return ['llm', 'llm_augmented', 'llm_query_planner', 'augmented'].includes(mode);
+}
+
 function isLlmQueryPlannerEnabled(params = {}) {
+  if (plannerModeDisablesLlm(params)) return false;
+  if (plannerModeEnablesLlm(params)) return true;
   if (params.llmQueryPlanner !== undefined) return !isDisabledFlag(params.llmQueryPlanner);
   if (params.llm_query_planner !== undefined) return !isDisabledFlag(params.llm_query_planner);
   if (process.env.PAPERNEXUS_DISCOVERY_LLM_QUERY_PLANNER !== undefined) {
@@ -87,6 +146,33 @@ function resolveMaxLlmQueries(params = {}) {
   const parsed = Number(params.maxLlmQueries || params.max_llm_queries || fallback);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.max(1, Math.min(8, Math.floor(parsed)));
+}
+
+function withSearchPlannerDefaults(params = {}) {
+  const operation = normalizeDiscoveryOperation(params.discoveryOperation || params.discovery_operation || params.operation);
+  if (operation !== 'search') return params;
+  const searchMode = resolveSearchMode(params);
+  return {
+    ...params,
+    maxLlmQueries: firstConfigured(
+      params.maxLlmQueries,
+      params.max_llm_queries,
+      SEARCH_LLM_QUERY_LIMITS[searchMode] || SEARCH_LLM_QUERY_LIMITS.balanced
+    )
+  };
+}
+
+function withSearchPlannerTimeout(params = {}, config = {}) {
+  const operation = normalizeDiscoveryOperation(params.discoveryOperation || params.discovery_operation || params.operation);
+  if (operation !== 'search') return config;
+  const searchMode = resolveSearchMode(params);
+  const cap = SEARCH_LLM_TIMEOUT_LIMITS_MS[searchMode] || SEARCH_LLM_TIMEOUT_LIMITS_MS.balanced;
+  const requested = Number(firstConfigured(params.llmTimeoutMs, params.llm_timeout_ms, config.timeoutMs, 45000));
+  const timeoutMs = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 45000, cap));
+  return {
+    ...config,
+    timeoutMs
+  };
 }
 
 function buildPrompt(params = {}, maxQueries = DEFAULT_LLM_QUERY_LIMIT) {
@@ -321,6 +407,13 @@ function withRulesMetadata(plan = {}, metadata = {}) {
 }
 
 export async function buildLlmAugmentedLiteratureDiscoveryPlan(params = {}) {
+  if (searchDisablesLlmPlannerByDefault(params)) {
+    return withRulesMetadata(buildLiteratureDiscoveryPlan(params), {
+      enabled: false,
+      reason: 'search-default-rule-based'
+    });
+  }
+
   if (!isLlmQueryPlannerEnabled(params)) {
     return withRulesMetadata(buildLiteratureDiscoveryPlan(params), {
       enabled: false,
@@ -328,23 +421,24 @@ export async function buildLlmAugmentedLiteratureDiscoveryPlan(params = {}) {
     });
   }
 
-  const config = resolveLlmConfig(params);
+  const plannerParams = withSearchPlannerDefaults(params);
+  const config = withSearchPlannerTimeout(plannerParams, resolveLlmConfig(plannerParams));
   if (!config.enabled || !config.model) {
-    return withRulesMetadata(buildLiteratureDiscoveryPlan(params), {
+    return withRulesMetadata(buildLiteratureDiscoveryPlan(plannerParams), {
       enabled: true,
       reason: 'llm-unconfigured'
     });
   }
 
-  const maxLlmQueries = resolveMaxLlmQueries(params);
+  const maxLlmQueries = resolveMaxLlmQueries(plannerParams);
   let rawPlan;
   try {
-    rawPlan = typeof params.llmQueryPlannerJson === 'function'
-      ? await params.llmQueryPlannerJson(buildPrompt(params, maxLlmQueries), { config, params })
-      : await callPlannerLlm(buildPrompt(params, maxLlmQueries), config);
+    rawPlan = typeof plannerParams.llmQueryPlannerJson === 'function'
+      ? await plannerParams.llmQueryPlannerJson(buildPrompt(plannerParams, maxLlmQueries), { config, params: plannerParams })
+      : await callPlannerLlm(buildPrompt(plannerParams, maxLlmQueries), config);
     if (typeof rawPlan === 'string') rawPlan = parseJsonText(rawPlan);
   } catch (error) {
-    return withRulesMetadata(buildLiteratureDiscoveryPlan(params), {
+    return withRulesMetadata(buildLiteratureDiscoveryPlan(plannerParams), {
       attempted: true,
       enabled: true,
       provider: config.provider,
@@ -354,8 +448,8 @@ export async function buildLlmAugmentedLiteratureDiscoveryPlan(params = {}) {
   }
 
   const rulePlan = buildLiteratureDiscoveryPlan({
-    ...params,
-    discipline: params.discipline || normalizeDiscipline(rawPlan?.discipline)
+    ...plannerParams,
+    discipline: plannerParams.discipline || normalizeDiscipline(rawPlan?.discipline)
   });
   const llmQueries = sanitizeLlmQueries(rawPlan, rulePlan.topic, maxLlmQueries);
   if (!llmQueries.length) {
@@ -371,7 +465,7 @@ export async function buildLlmAugmentedLiteratureDiscoveryPlan(params = {}) {
   const defaultMaxQueries = rulePlan.queries.length + llmQueries.length;
   const maxQueries = Math.max(
     1,
-    Math.floor(Number(params.maxQueries || params.max_queries || defaultMaxQueries) || defaultMaxQueries)
+    Math.floor(Number(plannerParams.maxQueries || plannerParams.max_queries || defaultMaxQueries) || defaultMaxQueries)
   );
   return {
     ...rulePlan,

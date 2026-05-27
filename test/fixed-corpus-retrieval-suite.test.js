@@ -103,6 +103,8 @@ test('fixed-corpus retrieval suite evaluates comparable retrieval modes and writ
     assert.equal(report.rows.find((row) => row.mode === 'hybrid-rerank').metrics['hit@1'], 1);
     assert.equal(report.rows.find((row) => row.mode === 'dense').denseResolvedScoreCount, 2);
     assert.equal(report.rows.find((row) => row.mode === 'rerank').rerankResolvedScoreCount, 2);
+    assert.deepEqual(report.inputs.map((entry) => entry.role), ['fixed_corpus_dense_scores', 'fixed_corpus_rerank_scores']);
+    assert.ok(report.inputs.every((entry) => /^[a-f0-9]{64}$/.test(entry.sha256)));
 
     assert.ok(await fileExists(report.artifacts.manifestPath));
     assert.ok(await fileExists(report.artifacts.resultRowsPath));
@@ -163,7 +165,9 @@ test('fixed-corpus retrieval suite CLI runs from repository paths with spaces', 
     assert.equal(cliReport.status, 'completed');
     assert.equal(cliReport.outputDir, outputDir);
     assert.deepEqual(cliReport.modes.map((row) => row.mode), ['lexical']);
-    assert.ok(await fileExists(path.join(outputDir, 'report.json')));
+    const reportOnDisk = JSON.parse(await fs.readFile(path.join(outputDir, 'report.json'), 'utf8'));
+    assert.deepEqual(reportOnDisk.inputs.map((entry) => entry.role), ['fixed_corpus_dataset']);
+    assert.match(reportOnDisk.inputs[0].sha256, /^[a-f0-9]{64}$/);
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }

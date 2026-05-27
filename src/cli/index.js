@@ -34,7 +34,7 @@ Global options:
 
 Commands:
   papernexus init [--force]
-  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--pdf-parser <markitdown|markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markitdown-python <python>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-auto-gpu <true|false>] [--docling-gpu-min-free-mb <mb>] [--docling-gpu-wait-timeout-ms <ms>] [--docling-gpu-poll-interval-ms <ms>] [--docling-cpu-threads <n>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
+  papernexus analyze [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--node-llm-check] [--ingestion-orchestrator] [--ingestion-orchestrator-profile <off|preview|release-gated>] [--ingestion-orchestrator-output-dir <dir>] [--grobid-tei-dir <dir>] [--s2orc-path <jsonl>] [--coci-path <file>] [--multimodal-assets-path <json>] [--pdf-parser <markitdown|markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markitdown-python <python>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-auto-gpu <true|false>] [--docling-gpu-min-free-mb <mb>] [--docling-gpu-wait-timeout-ms <ms>] [--docling-gpu-poll-interval-ms <ms>] [--docling-cpu-threads <n>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--watch] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus materialize [<path>] [--name <corpus>] [--continue] [--force] [--rebuild-pdf-markdown] [--quiet] [--concurrency <n>] [--pdf-parser <markitdown|markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markitdown-python <python>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-auto-gpu <true|false>] [--docling-gpu-min-free-mb <mb>] [--docling-gpu-wait-timeout-ms <ms>] [--docling-gpu-poll-interval-ms <ms>] [--docling-cpu-threads <n>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>]
   papernexus llm-optimize [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus build-graph [<path>] [--name <corpus>] [--continue] [--force] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>]
@@ -548,6 +548,70 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     semanticExtraction: firstDefined(flags['semantic-extraction'], commandConfig.semanticExtraction, 'auto'),
     nodeLlmCheck: Boolean(firstDefined(flags['node-llm-check'], commandConfig.nodeLlmCheck)),
     rebuildPdfMarkdown: Boolean(firstDefined(flags['rebuild-pdf-markdown'], commandConfig.rebuildPdfMarkdown)),
+    ingestionOrchestrator: toBoolean(firstDefined(
+      flags['ingestion-orchestrator'],
+      flags['parser-orchestrator'],
+      commandConfig.ingestionOrchestrator,
+      commandConfig.parserOrchestrator
+    ), undefined),
+    ingestionOrchestratorProfile: firstDefined(
+      flags['ingestion-orchestrator-profile'],
+      flags['parser-orchestrator-profile'],
+      commandConfig.ingestionOrchestratorProfile,
+      commandConfig.parserOrchestratorProfile,
+      normalizeObject(commandConfig.ingestionOrchestrator).profile,
+      normalizeObject(commandConfig.parserOrchestrator).profile
+    ),
+    ingestionOrchestratorOutputDir: firstDefined(
+      flags['ingestion-orchestrator-output-dir'],
+      flags['parser-orchestrator-output-dir'],
+      commandConfig.ingestionOrchestratorOutputDir,
+      commandConfig.parserOrchestratorOutputDir
+    ),
+    ingestionOrchestratorTeiPath: firstDefined(
+      flags['grobid-tei-path'],
+      flags['tei-path'],
+      commandConfig.grobidTeiPath,
+      commandConfig.ingestionOrchestratorTeiPath
+    ),
+    ingestionOrchestratorTeiDir: firstDefined(
+      flags['grobid-tei-dir'],
+      flags['tei-dir'],
+      commandConfig.grobidTeiDir,
+      commandConfig.ingestionOrchestratorTeiDir
+    ),
+    ingestionOrchestratorS2orcPath: firstDefined(
+      flags['s2orc-path'],
+      commandConfig.s2orcPath,
+      commandConfig.ingestionOrchestratorS2orcPath
+    ),
+    ingestionOrchestratorCociPath: firstDefined(
+      flags['coci-path'],
+      commandConfig.cociPath,
+      commandConfig.ingestionOrchestratorCociPath
+    ),
+    ingestionOrchestratorMultimodalAssetsPath: firstDefined(
+      flags['multimodal-assets-path'],
+      flags['ingestion-orchestrator-multimodal-assets-path'],
+      commandConfig.multimodalAssetsPath,
+      commandConfig.ingestionOrchestratorMultimodalAssetsPath
+    ),
+    ingestionOrchestratorClaimGoldPath: firstDefined(
+      flags['claim-gold-path'],
+      commandConfig.claimGoldPath,
+      commandConfig.ingestionOrchestratorClaimGoldPath
+    ),
+    ingestionOrchestratorCitationIntentGoldPath: firstDefined(
+      flags['citation-intent-gold-path'],
+      commandConfig.citationIntentGoldPath,
+      commandConfig.ingestionOrchestratorCitationIntentGoldPath
+    ),
+    ingestionOrchestratorMaxClaims: toNumber(firstDefined(
+      flags['ingestion-orchestrator-max-claims'],
+      flags['max-claims'],
+      commandConfig.ingestionOrchestratorMaxClaims,
+      commandConfig.maxClaims
+    ), undefined),
     pdfParser: firstDefined(flags['pdf-parser'], commandConfig.pdfParser, 'markitdown'),
     pdfCommand: firstDefined(flags['pdf-cmd'], commandConfig.pdfCommand),
     pythonCommand: firstDefined(flags['python-command'], commandConfig.pythonCommand),

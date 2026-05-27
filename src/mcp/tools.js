@@ -643,7 +643,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'literature_discovery',
-    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8.',
+    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use explicit deep/full settings when recall matters more than latency. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -792,16 +792,41 @@ export const PAPERNEXUS_TOOLS = [
         },
         maxQueries: {
           type: 'number',
-          description: 'Maximum query families to execute after LLM planning and deterministic fallback expansion.'
+          description: 'Maximum query families to execute after LLM planning and deterministic fallback expansion. For operation=search, defaults by searchMode are quick=4, balanced=6, and deep=10.'
+        },
+        searchMode: {
+          type: 'string',
+          enum: ['quick', 'balanced', 'deep'],
+          description: 'Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is the default bounded search; deep is broader but still bounded and returns partial diagnostics before the MCP outer timeout.',
+          default: 'balanced'
+        },
+        searchBudgetMs: {
+          type: 'number',
+          description: 'Soft wall-clock budget for operation=search. Defaults by searchMode are quick=25000, balanced=45000, and deep=90000. When exhausted, PaperNexus stops scheduling new provider queries and returns partial metadata results with diagnostics.',
+          default: 45000
+        },
+        maxQueriesPerProvider: {
+          type: 'number',
+          description: 'Maximum generated discovery queries sent to each provider. For operation=search, defaults to 2 in quick mode and 3 in balanced/deep mode.'
+        },
+        returnPartial: {
+          type: 'boolean',
+          description: 'Return completed provider results with partial/diagnostics metadata when budget, timeout, query cap, or provider rate-limit truncates discovery.',
+          default: true
+        },
+        planningMode: {
+          type: 'string',
+          enum: ['rule_based', 'llm_augmented'],
+          description: 'Query planning mode. operation=search defaults to rule_based unless llmQueryPlanner=true or planningMode=llm_augmented is explicit; non-search discovery keeps the configured LLM planner behavior.'
         },
         llmQueryPlanner: {
           type: 'boolean',
-          description: 'Use the configured LLM to split the topic into orthogonal literature-search queries before deterministic query expansion. Defaults to true; missing or failing LLM config falls back to deterministic planning.',
+          description: 'Use the configured LLM to split the topic into orthogonal literature-search queries before deterministic query expansion. Defaults to true for non-search discovery; operation=search defaults to false unless explicitly enabled. Missing, timing out, or failing LLM config falls back to deterministic planning.',
           default: true
         },
         maxLlmQueries: {
           type: 'number',
-          description: 'Maximum LLM-planned orthogonal queries inserted before deterministic expansion. Defaults by depth: quick=3, default=4, deep=8.',
+          description: 'Maximum LLM-planned orthogonal queries inserted before deterministic expansion. Defaults by depth are quick=3, default=4, deep=8; operation=search caps these to quick=2, balanced=2, and deep=4.',
           default: 4
         },
         llmProvider: {
@@ -1164,7 +1189,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'idea_catalyst',
-    description: 'Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle.',
+    description: 'Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle with v2 innovation artifacts: must-cite set, novelty certificate, review packet, storyline DAG, and counterfactual falsification plans.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1242,6 +1267,64 @@ export const PAPERNEXUS_TOOLS = [
         insertedBefore: {
           type: 'string',
           description: 'Optional Semantic Scholar index insertion cutoff for live_discovery mode.'
+        },
+        timeCutoff: {
+          type: 'string',
+          description: 'Optional temporal cutoff used to flag future-leakage in must-cite and novelty artifacts, such as 2024 or 2018-2024.'
+        },
+        mustCiteK: {
+          type: 'number',
+          default: 8,
+          description: 'Maximum number of must-cite prior-art entries to surface in v2 innovation artifacts.'
+        },
+        reviewerPanel: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Optional reviewer roles for the structured review packet, for example novelty, methods, reproducibility, outsider.'
+        },
+        storylineMode: {
+          type: 'string',
+          description: 'Optional storyline DAG mode. Defaults to claim_review_storyline.'
+        },
+        writeBack: {
+          type: 'boolean',
+          default: false,
+          description: 'When true, generates a schema-aware innovation writeback preview from v2 artifacts. The default is dry-run validation; it does not save unless writeBackApply=true, writeBackMode=apply, or writeBackDryRun=false.'
+        },
+        writeBackDryRun: {
+          type: 'boolean',
+          default: true,
+          description: 'When writeBack=true, keep graph mutation writeback in preview mode. Set false only for an explicit apply.'
+        },
+        writeBackApply: {
+          type: 'boolean',
+          default: false,
+          description: 'Explicitly apply validated writeback mutations to the corpus graph when writeBack=true.'
+        },
+        writeBackMode: {
+          type: 'string',
+          enum: ['dry_run', 'apply'],
+          default: 'dry_run',
+          description: 'Controlled writeback mode for v2 innovation artifacts.'
+        },
+        writeBackActor: {
+          type: 'string',
+          description: 'Short actor label recorded on writeback mutation audit properties.'
+        },
+        allowWeakEvidence: {
+          type: 'boolean',
+          default: false,
+          description: 'Allow weakly grounded innovation artifacts to emit preview operations. Defaults false so ungrounded claims, untraceable story beats, and future leakage block writeback.'
+        },
+        counterfactualBudget: {
+          type: 'number',
+          default: 2,
+          description: 'Maximum number of counterfactual falsification plans to produce.'
         },
         relevanceThreshold: {
           type: 'number',

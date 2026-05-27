@@ -14,8 +14,10 @@ import {
   corpusSourcesPayload,
   createImportTaskPayload,
   evidenceChainPayload,
+  evalRunPayload,
   createApiCache,
   enhancementSummaryPayload,
+  ideaCatalystV2Payload,
   ideasGraphPayload,
   impactGraphPayload,
   importTaskLogPayload,
@@ -26,13 +28,16 @@ import {
   methodEvidencePayload,
   methodLineagePayload,
   methodRegistryPayload,
+  noveltyEvalPayload,
   paperIndexPayload,
   paperEnhancementPayload,
   pathTraceGraphPayload,
   queryGraphPayload,
   reflectionChainPayload,
   researchBriefPayload,
+  reviewerSimulatePayload,
   getConfiguredRootPath,
+  storylinePayload,
   storylineBriefPayload,
   theoryBriefPayload,
   updateLlmConfigPayload
@@ -980,6 +985,34 @@ export async function serveCommand(options = {}) {
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/api/idea-catalyst-v2') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await ideaCatalystV2Payload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/novelty-eval') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await noveltyEvalPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/storyline') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await storylinePayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/reviewer-simulate') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await reviewerSimulatePayload(name, body, apiOptions));
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/api/path-trace') {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request, options);
@@ -1040,6 +1073,16 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request, options);
         sendJson(response, 200, await brainstormBriefPayload(name, body, apiOptions));
+        return;
+      }
+
+      const evalRunMatch = request.method === 'GET'
+        ? url.pathname.match(/^\/api\/eval\/runs\/([^/]+)$/)
+        : null;
+      if (evalRunMatch) {
+        const name = url.searchParams.get('name') || undefined;
+        const runId = decodeURIComponent(evalRunMatch[1]);
+        sendJson(response, 200, await evalRunPayload(name, runId, apiOptions));
         return;
       }
 

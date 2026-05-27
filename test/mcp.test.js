@@ -318,6 +318,26 @@ test('MCP tool calls and resource reads work against an indexed corpus', async (
   assert.ok(Array.isArray(parsedMethodRegistry.result.registry.methods));
   assert.equal(parsedMethodRegistry.result.diagnostics.queryTimeLlmCalls, 0);
 
+  const ideaCatalystWriteback = await pending.request('tools/call', {
+    name: 'idea_catalyst',
+    arguments: {
+      corpus: tempCorpusRoot,
+      problem: 'make experiment planning more reproducible',
+      targetDomain: 'Computer Science',
+      outputMode: 'packet_bundle',
+      writeBack: true,
+      writeBackActor: 'mcp-test'
+    }
+  }, { timeoutMs: 15000 });
+  const parsedIdeaCatalyst = JSON.parse(ideaCatalystWriteback.content[0].text);
+  assert.equal(parsedIdeaCatalyst.writeback.requested, true);
+  assert.equal(parsedIdeaCatalyst.writeback.dryRun, true);
+  assert.equal(parsedIdeaCatalyst.writeback.applyStatus, 'blocked');
+  assert.equal(parsedIdeaCatalyst.writeback.graphValidationStatus, 'not_run');
+  assert.ok(parsedIdeaCatalyst.writeback.warnings.some((warning) => warning.code === 'no_contribution_claims'));
+  let corpus = await loadCorpus(tempCorpusRoot);
+  assert.ok(!corpus.graph.nodes.some((node) => node.type === 'ContributionClaim'));
+
   const aggregatedBriefing = await pending.request('tools/call', {
     name: 'research_briefing',
     arguments: {

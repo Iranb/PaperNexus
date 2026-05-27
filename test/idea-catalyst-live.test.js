@@ -232,6 +232,8 @@ test('runLiveIdeaCatalyst executes snippet retrieval, majority pruning, and pair
     });
 
     assert.equal(result.contractVersion, 'idea-catalyst-live-discovery-v1');
+    assert.equal(result.contractVersionV2, 'idea-catalyst-live-discovery-v2');
+    assert.equal(result.packet_version, 'idea-catalyst-live-packet-bundle-v2');
     assert.equal(result.targetFieldOfStudy, 'Computer Science');
     assert.equal(result.source_domain_analyses.length, 3);
     assert.equal(result.source_domain_analyses.find((entry) => entry.source_domain === 'Psychology').accepted, true);
@@ -242,6 +244,17 @@ test('runLiveIdeaCatalyst executes snippet retrieval, majority pruning, and pair
     assert.equal(result.faithfulness_report.semantic_scholar_snippets_adapter, true);
     assert.equal(result.faithfulness_report.source_domain_majority_relevance_pruning, true);
     assert.equal(result.packetBundle.idea_fragments[0].id, 'fragment:soc');
+    assert.equal(result.packetBundle.packet_version, 'idea-catalyst-live-packet-bundle-v2');
+    assert.ok(result.must_cite_set.length > 0);
+    assert.ok(result.contribution_claims.length > 0);
+    assert.ok(result.contribution_claims.every((claim) => claim.source_span_ids.length > 0));
+    assert.equal(result.novelty_certificate.unsupported_claim_count, 0);
+    assert.ok(result.review_packet.reviewers.length > 0);
+    assert.ok(result.storyline_dag.beats.length > 0);
+    assert.ok(result.evidence_export.must_cite_set.length > 0);
+    assert.ok(result.evidence_export.review_packet.reviewers.length > 0);
+    assert.ok(result.evidence_export.source_spans.every((span) => span.license_scope && span.evidence_hash && span.source_anchor));
+    assert.ok(result.evidence_export.supporting_papers.every((paper) => paper.license_scope && paper.evidence_hash && paper.source_anchor));
   } finally {
     resetDiscoveryRequestSchedulerForTests();
     globalThis.fetch = originalFetch;

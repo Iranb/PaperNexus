@@ -52,7 +52,7 @@ import {
   createConfigSignature as createResearchRelationsPromptConfigSignature,
   createDisabledConfigSignature as createDisabledResearchRelationsPromptConfigSignature
 } from '../llm/prompts/research-relations-v1.js';
-import { collectFiles, fileExists, readJson, readText, withFileLock } from '../../lib/fs.js';
+import { collectFiles, fileExists, readJson, readText, withFileLock, writeJson } from '../../lib/fs.js';
 import {
   createContentSha256,
   createPaperIdentifierKeys,
@@ -138,6 +138,7 @@ import {
   extractCitationContextsFromPaper,
   summarizeMethodEvolutionOverlay
 } from './method-evolution-overlay.js';
+import { runParserOrchestrator } from './parser-orchestrator.js';
 import {
   resolvePaperIdentifiersExternally,
   shouldAttemptIdentifierResolution
@@ -4329,6 +4330,248 @@ function firstDefinedValue(...values) {
   return undefined;
 }
 
+function booleanOption(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
+  return fallback;
+}
+
+function normalizeIngestionOrchestratorProfile(value = '') {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (!normalized) return '';
+  if (['0', 'false', 'no', 'off', 'disabled', 'none'].includes(normalized)) return 'off';
+  if (['1', 'true', 'yes', 'on', 'enabled', 'default', 'controlled-default', 'preview', 'dry-run', 'dryrun'].includes(normalized)) {
+    return 'preview';
+  }
+  if (['release', 'release-gated', 'gold-gated', 'benchmark-gated'].includes(normalized)) return 'release-gated';
+  return normalized;
+}
+
+function resolveAnalyzeIngestionOrchestratorProfile(options = {}) {
+  const explicitEnabled = firstDefinedValue(
+    options.ingestionOrchestrator,
+    options.ingestion_orchestrator,
+    options.parserOrchestrator,
+    options.parser_orchestrator
+  );
+  if (explicitEnabled !== undefined && !booleanOption(explicitEnabled, false)) return 'off';
+
+  const profile = normalizeIngestionOrchestratorProfile(firstDefinedValue(
+    options.ingestionOrchestratorProfile,
+    options.ingestion_orchestrator_profile,
+    options.parserOrchestratorProfile,
+    options.parser_orchestrator_profile,
+    options.ingestionProfile,
+    options.ingestion_profile
+  ));
+  if (profile) return profile;
+  if (explicitEnabled !== undefined && booleanOption(explicitEnabled, false)) return 'preview';
+  return 'off';
+}
+
+function shouldRunAnalyzeIngestionOrchestrator(options = {}) {
+  return resolveAnalyzeIngestionOrchestratorProfile(options) !== 'off';
+}
+
+function resolveAnalyzeIngestionOrchestratorOutputDir(rootPath, options = {}) {
+  const configured = firstDefinedValue(
+    options.ingestionOrchestratorOutputDir,
+    options.ingestion_orchestrator_output_dir,
+    options.parserOrchestratorOutputDir,
+    options.parser_orchestrator_output_dir
+  );
+  if (configured) return path.resolve(rootPath, String(configured));
+  return path.join(getCorpusPaths(rootPath).corpusDir, 'ingestion-orchestrator');
+}
+
+function sourceSlug(sourceKey = '') {
+  const slug = slugify(sourceKey || 'source');
+  return `${slug || 'source'}-${stableHash(sourceKey || slug || 'source', 8)}`;
+}
+
+async function firstExistingPath(candidates = []) {
+  for (const candidate of candidates) {
+    if (candidate && await fileExists(candidate)) return candidate;
+  }
+  return '';
+}
+
+async function resolveAnalyzeOrchestratorTeiPath(sourceState = {}, options = {}, sourceCount = 1) {
+  const sourceKey = String(sourceState.sourceKey || '').trim();
+  const bySource = options.ingestionOrchestratorTeiPaths
+    || options.ingestion_orchestrator_tei_paths
+    || options.grobidTeiPaths
+    || options.grobid_tei_paths
+    || {};
+  if (bySource && typeof bySource === 'object' && !Array.isArray(bySource) && bySource[sourceKey]) {
+    return path.resolve(String(bySource[sourceKey]));
+  }
+
+  const explicitTeiPath = firstDefinedValue(
+    options.ingestionOrchestratorTeiPath,
+    options.ingestion_orchestrator_tei_path,
+    options.grobidTeiPath,
+    options.grobid_tei_path,
+    options.teiPath,
+    options.tei_path
+  );
+  if (explicitTeiPath && sourceCount === 1) {
+    return path.resolve(String(explicitTeiPath));
+  }
+
+  const teiDir = firstDefinedValue(
+    options.ingestionOrchestratorTeiDir,
+    options.ingestion_orchestrator_tei_dir,
+    options.grobidTeiDir,
+    options.grobid_tei_dir
+  );
+  const basename = path.basename(sourceState.inputPath || sourceKey || 'paper', path.extname(sourceState.inputPath || ''));
+  const candidates = [];
+  if (teiDir) {
+    const absoluteTeiDir = path.resolve(String(teiDir));
+    candidates.push(
+      path.join(absoluteTeiDir, `${basename}.tei.xml`),
+      path.join(absoluteTeiDir, `${basename}.grobid.tei.xml`),
+      path.join(absoluteTeiDir, `${basename}.tei`),
+      path.join(absoluteTeiDir, `${sourceSlug(sourceKey)}.tei.xml`)
+    );
+  }
+  if (sourceState.inputPath) {
+    const sourceDir = path.dirname(sourceState.inputPath);
+    candidates.push(
+      path.join(sourceDir, `${basename}.tei.xml`),
+      path.join(sourceDir, `${basename}.grobid.tei.xml`),
+      path.join(sourceDir, `${basename}.tei`)
+    );
+  }
+  return firstExistingPath(candidates);
+}
+
+async function writeAnalyzeOrchestratorPaperInput(outputDir, parsedPaper = {}, semanticPaper = {}, sourceState = {}) {
+  const paperPath = path.join(outputDir, 'parsed-paper.json');
+  await writeJson(paperPath, {
+    paper: {
+      paperId: parsedPaper.paperId || semanticPaper.paperId || `paper:${stableHash(sourceState.sourceKey || '')}`,
+      paperTitle: parsedPaper.paperTitle || parsedPaper.title || semanticPaper.paperTitle || semanticPaper.title || '',
+      sourceKey: parsedPaper.sourceKey || semanticPaper.sourceKey || sourceState.sourceKey || '',
+      sourcePath: parsedPaper.sourcePath || semanticPaper.sourcePath || sourceState.inputPath || '',
+      sourceMarkdownPath: parsedPaper.sourceMarkdownPath || semanticPaper.sourceMarkdownPath || sourceState.markdownCachePath || '',
+      sourcePdfPath: parsedPaper.sourcePdfPath || semanticPaper.sourcePdfPath || (sourceState.kind === 'pdf' ? sourceState.inputPath : '')
+    },
+    sections: parsedPaper.sections || [],
+    markdown: parsedPaper.markdown || parsedPaper.text || ''
+  });
+  return paperPath;
+}
+
+async function runAnalyzeIngestionOrchestrator(rootPath, manifestSources = [], sourceStateByKey = new Map(), semanticPapers = [], options = {}) {
+  const profile = resolveAnalyzeIngestionOrchestratorProfile(options);
+  if (profile === 'off') return null;
+
+  const outputRoot = resolveAnalyzeIngestionOrchestratorOutputDir(rootPath, options);
+  const semanticBySourceKey = new Map((semanticPapers || []).map((paper) => [paper.sourceKey, paper]));
+  const activeSources = (manifestSources || []).filter((entry) => entry.activeInGraph !== false);
+  const runs = [];
+  const warnings = [];
+
+  for (const entry of activeSources) {
+    const sourceState = sourceStateByKey.get(entry.sourceKey) || createSourceStateFromManifestEntry(entry);
+    sourceState.rootPath = rootPath;
+    sourceState.analysisOptions = options;
+    const semanticPaper = semanticBySourceKey.get(entry.sourceKey)
+      || await loadSemanticPaperSnapshot(rootPath, entry.sourceKey)
+      || {};
+    const parsedPaper = await loadParsedPaperFromMarkdownCache(sourceState, semanticPaper);
+    if (!parsedPaper) {
+      warnings.push({
+        code: 'parsed_paper_unavailable',
+        sourceKey: entry.sourceKey,
+        message: 'Ingestion orchestrator skipped this source because no markdown cache could be parsed.'
+      });
+      continue;
+    }
+
+    const sourceOutputDir = path.join(outputRoot, sourceSlug(entry.sourceKey));
+    const paperPath = await writeAnalyzeOrchestratorPaperInput(sourceOutputDir, parsedPaper, semanticPaper, sourceState);
+    const teiPath = await resolveAnalyzeOrchestratorTeiPath(sourceState, options, activeSources.length);
+    const cociPath = firstDefinedValue(options.ingestionOrchestratorCociPath, options.ingestion_orchestrator_coci_path, options.cociPath, options.coci_path);
+    const s2orcPath = firstDefinedValue(options.ingestionOrchestratorS2orcPath, options.ingestion_orchestrator_s2orc_path, options.s2orcPath, options.s2orc_path);
+    const multimodalAssetsPath = firstDefinedValue(
+      options.ingestionOrchestratorMultimodalAssetsPath,
+      options.ingestion_orchestrator_multimodal_assets_path,
+      options.multimodalAssetsPath,
+      options.multimodal_assets_path
+    );
+
+    const { manifest } = await runParserOrchestrator({
+      outputDir: sourceOutputDir,
+      paperPath,
+      teiPath,
+      cociPath: cociPath ? path.resolve(String(cociPath)) : '',
+      s2orcPath: s2orcPath ? path.resolve(String(s2orcPath)) : '',
+      multimodalAssetsPath: multimodalAssetsPath ? path.resolve(String(multimodalAssetsPath)) : '',
+      paperId: parsedPaper.paperId || semanticPaper.paperId || `paper:${stableHash(entry.sourceKey)}`,
+      paperTitle: parsedPaper.paperTitle || parsedPaper.title || semanticPaper.paperTitle || '',
+      sourceKey: entry.sourceKey,
+      sourcePath: sourceState.inputPath,
+      sourcePdfPath: sourceState.kind === 'pdf' ? sourceState.inputPath : '',
+      citationIntentGoldPath: options.ingestionOrchestratorCitationIntentGoldPath || options.citationIntentGoldPath,
+      claimGoldPath: options.ingestionOrchestratorClaimGoldPath || options.claimGoldPath,
+      minCitationIntentAccuracy: options.minCitationIntentAccuracy,
+      minCitationIntentMacroF1: options.minCitationIntentMacroF1,
+      minClaimRecall: options.minClaimRecall,
+      minSourceSpanCompleteness: options.minSourceSpanCompleteness,
+      minTypeAccuracy: options.minTypeAccuracy,
+      maxClaims: options.ingestionOrchestratorMaxClaims || options.maxClaims,
+      graphApplyMode: profile === 'release-gated' ? 'release-gated' : 'preview'
+    });
+
+    runs.push({
+      sourceKey: entry.sourceKey,
+      paperId: parsedPaper.paperId || semanticPaper.paperId || null,
+      paperTitle: parsedPaper.paperTitle || parsedPaper.title || semanticPaper.paperTitle || '',
+      outputDir: sourceOutputDir,
+      manifestPath: manifest.artifacts?.manifest || path.join(sourceOutputDir, 'ingestion-orchestrator-manifest.json'),
+      status: manifest.status,
+      releaseGateStatus: manifest.releaseGateStatus,
+      graphApplyPlan: manifest.graphApplyPlan || null,
+      diagnostics: manifest.diagnostics,
+      artifacts: manifest.artifacts
+    });
+  }
+
+  const failedCount = runs.filter((run) => run.status === 'failed' || run.releaseGateStatus === 'failed').length;
+  const readyCount = runs.filter((run) => run.status === 'ready').length;
+  const releasePassedCount = runs.filter((run) => run.releaseGateStatus === 'passed').length;
+  const summary = {
+    contractVersion: 'papernexus-analyze-ingestion-orchestrator-v1',
+    enabled: true,
+    profile,
+    writePolicy: 'preview-only',
+    status: failedCount ? 'failed' : (readyCount ? 'ready' : 'incomplete'),
+    releaseGateStatus: failedCount ? 'failed' : (releasePassedCount && releasePassedCount === runs.length ? 'passed' : 'incomplete'),
+    generatedAt: new Date().toISOString(),
+    outputDir: outputRoot,
+    runCount: runs.length,
+    readyRunCount: readyCount,
+    releasePassedRunCount: releasePassedCount,
+    runs,
+    diagnostics: {
+      sourceCount: activeSources.length,
+      skippedSourceCount: Math.max(0, activeSources.length - runs.length),
+      warningCount: warnings.length,
+      warnings
+    }
+  };
+  const manifestPath = path.join(outputRoot, 'analyze-ingestion-orchestrator-manifest.json');
+  await writeJson(manifestPath, summary);
+  summary.manifestPath = manifestPath;
+  return summary;
+}
+
 function createEmptyManifest({ corpusName, rootPath, inputPath, inputPaths, sourceMode, pdfParser, pdfCommand, semanticExtractionMode, sources, indexedAt, changes = null }) {
   return {
     version: MANIFEST_VERSION,
@@ -7029,6 +7272,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
       semanticExtraction: normalizedSemanticExtractionMode,
       ...(hasExplicitChunkPipelineOption(options) ? {} : { llmChunkPipeline: false })
     };
+    const runIngestionOrchestrator = shouldRunAnalyzeIngestionOrchestrator(analysisOptions);
     const forceMaterialization = Boolean(options.force && !optimizeOnly && !llmOnly);
     const forceLlmRefresh = Boolean(options.force && (optimizeOnly || llmOnly));
     const materializeOptions = materializeOnly
@@ -7205,6 +7449,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
     if (
       !options.force
       && llmOnly
+      && !runIngestionOrchestrator
       && (
         (!hasSourceChanges(changes) && sourceStates.every((sourceState) => !sourceState.llmRefreshState?.anyRequired))
         || (!inputSourcesChanged && manifestHasReusableLlmOptimization(previousManifest, analysisOptions))
@@ -7231,7 +7476,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
       };
     }
 
-    if (!options.force && !llmOnly && !hasSourceChanges(changes) && previousIndexExists) {
+    if (!options.force && !llmOnly && !runIngestionOrchestrator && !hasSourceChanges(changes) && previousIndexExists) {
       const existing = await loadCorpus(rootPath);
       await registerCorpus({
         name: existing.meta.name || corpusName,
@@ -7403,6 +7648,13 @@ export async function analyzeCorpus(inputPath, options = {}) {
     if (materializeOnly) {
       announceStage(materializeOptions, 2, 2, 'Writing source manifest', 'persisting reusable snapshot metadata');
       const indexedAt = new Date().toISOString();
+      const ingestionOrchestrator = await runAnalyzeIngestionOrchestrator(
+        rootPath,
+        manifestSources,
+        sourceStateByKey,
+        semanticPapers,
+        materializeOptions
+      );
       const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
       const lockHandlers = createLockProgressHandlers(materializeOptions, {
         onWaitLog: '[lock] waiting for corpus lock while writing the Stage 1 source manifest',
@@ -7421,6 +7673,9 @@ export async function analyzeCorpus(inputPath, options = {}) {
         indexedAt,
         changes
       });
+      if (ingestionOrchestrator) {
+        nextManifest.ingestionOrchestrator = ingestionOrchestrator;
+      }
       await withFileLock(getCorpusLockPath(rootPath), async () => {
         await assertAnalyzeCommitStillFresh(
           inputPath,
@@ -7459,13 +7714,21 @@ export async function analyzeCorpus(inputPath, options = {}) {
         changes,
         reused: false,
         stage: 'materialized',
-        timings: materializeTimings
+        timings: materializeTimings,
+        ingestionOrchestrator
       };
     }
 
     if (llmOnly) {
       announceStage(materializeOptions, 1, 1, 'Writing optimized snapshots', 'persisting LLM-enriched snapshot metadata');
       const indexedAt = new Date().toISOString();
+      const ingestionOrchestrator = await runAnalyzeIngestionOrchestrator(
+        rootPath,
+        manifestSources,
+        sourceStateByKey,
+        semanticPapers,
+        analysisOptions
+      );
       const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
       const lockHandlers = createLockProgressHandlers(materializeOptions, {
         onWaitLog: '[lock] waiting for corpus lock while persisting Stage 2 optimized snapshots',
@@ -7484,6 +7747,9 @@ export async function analyzeCorpus(inputPath, options = {}) {
         indexedAt,
         changes
       });
+      if (ingestionOrchestrator) {
+        nextManifest.ingestionOrchestrator = ingestionOrchestrator;
+      }
       const rateLimitCooldownUntil = getLlmRateLimitCooldownUntilFromPapers(semanticPapers);
       nextManifest.llmOptimization = rateLimitCooldownUntil
         ? buildLlmOptimizationCooldownState(nextManifest, analysisOptions, rateLimitCooldownUntil)
@@ -7513,7 +7779,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
         rootPath,
         changes,
         reused: false,
-        stage: 'llm-optimized'
+        stage: 'llm-optimized',
+        ingestionOrchestrator
       };
     }
 
@@ -7556,6 +7823,16 @@ export async function analyzeCorpus(inputPath, options = {}) {
     );
     const mergedGraphResult = mergeSimilarGraphNodes(graph);
     const mergedMeta = refreshMetaFromGraph(meta, mergedGraphResult.graph, mergedGraphResult.summary);
+    const ingestionOrchestrator = await runAnalyzeIngestionOrchestrator(
+      rootPath,
+      manifestSources,
+      sourceStateByKey,
+      semanticPapers,
+      analysisOptions
+    );
+    if (ingestionOrchestrator) {
+      mergedMeta.ingestionOrchestrator = ingestionOrchestrator;
+    }
 
     announceStage(
       analysisOptions,
@@ -7577,6 +7854,9 @@ export async function analyzeCorpus(inputPath, options = {}) {
       indexedAt: mergedMeta.indexedAt,
       changes
     });
+    if (ingestionOrchestrator) {
+      nextManifest.ingestionOrchestrator = ingestionOrchestrator;
+    }
     const rateLimitCooldownUntil = getLlmRateLimitCooldownUntilFromPapers(semanticPapers);
     nextManifest.llmOptimization = rateLimitCooldownUntil
       ? buildLlmOptimizationCooldownState(nextManifest, analysisOptions, rateLimitCooldownUntil)
@@ -7599,7 +7879,8 @@ export async function analyzeCorpus(inputPath, options = {}) {
       rootPath,
       changes,
       reused: false,
-      enhancement
+      enhancement,
+      ingestionOrchestrator
     };
 }
 

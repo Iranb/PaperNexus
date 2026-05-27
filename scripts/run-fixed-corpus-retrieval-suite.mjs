@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -147,6 +148,31 @@ async function readJsonl(filePath) {
   }
 }
 
+async function hashedInputRecord(role = '', filePath = '') {
+  if (!filePath) return null;
+  const absolutePath = path.resolve(filePath);
+  const buffer = await fs.readFile(absolutePath);
+  return {
+    role,
+    path: absolutePath,
+    sha256: crypto.createHash('sha256').update(buffer).digest('hex')
+  };
+}
+
+async function buildSuiteInputRecords(options = {}) {
+  const entries = [
+    ['fixed_corpus_dataset', options.datasetPath],
+    ['fixed_corpus_dense_scores', options.fixedCorpusDenseScoresPath],
+    ['fixed_corpus_rerank_scores', options.fixedCorpusRerankScoresPath]
+  ];
+  const records = [];
+  for (const [role, filePath] of entries) {
+    const record = await hashedInputRecord(role, filePath);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
 function metricKeysFromRows(rows = []) {
   const keys = new Set();
   for (const row of rows) {
@@ -282,6 +308,11 @@ export async function runFixedCorpusRetrievalSuite(inputOptions = {}) {
   const continueOnError = Boolean(inputOptions.continueOnError);
   const cutoffs = inputOptions.cutoffs || DEFAULT_CUTOFFS;
   const fixedCorpusScanLimit = parseInteger(inputOptions.fixedCorpusScanLimit, DEFAULT_SCAN_LIMIT);
+  const inputs = await buildSuiteInputRecords({
+    datasetPath,
+    fixedCorpusDenseScoresPath: inputOptions.fixedCorpusDenseScoresPath,
+    fixedCorpusRerankScoresPath: inputOptions.fixedCorpusRerankScoresPath
+  });
 
   await ensureDir(outputDir);
   if (!resume) {
@@ -313,6 +344,7 @@ export async function runFixedCorpusRetrievalSuite(inputOptions = {}) {
     fixedCorpusRerankScoresPath: inputOptions.fixedCorpusRerankScoresPath || null,
     fixedCorpusRrfK: inputOptions.fixedCorpusRrfK || null,
     fixedCorpusQueryAnalysis: inputOptions.fixedCorpusQueryAnalysis || 'off',
+    inputs,
     resume,
     continueOnError
   });
@@ -387,6 +419,7 @@ export async function runFixedCorpusRetrievalSuite(inputOptions = {}) {
       queryCount: benchmark.queryCount,
       corpusSize: benchmark.corpusSize || (Array.isArray(benchmark.corpus) ? benchmark.corpus.length : null)
     },
+    inputs,
     rows,
     artifacts: {
       manifestPath: path.join(outputDir, 'suite-manifest.json'),

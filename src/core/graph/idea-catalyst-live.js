@@ -20,6 +20,11 @@ import {
   unique
 } from '../../lib/utils.js';
 import { buildIdeaCatalystEvidenceExport } from './idea-catalyst-evidence-export.js';
+import {
+  LIVE_IDEA_CATALYST_PACKET_V2_VERSION,
+  LIVE_IDEA_CATALYST_V2_CONTRACT_VERSION,
+  buildIdeaCatalystInnovationArtifacts
+} from './innovation-contracts.js';
 
 const require = createRequire(import.meta.url);
 let jsonrepair = null;
@@ -1284,6 +1289,7 @@ function buildCrossDomainQueries(sourcePlansByChallenge = []) {
 function buildPacketBundle(result = {}) {
   return {
     contractVersion: LIVE_IDEA_CATALYST_PACKET_CONTRACT_VERSION,
+    packet_version: LIVE_IDEA_CATALYST_PACKET_V2_VERSION,
     mode: 'live_discovery',
     decomposition: result.decomposition,
     target_domain_analysis: result.target_domain_analysis,
@@ -1293,6 +1299,14 @@ function buildPacketBundle(result = {}) {
     cross_domain_analysis: result.source_domain_analyses,
     idea_fragments: result.idea_fragments,
     interdisciplinary_ranking: result.interdisciplinary_ranking,
+    innovation_contract_version: result.innovation_contract_version,
+    contribution_claims: result.contribution_claims || [],
+    must_cite_set: result.must_cite_set || [],
+    novelty_certificate: result.novelty_certificate || null,
+    review_packet: result.review_packet || null,
+    storyline_dag: result.storyline_dag || null,
+    counterfactuals: result.counterfactuals || [],
+    falsification_plans: result.falsification_plans || result.counterfactuals || [],
     live_retrieval: result.live_retrieval,
     faithfulness_report: result.faithfulness_report
   };
@@ -1366,6 +1380,8 @@ export async function runLiveIdeaCatalyst(params = {}, options = {}) {
 
   const result = {
     contractVersion: LIVE_IDEA_CATALYST_CONTRACT_VERSION,
+    contractVersionV2: LIVE_IDEA_CATALYST_V2_CONTRACT_VERSION,
+    contract_version_v2: LIVE_IDEA_CATALYST_V2_CONTRACT_VERSION,
     mode: 'live_discovery',
     run_id: params.runId || params.run_id || null,
     trace_id: params.traceId || params.trace_id || null,
@@ -1413,6 +1429,31 @@ export async function runLiveIdeaCatalyst(params = {}, options = {}) {
     },
     llm_ledger_refs: buildIdeaCatalystLlmLedgerRefs(params, options)
   };
+  const innovationArtifacts = buildIdeaCatalystInnovationArtifacts({
+    ...result,
+    problem,
+    targetDomain,
+    target_domain: targetDomain,
+    target_domain_analysis: result.target_domain_analysis,
+    source_domain_analyses: result.source_domain_analyses,
+    idea_fragments: result.idea_fragments,
+    timeCutoff: params.timeCutoff || params.time_cutoff,
+    mustCiteK: params.mustCiteK || params.must_cite_k,
+    reviewerPanel: params.reviewerPanel || params.reviewer_panel,
+    storylineMode: params.storylineMode || params.storyline_mode,
+    counterfactualBudget: params.counterfactualBudget || params.counterfactual_budget
+  }, {
+    timeCutoff: params.timeCutoff || params.time_cutoff,
+    mustCiteK: params.mustCiteK || params.must_cite_k,
+    reviewerPanel: params.reviewerPanel || params.reviewer_panel,
+    storylineMode: params.storylineMode || params.storyline_mode,
+    counterfactualBudget: params.counterfactualBudget || params.counterfactual_budget,
+    writeBack: params.writeBack || params.write_back
+  });
+  Object.assign(result, {
+    ...innovationArtifacts,
+    packet_version: LIVE_IDEA_CATALYST_PACKET_V2_VERSION
+  });
   result.packetBundle = buildPacketBundle(result);
   result.packet_bundle = result.packetBundle;
   result.evidence_export = buildIdeaCatalystEvidenceExport({

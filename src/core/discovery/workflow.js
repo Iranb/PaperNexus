@@ -101,6 +101,247 @@ function resolveMaxCandidates(params = {}, plan = {}) {
   return 240;
 }
 
+const SEARCH_EXECUTION_PROFILES = {
+  quick: {
+    budgetMs: 25000,
+    maxQueries: 4,
+    maxQueriesPerProvider: 2,
+    timeoutMs: 5000,
+    retryCount: 0
+  },
+  balanced: {
+    budgetMs: 45000,
+    maxQueries: 6,
+    maxQueriesPerProvider: 3,
+    timeoutMs: 6000,
+    retryCount: 0
+  },
+  deep: {
+    budgetMs: 90000,
+    maxQueries: 10,
+    maxQueriesPerProvider: 3,
+    timeoutMs: 8000,
+    retryCount: 0
+  }
+};
+
+function normalizeDiscoveryOperation(value = '') {
+  return String(value || '').trim().toLowerCase().replace(/-/g, '_');
+}
+
+function firstConfigured(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+}
+
+function toPositiveIntegerOrNull(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1, Math.floor(parsed));
+}
+
+function resolveDiscoveryOperation(params = {}) {
+  return normalizeDiscoveryOperation(params.discoveryOperation || params.discovery_operation || params.operation);
+}
+
+function resolveDiscoverySearchMode(params = {}, operation = '') {
+  if (operation !== 'search') return '';
+  const explicit = String(params.searchMode || params.search_mode || '').trim().toLowerCase();
+  if (explicit === 'quick') return 'quick';
+  if (explicit === 'balanced' || explicit === 'default') return 'balanced';
+  if (explicit === 'deep' || explicit === 'full') return 'deep';
+  const depth = String(params.depth || '').trim().toLowerCase();
+  if (depth === 'quick') return 'quick';
+  if (depth === 'deep') return 'deep';
+  return 'balanced';
+}
+
+function searchProfile(searchMode = '') {
+  return SEARCH_EXECUTION_PROFILES[searchMode] || null;
+}
+
+function applySearchPlanningDefaults(params = {}, operation = '', searchMode = '') {
+  const profile = searchProfile(searchMode);
+  if (operation !== 'search' || !profile) return params;
+  return {
+    ...params,
+    operation,
+    discoveryOperation: operation,
+    searchMode
+  };
+}
+
+function capPlanQueriesForSearch(plan = {}, params = {}, operation = '', searchMode = '') {
+  const profile = searchProfile(searchMode);
+  if (operation !== 'search' || !profile) {
+    return {
+      plan,
+      diagnostics: {
+        applied: false
+      }
+    };
+  }
+  const limit = toPositiveIntegerOrNull(firstConfigured(
+    params.maxQueries,
+    params.max_queries,
+    profile.maxQueries
+  )) || profile.maxQueries;
+  const queries = Array.isArray(plan.queries) ? plan.queries : [];
+  if (queries.length <= limit) {
+    return {
+      plan,
+      diagnostics: {
+        applied: true,
+        maxQueries: limit,
+        originalQueryCount: queries.length,
+        finalQueryCount: queries.length,
+        truncated: false
+      }
+    };
+  }
+  return {
+    plan: {
+      ...plan,
+      queries: queries.slice(0, limit),
+      queryLimit: {
+        mode: searchMode,
+        maxQueries: limit,
+        originalQueryCount: queries.length,
+        truncated: true
+      }
+    },
+    diagnostics: {
+      applied: true,
+      maxQueries: limit,
+      originalQueryCount: queries.length,
+      finalQueryCount: limit,
+      truncated: true,
+      skippedQueries: queries.slice(limit).map((query) => ({
+        queryId: query.id,
+        family: query.family,
+        reason: 'search_query_limit'
+      }))
+    }
+  };
+}
+
+function createDiscoveryBudget(params = {}, operation = '', searchMode = '') {
+  const profile = searchProfile(searchMode);
+  const explicitBudget = firstConfigured(
+    params.searchBudgetMs,
+    params.search_budget_ms,
+    params.discoveryBudgetMs,
+    params.discovery_budget_ms,
+    params.budgetMs,
+    params.budget_ms
+  );
+  const budgetMs = toPositiveIntegerOrNull(explicitBudget)
+    || (operation === 'search' && profile ? profile.budgetMs : null);
+  if (!budgetMs) return null;
+  const startedAt = Date.now();
+  return {
+    startedAt,
+    deadlineAt: startedAt + budgetMs,
+    budgetMs,
+    operation: operation || 'run',
+    searchMode: searchMode || '',
+    returnPartial: true
+  };
+}
+
+function applySearchExecutionDefaults(params = {}, operation = '', searchMode = '', budget = null) {
+  const profile = searchProfile(searchMode);
+  if (operation !== 'search' || !profile) {
+    return budget ? {
+      ...params,
+      budget,
+      returnPartial: params.returnPartial ?? params.return_partial ?? true
+    } : params;
+  }
+  return {
+    ...params,
+    operation,
+    discoveryOperation: operation,
+    searchMode,
+    budget,
+    timeoutMs: firstConfigured(params.timeoutMs, params.timeout_ms, profile.timeoutMs),
+    retryCount: firstConfigured(params.retryCount, params.retry_count, profile.retryCount),
+    maxQueriesPerProvider: firstConfigured(
+      params.maxQueriesPerProvider,
+      params.max_queries_per_provider,
+      profile.maxQueriesPerProvider
+    ),
+    minProviderQueryBudgetMs: firstConfigured(
+      params.minProviderQueryBudgetMs,
+      params.min_provider_query_budget_ms,
+      Math.min(profile.timeoutMs, 1000)
+    ),
+    returnPartial: params.returnPartial ?? params.return_partial ?? true,
+    skipRemainingProviderQueriesOnRateLimit: params.skipRemainingProviderQueriesOnRateLimit
+      ?? params.skip_remaining_provider_queries_on_rate_limit
+      ?? true,
+    discoveryRequestCache: params.discoveryRequestCache ?? params.discovery_request_cache ?? true,
+    discoveryRequestCacheTtlMs: firstConfigured(
+      params.discoveryRequestCacheTtlMs,
+      params.discovery_request_cache_ttl_ms,
+      15 * 60 * 1000
+    ),
+    discoveryCircuitBreakerFailureThreshold: firstConfigured(
+      params.discoveryCircuitBreakerFailureThreshold,
+      params.discovery_circuit_breaker_failure_threshold,
+      1
+    ),
+    discoveryCircuitBreakerCooldownMs: firstConfigured(
+      params.discoveryCircuitBreakerCooldownMs,
+      params.discovery_circuit_breaker_cooldown_ms,
+      5 * 60 * 1000
+    )
+  };
+}
+
+function buildDiscoveryDiagnostics({
+  plan = {},
+  planLimitDiagnostics = {},
+  providerResult = {},
+  budget = null,
+  operation = '',
+  searchMode = ''
+} = {}) {
+  const providerDiagnostics = providerResult.diagnostics?.providers || [];
+  const warnings = [];
+  if (planLimitDiagnostics.truncated) warnings.push('search-query-limit-applied');
+  if (providerResult.partial) warnings.push('provider-results-partial');
+  if (providerResult.budget?.budgetExhausted) warnings.push('search-budget-exhausted');
+  if (plan.queryPlanner?.reason) warnings.push(`query-planner:${plan.queryPlanner.reason}`);
+  return {
+    operation: operation || 'run',
+    searchMode: searchMode || '',
+    planning: {
+      ...(plan.queryPlanner || {}),
+      queryLimit: planLimitDiagnostics
+    },
+    providers: providerDiagnostics,
+    budget: providerResult.budget || (budget ? {
+      ...budget,
+      elapsedMs: Date.now() - budget.startedAt,
+      remainingMs: Math.max(0, budget.deadlineAt - Date.now()),
+      budgetExhausted: false
+    } : null),
+    skipped: [
+      ...(planLimitDiagnostics.skippedQueries || []),
+      ...providerDiagnostics.flatMap((entry) => (
+        entry.skippedQueries > 0
+          ? [{
+              provider: entry.provider,
+              skippedQueries: entry.skippedQueries,
+              reason: entry.truncationReason || 'skipped'
+            }]
+          : []
+      ))
+    ],
+    warnings
+  };
+}
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -525,22 +766,38 @@ export async function runLiteratureDiscovery(params = {}) {
   if (!rootPath) throw new Error('rootPath is required for literature discovery.');
   const generatedAt = new Date().toISOString();
   const runId = params.runId || createDiscoveryRunId(new Date(generatedAt));
+  const operation = resolveDiscoveryOperation(params);
+  const searchMode = resolveDiscoverySearchMode(params, operation);
+  const planningParams = applySearchPlanningDefaults(params, operation, searchMode);
   const seedCandidates = buildSeedPaperCandidates(params);
   const seedEntities = buildSeedEntityCandidates(params);
-  const plan = attachEntityQueries(
-    attachSeedQueries(await buildLiteratureDiscoveryRunPlan(params), seedCandidates, params),
+  const attachedPlan = attachEntityQueries(
+    attachSeedQueries(await buildLiteratureDiscoveryRunPlan(planningParams), seedCandidates, planningParams),
     seedEntities,
-    params
+    planningParams
+  );
+  const { plan, diagnostics: planLimitDiagnostics } = capPlanQueriesForSearch(
+    attachedPlan,
+    planningParams,
+    operation,
+    searchMode
   );
   const selectedProviders = params.providers
     ? normalizeDiscoveryProviders(params.providers)
     : defaultProvidersForPlan(plan, params);
-  const config = resolveDiscoveryConfig({
+  const budget = createDiscoveryBudget(params, operation, searchMode);
+  const executionParams = applySearchExecutionDefaults({
     ...params,
+    providers: selectedProviders
+  }, operation, searchMode, budget);
+  const config = resolveDiscoveryConfig({
+    ...executionParams,
     providers: selectedProviders
   });
   const providerResult = await executeProviderQueries({
+    ...executionParams,
     ...config,
+    budget,
     plan
   });
   const initialMerged = mergeDiscoveryCandidates({
@@ -649,6 +906,20 @@ export async function runLiteratureDiscovery(params = {}) {
       queryCount: plan.queries.filter((entry) => entry.family === 'entity_seed').length
     }
   };
+  run.partial = Boolean(
+    providerResult.partial
+    || providerResult.budget?.budgetExhausted
+    || planLimitDiagnostics.truncated
+  );
+  run.budget = providerResult.budget || null;
+  run.diagnostics = buildDiscoveryDiagnostics({
+    plan,
+    planLimitDiagnostics,
+    providerResult,
+    budget,
+    operation,
+    searchMode
+  });
   run.metadataGraph = buildDiscoveryMetadataGraph(run.candidates);
   run.coverage = buildCoverage(run);
   const saved = params.persist === false ? null : await saveDiscoveryRun(rootPath, run);

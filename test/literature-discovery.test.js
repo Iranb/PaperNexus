@@ -611,6 +611,92 @@ test('buildLiteratureDiscoveryRunPlan falls back to deterministic planning when 
   assert.equal(plan.queries[0].family, 'direct');
 });
 
+test('buildLiteratureDiscoveryRunPlan keeps operation=search rule-based by default', async () => {
+  let plannerCalled = false;
+  const plan = await buildLiteratureDiscoveryRunPlan({
+    operation: 'search',
+    topic: 'LLM agents for time series forecasting',
+    depth: 'quick',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmApiKey: 'test-key',
+    llmQueryPlannerJson: async () => {
+      plannerCalled = true;
+      return { queries: [{ query: 'should not be used', family: 'direct' }] };
+    }
+  });
+
+  assert.equal(plannerCalled, false);
+  assert.equal(plan.queryPlanner.mode, 'rules');
+  assert.equal(plan.queryPlanner.reason, 'search-default-rule-based');
+});
+
+test('buildLiteratureDiscoveryRunPlan caps explicit operation=search LLM planning', async () => {
+  let capturedConfig = null;
+  const plan = await buildLiteratureDiscoveryRunPlan({
+    operation: 'search',
+    searchMode: 'balanced',
+    planningMode: 'llm_augmented',
+    topic: 'LLM agents for time series forecasting',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmApiKey: 'test-key',
+    llmTimeoutMs: 45000,
+    llmQueryPlannerJson: async (prompt, { config }) => {
+      capturedConfig = config;
+      assert.match(prompt, /Return strict JSON only/);
+      return {
+        queries: [
+          { query: 'autonomous agent forecasting benchmark', family: 'context' },
+          { query: 'LLM agent planning evaluation', family: 'context' },
+          { query: 'time series foundation models agents', family: 'context' },
+          { query: 'agentic forecasting survey', family: 'context' }
+        ]
+      };
+    }
+  });
+
+  const llmQueries = plan.queries.filter((query) => String(query.family || '').startsWith('llm_'));
+  assert.equal(capturedConfig.timeoutMs, 12000);
+  assert.equal(plan.queryPlanner.mode, 'llm');
+  assert.equal(plan.queryPlanner.llmQueryCount, 2);
+  assert.equal(llmQueries.length, 2);
+});
+
+test('buildLiteratureDiscoveryRunPlan caps deep operation=search LLM planning', async () => {
+  let capturedConfig = null;
+  const plan = await buildLiteratureDiscoveryRunPlan({
+    operation: 'search',
+    searchMode: 'deep',
+    planningMode: 'llm_augmented',
+    topic: 'LLM agents for time series forecasting',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmApiKey: 'test-key',
+    llmTimeoutMs: 45000,
+    llmQueryPlannerJson: async (prompt, { config }) => {
+      capturedConfig = config;
+      assert.match(prompt, /Return strict JSON only/);
+      return {
+        queries: [
+          { query: 'autonomous agent forecasting benchmark', family: 'context' },
+          { query: 'LLM agent planning evaluation', family: 'context' },
+          { query: 'time series foundation models agents', family: 'context' },
+          { query: 'agentic forecasting survey', family: 'context' },
+          { query: 'forecasting agents tool use', family: 'context' },
+          { query: 'time series benchmark failure modes', family: 'context' }
+        ]
+      };
+    }
+  });
+
+  const llmQueries = plan.queries.filter((query) => String(query.family || '').startsWith('llm_'));
+  assert.equal(capturedConfig.timeoutMs, 18000);
+  assert.equal(plan.queryPlanner.mode, 'llm');
+  assert.equal(plan.queryPlanner.llmQueryCount, 4);
+  assert.equal(llmQueries.length, 4);
+});
+
 test('extractResearchEntitiesFromText finds dataset and benchmark mentions', () => {
   const entities = extractResearchEntitiesFromText(
     'We evaluate Idea-Catalyst using the CHIMERA dataset. Benchmarks like IdeaBench explore literature-grounded idea generation. CreativityPrism: A Holistic Benchmark for Large Language Model Creativity is also related.',
@@ -854,6 +940,97 @@ test('executeProviderQueries can pace consecutive requests to the same provider'
     assert.equal(starts.length, 2);
     assert.ok(starts[1] - starts[0] >= 10);
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeProviderQueries returns partial diagnostics when budget skips remaining queries', async () => {
+  let calls = 0;
+  const startedAt = Date.now();
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return createJsonResponse({ results: [] });
+    };
+
+    const result = await executeProviderQueries({
+      providers: ['openalex'],
+      plan: {
+        queries: [
+          { id: 'q1', query: 'first budgeted query', family: 'direct' },
+          { id: 'q2', query: 'second budgeted query', family: 'artifact_expansion' }
+        ]
+      },
+      maxResultsPerQuery: 1,
+      providerRequestDelayMs: 0,
+      retryCount: 0,
+      timeoutMs: 100,
+      minProviderQueryBudgetMs: 10,
+      budget: {
+        startedAt,
+        deadlineAt: startedAt + 35,
+        budgetMs: 35
+      }
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.partial, true);
+    assert.equal(result.budget.budgetExhausted, true);
+    assert.equal(result.queryResults.length, 2);
+    assert.equal(result.queryResults[1].skipped, true);
+    assert.equal(result.queryResults[1].reason, 'budget_exhausted');
+    assert.equal(result.diagnostics.providers[0].truncationReason, 'budget_exhausted');
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeProviderQueries skips remaining provider queries after a search rate limit', async () => {
+  let calls = 0;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: () => null },
+        async json() {
+          return {};
+        },
+        async text() {
+          return '{}';
+        }
+      };
+    };
+
+    const result = await executeProviderQueries({
+      providers: ['openalex'],
+      plan: {
+        queries: [
+          { id: 'q1', query: 'quota limited query', family: 'direct' },
+          { id: 'q2', query: 'query that should be skipped', family: 'review_expansion' }
+        ]
+      },
+      retryCount: 0,
+      skipRemainingProviderQueriesOnRateLimit: true,
+      discoveryCircuitBreakerFailureThreshold: 1,
+      discoveryCircuitBreakerCooldownMs: 1000
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.partial, true);
+    assert.match(result.queryResults[0].reason, /openalex http 429/);
+    assert.equal(result.queryResults[1].skipped, true);
+    assert.equal(result.queryResults[1].reason, 'provider_rate_limited');
+    assert.equal(result.diagnostics.providers[0].rateLimited, 1);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
     globalThis.fetch = originalFetch;
   }
 });
@@ -1456,6 +1633,159 @@ test('runLiteratureDiscovery executes LLM-planned queries by default when config
     assert.ok(requestedQueries.includes('LLM agent planning evaluation'));
     assert.ok(requestedQueries.includes('time series foundation models agents'));
   } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('runLiteratureDiscovery bounds operation=search with rule planning and diagnostics', async () => {
+  const rootPath = await createTempCorpus();
+  const requestedQueries = [];
+  let plannerCalled = false;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'api.openalex.org') {
+        requestedQueries.push(url.searchParams.get('search') || '');
+        return createJsonResponse({ results: [] });
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const run = await runLiteratureDiscovery({
+      rootPath,
+      operation: 'search',
+      topic: 'Find the ICLR 2024 paper about long-context retrieval augmented generation benchmark failures and graph neural reranking.',
+      providers: ['openalex'],
+      providerRequestDelayMs: 0,
+      discoveryRequestCache: false,
+      searchBudgetMs: 1000,
+      minProviderQueryBudgetMs: 10,
+      resolveSources: false,
+      persist: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmApiKey: 'test-key',
+      llmQueryPlannerJson: async () => {
+        plannerCalled = true;
+        return { queries: [{ query: 'should not be planned by default', family: 'direct' }] };
+      }
+    });
+
+    assert.equal(plannerCalled, false);
+    assert.equal(run.plan.queryPlanner.mode, 'rules');
+    assert.equal(run.plan.queryPlanner.reason, 'search-default-rule-based');
+    assert.ok(run.plan.queries.length <= 6);
+    assert.equal(requestedQueries.length, 3);
+    assert.equal(run.budget.budgetMs, 1000);
+    assert.equal(run.diagnostics.searchMode, 'balanced');
+    assert.equal(run.diagnostics.providers[0].scheduledQueries, 3);
+    assert.ok(run.diagnostics.providers[0].skippedQueries > 0);
+    assert.equal(run.partial, true);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('runLiteratureDiscovery applies quick search caps while deep search preserves larger plans', async () => {
+  const rootPath = await createTempCorpus();
+  const requestedQueries = [];
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'api.openalex.org') {
+        requestedQueries.push(url.searchParams.get('search') || '');
+        return createJsonResponse({ results: [] });
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const topic = 'ICLR 2024 long-context retrieval benchmark failure cases transformer reranking';
+    const quick = await runLiteratureDiscovery({
+      rootPath,
+      operation: 'search',
+      searchMode: 'quick',
+      topic,
+      providers: ['openalex'],
+      providerRequestDelayMs: 0,
+      discoveryRequestCache: false,
+      resolveSources: false,
+      persist: false
+    });
+    const quickRequestCount = requestedQueries.length;
+
+    const deep = await runLiteratureDiscovery({
+      rootPath,
+      operation: 'search',
+      searchMode: 'deep',
+      topic,
+      providers: ['openalex'],
+      providerRequestDelayMs: 0,
+      discoveryRequestCache: false,
+      resolveSources: false,
+      persist: false
+    });
+
+    assert.equal(quick.budget.budgetMs, 25000);
+    assert.equal(quick.diagnostics.searchMode, 'quick');
+    assert.equal(quick.diagnostics.planning.queryLimit.maxQueries, 4);
+    assert.equal(quick.diagnostics.planning.queryLimit.truncated, true);
+    assert.ok(quick.plan.queries.length <= 4);
+    assert.equal(quick.diagnostics.providers[0].scheduledQueries, 2);
+    assert.ok(quick.diagnostics.skipped.some((entry) => entry.reason === 'search_query_limit'));
+    assert.equal(quick.partial, true);
+
+    assert.equal(deep.budget.budgetMs, 90000);
+    assert.equal(deep.diagnostics.searchMode, 'deep');
+    assert.equal(deep.diagnostics.planning.queryLimit.applied, true);
+    assert.equal(deep.diagnostics.planning.queryLimit.maxQueries, 10);
+    assert.ok(deep.plan.queries.length <= 10);
+    assert.ok(deep.plan.queries.length > quick.plan.queries.length);
+    assert.ok(deep.diagnostics.providers[0].scheduledQueries > quick.diagnostics.providers[0].scheduledQueries);
+    assert.equal(requestedQueries.length - quickRequestCount, deep.diagnostics.providers[0].scheduledQueries);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('runLiteratureDiscovery operation=search defaults to zero provider retries', async () => {
+  const rootPath = await createTempCorpus();
+  let calls = 0;
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async () => {
+      calls += 1;
+      return createJsonStatusResponse(500, { error: 'temporary provider failure' });
+    };
+
+    const run = await runLiteratureDiscovery({
+      rootPath,
+      operation: 'search',
+      topic: 'retry bounded search benchmark failure query',
+      providers: ['openalex'],
+      providerRequestDelayMs: 0,
+      discoveryRequestCache: false,
+      discoveryCircuitBreakerFailureThreshold: 100,
+      searchBudgetMs: 5000,
+      minProviderQueryBudgetMs: 1,
+      resolveSources: false,
+      persist: false
+    });
+
+    assert.ok(run.diagnostics.providers[0].scheduledQueries > 0);
+    assert.equal(calls, run.diagnostics.providers[0].scheduledQueries);
+    assert.equal(run.diagnostics.providers[0].failedQueries, run.diagnostics.providers[0].scheduledQueries);
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
     globalThis.fetch = originalFetch;
     await fs.rm(rootPath, { recursive: true, force: true });
   }

@@ -33,11 +33,13 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexusReflection/scripts/pn_stage_sync.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusReflection/scripts/pn_stage_sync.py) | Pn Stage Sync implementation. |
 | [`SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py) | Pn Graph Query implementation. |
 | [`SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py`](https://github.com/papernexus/PaperNexus/blob/main/SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py) | Pn Research Chains implementation. |
+| [`scripts/apply-ingestion-graph-mutations.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/apply-ingestion-graph-mutations.mjs) | Apply Ingestion Graph Mutations implementation. |
 | [`scripts/audit-graph-provenance.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/audit-graph-provenance.mjs) | Audit Graph Provenance implementation. |
 | [`scripts/benchmark-graph-ranking-ablation.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/benchmark-graph-ranking-ablation.mjs) | Benchmark Graph Ranking Ablation implementation. |
 | [`scripts/benchmark-graph-v2-delta.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/benchmark-graph-v2-delta.mjs) | Benchmark Graph V2 Delta implementation. |
 | [`scripts/diagnose-graph-identity.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/diagnose-graph-identity.mjs) | Diagnose Graph Identity implementation. |
 | [`scripts/docling_to_markdown.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/docling_to_markdown.py) | Docling To Markdown implementation. |
+| [`scripts/evaluate-graph-link-prediction.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/evaluate-graph-link-prediction.mjs) | Evaluate Graph Link Prediction implementation. |
 | [`scripts/generate-docs-reference.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/generate-docs-reference.mjs) | Generate VitePress reference pages from code, config, and repository structure. |
 | [`scripts/generate-graph-ablation-artifact-contract.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/generate-graph-ablation-artifact-contract.mjs) | Generate Graph Ablation Artifact Contract implementation. |
 | [`scripts/generate-graph-quality-report.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/generate-graph-quality-report.mjs) | Generate Graph Quality Report implementation. |
@@ -62,11 +64,33 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/pn_research_chains.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/pn_research_chains.py) | Pn Research Chains implementation. |
 | [`scripts/pn_stage_sync.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/pn_stage_sync.py) | Pn Stage Sync implementation. |
 | [`scripts/prepare-aliyun-batch-inference.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-aliyun-batch-inference.mjs) | Prepare Aliyun Batch Inference implementation. |
+| [`scripts/prepare-citation-intents.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-citation-intents.mjs) | Prepare Citation Intents implementation. |
+| [`scripts/prepare-claim-extraction.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-claim-extraction.mjs) | Prepare Claim Extraction implementation. |
+| [`scripts/prepare-coci-citation-graph.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-coci-citation-graph.mjs) | Prepare Coci Citation Graph implementation. |
+| [`scripts/prepare-docs-sync-release-evidence.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-docs-sync-release-evidence.mjs) | Prepare Docs Sync Release Evidence implementation. |
+| [`scripts/prepare-engineering-release-evidence.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-engineering-release-evidence.mjs) | Prepare Engineering Release Evidence implementation. |
 | [`scripts/prepare-graph-ablation-artifact.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-graph-ablation-artifact.mjs) | Prepare Graph Ablation Artifact implementation. |
+| [`scripts/prepare-graph-link-prediction.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-graph-link-prediction.mjs) | Prepare Graph Link Prediction implementation. |
+| [`scripts/prepare-graph-reasoning-report.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-graph-reasoning-report.mjs) | Prepare Graph Reasoning Report implementation. |
+| [`scripts/prepare-grobid-tei-citation-contexts.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-grobid-tei-citation-contexts.mjs) | Prepare Grobid Tei Citation Contexts implementation. |
+| [`scripts/prepare-human-blind-eval.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-human-blind-eval.mjs) | Prepare Human Blind Eval implementation. |
+| [`scripts/prepare-idea-catalyst-release-gate.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-idea-catalyst-release-gate.mjs) | Prepare Idea Catalyst Release Gate implementation. |
+| [`scripts/prepare-idea-catalyst-replay-dataset.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-idea-catalyst-replay-dataset.mjs) | Prepare Idea Catalyst Replay Dataset implementation. |
+| [`scripts/prepare-innovation-sidecar-release-evidence.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-innovation-sidecar-release-evidence.mjs) | Prepare Innovation Sidecar Release Evidence implementation. |
+| [`scripts/prepare-innovation-writeback.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-innovation-writeback.mjs) | Prepare Innovation Writeback implementation. |
+| [`scripts/prepare-release-evidence-bundle.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-release-evidence-bundle.mjs) | Prepare Release Evidence Bundle implementation. |
+| [`scripts/prepare-replay-release-evidence-skeleton.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-replay-release-evidence-skeleton.mjs) | Prepare Replay Release Evidence Skeleton implementation. |
+| [`scripts/prepare-s2orc-citation-contexts.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-s2orc-citation-contexts.mjs) | Prepare S2orc Citation Contexts implementation. |
+| [`scripts/prepare-scientific-embedding-release-evidence.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-scientific-embedding-release-evidence.mjs) | Prepare Scientific Embedding Release Evidence implementation. |
+| [`scripts/prepare-scientific-embeddings.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/prepare-scientific-embeddings.mjs) | Prepare Scientific Embeddings implementation. |
 | [`scripts/reinstall.sh`](https://github.com/papernexus/PaperNexus/blob/main/scripts/reinstall.sh) | Reinstall implementation. |
 | [`scripts/run-engineering-control-acceptance.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-engineering-control-acceptance.mjs) | Run Engineering Control Acceptance implementation. |
 | [`scripts/run-fixed-corpus-retrieval-suite.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-fixed-corpus-retrieval-suite.mjs) | Run Fixed Corpus Retrieval Suite implementation. |
 | [`scripts/run-graph-ablation-paper-claim-pipeline.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-graph-ablation-paper-claim-pipeline.mjs) | Run Graph Ablation Paper Claim Pipeline implementation. |
+| [`scripts/run-idea-catalyst-ablation-suite.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-idea-catalyst-ablation-suite.mjs) | Run Idea Catalyst Ablation Suite implementation. |
+| [`scripts/run-idea-catalyst-historical-replay.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-idea-catalyst-historical-replay.mjs) | Run Idea Catalyst Historical Replay implementation. |
+| [`scripts/run-idea-catalyst-replay-suite.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-idea-catalyst-replay-suite.mjs) | Run Idea Catalyst Replay Suite implementation. |
+| [`scripts/run-ingestion-orchestrator.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-ingestion-orchestrator.mjs) | Run Ingestion Orchestrator implementation. |
 | [`scripts/run-litsearch-retrieval-pipeline.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-litsearch-retrieval-pipeline.mjs) | Run Litsearch Retrieval Pipeline implementation. |
 | [`scripts/run-small-public-benchmarks.sh`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-small-public-benchmarks.sh) | Run Small Public Benchmarks implementation. |
 | [`scripts/summarize-benchmark-runs.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/summarize-benchmark-runs.mjs) | Summarize Benchmark Runs implementation. |

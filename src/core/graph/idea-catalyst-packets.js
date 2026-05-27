@@ -3,6 +3,10 @@ import { deriveDomainTaxonomyFromGraph, normalizeDomainTags, normalizeFieldOfStu
 import { buildInterdisciplinaryPotentialReport } from './interdisciplinary-potential.js';
 import { extractTakeawaysFromBridgeNodes } from './takeaway-extraction.js';
 import { NODE_TYPES } from './schema.js';
+import {
+  IDEA_CATALYST_PACKET_V2_VERSION,
+  buildIdeaCatalystInnovationArtifacts
+} from './innovation-contracts.js';
 
 export const IDEA_CATALYST_PACKET_BUNDLE_VERSION = 'idea-catalyst-packet-bundle-v1';
 const IDEA_CATALYST_EVIDENCE_CONTRACT_VERSION = 'idea-catalyst-evidence-chain-v1';
@@ -926,7 +930,6 @@ export function buildIdeaCatalystPacketBundle(graph, catalystResult = {}, params
   const requisitionReport = sufficient && ideaFragments.length ? null : buildRequisitionReport(crossDomainQueries, sourceDomainAnalyses, {
     abstractChallenge
   }, ideaFragments);
-
   const decomposition = {
     coarse_grained_domain: coarseGrainedDomain,
     fine_grained_domain: fineGrainedDomain,
@@ -945,12 +948,33 @@ export function buildIdeaCatalystPacketBundle(graph, catalystResult = {}, params
       remaining_challenges: remainingChallenges,
       overall_assessment: remainingChallenges.length
         ? (researchQuestions.length > remainingChallenges.length ? 'partially addressed' : 'largely unaddressed')
-        : 'substantially addressed'
+      : 'substantially addressed'
     }
   ];
+  const innovationArtifacts = buildIdeaCatalystInnovationArtifacts({
+    problem: abstractChallenge,
+    targetDomain,
+    target_domain: targetDomain,
+    target_domain_analysis: targetDomainAnalysis,
+    source_domain_analyses: sourceDomainAnalyses,
+    idea_fragments: requisitionReport ? [] : ideaFragments,
+    timeCutoff: params.timeCutoff || params.time_cutoff,
+    mustCiteK: params.mustCiteK || params.must_cite_k,
+    reviewerPanel: params.reviewerPanel || params.reviewer_panel,
+    storylineMode: params.storylineMode || params.storyline_mode,
+    counterfactualBudget: params.counterfactualBudget || params.counterfactual_budget
+  }, {
+    timeCutoff: params.timeCutoff || params.time_cutoff,
+    mustCiteK: params.mustCiteK || params.must_cite_k,
+    reviewerPanel: params.reviewerPanel || params.reviewer_panel,
+    storylineMode: params.storylineMode || params.storyline_mode,
+    counterfactualBudget: params.counterfactualBudget || params.counterfactual_budget,
+    writeBack: params.writeBack || params.write_back
+  });
 
   return {
     contractVersion: IDEA_CATALYST_PACKET_BUNDLE_VERSION,
+    packet_version: IDEA_CATALYST_PACKET_V2_VERSION,
     decomposition,
     target_domain_analysis: targetDomainAnalysis,
     cross_domain_queries: crossDomainQueries,
@@ -963,6 +987,7 @@ export function buildIdeaCatalystPacketBundle(graph, catalystResult = {}, params
     structural_analogy: evidenceContext.structural_analogy,
     interdisciplinary_potential_ranking: evidenceContext.interdisciplinary_potential_ranking,
     domain_distance_policy: buildDomainDistancePolicy(domainDistanceMatrix),
-    requisition_report: requisitionReport
+    requisition_report: requisitionReport,
+    ...innovationArtifacts
   };
 }

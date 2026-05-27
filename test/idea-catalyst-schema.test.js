@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createKnowledgeGraph } from '../src/core/graph/graph.js';
-import { EDGE_TYPES, NODE_TYPES } from '../src/core/graph/schema.js';
+import { EDGE_TYPES, GRAPH_LAYERS, NODE_TYPES, getNodeLayer } from '../src/core/graph/schema.js';
+import { getCompatibleRule } from '../src/core/graph/rules.js';
 import {
   buildDomainDistanceMatrix,
   deriveDomainTaxonomyFromGraph,
@@ -24,6 +25,25 @@ test('idea-catalyst schema exposes domain and abstract mechanism primitives', ()
   assert.equal(EDGE_TYPES.INSTANTIATES, 'INSTANTIATES');
   assert.equal(EDGE_TYPES.IMPLEMENTS, 'IMPLEMENTS');
   assert.equal(EDGE_TYPES.CONSTRAINS, 'CONSTRAINS');
+});
+
+test('idea-catalyst schema exposes claim, citation, review, storyline, and falsification primitives', () => {
+  assert.equal(NODE_TYPES.CONTRIBUTION_CLAIM, 'ContributionClaim');
+  assert.equal(NODE_TYPES.NOVELTY_CLAIM, 'NoveltyClaim');
+  assert.equal(NODE_TYPES.CITATION_CONTEXT, 'CitationContext');
+  assert.equal(NODE_TYPES.REVIEW_CONCERN, 'ReviewConcern');
+  assert.equal(NODE_TYPES.STORY_BEAT, 'StoryBeat');
+  assert.equal(NODE_TYPES.FALSIFICATION_PLAN, 'FalsificationPlan');
+  assert.equal(getNodeLayer(NODE_TYPES.REVIEW_CONCERN), GRAPH_LAYERS.REVIEW);
+  assert.equal(getNodeLayer(NODE_TYPES.STORY_BEAT), GRAPH_LAYERS.STORY);
+  assert.equal(EDGE_TYPES.SUPPORTS_CLAIM, 'SUPPORTS_CLAIM');
+  assert.equal(EDGE_TYPES.RAISES_CONCERN, 'RAISES_CONCERN');
+  assert.equal(EDGE_TYPES.FORMS_BEAT, 'FORMS_BEAT');
+  assert.equal(EDGE_TYPES.HAS_FALSIFICATION_PLAN, 'HAS_FALSIFICATION_PLAN');
+  assert.ok(getCompatibleRule(NODE_TYPES.CITATION_CONTEXT, NODE_TYPES.CONTRIBUTION_CLAIM, EDGE_TYPES.SUPPORTS_CLAIM));
+  assert.ok(getCompatibleRule(NODE_TYPES.REVIEW_CONCERN, NODE_TYPES.NOVELTY_CLAIM, EDGE_TYPES.DISPUTES_CLAIM));
+  assert.ok(getCompatibleRule(NODE_TYPES.CONTRIBUTION_CLAIM, NODE_TYPES.STORY_BEAT, EDGE_TYPES.FORMS_BEAT));
+  assert.ok(getCompatibleRule(NODE_TYPES.NOVELTY_CLAIM, NODE_TYPES.FALSIFICATION_PLAN, EDGE_TYPES.HAS_FALSIFICATION_PLAN));
 });
 
 test('normalizeDomainTags dedupes and preserves canonical tags', () => {

@@ -38,6 +38,173 @@ The supported parser families are:
 - `mineru`
 - `paddleocr-vl`
 
+GROBID TEI is also supported as an offline citation-context adapter, not yet as the default PDF parser orchestrator. When you already have a GROBID TEI XML file, convert it into PaperNexus citation-context IR with:
+
+```bash
+npm run ingest:grobid-tei -- \
+  --tei-path paper.tei.xml \
+  --output-path citation-contexts.json \
+  --paper-id paper:example \
+  --paper-title "Example Paper" \
+  --source-pdf-path paper.pdf
+```
+
+The adapter writes `papernexus-grobid-tei-citation-contexts-v1` artifacts with resolved bibliography metadata, per-citation sentence windows, reference identifiers, source paths, and diagnostics. These contexts use the same `papernexus-citation-contexts-v1` record shape consumed by method-evolution and evidence workflows. Missing bibliography entries are recorded as `reference-missing` instead of being silently dropped.
+
+S2ORC JSON or JSONL slices are supported as an offline full-text/citation-mention supplement. This path is intended for licensed local S2ORC snapshots, not online discovery requests:
+
+```bash
+npm run ingest:s2orc -- \
+  --s2orc-path s2orc-slice.jsonl \
+  --output-path citation-contexts.json \
+  --source-key s2orc-local-slice \
+  --max-papers 1000
+```
+
+The S2ORC adapter writes `papernexus-s2orc-citation-contexts-v1` artifacts while preserving the downstream `papernexus-citation-contexts-v1` context shape. It normalizes `body_text` / `abstract` cite spans, `bib_entries` metadata, reference identifiers, sentence windows, section roles, source slice provenance, and unresolved-reference diagnostics.
+
+COCI/OpenCitations dumps are supported as an offline DOI-to-DOI citation graph supplement. This path is for local CSV/TSV/JSON/JSONL slices and is not used as the only citation truth:
+
+```bash
+npm run ingest:coci -- \
+  --coci-path coci.csv \
+  --output-path coci-citation-graph.json \
+  --source-key coci-local-slice \
+  --max-records 100000
+```
+
+The COCI adapter writes `papernexus-coci-citation-graph-v1` artifacts with normalized citing/cited DOI endpoints, OCI provenance, creation/timespan metadata, self-citation flags, duplicate edge diagnostics, and a dry-run `graphProjection` of placeholder `Paper` nodes linked by `CITES` relationships. It records `licenseScope` on edges and does not write to the main graph by default.
+
+Citation contexts can then be classified into a standalone citation-intent artifact:
+
+```bash
+npm run ingest:citation-intents -- \
+  --contexts-path citation-contexts.json \
+  --output-path citation-intents.json
+```
+
+The citation-intent adapter writes `papernexus-citation-intents-v1` artifacts with primary intent labels such as `method-use`, `baseline-comparison`, `limitation-contrast`, `motivation-gap`, `supporting-evidence`, `dataset`, and `evaluation-metric`. Each intent records confidence, matched evidence patterns, the source citation-context id, and a graph edge hint such as `CITES_FOR_METHOD`, `CITES_FOR_BASELINE`, or `CITES_FOR_CONTRAST`. When gold labels are available, pass `--gold-path`, `--min-accuracy`, and `--min-macro-f1` to turn the classifier into an explicit benchmark gate.
+
+Claim extraction is a separate offline artifact so claim spans can be evaluated before any graph writeback:
+
+```bash
+npm run ingest:claim-extraction -- \
+  --input-path parsed-paper.json \
+  --output-path claims.json \
+  --citation-contexts-path citation-contexts.json \
+  --citation-intents-path citation-intents.json
+```
+
+The claim extractor writes `papernexus-claim-extraction-v1` artifacts with source-span-grounded claims, evidence span ids, linked citation-context ids, optional citation-intent ids, and a graph projection containing `Claim` / `EvidenceSnippet` nodes plus `CLAIMS`, `SUPPORTED_BY`, and `SUPPORTS_CLAIM` edges. When CLAIM-BENCH/CLAIMCHECK-style labels are available, pass `--gold-path`, `--min-claim-recall`, `--min-source-span-completeness`, and `--min-type-accuracy` to make claim extraction a benchmark gate.
+
+The P1 parser orchestrator now wires these offline adapters into one default citation/claim substrate run:
+
+```bash
+npm run ingest:orchestrate -- \
+  --output-dir .papernexus/ingestion-runs/example \
+  --tei-path paper.tei.xml \
+  --s2orc-path s2orc-slice.jsonl \
+  --coci-path coci.csv \
+  --multimodal-assets-path multimodal-assets.json \
+  --paper-path parsed-paper.json
+```
+
+The orchestrator writes `papernexus-parser-orchestrator-v1` manifests plus normalized artifacts:
+
+- `citation-contexts.json`: combined `papernexus-citation-contexts-v1` records, with GROBID TEI as the default citation parser and S2ORC as the supplement.
+- `citation-intents.json`: `papernexus-citation-intents-v1` labels with optional SciCite-style gates.
+- `claims.json`: `papernexus-claim-extraction-v1` claims with optional CLAIM-BENCH/CLAIMCHECK-style gates.
+- `coci-citation-graph.json`: optional COCI/OpenCitations DOI graph projection.
+- `multimodal-assets.json`: optional `papernexus-multimodal-assets-v1` figure/table/formula OCR assets, usually produced by PaddleOCR-VL, Docling, Marker, or an equivalent sidecar.
+- `graph-mutations.json`: a dry-run `papernexus-ingestion-graph-mutations-v1` preview using the existing `mutate_graph` operation shape for `CitationContext`, `Claim`, `EvidenceSnippet`, `MultimodalAsset`, placeholder `Paper`, `SUPPORTED_BY`, `SUPPORTS_CLAIM`, `HAS_CITATION_INTENT`, `EXTRACTED_FROM_FIGURE`, `EXTRACTED_FROM_TABLE`, `EXTRACTED_FROM_FORMULA`, and `CITES` operations.
+
+When `multimodal-assets.json` is supplied, the orchestrator projects each asset to a `MultimodalAsset` node and links it to referenced claims, citation contexts, or evidence spans using `EXTRACTED_FROM_FIGURE`, `EXTRACTED_FROM_TABLE`, or `EXTRACTED_FROM_FORMULA`. The asset record should preserve `asset_type`, `page`, `bbox`, `caption` or `ocr_text`, `source_parser`, `source_anchor`, `evidence_hash`, and `license_scope`. This keeps OCR/image/table/formula evidence auditable without storing full copyrighted assets in the KG by default. Release-gated apply plans now require at least one projected multimodal asset, and every projected asset must have license scope, evidence hash, an explicit source anchor, and at least one target graph link; empty or incomplete asset audit blocks `ready_to_apply`.
+
+The manifest separates `status` from `releaseGateStatus`: a run can be `ready` because graph mutation previews exist while `releaseGateStatus` remains `incomplete` until gold citation-intent and claim-grounding labels are supplied. This prevents the adapter/orchestration layer from being mistaken for a real external benchmark pass.
+
+The same orchestrator can now be enabled from the normal analyze/materialize runtime as an explicit P1 profile:
+
+```bash
+papernexus analyze ./papers \
+  --ingestion-orchestrator \
+  --grobid-tei-dir ./grobid-tei \
+  --s2orc-path ./s2orc-slice.jsonl \
+  --coci-path ./coci.csv \
+  --multimodal-assets-path ./multimodal-assets.json
+```
+
+The orchestrator also supports a controlled default profile from config or CLI:
+
+```json
+{
+  "analyze": {
+    "ingestionOrchestratorProfile": "preview"
+  }
+}
+```
+
+Equivalent CLI:
+
+```bash
+papernexus analyze ./papers \
+  --ingestion-orchestrator-profile preview
+```
+
+Supported profile values are `off`, `preview`, and `release-gated`. The `preview` profile is the intended default rollout profile: PaperNexus reuses the parser markdown cache, writes per-source parsed-paper inputs under `.papernexus/ingestion-orchestrator/`, runs the parser orchestrator for active sources, and stores an `ingestionOrchestrator` summary in `.papernexus/sources.json`. The runtime integration still writes dry-run graph mutation previews only (`writePolicy: preview-only`); it does not apply claim/citation operations to the main graph, and `releaseGateStatus` remains `incomplete` unless gold citation-intent or claim-grounding labels are provided. The `release-gated` profile now records stricter operator intent in `graph-apply-plan.json`: the plan becomes `ready_to_apply` only when graph mutations exist, at least one multimodal asset is fully audited, citation-intent benchmark gates pass, claim-extraction benchmark gates pass, and release-gated apply was explicitly requested. The plan also records SHA-256 input records for source paper/TEI, citation-intent gold labels, claim-extraction gold labels, and multimodal assets when those inputs are available, so the downstream apply report can carry them into `R3`. Even then, the orchestrator does not perform the graph write itself; an operator or graph mutation executor must review `graph-mutations.json` and apply it deliberately.
+
+Standalone orchestration exposes the same plan:
+
+```bash
+npm run ingest:orchestrate -- \
+  --output-dir artifacts/ingestion/run-001 \
+  --tei-path artifacts/grobid/paper.tei.xml \
+  --paper-path artifacts/parsed-paper.json \
+  --citation-intent-gold-path artifacts/gold/citation-intents.json \
+  --claim-gold-path artifacts/gold/claims.json \
+  --graph-apply-mode release-gated
+```
+
+The command writes `graph-mutations.json` plus `graph-apply-plan.json`. The apply plan is the release-grade strategy boundary: it explains whether graph operations are preview-only, blocked, or ready for a separate explicit apply step.
+
+The separate apply step is now handled by an explicit ingestion graph mutation executor:
+
+```bash
+npm run ingest:apply-graph-mutations -- \
+  --graph-mutations-path artifacts/ingestion/run-001/graph-mutations.json \
+  --graph-apply-plan-path artifacts/ingestion/run-001/graph-apply-plan.json \
+  --corpus-root ./papers \
+  --output-dir artifacts/ingestion/run-001/execution
+```
+
+This executor is dry-run by default. It validates the mutation operations against the selected corpus graph and writes `graph-mutation-execution-report.json`, `graph-mutation-execution-report.md`, `manifest.json`, and `rollback-manifest.json`. Preview runs are allowed even when the apply plan is `preview_only` or `blocked`, which is useful for operator review and schema validation, but they never write the authoritative graph.
+
+Persisting requires an explicit apply flag:
+
+```bash
+npm run ingest:apply-graph-mutations -- \
+  --graph-mutations-path artifacts/ingestion/run-001/graph-mutations.json \
+  --graph-apply-plan-path artifacts/ingestion/run-001/graph-apply-plan.json \
+  --corpus-root ./papers \
+  --output-dir artifacts/ingestion/run-001/execution \
+  --apply
+```
+
+The executor refuses actual writes unless `graph-apply-plan.json` has `status: "ready_to_apply"`, `canApply: true`, all apply gates passed, and non-empty mutation operations. When an authoritative write is performed, it records before/projected/after graph checksums, SHA-256 hashes for `graph-mutations.json` and `graph-apply-plan.json`, carries through the apply plan's source/gold-label/multimodal input hashes, and writes a pre-apply `before-graph-snapshot.json` referenced by the rollback manifest. This keeps P1 ingestion writes operator-controlled and auditable instead of letting parser artifacts silently mutate the main graph.
+
+Pass `graph-mutation-execution-report.json` into `eval:idea-catalyst-release-gate` with `--ingestion-graph-mutation-execution` to satisfy `R3`. Dry-run or blocked reports remain useful for review, but they cannot pass the release gate.
+
+Idea-Catalyst v2 artifacts can be converted into a dry-run graph mutation preview before any graph writeback:
+
+```bash
+npm run graph:innovation-writeback -- \
+  --input-path idea-catalyst-artifact.json \
+  --output-path mutation-preview.json
+```
+
+The writeback helper writes `papernexus-innovation-writeback-v1` artifacts using the existing `mutate_graph` operation shape. It maps contribution claims, source spans, citation contexts, must-cite papers, review concerns, storyline beats, and falsification plans to schema-valid node and relationship operations. By default it fails closed and emits no operations when contribution claims lack `source_span_ids`, storyline beats lack trace references, or must-cite evidence shows future leakage.
+
+`POST /api/idea-catalyst-v2` and the MCP `idea_catalyst` tool can now run the same writeback path when `writeBack=true`. The default remains safe: PaperNexus builds and validates a dry-run preview against the selected corpus and returns `writeback.applyStatus="previewed"` without saving graph changes. Persisting requires an explicit apply signal, such as `writeBackApply=true`, `writeBackMode=apply`, or `writeBackDryRun=false`. Live-discovery-only responses can emit mutation operations, but graph validation/apply requires a corpus-backed graph path.
+
 They all feed the same downstream contract:
 
 - markdown cache under `.papernexus/markdown/<parser>/...`

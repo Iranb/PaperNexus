@@ -454,17 +454,18 @@ test('serveCommand exposes authenticated POST query APIs for graph reasoning hel
 test('catalyst API payload helper and HTTP route expose a stable scout-oriented contract', async () => {
   const fixture = await createCatalystApiFixture();
   const port = 53000 + Math.floor(Math.random() * 1000);
+  const catalystRequest = {
+    targetDomain: 'Education',
+    abstractChallenge: 'reduce confirmation bias during tutoring feedback',
+    mechanisms: ['metacontrol policy'],
+    options: {
+      limit: 5
+    }
+  };
 
   try {
     const api = await import('../src/server/api.js');
-    const payload = await api.catalystGraphPayload(fixture.rootPath, {
-      targetDomain: 'Education',
-      abstractChallenge: 'reduce confirmation bias during tutoring feedback',
-      mechanisms: ['metacontrol policy'],
-      options: {
-        limit: 5
-      }
-    });
+    const payload = await api.catalystGraphPayload(fixture.rootPath, catalystRequest);
     assert.equal(payload.rootPath, fixture.rootPath);
     assert.equal(payload.result.contractVersion, 'idea-catalyst-query-v1');
     assert.equal(payload.result.targetDomain, 'Education');
@@ -480,6 +481,64 @@ test('catalyst API payload helper and HTTP route expose a stable scout-oriented 
     assert.ok(payload.result.structuralAnalogy.alignments.some((entry) => entry.transferableMechanisms.includes('metacontrol policy')));
     assert.equal(payload.result.interdisciplinaryPotentialRanking.contractVersion, 'idea-catalyst-interdisciplinary-ranking-v1');
     assert.ok(payload.result.interdisciplinaryPotentialRanking.rankedCandidates.length > 0);
+
+    const ideaV2 = await api.ideaCatalystV2Payload(fixture.rootPath, catalystRequest);
+    assert.equal(ideaV2.result.contractVersion, 'papernexus-idea-catalyst-v2-http-v1');
+    assert.ok(ideaV2.result.must_cite_set.length > 0);
+    assert.ok(ideaV2.result.contribution_claims.length > 0);
+    assert.ok(ideaV2.result.novelty_certificate);
+    assert.ok(ideaV2.result.review_packet);
+    assert.ok(ideaV2.result.storyline_dag.beats.every((beat) => Array.isArray(beat.trace_refs) && beat.trace_refs.length > 0));
+    assert.ok(ideaV2.result.falsification_plans.length > 0);
+    assert.deepEqual(ideaV2.falsification_plans, ideaV2.result.falsification_plans);
+
+    const { loadCorpus } = await import('../src/storage/corpus-store.js');
+    const beforeWriteback = await loadCorpus(fixture.rootPath);
+    const ideaV2Writeback = await api.ideaCatalystV2Payload(fixture.rootPath, {
+      ...catalystRequest,
+      writeBack: true,
+      writeBackActor: 'query-api-test'
+    });
+    assert.equal(ideaV2Writeback.writeback.requested, true);
+    assert.equal(ideaV2Writeback.writeback.dryRun, true);
+    assert.equal(ideaV2Writeback.writeback.applyStatus, 'previewed');
+    assert.equal(ideaV2Writeback.writeback.graphValidationStatus, 'validated');
+    assert.ok(ideaV2Writeback.writeback.mutationResult.summary.nodesCreated > 0);
+    const afterDryRun = await loadCorpus(fixture.rootPath);
+    assert.equal(afterDryRun.graph.nodeCount, beforeWriteback.graph.nodeCount);
+
+    const ideaV2Apply = await api.ideaCatalystV2Payload(fixture.rootPath, {
+      ...catalystRequest,
+      writeBack: true,
+      writeBackApply: true,
+      writeBackActor: 'query-api-test'
+    });
+    assert.equal(ideaV2Apply.writeback.dryRun, false);
+    assert.equal(ideaV2Apply.writeback.applyStatus, 'applied');
+    const afterApply = await loadCorpus(fixture.rootPath);
+    assert.ok(afterApply.graph.nodes.some((node) => node.type === 'ContributionClaim'));
+
+    const novelty = await api.noveltyEvalPayload(fixture.rootPath, catalystRequest);
+    assert.equal(novelty.result.contractVersion, 'papernexus-novelty-eval-http-v1');
+    assert.ok(novelty.result.novelty_certificate.reasons.length > 0);
+
+    const storyline = await api.storylinePayload(fixture.rootPath, catalystRequest);
+    assert.equal(storyline.result.contractVersion, 'papernexus-storyline-http-v1');
+    assert.equal(storyline.result.beat_trace_coverage.traceable_beat_count, storyline.result.beat_trace_coverage.beat_count);
+
+    const reviewer = await api.reviewerSimulatePayload(fixture.rootPath, catalystRequest);
+    assert.equal(reviewer.result.contractVersion, 'papernexus-reviewer-simulation-http-v1');
+    assert.ok(reviewer.result.review_packet.reviewers.length > 0);
+
+    const { startRun } = await import('../src/storage/run-store.js');
+    const started = await startRun(fixture.rootPath, {
+      runId: 'eval:test-run',
+      kind: 'eval',
+      currentStage: 'smoke'
+    });
+    const run = await api.evalRunPayload(fixture.rootPath, started.runId);
+    assert.equal(run.result.contractVersion, 'papernexus-eval-run-http-v1');
+    assert.equal(run.result.run_id, started.runId);
 
     const { serveCommand } = await import('../src/server/http.js');
     const serverHandle = await serveCommand({
@@ -500,20 +559,14 @@ test('catalyst API payload helper and HTTP route expose a stable scout-oriented 
     });
 
     try {
+      const headers = {
+        Authorization: 'Bearer test',
+        'Content-Type': 'application/json'
+      };
       const response = await fetch(`http://127.0.0.1:${port}/api/catalyst`, {
         method: 'POST',
-        headers: {
-          Authorization: 'Bearer test',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          targetDomain: 'Education',
-          abstractChallenge: 'reduce confirmation bias during tutoring feedback',
-          mechanisms: ['metacontrol policy'],
-          options: {
-            limit: 5
-          }
-        })
+        headers,
+        body: JSON.stringify(catalystRequest)
       }).then((result) => result.json());
 
       assert.equal(response.rootPath, fixture.rootPath);
@@ -527,6 +580,44 @@ test('catalyst API payload helper and HTTP route expose a stable scout-oriented 
       assert.ok(response.result.bridgeRetrieval.candidateBridgePaths.some((entry) => entry.candidateNodeType === 'Takeaway'));
       assert.equal(response.result.structuralAnalogy.contractVersion, 'idea-catalyst-analogy-v1');
       assert.equal(response.result.interdisciplinaryPotentialRanking.contractVersion, 'idea-catalyst-interdisciplinary-ranking-v1');
+
+      const routeChecks = [
+        ['/api/idea-catalyst-v2', 'papernexus-idea-catalyst-v2-http-v1'],
+        ['/api/novelty-eval', 'papernexus-novelty-eval-http-v1'],
+        ['/api/storyline', 'papernexus-storyline-http-v1'],
+        ['/api/reviewer-simulate', 'papernexus-reviewer-simulation-http-v1']
+      ];
+      for (const [route, contractVersion] of routeChecks) {
+        const routeResponse = await fetch(`http://127.0.0.1:${port}${route}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(catalystRequest)
+        }).then((result) => result.json());
+        assert.equal(routeResponse.rootPath, fixture.rootPath);
+        assert.equal(routeResponse.result.contractVersion, contractVersion);
+      }
+
+      const writebackRouteResponse = await fetch(`http://127.0.0.1:${port}/api/idea-catalyst-v2`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          ...catalystRequest,
+          writeBack: true,
+          writeBackActor: 'query-api-http-test'
+        })
+      }).then((result) => result.json());
+      assert.equal(writebackRouteResponse.writeback.requested, true);
+      assert.equal(writebackRouteResponse.writeback.dryRun, true);
+      assert.equal(writebackRouteResponse.writeback.applyStatus, 'previewed');
+
+      const evalRun = await fetch(`http://127.0.0.1:${port}/api/eval/runs/${encodeURIComponent(started.runId)}`, {
+        headers: {
+          Authorization: 'Bearer test'
+        }
+      }).then((result) => result.json());
+      assert.equal(evalRun.rootPath, fixture.rootPath);
+      assert.equal(evalRun.result.contractVersion, 'papernexus-eval-run-http-v1');
+      assert.equal(evalRun.result.run_id, started.runId);
     } finally {
       await serverHandle.stop();
     }

@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://papernexus.local/schemas/idea-catalyst-historical-replay-v1.json",
+  "title": "PaperNexus Idea-Catalyst Historical Replay Dataset",
+  "description": "Canonical interchange schema for running idea-catalyst-historical-replay-v1 over v2 Idea-Catalyst packets and external benchmark adapters.",
+  "type": "object",
+  "required": [
+    "cases"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Human-readable dataset or run name."
+    },
+    "format": {
+      "type": "string",
+      "description": "Source format after adapter normalization, such as custom, masterset, novbench, rinobench, claimcheck, openreview, peerread, moprd, or re2."
+    },
+    "adapter_contract_version": {
+      "type": "string",
+      "description": "Adapter contract that normalized an external benchmark into this replay dataset, such as idea-catalyst-replay-adapter-v1."
+    },
+    "source_format": {
+      "type": "string",
+      "description": "Original or normalized external source family used by the adapter."
+    },
+    "dataset_source": {
+      "type": "string",
+      "description": "Released dataset URL, DOI, snapshot id, or internal source label used to prepare this replay dataset."
+    },
+    "license_scope": {
+      "type": "string",
+      "description": "Dataset license or internal-use scope recorded during replay dataset preparation."
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Files consumed while preparing this replay dataset, including SHA-256 hashes.",
+      "items": {
+        "$ref": "#/$defs/input"
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Preparation-time provenance metadata for the normalized replay dataset.",
+      "properties": {
+        "dataset_source": {
+          "type": "string"
+        },
+        "license_scope": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/input"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "adapter_diagnostics": {
+      "type": "object",
+      "description": "Counts for missing candidate packets, baseline packets, and gold label families after normalization."
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "input": {
+      "type": "object",
+      "required": [
+        "role",
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mtime": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": true
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "candidate"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "dataset": {
+          "type": "string"
+        },
+        "benchmark": {
+          "type": "string"
+        },
+        "source_format": {
+          "type": "string"
+        },
+        "source_metadata": {
+          "type": "object"
+        },
+        "timeCutoff": {
+          "$ref": "#/$defs/cutoff"
+        },
+        "time_cutoff": {
+          "$ref": "#/$defs/cutoff"
+        },
+        "cutoffYear": {
+          "$ref": "#/$defs/cutoff"
+        },
+        "cutoff_year": {
+          "$ref": "#/$defs/cutoff"
+        },
+        "candidate": {
+          "$ref": "#/$defs/packet"
+        },
+        "candidatePacket": {
+          "$ref": "#/$defs/packet"
+        },
+        "candidate_packet": {
+          "$ref": "#/$defs/packet"
+        },
+        "baseline": {
+          "$ref": "#/$defs/packet"
+        },
+        "baselinePacket": {
+          "$ref": "#/$defs/packet"
+        },
+        "baseline_packet": {
+          "$ref": "#/$defs/packet"
+        },
+        "liveDiscoveryBaseline": {
+          "$ref": "#/$defs/packet"
+        },
+        "live_discovery_baseline": {
+          "$ref": "#/$defs/packet"
+        },
+        "gold": {
+          "$ref": "#/$defs/gold"
+        },
+        "expected": {
+          "$ref": "#/$defs/gold"
+        },
+        "labels": {
+          "$ref": "#/$defs/gold"
+        }
+      },
+      "additionalProperties": true
+    },
+    "cutoff": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1900,
+          "maximum": 2100
+        },
+        {
+          "type": "string",
+          "pattern": "^(19|20)[0-9]{2}.*$"
+        }
+      ]
+    },
+    "packet": {
+      "type": "object",
+      "properties": {
+        "evidence_status": {
+          "$ref": "#/$defs/evidenceStatus"
+        },
+        "evidenceStatus": {
+          "$ref": "#/$defs/evidenceStatus"
+        },
+        "result": {
+          "type": "object"
+        },
+        "evidence_export": {
+          "type": "object"
+        },
+        "must_cite_set": {
+          "$ref": "#/$defs/paperList"
+        },
+        "mustCiteSet": {
+          "$ref": "#/$defs/paperList"
+        },
+        "supporting_papers": {
+          "$ref": "#/$defs/paperList"
+        },
+        "supportingPapers": {
+          "$ref": "#/$defs/paperList"
+        },
+        "novelty_certificate": {
+          "$ref": "#/$defs/noveltyCertificate"
+        },
+        "noveltyCertificate": {
+          "$ref": "#/$defs/noveltyCertificate"
+        },
+        "contribution_claims": {
+          "$ref": "#/$defs/claimList"
+        },
+        "contributionClaims": {
+          "$ref": "#/$defs/claimList"
+        },
+        "storyline_dag": {
+          "$ref": "#/$defs/storylineDag"
+        },
+        "storylineDAG": {
+          "$ref": "#/$defs/storylineDag"
+        },
+        "storylineDag": {
+          "$ref": "#/$defs/storylineDag"
+        }
+      },
+      "additionalProperties": true
+    },
+    "evidenceStatus": {
+      "type": "string",
+      "enum": [
+        "source_backed",
+        "weak_evidence",
+        "needs_more_literature",
+        "failed"
+      ]
+    },
+    "gold": {
+      "type": "object",
+      "properties": {
+        "must_cite_set": {
+          "$ref": "#/$defs/paperList"
+        },
+        "mustCiteSet": {
+          "$ref": "#/$defs/paperList"
+        },
+        "must_cite": {
+          "$ref": "#/$defs/paperList"
+        },
+        "mustCite": {
+          "$ref": "#/$defs/paperList"
+        },
+        "relevant": {
+          "$ref": "#/$defs/paperList"
+        },
+        "papers": {
+          "$ref": "#/$defs/paperList"
+        },
+        "novelty_certificate": {
+          "$ref": "#/$defs/noveltyCertificate"
+        },
+        "noveltyCertificate": {
+          "$ref": "#/$defs/noveltyCertificate"
+        },
+        "novelty": {
+          "$ref": "#/$defs/noveltyCertificate"
+        },
+        "claims": {
+          "$ref": "#/$defs/claimList"
+        },
+        "contribution_claims": {
+          "$ref": "#/$defs/claimList"
+        },
+        "contributionClaims": {
+          "$ref": "#/$defs/claimList"
+        }
+      },
+      "additionalProperties": true
+    },
+    "paperList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/paper"
+      }
+    },
+    "paper": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "paper_key": {
+              "type": "string"
+            },
+            "paperKey": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "doi": {
+              "type": "string"
+            },
+            "arxivId": {
+              "type": "string"
+            },
+            "openalex": {
+              "type": "string"
+            },
+            "s2": {
+              "type": "string"
+            },
+            "year": {
+              "type": [
+                "integer",
+                "string",
+                "null"
+              ]
+            },
+            "publication_year": {
+              "type": [
+                "integer",
+                "string",
+                "null"
+              ]
+            },
+            "identifiers": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "noveltyCertificate": {
+      "type": "object",
+      "properties": {
+        "novelty": {
+          "$ref": "#/$defs/score"
+        },
+        "significance": {
+          "$ref": "#/$defs/score"
+        },
+        "feasibility": {
+          "$ref": "#/$defs/score"
+        },
+        "grounding": {
+          "$ref": "#/$defs/score"
+        },
+        "must_cite_completeness": {
+          "$ref": "#/$defs/score"
+        },
+        "temporal_validity": {
+          "$ref": "#/$defs/score"
+        },
+        "future_leakage_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "futureLeakageCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "claimList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/claim"
+      }
+    },
+    "claim": {
+      "type": "object",
+      "properties": {
+        "claim_id": {
+          "type": "string"
+        },
+        "claimId": {
+          "type": "string"
+        },
+        "claim_text": {
+          "type": "string"
+        },
+        "claimText": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        },
+        "supported": {
+          "type": [
+            "boolean",
+            "string"
+          ]
+        },
+        "source_span_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceSpanIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "storylineDag": {
+      "type": "object",
+      "properties": {
+        "beats": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "unsupported_beats": {
+          "type": "array"
+        },
+        "unsupportedBeats": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

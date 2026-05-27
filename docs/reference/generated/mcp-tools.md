@@ -20,8 +20,8 @@ This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/P
 | [`research_lookup`](#tool-research_lookup) | Run high-level lookup operations over already committed graph state using one remote HTTP MCP surface for query, context, impact, ideas, brainstorming, exact paper index lookup, domain distance, takeaway extraction, interdisciplinary potential, and method atlas lookups. Use literature_discovery first for fresh keyword literature search; graph lookup only sees imported papers after import tasks reach status=completed and stage=completed. |
 | [`research_briefing`](#tool-research_briefing) | Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP MCP tool surface. |
 | [`import_workflow`](#tool-import_workflow) | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=8 unless server config explicitly disables or overrides it. |
-| [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8. |
-| [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle. |
+| [`literature_discovery`](#tool-literature_discovery) | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use explicit deep/full settings when recall matters more than latency. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8. |
+| [`idea_catalyst`](#tool-idea_catalyst) | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle with v2 innovation artifacts: must-cite set, novelty certificate, review packet, storyline DAG, and counterfactual falsification plans. |
 | [`agent_materials`](#tool-agent_materials) | Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, and research-controller artifacts without making novelty judgments; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph. |
 | [`mutate_graph`](#tool-mutate_graph) | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots. |
@@ -293,7 +293,7 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 <a id="tool-literature_discovery"></a>
 
-Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8.
+Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use explicit deep/full settings when recall matters more than latency. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8.
 
 ### Input Schema
 
@@ -316,9 +316,14 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `depth` | optional | string (quick, default, deep) |  |
 | `discipline` | optional | string | Optional discipline hint such as computer-science, biomedicine, physics-math, chemistry-materials, economics-social-science, humanities-law, or chinese-scholarship. |
 | `providers` | optional | string \| array | Provider allow-list. Default providers are openalex, semantic_scholar, crossref, and arxiv. Implemented opt-in providers include papers_cool, pasa, europe_pmc, pubmed, dblp, and core; unpaywall is used during source resolution. |
-| `maxQueries` | optional | number | Maximum query families to execute after LLM planning and deterministic fallback expansion. |
-| `llmQueryPlanner` | optional | boolean | Use the configured LLM to split the topic into orthogonal literature-search queries before deterministic query expansion. Defaults to true; missing or failing LLM config falls back to deterministic planning. |
-| `maxLlmQueries` | optional | number | Maximum LLM-planned orthogonal queries inserted before deterministic expansion. Defaults by depth: quick=3, default=4, deep=8. |
+| `maxQueries` | optional | number | Maximum query families to execute after LLM planning and deterministic fallback expansion. For operation=search, defaults by searchMode are quick=4, balanced=6, and deep=10. |
+| `searchMode` | optional | string (quick, balanced, deep) | Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is the default bounded search; deep is broader but still bounded and returns partial diagnostics before the MCP outer timeout. |
+| `searchBudgetMs` | optional | number | Soft wall-clock budget for operation=search. Defaults by searchMode are quick=25000, balanced=45000, and deep=90000. When exhausted, PaperNexus stops scheduling new provider queries and returns partial metadata results with diagnostics. |
+| `maxQueriesPerProvider` | optional | number | Maximum generated discovery queries sent to each provider. For operation=search, defaults to 2 in quick mode and 3 in balanced/deep mode. |
+| `returnPartial` | optional | boolean | Return completed provider results with partial/diagnostics metadata when budget, timeout, query cap, or provider rate-limit truncates discovery. |
+| `planningMode` | optional | string (rule_based, llm_augmented) | Query planning mode. operation=search defaults to rule_based unless llmQueryPlanner=true or planningMode=llm_augmented is explicit; non-search discovery keeps the configured LLM planner behavior. |
+| `llmQueryPlanner` | optional | boolean | Use the configured LLM to split the topic into orthogonal literature-search queries before deterministic query expansion. Defaults to true for non-search discovery; operation=search defaults to false unless explicitly enabled. Missing, timing out, or failing LLM config falls back to deterministic planning. |
+| `maxLlmQueries` | optional | number | Maximum LLM-planned orthogonal queries inserted before deterministic expansion. Defaults by depth are quick=3, default=4, deep=8; operation=search caps these to quick=2, balanced=2, and deep=4. |
 | `llmProvider` | optional | string | Optional LLM provider override for query planning, such as openai, anthropic, or ollama. Defaults to PaperNexus llm config. |
 | `llmModel` | optional | string | Optional LLM model override for query planning. Defaults to PaperNexus llm config. |
 | `llmBaseUrl` | optional | string | Optional LLM API base URL override for query planning. Defaults to PaperNexus llm config. |
@@ -400,7 +405,7 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 
 <a id="tool-idea_catalyst"></a>
 
-Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle.
+Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle with v2 innovation artifacts: must-cite set, novelty certificate, review packet, storyline DAG, and counterfactual falsification plans.
 
 ### Input Schema
 
@@ -422,6 +427,17 @@ Run a challenge-aware interdisciplinary ideation pass over the graph and return 
 | `year` | optional | string | Optional Semantic Scholar publication year filter for live_discovery mode, such as 2018-2024 or -2023. |
 | `publicationDateOrYear` | optional | string | Optional Semantic Scholar publication date/year range for live_discovery mode. |
 | `insertedBefore` | optional | string | Optional Semantic Scholar index insertion cutoff for live_discovery mode. |
+| `timeCutoff` | optional | string | Optional temporal cutoff used to flag future-leakage in must-cite and novelty artifacts, such as 2024 or 2018-2024. |
+| `mustCiteK` | optional | number | Maximum number of must-cite prior-art entries to surface in v2 innovation artifacts. |
+| `reviewerPanel` | optional | string \| array | Optional reviewer roles for the structured review packet, for example novelty, methods, reproducibility, outsider. |
+| `storylineMode` | optional | string | Optional storyline DAG mode. Defaults to claim_review_storyline. |
+| `writeBack` | optional | boolean | When true, generates a schema-aware innovation writeback preview from v2 artifacts. The default is dry-run validation; it does not save unless writeBackApply=true, writeBackMode=apply, or writeBackDryRun=false. |
+| `writeBackDryRun` | optional | boolean | When writeBack=true, keep graph mutation writeback in preview mode. Set false only for an explicit apply. |
+| `writeBackApply` | optional | boolean | Explicitly apply validated writeback mutations to the corpus graph when writeBack=true. |
+| `writeBackMode` | optional | string (dry_run, apply) | Controlled writeback mode for v2 innovation artifacts. |
+| `writeBackActor` | optional | string | Short actor label recorded on writeback mutation audit properties. |
+| `allowWeakEvidence` | optional | boolean | Allow weakly grounded innovation artifacts to emit preview operations. Defaults false so ungrounded claims, untraceable story beats, and future leakage block writeback. |
+| `counterfactualBudget` | optional | number | Maximum number of counterfactual falsification plans to produce. |
 | `relevanceThreshold` | optional | number |  |
 | `limit` | optional | number |  |
 | `outputMode` | optional | string (idea_fragments, packet_bundle) |  |

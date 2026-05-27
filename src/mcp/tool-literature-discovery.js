@@ -285,6 +285,20 @@ function buildDiscoveryParams(rootPath, args = {}, options = {}) {
     rootPath,
     topic: args.topic || args.query,
     depth: args.depth,
+    operation: args.operation,
+    discoveryOperation: args.operation,
+    searchMode: firstDefined(args.searchMode, args.search_mode),
+    searchBudgetMs: firstDefined(args.searchBudgetMs, args.search_budget_ms),
+    discoveryBudgetMs: firstDefined(args.discoveryBudgetMs, args.discovery_budget_ms),
+    budgetMs: firstDefined(args.budgetMs, args.budget_ms),
+    maxQueriesPerProvider: firstDefined(args.maxQueriesPerProvider, args.max_queries_per_provider),
+    minProviderQueryBudgetMs: firstDefined(args.minProviderQueryBudgetMs, args.min_provider_query_budget_ms),
+    returnPartial: firstDefined(args.returnPartial, args.return_partial),
+    skipRemainingProviderQueriesOnRateLimit: firstDefined(
+      args.skipRemainingProviderQueriesOnRateLimit,
+      args.skip_remaining_provider_queries_on_rate_limit
+    ),
+    planningMode: firstDefined(args.planningMode, args.planning_mode),
     discipline: args.discipline,
     maxQueries: args.maxQueries || args.max_queries,
     maxResultsPerQuery: args.maxResultsPerQuery || args.max_results_per_query,
@@ -720,6 +734,8 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
   ) {
     const run = await runLiteratureDiscovery({
       ...buildDiscoveryParams(rootPath, args, options),
+      operation,
+      discoveryOperation: operation,
       resolveSources: operation === 'search' ? false : (args.resolveSources ?? args.resolve_sources),
       persist: args.persist !== false
     });

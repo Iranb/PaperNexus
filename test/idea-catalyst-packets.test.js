@@ -286,6 +286,18 @@ test('buildIdeaCatalystPacketBundle returns the staged public-repo packet struct
   });
 
   assert.equal(bundle.contractVersion, 'idea-catalyst-packet-bundle-v1');
+  assert.equal(bundle.packet_version, 'idea-catalyst-packet-bundle-v2');
+  assert.equal(bundle.innovation_contract_version, 'papernexus-innovation-artifacts-v1');
+  assert.ok(Array.isArray(bundle.must_cite_set));
+  assert.ok(bundle.must_cite_set.length > 0);
+  assert.ok(Array.isArray(bundle.contribution_claims));
+  assert.ok(bundle.contribution_claims.length > 0);
+  assert.ok(bundle.contribution_claims.every((claim) => claim.source_span_ids.length > 0));
+  assert.equal(bundle.novelty_certificate.unsupported_claim_count, 0);
+  assert.ok(bundle.novelty_certificate.grounding > 0);
+  assert.ok(bundle.review_packet.reviewers.length > 0);
+  assert.ok(bundle.storyline_dag.beats.length > 0);
+  assert.ok(bundle.counterfactuals.length > 0);
   assert.equal(bundle.decomposition.fine_grained_domain, 'Intelligent Tutoring Systems');
   assert.equal(bundle.decomposition.coarse_grained_domain, 'Education');
   assert.ok(bundle.decomposition.research_questions.length >= 2);
@@ -350,6 +362,9 @@ test('buildIdeaCatalystPacketBundle reports DATA_STARVATION instead of usable fr
 
   assert.equal(bundle.requisition_report.status, 'DATA_STARVATION');
   assert.deepEqual(bundle.idea_fragments, []);
+  assert.deepEqual(bundle.contribution_claims, []);
+  assert.equal(bundle.novelty_certificate.claim_count, 0);
+  assert.ok(bundle.storyline_dag.unsupported_beats.length > 0);
   assert.ok(bundle.bridge_retrieval.candidate_bridge_paths.length > 0);
   assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.bridge_path_ids.length > 0));
   assert.ok(bundle.source_domain_analyses.some((analysis) => analysis.evidence_chain_refs.length > 0));
