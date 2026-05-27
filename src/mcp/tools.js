@@ -2145,7 +2145,7 @@ export const PAPERNEXUS_TOOLS = [
           items: {
             type: 'string'
           },
-          description: 'Optional PaperNexus server-visible source directories or files containing PDFs/Markdown. MCP does not upload local files; paths must already exist from the server perspective. Omit or pass an empty array to initialize an empty corpus config.'
+          description: 'Optional PaperNexus server-visible source directories or files containing PDFs/Markdown. MCP does not upload local files; paths must already exist from the server perspective. Do not pass workstation-only paths such as /Users/... unless that path exists on the MCP server. Omit or pass an empty array to initialize an empty corpus config.'
         },
         sources: {
           type: ['array', 'string'],
@@ -2258,7 +2258,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'create_corpus',
-    description: 'Create the first committed corpus graph over MCP from server-visible source files/directories or create an empty graph when no sources are provided, equivalent to the first papernexus analyze --name run. Use refresh_corpus for later maintenance.',
+    description: 'Create the first committed corpus graph over MCP from server-visible source files/directories or create an empty graph when no sources are provided, equivalent to the first papernexus analyze --name run. Source-backed builds default to a background job to avoid MCP client timeouts; use operation=status or operation=wait with the returned jobId. Use refresh_corpus for later maintenance.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2267,7 +2267,7 @@ export const PAPERNEXUS_TOOLS = [
           items: {
             type: 'string'
           },
-          description: 'Optional PaperNexus server-visible source directories or files containing PDFs/Markdown. If omitted, configured sources.inputs are used; if no inputs are configured, an empty corpus graph is created.'
+          description: 'Optional PaperNexus server-visible source directories or files containing PDFs/Markdown. MCP does not upload local files; paths must already exist from the MCP server perspective. Do not pass workstation-only paths such as /Users/... unless that path exists on the server. If omitted, configured sources.inputs are used; if no inputs are configured, an empty corpus graph is created.'
         },
         sources: {
           type: ['array', 'string'],
@@ -2339,6 +2339,40 @@ export const PAPERNEXUS_TOOLS = [
         batchSize: {
           type: 'number',
           description: 'Alias for llmBatchSize.'
+        },
+        operation: {
+          type: 'string',
+          enum: ['build', 'submit', 'status', 'wait'],
+          description: 'build starts a create operation, submit always starts it as a background job, status returns a submitted job, and wait polls a submitted job until completion or waitTimeoutMs.',
+          default: 'build'
+        },
+        executionMode: {
+          type: 'string',
+          enum: ['auto', 'sync', 'async'],
+          description: 'Execution mode for operation=build. auto runs empty corpus creation synchronously and source-backed builds asynchronously to avoid MCP client timeouts.',
+          default: 'auto'
+        },
+        async: {
+          type: 'boolean',
+          description: 'Alias for executionMode=async when true and executionMode=sync when false.'
+        },
+        waitForCompletion: {
+          type: 'boolean',
+          description: 'When false, alias for executionMode=async; when true, alias for executionMode=sync.'
+        },
+        jobId: {
+          type: 'string',
+          description: 'Background create_corpus job id returned by an async build; required for operation=status or operation=wait.'
+        },
+        waitTimeoutMs: {
+          type: 'number',
+          description: 'Maximum milliseconds for operation=wait to poll before returning the latest job state.',
+          default: 30000
+        },
+        pollIntervalMs: {
+          type: 'number',
+          description: 'Polling interval for operation=wait.',
+          default: 500
         }
       }
     }

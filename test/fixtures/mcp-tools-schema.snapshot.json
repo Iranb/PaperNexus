@@ -724,6 +724,9 @@
         "analyzeConcurrency": {
           "type": "number"
         },
+        "async": {
+          "type": "boolean"
+        },
         "batchSize": {
           "type": "number"
         },
@@ -739,6 +742,15 @@
         "corpusName": {
           "type": "string"
         },
+        "executionMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "async",
+            "auto",
+            "sync"
+          ]
+        },
         "force": {
           "type": "boolean",
           "default": false
@@ -749,8 +761,21 @@
         "inputPath": {
           "type": "string"
         },
+        "jobId": {
+          "type": "string"
+        },
         "llmBatchSize": {
           "type": "number"
+        },
+        "operation": {
+          "type": "string",
+          "default": "build",
+          "enum": [
+            "build",
+            "status",
+            "submit",
+            "wait"
+          ]
         },
         "pdfCommand": {
           "type": "string"
@@ -766,6 +791,10 @@
             "opendataloader",
             "paddleocr-vl"
           ]
+        },
+        "pollIntervalMs": {
+          "type": "number",
+          "default": 500
         },
         "rebuildPdfMarkdown": {
           "type": "boolean"
@@ -796,6 +825,13 @@
             "array",
             "string"
           ]
+        },
+        "waitForCompletion": {
+          "type": "boolean"
+        },
+        "waitTimeoutMs": {
+          "type": "number",
+          "default": 30000
         }
       }
     }

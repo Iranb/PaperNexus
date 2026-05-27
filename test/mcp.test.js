@@ -192,6 +192,9 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   const createCorpusTool = tools.tools.find((tool) => tool.name === 'create_corpus');
   assert.ok(createCorpusTool);
   assert.ok(Object.hasOwn(createCorpusTool.inputSchema.properties, 'rootPath'));
+  assert.ok(Object.hasOwn(createCorpusTool.inputSchema.properties, 'operation'));
+  assert.ok(Object.hasOwn(createCorpusTool.inputSchema.properties, 'executionMode'));
+  assert.ok(Object.hasOwn(createCorpusTool.inputSchema.properties, 'jobId'));
   const refreshCorpusTool = tools.tools.find((tool) => tool.name === 'refresh_corpus');
   assert.ok(refreshCorpusTool);
   assert.ok(refreshCorpusTool.inputSchema.properties.mode.enum.includes('llm_optimize'));
@@ -605,8 +608,29 @@ test('runtime_init and create_corpus expose zero-to-first-build setup over MCP',
         semanticExtraction: 'heuristic-only',
         force: true
       }
-    }, { timeoutMs: 20000 });
-    const createPayload = JSON.parse(createResult.content[0].text);
+    });
+    const submitPayload = JSON.parse(createResult.content[0].text);
+    assert.equal(submitPayload.contractVersion, 'papernexus-corpus-create-job-v1');
+    assert.equal(submitPayload.corpus, 'mcp-created');
+    assert.equal(submitPayload.rootPath, localIndexRoot);
+    assert.equal(submitPayload.graphCommitted, false);
+    assert.ok(submitPayload.jobId);
+
+    const waitResult = await localPending.request('tools/call', {
+      name: 'create_corpus',
+      arguments: {
+        operation: 'wait',
+        jobId: submitPayload.jobId,
+        waitTimeoutMs: 20000
+      }
+    }, { timeoutMs: 25000 });
+    const waitPayload = JSON.parse(waitResult.content[0].text);
+    assert.equal(waitPayload.contractVersion, 'papernexus-corpus-create-job-v1');
+    assert.equal(waitPayload.status, 'completed');
+    assert.equal(waitPayload.graphCommitted, true);
+    assert.equal(waitPayload.timedOut, false);
+
+    const createPayload = waitPayload.result;
     assert.equal(createPayload.contractVersion, 'papernexus-corpus-create-v1');
     assert.equal(createPayload.corpus, 'mcp-created');
     assert.equal(createPayload.rootPath, localIndexRoot);
@@ -627,6 +651,69 @@ test('runtime_init and create_corpus expose zero-to-first-build setup over MCP',
     }
     await fs.rm(localIndexRoot, { recursive: true, force: true });
     await fs.rm(localSourceRoot, { recursive: true, force: true });
+    await fs.rm(localHome, { recursive: true, force: true });
+  }
+});
+
+test('runtime_init and create_corpus reject sourceInputs that are not visible to the MCP server', async () => {
+  const localHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-path-home-'));
+  const localIndexRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-path-index-'));
+  const localConfigPath = path.join(localHome, 'config.json');
+  const workstationOnlyPath = '/Users/__papernexus_not_on_server__/missing-paper.pdf';
+  let localPending = null;
+
+  try {
+    localPending = startMcpClient({
+      ...process.env,
+      PAPERNEXUS_HOME: localHome,
+      PAPERNEXUS_GRAPH_BACKEND: 'json'
+    });
+    await localPending.request('initialize', {});
+
+    await assert.rejects(
+      () => localPending.request('tools/call', {
+        name: 'runtime_init',
+        arguments: {
+          configPath: localConfigPath,
+          sourceInputs: [workstationOnlyPath],
+          corpus: 'mcp-path-check',
+          indexDir: localIndexRoot
+        }
+      }),
+      /runtime_init sourceInputs\[0\] is not visible to this MCP server:.*local workstation path/
+    );
+
+    await fs.writeFile(localConfigPath, JSON.stringify({
+      sources: {
+        inputs: [workstationOnlyPath]
+      },
+      storage: {
+        indexDir: localIndexRoot
+      },
+      analyze: {
+        name: 'mcp-path-check',
+        pdfParser: 'markitdown'
+      },
+      global: {
+        corpus: 'mcp-path-check'
+      }
+    }, null, 2));
+
+    await assert.rejects(
+      () => localPending.request('tools/call', {
+        name: 'create_corpus',
+        arguments: {
+          configPath: localConfigPath,
+          semanticExtraction: 'heuristic-only'
+        }
+      }),
+      /create_corpus sourceInputs\[0\] is not visible to this MCP server:.*local workstation path/
+    );
+  } finally {
+    if (localPending) {
+      await localPending.close();
+    }
+    await fs.rm(localIndexRoot, { recursive: true, force: true });
     await fs.rm(localHome, { recursive: true, force: true });
   }
 });

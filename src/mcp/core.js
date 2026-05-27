@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { buildBrainstorm, buildContext, buildImpact, buildResearchIdeas, searchGraph } from '../core/search/search.js';
@@ -8,6 +9,7 @@ import { renderBrainstormResult, renderContextResult, renderCorpusList, renderId
 import { applyCorpusMutations, loadCorpus, loadCorpusLite, loadSourceManifest, resolveCorpus } from '../storage/corpus-store.js';
 import { loadRegistry } from '../storage/registry.js';
 import { getDefaultRuntimeConfigRoot, loadRuntimeConfig, resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
+import { ensureDir, fileExists, readJson, writeJson } from '../lib/fs.js';
 import { PAPERNEXUS_PROMPTS, getPrompt } from './prompts.js';
 import { listResources, readResourcePayload } from './resources.js';
 import { corpusSourcesPayload } from '../server/api.js';
@@ -191,6 +193,253 @@ function compactMcpOptions(options = {}) {
   return Object.fromEntries(
     Object.entries(options).filter(([, value]) => value !== undefined)
   );
+}
+
+function waitMcpMilliseconds(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function looksLikeLocalWorkstationPath(value) {
+  const normalized = normalizeMcpString(value).replace(/\\/g, '/');
+  return /^\/Users\/[^/]+/.test(normalized) || /^[A-Za-z]:\//.test(normalized);
+}
+
+function buildMcpSourceVisibilityError(toolName, sourceInput, resolvedPath, index) {
+  const workstationHint = looksLikeLocalWorkstationPath(sourceInput)
+    ? ' This looks like a local workstation path; the MCP server cannot read files from your local machine unless they have been uploaded or mounted on the server.'
+    : '';
+  return `${toolName} sourceInputs[${index}] is not visible to this MCP server: ${sourceInput} (resolved: ${resolvedPath}).${workstationHint} Stage or upload the file/directory to the PaperNexus server first, then pass a server-visible path such as ~/uploads/... or a server absolute path.`;
+}
+
+async function assertMcpSourceInputsVisible(sourceInputs, resolvedSourceInputs, toolName) {
+  for (let index = 0; index < resolvedSourceInputs.length; index += 1) {
+    const resolvedPath = resolvedSourceInputs[index];
+    if (!(await fileExists(resolvedPath))) {
+      throw new Error(buildMcpSourceVisibilityError(
+        toolName,
+        sourceInputs[index] || resolvedPath,
+        resolvedPath,
+        index
+      ));
+    }
+  }
+}
+
+function normalizeMcpCreateCorpusOperation(args = {}) {
+  const raw = firstMcpString(args.operation, args.op).toLowerCase().replace(/-/g, '_');
+  if (!raw || raw === 'build' || raw === 'create' || raw === 'run') return 'build';
+  if (raw === 'submit' || raw === 'queue' || raw === 'start' || raw === 'background') return 'submit';
+  if (raw === 'status' || raw === 'get_status') return 'status';
+  if (raw === 'wait' || raw === 'await') return 'wait';
+  throw new Error(`Unknown create_corpus operation: ${args.operation || args.op}`);
+}
+
+function normalizeMcpCreateCorpusExecutionMode(args = {}, sourceInputs = [], operation = 'build') {
+  if (operation === 'submit') return 'async';
+
+  const explicitMode = firstMcpString(
+    args.executionMode,
+    args.execution_mode,
+    args.runMode,
+    args.run_mode
+  ).toLowerCase().replace(/-/g, '_');
+
+  if (!explicitMode && args.async !== undefined) {
+    return args.async === true ? 'async' : 'sync';
+  }
+
+  if (!explicitMode && args.waitForCompletion !== undefined) {
+    return args.waitForCompletion === false ? 'async' : 'sync';
+  }
+
+  if (!explicitMode || explicitMode === 'auto') {
+    return sourceInputs.length ? 'async' : 'sync';
+  }
+
+  if (['async', 'asynchronous', 'background', 'queued', 'queue', 'submit'].includes(explicitMode)) {
+    return 'async';
+  }
+
+  if (['sync', 'synchronous', 'blocking', 'wait'].includes(explicitMode)) {
+    return 'sync';
+  }
+
+  throw new Error(`Unknown create_corpus executionMode: ${explicitMode}`);
+}
+
+function normalizeMcpCreateCorpusJobId(value) {
+  const jobId = normalizeMcpString(value);
+  if (!jobId) {
+    throw new Error('create_corpus status/wait requires jobId.');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(jobId)) {
+    throw new Error(`Invalid create_corpus jobId: ${jobId}`);
+  }
+  return jobId;
+}
+
+function getMcpCreateCorpusJobsDir() {
+  return path.join(getDefaultRuntimeConfigRoot(), 'mcp-jobs', 'create-corpus');
+}
+
+function getMcpCreateCorpusJobPath(jobId) {
+  return path.join(getMcpCreateCorpusJobsDir(), `${normalizeMcpCreateCorpusJobId(jobId)}.json`);
+}
+
+function nowIsoString() {
+  return new Date().toISOString();
+}
+
+function buildMcpCreateCorpusResult(result, context) {
+  return {
+    contractVersion: 'papernexus-corpus-create-v1',
+    corpus: result.meta?.name || context.corpusName,
+    rootPath: result.rootPath || context.rootPath || '',
+    inputPath: result.inputPath || context.inputRoot,
+    sourceInputs: context.sourceInputs,
+    resolvedSourceInputs: context.inputRoot,
+    stage: result.stage || result.meta?.stage || 'completed',
+    graphCommitted: true,
+    reused: Boolean(result.reused),
+    changes: result.changes || result.meta?.lastChangeSummary || null,
+    options: context.options,
+    meta: result.meta
+      ? {
+          ...result.meta,
+          rootPath: result.rootPath || context.rootPath || ''
+        }
+      : null
+  };
+}
+
+async function writeMcpCreateCorpusJob(job) {
+  await ensureDir(getMcpCreateCorpusJobsDir());
+  await writeJson(getMcpCreateCorpusJobPath(job.jobId), job);
+}
+
+async function readMcpCreateCorpusJob(jobId) {
+  const normalizedJobId = normalizeMcpCreateCorpusJobId(jobId);
+  const job = await readJson(getMcpCreateCorpusJobPath(normalizedJobId), null);
+  if (!job) {
+    throw new Error(`create_corpus job not found: ${normalizedJobId}`);
+  }
+  return job;
+}
+
+function renderMcpCreateCorpusJob(job, extra = {}) {
+  const inProgress = job.status === 'queued' || job.status === 'running';
+  return {
+    contractVersion: 'papernexus-corpus-create-job-v1',
+    jobId: job.jobId,
+    status: job.status,
+    stage: job.stage,
+    graphCommitted: job.graphCommitted === true,
+    submittedAt: job.createdAt,
+    startedAt: job.startedAt || null,
+    completedAt: job.completedAt || null,
+    updatedAt: job.updatedAt,
+    corpus: job.corpus,
+    rootPath: job.rootPath || '',
+    inputPath: job.inputPath || [],
+    sourceInputs: job.sourceInputs || [],
+    resolvedSourceInputs: job.resolvedSourceInputs || [],
+    options: job.options || {},
+    result: job.result || null,
+    error: job.error || null,
+    next: inProgress
+      ? {
+          tool: 'create_corpus',
+          arguments: {
+            operation: 'status',
+            jobId: job.jobId
+          }
+        }
+      : null,
+    ...extra
+  };
+}
+
+async function waitForMcpCreateCorpusJob(jobId, options = {}) {
+  const timeoutMs = Math.max(0, normalizeMcpNumber(options.timeoutMs, 0));
+  const pollIntervalMs = Math.max(100, normalizeMcpNumber(options.pollIntervalMs, 500));
+  const deadline = timeoutMs ? Date.now() + timeoutMs : Date.now();
+  let job = await readMcpCreateCorpusJob(jobId);
+
+  while ((job.status === 'queued' || job.status === 'running') && Date.now() < deadline) {
+    await waitMcpMilliseconds(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+    job = await readMcpCreateCorpusJob(jobId);
+  }
+
+  return {
+    job,
+    timedOut: job.status === 'queued' || job.status === 'running'
+  };
+}
+
+async function runMcpCreateCorpusJob(job, context, executionArgs) {
+  const runningJob = {
+    ...job,
+    status: 'running',
+    stage: 'running',
+    startedAt: nowIsoString(),
+    updatedAt: nowIsoString()
+  };
+  await writeMcpCreateCorpusJob(runningJob);
+
+  try {
+    const { analyzeCorpus } = await import('../core/ingestion/pipeline.js');
+    const result = await analyzeCorpus(context.inputRoot, executionArgs);
+    await writeMcpCreateCorpusJob({
+      ...runningJob,
+      status: 'completed',
+      stage: result.stage || result.meta?.stage || 'completed',
+      graphCommitted: true,
+      completedAt: nowIsoString(),
+      updatedAt: nowIsoString(),
+      result: buildMcpCreateCorpusResult(result, context)
+    });
+  } catch (error) {
+    await writeMcpCreateCorpusJob({
+      ...runningJob,
+      status: 'failed',
+      stage: 'failed',
+      graphCommitted: false,
+      completedAt: nowIsoString(),
+      updatedAt: nowIsoString(),
+      error: {
+        name: error?.name || 'Error',
+        message: error?.message || String(error)
+      }
+    });
+  }
+}
+
+async function submitMcpCreateCorpusJob(context, executionArgs) {
+  const now = nowIsoString();
+  const job = {
+    version: 1,
+    type: 'create_corpus',
+    jobId: randomUUID(),
+    status: 'queued',
+    stage: 'queued',
+    graphCommitted: false,
+    createdAt: now,
+    updatedAt: now,
+    corpus: context.corpusName,
+    rootPath: context.rootPath || '',
+    inputPath: context.inputRoot,
+    sourceInputs: context.sourceInputs,
+    resolvedSourceInputs: context.inputRoot,
+    options: context.options
+  };
+
+  await writeMcpCreateCorpusJob(job);
+  setImmediate(() => {
+    void runMcpCreateCorpusJob(job, context, executionArgs);
+  });
+  return job;
 }
 
 export async function executeTool(name, args, options = {}) {
@@ -422,12 +671,18 @@ export async function executeTool(name, args, options = {}) {
     }
 
     const targetConfigPath = firstMcpString(args.configPath, loaded.path, options.configPath);
+    const targetConfigBaseDir = resolveMcpConfigBaseDir(
+      targetConfigPath ? resolvePathWithHome(targetConfigPath, configBaseDir) : loaded.path,
+      options
+    );
+    const resolvedSourceInputs = sourceInputs.map((input) => resolvePathWithHome(input, targetConfigBaseDir));
+    await assertMcpSourceInputsVisible(sourceInputs, resolvedSourceInputs, 'runtime_init');
+
     const saved = await saveRuntimeConfig(nextConfig, {
       cwd: configBaseDir,
       ...(targetConfigPath ? { path: targetConfigPath } : {})
     });
     const savedBaseDir = resolveMcpConfigBaseDir(saved.path, options);
-    const resolvedSourceInputs = sourceInputs.map((input) => resolvePathWithHome(input, savedBaseDir));
     const resolvedIndexDir = resolvePathWithHome(indexDir, savedBaseDir);
 
     return JSON.stringify({
@@ -450,13 +705,29 @@ export async function executeTool(name, args, options = {}) {
         arguments: {
           sourceInputs: resolvedSourceInputs,
           corpus: corpusName,
-          rootPath: resolvedIndexDir
+          rootPath: resolvedIndexDir,
+          executionMode: sourceInputs.length ? 'async' : 'sync'
         }
       }
     }, null, 2);
   }
 
   if (name === 'create_corpus') {
+    const operation = normalizeMcpCreateCorpusOperation(args);
+    if (operation === 'status') {
+      const job = await readMcpCreateCorpusJob(args.jobId);
+      return JSON.stringify(renderMcpCreateCorpusJob(job), null, 2);
+    }
+    if (operation === 'wait') {
+      const waitResult = await waitForMcpCreateCorpusJob(args.jobId, {
+        timeoutMs: normalizeMcpNumber(firstMcpValue(args.waitTimeoutMs, args.timeoutMs, args.timeout_ms), 30000),
+        pollIntervalMs: normalizeMcpNumber(firstMcpValue(args.pollIntervalMs, args.poll_interval_ms), 500)
+      });
+      return JSON.stringify(renderMcpCreateCorpusJob(waitResult.job, {
+        timedOut: waitResult.timedOut
+      }), null, 2);
+    }
+
     const loaded = await loadMcpRuntimeConfig(args, options);
     const config = normalizeMcpObject(loaded.config);
     const configBaseDir = resolveMcpConfigBaseDir(loaded.path, options);
@@ -489,6 +760,7 @@ export async function executeTool(name, args, options = {}) {
     );
     const rootPath = rootPathInput ? resolvePathWithHome(rootPathInput, configBaseDir) : undefined;
     const inputRoot = sourceInputs.map((input) => resolvePathWithHome(input, configBaseDir));
+    await assertMcpSourceInputsVisible(sourceInputs, inputRoot, 'create_corpus');
     const semanticExtraction = firstMcpString(
       args.semanticExtraction,
       args.semantic_extraction,
@@ -508,8 +780,8 @@ export async function executeTool(name, args, options = {}) {
     const pdfParser = firstMcpString(args.pdfParser, analyzeConfig.pdfParser);
     const pdfCommand = firstMcpString(args.pdfCommand, analyzeConfig.pdfCommand);
     const force = args.force === undefined ? Boolean(analyzeConfig.force) : args.force === true;
+    const executionMode = normalizeMcpCreateCorpusExecutionMode(args, sourceInputs, operation);
 
-    const { analyzeCorpus } = await import('../core/ingestion/pipeline.js');
     const executionArgs = compactMcpOptions({
       ...analyzeConfig,
       ...buildMcpLlmExecutionOptions(config),
@@ -525,34 +797,31 @@ export async function executeTool(name, args, options = {}) {
       llmBatchSize,
       batchSize: llmBatchSize
     });
-    const result = await analyzeCorpus(inputRoot, executionArgs);
-
-    return JSON.stringify({
-      contractVersion: 'papernexus-corpus-create-v1',
-      corpus: result.meta?.name || corpusName,
-      rootPath: result.rootPath || rootPath || '',
-      inputPath: result.inputPath || inputRoot,
+    const createContext = {
+      corpusName,
+      rootPath,
+      inputRoot,
       sourceInputs,
-      resolvedSourceInputs: inputRoot,
-      stage: result.stage || result.meta?.stage || 'completed',
-      graphCommitted: true,
-      reused: Boolean(result.reused),
-      changes: result.changes || result.meta?.lastChangeSummary || null,
       options: {
+        executionMode,
         force,
         semanticExtraction: semanticExtraction || null,
         rebuildPdfMarkdown: rebuildPdfMarkdown === undefined ? null : rebuildPdfMarkdown === true,
         pdfParser: pdfParser || null,
         llmBatchSize: llmBatchSize ?? null,
         analyzeConcurrency: analyzeConcurrency ?? null
-      },
-      meta: result.meta
-        ? {
-            ...result.meta,
-            rootPath: result.rootPath || rootPath || ''
-          }
-        : null
-    }, null, 2);
+      }
+    };
+
+    if (executionMode === 'async') {
+      const job = await submitMcpCreateCorpusJob(createContext, executionArgs);
+      return JSON.stringify(renderMcpCreateCorpusJob(job), null, 2);
+    }
+
+    const { analyzeCorpus } = await import('../core/ingestion/pipeline.js');
+    const result = await analyzeCorpus(inputRoot, executionArgs);
+
+    return JSON.stringify(buildMcpCreateCorpusResult(result, createContext), null, 2);
   }
 
   if (name === 'refresh_corpus') {
