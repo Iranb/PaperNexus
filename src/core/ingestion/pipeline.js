@@ -7246,6 +7246,7 @@ async function materializeSourceStates(rootPath, sourceStates, options = {}) {
 }
 
 export async function analyzeCorpus(inputPath, options = {}) {
+  const allowEmptyCorpus = Boolean(options.allowEmptyCorpus);
   const discovery = await discoverCorpusSources(inputPath, {
     rootPath: options.rootPath,
     includeActiveImportSources: options.includeActiveImportSources,
@@ -7313,7 +7314,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
       await assertSingleGraphInputScope(rootPath, absoluteInputs, resolveManifestInputPath(previousManifest));
     }
 
-    if (!discovery.sources.length && !previousIndexExists) {
+    if (!discovery.sources.length && !previousIndexExists && !allowEmptyCorpus) {
       throw new Error(`No PDF or Markdown files found in ${inputLabel}.`);
     }
 
@@ -7555,7 +7556,7 @@ export async function analyzeCorpus(inputPath, options = {}) {
     semanticPapers.sort((left, right) => left.paperTitle.localeCompare(right.paperTitle));
     manifestSources.sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
 
-    if (!semanticPapers.length) {
+    if (!semanticPapers.length && (!allowEmptyCorpus || sourceStates.length || failedSources.length)) {
       const firstFailure = failedSources[0];
       throw new Error(firstFailure?.message || `No papers could be materialized from ${inputLabel}.`);
     }

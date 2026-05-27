@@ -187,6 +187,7 @@ test('MCP initialize, tools, prompts, and resources endpoints return expected me
   const runtimeInitTool = tools.tools.find((tool) => tool.name === 'runtime_init');
   assert.ok(runtimeInitTool);
   assert.ok(Object.hasOwn(runtimeInitTool.inputSchema.properties, 'sourceInputs'));
+  assert.deepEqual(runtimeInitTool.inputSchema.required, ['corpus']);
   assert.ok(Object.hasOwn(runtimeInitTool.inputSchema.properties, 'llm'));
   const createCorpusTool = tools.tools.find((tool) => tool.name === 'create_corpus');
   assert.ok(createCorpusTool);
@@ -626,6 +627,74 @@ test('runtime_init and create_corpus expose zero-to-first-build setup over MCP',
     }
     await fs.rm(localIndexRoot, { recursive: true, force: true });
     await fs.rm(localSourceRoot, { recursive: true, force: true });
+    await fs.rm(localHome, { recursive: true, force: true });
+  }
+});
+
+test('create_corpus can initialize an empty graph over MCP', async () => {
+  const localHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-empty-home-'));
+  const localIndexRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-empty-index-'));
+  const localConfigPath = path.join(localHome, 'config.json');
+  let localPending = null;
+
+  try {
+    localPending = startMcpClient({
+      ...process.env,
+      PAPERNEXUS_HOME: localHome,
+      PAPERNEXUS_GRAPH_BACKEND: 'json'
+    });
+    await localPending.request('initialize', {});
+
+    const initResult = await localPending.request('tools/call', {
+      name: 'runtime_init',
+      arguments: {
+        configPath: localConfigPath,
+        corpus: 'mcp-empty',
+        indexDir: localIndexRoot,
+        pdfParser: 'markitdown'
+      }
+    });
+    const initPayload = JSON.parse(initResult.content[0].text);
+    assert.equal(initPayload.contractVersion, 'papernexus-runtime-init-v1');
+    assert.deepEqual(initPayload.sourceInputs, []);
+    assert.deepEqual(initPayload.resolvedSourceInputs, []);
+
+    const savedConfig = JSON.parse(await fs.readFile(localConfigPath, 'utf8'));
+    assert.deepEqual(savedConfig.sources.inputs, []);
+    assert.equal(savedConfig.storage.indexDir, localIndexRoot);
+
+    const createResult = await localPending.request('tools/call', {
+      name: 'create_corpus',
+      arguments: {
+        configPath: localConfigPath,
+        semanticExtraction: 'heuristic-only',
+        force: true
+      }
+    }, { timeoutMs: 20000 });
+    const createPayload = JSON.parse(createResult.content[0].text);
+    assert.equal(createPayload.contractVersion, 'papernexus-corpus-create-v1');
+    assert.equal(createPayload.corpus, 'mcp-empty');
+    assert.equal(createPayload.rootPath, localIndexRoot);
+    assert.equal(createPayload.stage, 'completed');
+    assert.equal(createPayload.graphCommitted, true);
+    assert.deepEqual(createPayload.sourceInputs, []);
+    assert.deepEqual(createPayload.resolvedSourceInputs, []);
+    assert.equal(createPayload.meta.paperCount, 0);
+    assert.equal(createPayload.meta.sourceCount, 0);
+
+    const statusResult = await localPending.request('tools/call', {
+      name: 'corpus_status',
+      arguments: {
+        corpus: localIndexRoot
+      }
+    });
+    assert.match(statusResult.content[0].text, /mcp-empty/);
+    assert.match(statusResult.content[0].text, /Papers: 0/);
+  } finally {
+    if (localPending) {
+      await localPending.close();
+    }
+    await fs.rm(localIndexRoot, { recursive: true, force: true });
     await fs.rm(localHome, { recursive: true, force: true });
   }
 });

@@ -171,6 +171,9 @@ test('buildRemoteDoclingScript includes docling command and output directory', (
   assert.match(script, /'--image-export-mode' 'placeholder'/);
   assert.match(script, /--no-enrich-picture-classes/);
   assert.match(script, /--no-enrich-picture-description/);
+  assert.match(script, /export HF_ENDPOINT="\$\{HF_ENDPOINT:-https:\/\/hf-mirror\.com\}"/);
+  assert.match(script, /export HF_HOME="\$\{HF_HOME:-\$HOME\/\.cache\/papernexus\/huggingface\}"/);
+  assert.match(script, /export HF_HUB_CACHE="\$\{HF_HUB_CACHE:-\$HF_HOME\/hub\}"/);
   assert.match(script, /'--ocr-engine' 'ocrmac'/);
   assert.match(script, /'--output' '\/tmp\/run\/out'/);
   assert.match(script, /find "\$run_dir" -type f -name '\*\.md'/);
@@ -211,15 +214,51 @@ test('Docling GPU helpers parse nvidia-smi output and build conservative executi
     { index: '1', name: 'NVIDIA RTX 4090', freeMemoryMb: 4096 }
   ]);
 
-  const env = __markerTestables.buildDoclingExecutionEnv({
-    doclingCudaVisibleDevices: '2',
-    doclingCpuThreads: 2
-  });
-  assert.equal(env.CUDA_VISIBLE_DEVICES, '2');
-  assert.equal(env.OPENBLAS_NUM_THREADS, '2');
-  assert.equal(env.OMP_NUM_THREADS, '2');
-  assert.equal(env.MKL_NUM_THREADS, '2');
-  assert.equal(env.NUMEXPR_NUM_THREADS, '2');
+  const savedEnv = {
+    HF_ENDPOINT: process.env.HF_ENDPOINT,
+    HF_HOME: process.env.HF_HOME,
+    HF_HUB_CACHE: process.env.HF_HUB_CACHE,
+    TRANSFORMERS_CACHE: process.env.TRANSFORMERS_CACHE,
+    HF_HUB_DISABLE_TELEMETRY: process.env.HF_HUB_DISABLE_TELEMETRY,
+    PAPERNEXUS_HF_ENDPOINT: process.env.PAPERNEXUS_HF_ENDPOINT,
+    PAPERNEXUS_HF_HOME: process.env.PAPERNEXUS_HF_HOME,
+    PAPERNEXUS_HF_HUB_CACHE: process.env.PAPERNEXUS_HF_HUB_CACHE,
+    PAPERNEXUS_TRANSFORMERS_CACHE: process.env.PAPERNEXUS_TRANSFORMERS_CACHE,
+    PAPERNEXUS_HF_HUB_DISABLE_TELEMETRY: process.env.PAPERNEXUS_HF_HUB_DISABLE_TELEMETRY,
+    PAPERNEXUS_DOCLING_HF_ENDPOINT: process.env.PAPERNEXUS_DOCLING_HF_ENDPOINT,
+    PAPERNEXUS_DOCLING_HF_HOME: process.env.PAPERNEXUS_DOCLING_HF_HOME,
+    PAPERNEXUS_DOCLING_HF_HUB_CACHE: process.env.PAPERNEXUS_DOCLING_HF_HUB_CACHE,
+    PAPERNEXUS_DOCLING_TRANSFORMERS_CACHE: process.env.PAPERNEXUS_DOCLING_TRANSFORMERS_CACHE,
+    PAPERNEXUS_DOCLING_HF_HUB_DISABLE_TELEMETRY: process.env.PAPERNEXUS_DOCLING_HF_HUB_DISABLE_TELEMETRY
+  };
+  try {
+    for (const key of Object.keys(savedEnv)) {
+      delete process.env[key];
+    }
+
+    const env = __markerTestables.buildDoclingExecutionEnv({
+      doclingCudaVisibleDevices: '2',
+      doclingCpuThreads: 2
+    });
+    assert.equal(env.CUDA_VISIBLE_DEVICES, '2');
+    assert.equal(env.OPENBLAS_NUM_THREADS, '2');
+    assert.equal(env.OMP_NUM_THREADS, '2');
+    assert.equal(env.MKL_NUM_THREADS, '2');
+    assert.equal(env.NUMEXPR_NUM_THREADS, '2');
+    assert.equal(env.HF_ENDPOINT, 'https://hf-mirror.com');
+    assert.match(env.HF_HOME, /\.cache\/papernexus\/huggingface$/);
+    assert.equal(env.HF_HUB_CACHE, path.join(env.HF_HOME, 'hub'));
+    assert.equal(env.TRANSFORMERS_CACHE, path.join(env.HF_HOME, 'transformers'));
+    assert.equal(env.HF_HUB_DISABLE_TELEMETRY, '1');
+  } finally {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 });
 
 test('resolveMineruRemoteFailureMode defaults to error and accepts docling', () => {

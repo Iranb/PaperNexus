@@ -337,22 +337,30 @@ export async function executeTool(name, args, options = {}) {
     const loaded = await loadMcpRuntimeConfig(args, options, { allowMissingExplicit: true });
     const config = normalizeMcpObject(loaded.config);
     const configBaseDir = resolveMcpConfigBaseDir(loaded.path, options);
-    const sourceInputs = normalizeMcpStringList(
-      args.sourceInputs
-      ?? args.sources
-      ?? args.inputPaths
-      ?? args.inputPath
-      ?? args.sourceRoot
-      ?? args.source
-    );
-    if (!sourceInputs.length) {
-      throw new Error('runtime_init requires sourceInputs with at least one server-visible PDF/Markdown path.');
-    }
+    const currentSources = normalizeMcpObject(config.sources);
+    const hasSourceInputArgs = [
+      'sourceInputs',
+      'sources',
+      'inputPaths',
+      'inputPath',
+      'sourceRoot',
+      'source'
+    ].some((key) => args[key] !== undefined);
 
     const currentAnalyze = normalizeMcpObject(config.analyze);
     const currentStorage = normalizeMcpObject(config.storage);
     const currentGlobal = normalizeMcpObject(config.global);
     const currentServe = normalizeMcpObject(config.serve);
+    const sourceInputs = hasSourceInputArgs
+      ? normalizeMcpStringList(
+        args.sourceInputs
+        ?? args.sources
+        ?? args.inputPaths
+        ?? args.inputPath
+        ?? args.sourceRoot
+        ?? args.source
+      )
+      : normalizeMcpStringList(currentSources.inputs);
     const corpusName = firstMcpString(args.corpus, args.corpusName, args.name);
     if (!corpusName) {
       throw new Error('runtime_init requires corpus or corpusName.');
@@ -385,7 +393,7 @@ export async function executeTool(name, args, options = {}) {
     const nextConfig = {
       ...config,
       sources: {
-        ...normalizeMcpObject(config.sources),
+        ...currentSources,
         inputs: sourceInputs
       },
       storage: {
@@ -467,16 +475,18 @@ export async function executeTool(name, args, options = {}) {
     const sourceInputs = requestedSourceInputs.length
       ? requestedSourceInputs
       : normalizeMcpStringList(sourcesConfig.inputs);
-    if (!sourceInputs.length) {
-      throw new Error('create_corpus requires sourceInputs or configured sources.inputs with at least one server-visible PDF/Markdown path.');
-    }
 
     const corpusName = firstMcpString(args.corpus, args.corpusName, args.name, analyzeConfig.name, globalConfig.corpus);
     if (!corpusName) {
       throw new Error('create_corpus requires corpus/corpusName or configured analyze.name/global.corpus.');
     }
 
-    const rootPathInput = firstMcpString(args.rootPath, args.indexDir, storageConfig.indexDir);
+    const rootPathInput = firstMcpString(
+      args.rootPath,
+      args.indexDir,
+      storageConfig.indexDir,
+      sourceInputs.length ? '' : path.join(getDefaultRuntimeConfigRoot(), 'index-store')
+    );
     const rootPath = rootPathInput ? resolvePathWithHome(rootPathInput, configBaseDir) : undefined;
     const inputRoot = sourceInputs.map((input) => resolvePathWithHome(input, configBaseDir));
     const semanticExtraction = firstMcpString(
@@ -506,6 +516,7 @@ export async function executeTool(name, args, options = {}) {
       name: corpusName,
       rootPath,
       force,
+      allowEmptyCorpus: true,
       semanticExtraction: semanticExtraction || undefined,
       rebuildPdfMarkdown: rebuildPdfMarkdown === undefined ? undefined : rebuildPdfMarkdown === true,
       pdfParser: pdfParser || undefined,

@@ -2145,7 +2145,7 @@ export const PAPERNEXUS_TOOLS = [
           items: {
             type: 'string'
           },
-          description: 'One or more PaperNexus server-visible source directories or files containing PDFs/Markdown. MCP does not upload local files; paths must already exist from the server perspective.'
+          description: 'Optional PaperNexus server-visible source directories or files containing PDFs/Markdown. MCP does not upload local files; paths must already exist from the server perspective. Omit or pass an empty array to initialize an empty corpus config.'
         },
         sources: {
           type: ['array', 'string'],
@@ -2253,12 +2253,12 @@ export const PAPERNEXUS_TOOLS = [
           additionalProperties: false
         }
       },
-      required: ['sourceInputs', 'corpus']
+      required: ['corpus']
     }
   },
   {
     name: 'create_corpus',
-    description: 'Create the first committed corpus graph over MCP from server-visible source files/directories, equivalent to the first papernexus analyze --name run. Use refresh_corpus for later maintenance.',
+    description: 'Create the first committed corpus graph over MCP from server-visible source files/directories or create an empty graph when no sources are provided, equivalent to the first papernexus analyze --name run. Use refresh_corpus for later maintenance.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2267,7 +2267,7 @@ export const PAPERNEXUS_TOOLS = [
           items: {
             type: 'string'
           },
-          description: 'One or more PaperNexus server-visible source directories or files containing PDFs/Markdown. If omitted, configured sources.inputs are used.'
+          description: 'Optional PaperNexus server-visible source directories or files containing PDFs/Markdown. If omitted, configured sources.inputs are used; if no inputs are configured, an empty corpus graph is created.'
         },
         sources: {
           type: ['array', 'string'],

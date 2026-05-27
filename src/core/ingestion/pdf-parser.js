@@ -27,6 +27,8 @@ const DEFAULT_DOCLING_GPU_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_DOCLING_GPU_POLL_INTERVAL_MS = 5000;
 const DEFAULT_DOCLING_GPU_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_DOCLING_CPU_THREADS = 4;
+const DEFAULT_HUGGINGFACE_ENDPOINT = 'https://hf-mirror.com';
+const DEFAULT_DOCLING_HF_HOME = path.join(os.homedir(), '.cache', 'papernexus', 'huggingface');
 const mineruProbeCache = new Map();
 const doclingWarmupCache = new Map();
 const MARKITDOWN_WRAPPER_PATH = fileURLToPath(new URL('../../../scripts/markitdown_to_markdown.py', import.meta.url));
@@ -421,6 +423,15 @@ function resolvePositiveInteger(value, defaultValue, { min = 1, max = Number.MAX
   return Math.max(min, Math.min(max, Math.floor(numeric)));
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const normalized = String(value).trim();
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
 function resolveDoclingDevice(options = {}) {
   return String(
     options.doclingDevice
@@ -542,6 +553,57 @@ function resolveDoclingPreloadTimeoutMs(options = {}) {
   );
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_DOCLING_PRELOAD_TIMEOUT_MS;
   return Math.max(1, Math.round(raw));
+}
+
+function buildDoclingHuggingFaceEnv(options = {}) {
+  const hfEndpoint = firstNonEmptyString(
+    options.doclingHfEndpoint,
+    options.hfEndpoint,
+    process.env.PAPERNEXUS_DOCLING_HF_ENDPOINT,
+    process.env.PAPERNEXUS_HF_ENDPOINT,
+    process.env.HF_ENDPOINT,
+    DEFAULT_HUGGINGFACE_ENDPOINT
+  );
+  const hfHome = firstNonEmptyString(
+    options.doclingHfHome,
+    options.hfHome,
+    process.env.PAPERNEXUS_DOCLING_HF_HOME,
+    process.env.PAPERNEXUS_HF_HOME,
+    process.env.HF_HOME,
+    DEFAULT_DOCLING_HF_HOME
+  );
+  const hfHubCache = firstNonEmptyString(
+    options.doclingHfHubCache,
+    options.hfHubCache,
+    process.env.PAPERNEXUS_DOCLING_HF_HUB_CACHE,
+    process.env.PAPERNEXUS_HF_HUB_CACHE,
+    process.env.HF_HUB_CACHE,
+    path.join(hfHome, 'hub')
+  );
+  const transformersCache = firstNonEmptyString(
+    options.doclingTransformersCache,
+    options.transformersCache,
+    process.env.PAPERNEXUS_DOCLING_TRANSFORMERS_CACHE,
+    process.env.PAPERNEXUS_TRANSFORMERS_CACHE,
+    process.env.TRANSFORMERS_CACHE,
+    path.join(hfHome, 'transformers')
+  );
+  const hfHubDisableTelemetry = firstNonEmptyString(
+    options.doclingHfHubDisableTelemetry,
+    options.hfHubDisableTelemetry,
+    process.env.PAPERNEXUS_DOCLING_HF_HUB_DISABLE_TELEMETRY,
+    process.env.PAPERNEXUS_HF_HUB_DISABLE_TELEMETRY,
+    process.env.HF_HUB_DISABLE_TELEMETRY,
+    '1'
+  );
+
+  return {
+    HF_ENDPOINT: hfEndpoint,
+    HF_HOME: hfHome,
+    HF_HUB_CACHE: hfHubCache,
+    TRANSFORMERS_CACHE: transformersCache,
+    HF_HUB_DISABLE_TELEMETRY: hfHubDisableTelemetry
+  };
 }
 
 function resolvePaddleOcrVlPython(options = {}) {
@@ -1123,6 +1185,7 @@ function buildDoclingExecutionEnv(options = {}) {
     env.PYTORCH_CUDA_ALLOC_CONF = process.env.PYTORCH_CUDA_ALLOC_CONF || 'expandable_segments:True';
   }
   return {
+    ...buildDoclingHuggingFaceEnv(options),
     ...buildDoclingThreadEnv(options),
     ...env
   };
@@ -1422,6 +1485,11 @@ function buildRemoteDoclingScript({
   gpuPollIntervalMs = DEFAULT_DOCLING_GPU_POLL_INTERVAL_MS,
   gpuLockStaleMs = DEFAULT_DOCLING_GPU_LOCK_STALE_MS,
   cpuThreads = DEFAULT_DOCLING_CPU_THREADS,
+  hfEndpoint,
+  hfHome,
+  hfHubCache,
+  transformersCache,
+  hfHubDisableTelemetry,
   autoGpu = true
 }) {
   const command = buildShellCommand(
@@ -1445,6 +1513,11 @@ function buildRemoteDoclingScript({
   const gpuPollSeconds = Math.max(1, Math.ceil(Number(gpuPollIntervalMs || DEFAULT_DOCLING_GPU_POLL_INTERVAL_MS) / 1000));
   const gpuLockStaleMinutes = Math.max(1, Math.floor(Number(gpuLockStaleMs || DEFAULT_DOCLING_GPU_LOCK_STALE_MS) / 60000));
   const threadCount = String(resolvePositiveInteger(cpuThreads, DEFAULT_DOCLING_CPU_THREADS));
+  const remoteHfEndpoint = firstNonEmptyString(hfEndpoint);
+  const remoteHfHome = firstNonEmptyString(hfHome);
+  const remoteHfHubCache = firstNonEmptyString(hfHubCache);
+  const remoteTransformersCache = firstNonEmptyString(transformersCache);
+  const remoteHfHubDisableTelemetry = firstNonEmptyString(hfHubDisableTelemetry);
 
   return [
     'set -e',
@@ -1460,6 +1533,21 @@ function buildRemoteDoclingScript({
     `export MKL_NUM_THREADS=${shellQuote(threadCount)}`,
     `export NUMEXPR_NUM_THREADS=${shellQuote(threadCount)}`,
     `export VECLIB_MAXIMUM_THREADS=${shellQuote(threadCount)}`,
+    remoteHfEndpoint
+      ? `export HF_ENDPOINT=${shellQuote(remoteHfEndpoint)}`
+      : `export HF_ENDPOINT="\${HF_ENDPOINT:-${DEFAULT_HUGGINGFACE_ENDPOINT}}"`,
+    remoteHfHome
+      ? `export HF_HOME=${shellQuote(remoteHfHome)}`
+      : 'export HF_HOME="${HF_HOME:-$HOME/.cache/papernexus/huggingface}"',
+    remoteHfHubCache
+      ? `export HF_HUB_CACHE=${shellQuote(remoteHfHubCache)}`
+      : 'export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"',
+    remoteTransformersCache
+      ? `export TRANSFORMERS_CACHE=${shellQuote(remoteTransformersCache)}`
+      : 'export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"',
+    remoteHfHubDisableTelemetry
+      ? `export HF_HUB_DISABLE_TELEMETRY=${shellQuote(remoteHfHubDisableTelemetry)}`
+      : 'export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"',
     ...(cudaVisibleDevices ? [`export CUDA_VISIBLE_DEVICES=${shellQuote(cudaVisibleDevices)}`] : []),
     ...(cudaVisibleDevices ? ['export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"'] : []),
     'GPU_LOCK_DIR=""',
@@ -3170,6 +3258,7 @@ export const __pdfParserTestables = {
   resolveDoclingEnrichPictureDescription,
   resolveDoclingPreload,
   resolveDoclingPreloadTimeoutMs,
+  buildDoclingHuggingFaceEnv,
   resolvePaddleOcrVlPython,
   resolvePaddleOcrVlServerUrl,
   resolveRemoteMarkerHost,

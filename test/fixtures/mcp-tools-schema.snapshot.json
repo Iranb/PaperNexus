@@ -2242,8 +2242,7 @@
     "inputSchema": {
       "type": "object",
       "required": [
-        "corpus",
-        "sourceInputs"
+        "corpus"
       ],
       "properties": {
         "configPath": {
