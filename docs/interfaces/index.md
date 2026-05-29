@@ -31,6 +31,21 @@ PaperNexus supports both:
 
 Remote HTTP MCP is the recommended control plane for live graph operations because it gives callers typed tool surfaces instead of forcing them to invent raw route shapes.
 
+The public MCP surface has five practical groups:
+
+| Group | Tools | What They Operate On |
+| --- | --- | --- |
+| Corpus and graph reads | `list_corpora`, `corpus_status`, `corpus_sources`, `query`, `context`, `impact`, `ideas`, `brainstorm`, `domain_distance`, `extract_takeaways`, `interdisciplinary_potential` | Already committed corpus graph state |
+| High-level research reads | `research_lookup`, `research_briefing`, `idea_catalyst` | Already committed graph state plus bounded derived packets |
+| Import and discovery | `literature_discovery`, `import_workflow` | Discovery artifacts and import queues |
+| Runtime and graph maintenance | `runtime_init`, `create_corpus`, `refresh_corpus`, `refresh_paper_graph`, `mutate_graph` | Runtime config, corpus build/refresh jobs, and schema-aware graph mutations |
+| Agent material backend | `agent_materials` | Committed graph/source materials plus project overlay state outside the raw graph |
+
+Two boundaries matter for callers:
+
+- `literature_discovery` produces candidate and source-resolution artifacts before graph ingestion.
+- `research_lookup`, `query`, `context`, and most `agent_materials` material reads only treat papers as graph evidence after import completion and graph sync.
+
 ## Skill-Local Wrappers
 
 The repository also ships Python wrappers inside `SKILL/**/scripts`.
@@ -42,12 +57,18 @@ These wrappers are important because they solve real integration problems for ag
 - querying queue progress in batch form
 - hiding JSON-RPC details behind typed command wrappers
 
+The wrappers are convenience entrypoints over MCP contracts. They should not fork protocol behavior, call private `/api/*` routes for live graph work, or treat provider-only discovery hits as committed graph evidence.
+
 ## Interface Selection Rule Of Thumb
 
 - use CLI for local operator workflows
 - use browser UI for live inspection
 - use remote HTTP MCP for live automation
 - use skill-local wrappers for agent workflows that need remote import, queue, or graph lookup convenience
+- use `literature_discovery` for fresh topic search and source resolution
+- use `import_workflow` as the readiness check before graph queries depend on newly imported papers
+- use `runtime_init` and `create_corpus` for server-side setup/build workflows exposed through MCP
+- use `agent_materials` for evidence packs, overlay memory, and approval-gated research-controller artifacts
 
 ## Contract Stability Strategy
 
@@ -62,6 +83,8 @@ Raw `/api/*` route usage is intentionally de-emphasized for live automation beca
 ## Read Next
 
 - [MCP And Skill Contract Guardrails](/interfaces/mcp-skill-contracts)
+- [Literature Discovery](/literature-discovery/)
 - [Remote Import And Skills](/interfaces/remote-import-and-skills)
+- [Agent Material Backend](/agent-materials/)
 - [Generated MCP Tool Reference](/reference/generated/mcp-tools)
 - [Generated HTTP Serve Reference](/reference/generated/http-serve)

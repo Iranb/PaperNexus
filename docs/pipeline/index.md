@@ -161,6 +161,22 @@ The queue also has recovery logic:
 
 For agents, this means import status should be interpreted as current state, not just the first error ever written to the log.
 
+## Literature Discovery Bridge
+
+`literature_discovery` is upstream of the graph pipeline. It does not replace `analyze`, and it does not make a candidate paper queryable by graph tools on its own.
+
+The discovery bridge has three states:
+
+| State | Produced By | Graph Visibility |
+| --- | --- | --- |
+| Candidate metadata | `operation=plan`, `search`, or `run` | Not graph evidence |
+| Source-resolution artifact | `operation=resolve` or `run` with downloads/source resolution enabled | Not graph evidence, but may be importable |
+| Imported paper | `operation=import`, `ingest`, `importResolved=true`, or `import_workflow` | Visible only after import processing and authoritative graph sync complete |
+
+This separation is intentional. It lets PaperNexus use fresh provider search when requested while preserving the core guarantee that graph reads are grounded in committed corpus state.
+
+See [Literature Discovery](/literature-discovery/) for operation modes, provider defaults, source-resolution statuses, and import-readiness rules.
+
 ## Maintainability Rule
 
 When adding new graph-native semantics, the maintenance question should always be:

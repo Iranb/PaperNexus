@@ -24,7 +24,7 @@ const HELP_TEXT = `
 PaperNexus
 
 Analysis and knowledge-graph engine for already-provided academic papers and corpora.
-PaperNexus does not discover external literature or orchestrate multi-agent research workflows for you.
+PaperNexus builds graph intelligence over provided corpora and exposes an explicit MCP literature-discovery bridge for fresh search and optional imports.
 
 Global options:
   --config <path>     Use an explicit config JSON file
@@ -85,9 +85,10 @@ Commands:
   papernexus mcp
 
 Scope boundary:
-  - analyze, materialize, and import process papers, corpora, or manifests you already provide.
-  - query, catalyst, and enhancement APIs operate on already-indexed graph state.
-  - Discovery, external search, and orchestration live outside PaperNexus.
+  - analyze and materialize process local papers, corpora, or manifests you already provide.
+  - literature_discovery can run bounded fresh search/source resolution, but graph tools see those papers only after import_workflow reports completed graph sync.
+  - query, catalyst, agent_materials, and briefing APIs operate on already-committed graph state unless an explicit provider/live/literature opt-in is passed.
+  - broader autonomous multi-agent orchestration and final research decisions live outside PaperNexus.
 
 LLM Fallback Options:
   --fallback-provider <openai|anthropic|ollama>

@@ -8,7 +8,7 @@ This page is generated from the live `papernexus help` output plus a thin layer 
 PaperNexus
 
 Analysis and knowledge-graph engine for already-provided academic papers and corpora.
-PaperNexus does not discover external literature or orchestrate multi-agent research workflows for you.
+PaperNexus builds graph intelligence over provided corpora and exposes an explicit MCP literature-discovery bridge for fresh search and optional imports.
 
 Global options:
   --config <path>     Use an explicit config JSON file
@@ -69,9 +69,10 @@ Commands:
   papernexus mcp
 
 Scope boundary:
-  - analyze, materialize, and import process papers, corpora, or manifests you already provide.
-  - query, catalyst, and enhancement APIs operate on already-indexed graph state.
-  - Discovery, external search, and orchestration live outside PaperNexus.
+  - analyze and materialize process local papers, corpora, or manifests you already provide.
+  - literature_discovery can run bounded fresh search/source resolution, but graph tools see those papers only after import_workflow reports completed graph sync.
+  - query, catalyst, agent_materials, and briefing APIs operate on already-committed graph state unless an explicit provider/live/literature opt-in is passed.
+  - broader autonomous multi-agent orchestration and final research decisions live outside PaperNexus.
 
 LLM Fallback Options:
   --fallback-provider <openai|anthropic|ollama>
@@ -218,7 +219,7 @@ Examples:
 | `stage1` | Alias for `materialize`. | `papernexus stage1 [&lt;path&gt;] [--name &lt;corpus&gt;] [--continue] [--force]` |
 | `stage2` | Alias for `llm-optimize`. | `papernexus stage2 [&lt;path&gt;] [--name &lt;corpus&gt;] [--continue] [--force]` |
 | `stage3` | Alias for `build-graph`. | `papernexus stage3 [&lt;path&gt;] [--name &lt;corpus&gt;] [--continue] [--force]` |
-| `stage4` | Alias for `merge-graph` plus staged commit compatibility path. | `papernexus stage4 [&lt;path&gt;] [--continue] [--force]` |
+| `stage4` | Alias for `write-index` plus staged commit compatibility path. | `papernexus stage4 [&lt;path&gt;] [--continue] [--force]` |
 | `optimize` | Resume from existing snapshots and run stages 2-5 together. | `papernexus optimize [&lt;path&gt;] [--name &lt;corpus&gt;] [--continue] [--force] [--quiet] [--concurrency &lt;n&gt;] [--semantic-extraction &lt;auto\|heuristic-only\|llm-assisted\|llm-primary&gt;] [--node-llm-check] [--pdf-parser &lt;markitdown\|markpdfdown\|opendataloader\|docling\|marker\|mineru\|paddleocr-vl&gt;] [--pdf-cmd &lt;cmd&gt;] [--python-command &lt;python&gt;] [--pdf-parser-ssh-host &lt;host&gt;] [--markitdown-python &lt;python&gt;] [--markpdfdown-python &lt;python&gt;] [--opendataloader-pdf-python &lt;python&gt;] [--docling-python &lt;python&gt;] [--docling-cmd &lt;cmd&gt;] [--docling-vlm] [--docling-vlm-preset &lt;preset&gt;] [--docling-ssh-host &lt;host&gt;] [--docling-ocr-engine &lt;name&gt;] [--docling-pdf-backend &lt;backend&gt;] [--docling-device &lt;device&gt;] [--docling-cuda-visible-devices &lt;ids&gt;] [--docling-auto-gpu &lt;true\|false&gt;] [--docling-gpu-min-free-mb &lt;mb&gt;] [--docling-gpu-wait-timeout-ms &lt;ms&gt;] [--docling-gpu-poll-interval-ms &lt;ms&gt;] [--docling-cpu-threads &lt;n&gt;] [--docling-artifacts-path &lt;path&gt;] [--docling-image-export-mode &lt;mode&gt;] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms &lt;ms&gt;] [--marker-cmd &lt;cmd&gt;] [--marker-ssh-host &lt;host&gt;] [--mineru-cmd &lt;url&gt;] [--mineru-http-url &lt;url&gt;] [--mineru-remote-failure &lt;error\|docling&gt;] [--page-range &lt;pages&gt;] [--pdf-ssh-host &lt;host&gt;] [--ollama-model &lt;name&gt;] [--ollama-url &lt;url&gt;] [--ollama-relations] [--ollama-ssh-host &lt;host&gt;]` |
 | `watch` | Long-running rebuild loop for already-provided paper directories. | `papernexus watch [&lt;path&gt;] [--name &lt;corpus&gt;] [--quiet] [--concurrency &lt;n&gt;] [--semantic-extraction &lt;auto\|heuristic-only\|llm-assisted\|llm-primary&gt;] [--pdf-parser &lt;markitdown\|markpdfdown\|opendataloader\|docling\|marker\|mineru\|paddleocr-vl&gt;] [--pdf-cmd &lt;cmd&gt;] [--python-command &lt;python&gt;] [--pdf-parser-ssh-host &lt;host&gt;] [--markitdown-python &lt;python&gt;] [--markpdfdown-python &lt;python&gt;] [--opendataloader-pdf-python &lt;python&gt;] [--docling-python &lt;python&gt;] [--docling-cmd &lt;cmd&gt;] [--docling-vlm] [--docling-vlm-preset &lt;preset&gt;] [--docling-ssh-host &lt;host&gt;] [--docling-ocr-engine &lt;name&gt;] [--docling-pdf-backend &lt;backend&gt;] [--docling-device &lt;device&gt;] [--docling-cuda-visible-devices &lt;ids&gt;] [--docling-auto-gpu &lt;true\|false&gt;] [--docling-gpu-min-free-mb &lt;mb&gt;] [--docling-gpu-wait-timeout-ms &lt;ms&gt;] [--docling-gpu-poll-interval-ms &lt;ms&gt;] [--docling-cpu-threads &lt;n&gt;] [--docling-artifacts-path &lt;path&gt;] [--docling-image-export-mode &lt;mode&gt;] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms &lt;ms&gt;] [--marker-cmd &lt;cmd&gt;] [--marker-ssh-host &lt;host&gt;] [--mineru-cmd &lt;url&gt;] [--mineru-http-url &lt;url&gt;] [--mineru-remote-failure &lt;error\|docling&gt;] [--page-range &lt;pages&gt;] [--pdf-ssh-host &lt;host&gt;] [--debounce-ms &lt;ms&gt;] [--poll-interval-ms &lt;ms&gt;] [--ollama-model &lt;name&gt;] [--ollama-url &lt;url&gt;] [--ollama-relations] [--ollama-ssh-host &lt;host&gt;]` |
 

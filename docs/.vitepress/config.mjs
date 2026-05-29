@@ -37,6 +37,19 @@ function sidebarPipeline() {
   ];
 }
 
+function sidebarLiteratureDiscovery() {
+  return [
+    {
+      text: 'Literature Discovery',
+      items: [
+        { text: 'Discovery Overview', link: '/literature-discovery/' },
+        { text: 'Remote Import And Skills', link: '/interfaces/remote-import-and-skills' },
+        { text: 'Generated MCP Tool Reference', link: '/reference/generated/mcp-tools' }
+      ]
+    }
+  ];
+}
+
 function sidebarGraph() {
   return [
     {
@@ -44,6 +57,7 @@ function sidebarGraph() {
       items: [
         { text: 'Graph Overview', link: '/graph/' },
         { text: 'Cross-Domain Intelligence', link: '/graph/cross-domain-intelligence' },
+        { text: 'Idea-Catalyst Live Discovery', link: '/graph/idea-catalyst-live-discovery' },
         { text: 'KG Innovation Discovery Review', link: '/graph/knowledge-graph-innovation-discovery-review.zh-CN' }
       ]
     }
@@ -56,7 +70,21 @@ function sidebarInterfaces() {
       text: 'Interfaces',
       items: [
         { text: 'Interfaces Overview', link: '/interfaces/' },
+        { text: 'MCP And Skill Contracts', link: '/interfaces/mcp-skill-contracts' },
         { text: 'Remote Import And Skills', link: '/interfaces/remote-import-and-skills' }
+      ]
+    }
+  ];
+}
+
+function sidebarAgentMaterials() {
+  return [
+    {
+      text: 'Agent Materials',
+      items: [
+        { text: 'Agent Materials Overview', link: '/agent-materials/' },
+        { text: 'Backend Contract', link: '/agent-material-backend' },
+        { text: 'Research Controller', link: '/agent-materials/research-controller-skill' }
       ]
     }
   ];
@@ -122,8 +150,10 @@ export default {
       { text: 'Overview', link: '/overview/' },
       { text: 'Get Started', link: '/get-started/' },
       { text: 'Pipeline', link: '/pipeline/' },
+      { text: 'Discovery', link: '/literature-discovery/' },
       { text: 'Graph', link: '/graph/' },
       { text: 'Interfaces', link: '/interfaces/' },
+      { text: 'Agent Materials', link: '/agent-materials/' },
       { text: 'Storage', link: '/storage/' },
       { text: 'Operations', link: '/operations/' },
       { text: 'Reference', link: '/reference/' }
@@ -132,8 +162,11 @@ export default {
       '/overview/': sidebarOverview(),
       '/get-started/': sidebarGetStarted(),
       '/pipeline/': sidebarPipeline(),
+      '/literature-discovery/': sidebarLiteratureDiscovery(),
       '/graph/': sidebarGraph(),
       '/interfaces/': sidebarInterfaces(),
+      '/agent-materials/': sidebarAgentMaterials(),
+      '/agent-material-backend': sidebarAgentMaterials(),
       '/storage/': sidebarStorage(),
       '/operations/': sidebarOperations(),
       '/reference/': sidebarReference()

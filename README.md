@@ -34,13 +34,15 @@
 
 ## What Is PaperNexus?
 
-PaperNexus turns a local paper corpus into a reusable research knowledge graph. It ingests PDF or Markdown sources, materializes cacheable semantic snapshots, builds a typed multilayer graph, and exposes that graph through a CLI, browser dashboard, authenticated HTTP APIs, local stdio MCP, remote HTTP MCP, and Python helper scripts.
+PaperNexus turns paper sources into a reusable research knowledge graph. Its core pipeline ingests PDF or Markdown files you provide, materializes cacheable semantic snapshots, builds a typed multilayer graph, and exposes that graph through a CLI, browser dashboard, authenticated HTTP APIs, local stdio MCP, remote HTTP MCP, and Python helper scripts. It also includes an explicit MCP `literature_discovery` bridge for bounded fresh search, legal source resolution, and optional import submission.
 
 > PaperNexus is not just a paper folder or an embedding index. Its core artifact is an inspectable graph of papers, problems, methods, claims, evidence, datasets, benchmarks, ideas, and method-evolution relationships.
 
 **Local-first**: source files, snapshots, graph stores, import queues, and discovery artifacts live on your machine.
 
 **Graph-native**: research questions, method lineage, cross-domain evidence, impact, context, ideas, and brainstorming operate over committed graph state.
+
+**Discovery-aware**: fresh topic search is a separate MCP workflow. Discovery artifacts exist before graph ingestion, and graph tools only see newly found papers after import tasks and graph sync complete.
 
 **Evidence-aware**: method-evolution edges require citation context, exact quotes, temporal checks, confidence, and evidence completeness gates.
 
@@ -53,7 +55,7 @@ PaperNexus turns a local paper corpus into a reusable research knowledge graph. 
 ```bash
 npm install
 npm link
-python -m pip install -U markpdfdown
+python -m pip install -U markitdown
 
 papernexus init
 papernexus analyze --force
@@ -77,22 +79,23 @@ npm bin -g
 **Corpus ingestion**
 
 - PDF and Markdown ingestion with cache-first reuse.
-- MarkPDFDown as the recommended parser path, with Docling fallback for failed or degenerate parses.
-- Optional parser backends: MarkItDown, OpenDataLoader, Docling, Marker, MinerU, and PaddleOCR-VL.
+- MarkItDown as the default parser path, with Docling fallback for failed or weak parses.
+- Optional parser backends: MarkPDFDown, OpenDataLoader, Docling, Marker, MinerU, and PaddleOCR-VL.
 - Import queue for uploaded `pdf/md` files, with per-task logs and resumable worker state.
 
 **Literature discovery**
 
-- Topic-to-candidate workflow with query planning, venue hints, provider execution, merge, citation expansion, source resolution, and coverage reporting.
-- Provider support for OpenAlex, Semantic Scholar, Crossref, arXiv, DBLP, Europe PMC/PubMed alias, CORE, and Unpaywall DOI lookup.
+- MCP-only topic-to-candidate workflow with query planning, bounded provider execution, merge, optional citation expansion, source resolution, and coverage reporting.
+- Default provider support for OpenAlex, Semantic Scholar, Crossref, and arXiv, with implemented opt-in providers for DBLP, Europe PMC/PubMed alias, CORE, papers.cool, and PASA. Unpaywall is used during DOI source resolution rather than as a general search provider.
 - Legal full-text handling with explicit statuses such as `open_pdf`, `needs_institution`, `no_open_pdf`, `anti_bot_blocked`, and `html_not_pdf`.
 - Discovery artifacts include `discovery.json`, `report.md`, `download-manifest.json`, and `latest.json`.
+- Import submission is explicit: use `importResolved`, `processImports`, or `import_workflow`, then wait for completed graph sync before treating results as graph evidence.
 
 **Knowledge graph**
 
 - Typed graph layers for papers, problems, methods, claims, evidence, datasets, benchmarks, takeaways, idea fragments, and future directions.
 - Staged graph build, graph merge, authoritative graph commit, lite read projection, and generated graph metadata.
-- Kuzu-backed authoritative graph with a lightweight JSON read index.
+- Kuzu-backed authoritative storage when available, JSON fallback storage, and a lightweight read-optimized lite view.
 
 **Research intelligence**
 
@@ -117,6 +120,16 @@ papers (.pdf / .md)
   -> query / answer / brainstorm / serve / MCP
 ```
 
+Fresh literature search is an optional upstream bridge, not an implicit part of `analyze`:
+
+```text
+literature_discovery search/run
+  -> discovery artifacts and legal source-resolution status
+  -> optional importResolved / import_workflow
+  -> import worker + graph sync
+  -> query / answer / agent_materials over committed graph state
+```
+
 Key storage rule:
 
 - Source files stay under the configured paper source directory.
@@ -130,7 +143,7 @@ Key storage rule:
 | Setup | `papernexus init`, `papernexus setup`, `papernexus apikey` | Runtime config and secure LLM credentials |
 | Corpus build | `analyze`, `materialize`, `llm-optimize`, `build-graph`, `merge-graph`, `write-index` | Snapshots, graph store, lite index |
 | Import queue | `papernexus imports`, Web upload API, Python import scripts | Import tasks, logs, recovered source files |
-| Discovery | MCP `literature_discovery` | Candidate lists, OA status, manifests, importable PDFs |
+| Discovery | MCP `literature_discovery` | Candidate lists, source-resolution status, manifests, optional import tasks |
 | Graph lookup | `query`, `context`, `impact`, `answer` | Evidence-backed graph results |
 | Ideation | `ideas`, `brainstorm`, `catalyst` | Idea fragments, cross-domain mechanisms, research packets |
 | Serving | `serve`, HTTP API, Web UI, remote MCP | Local dashboard and agent control plane |
@@ -145,15 +158,16 @@ npm install
 npm link
 ```
 
-Recommended parser dependency:
+Default parser dependency:
 
 ```bash
-python -m pip install -U markpdfdown
+python -m pip install -U markitdown
 ```
 
 Optional parser dependencies:
 
 ```bash
+python -m pip install -U markpdfdown
 python -m pip install -U opendataloader-pdf
 pip install docling marker-pdf
 python -m pip install -U "paddleocr[doc-parser]"
@@ -173,12 +187,12 @@ This repository ships a portable template:
 cp ./config.example.json ~/.papernexus/config.json
 ```
 
-Minimal recommended parser and LLM config:
+Minimal default parser and LLM config:
 
 ```json
 {
   "analyze": {
-    "pdfParser": "markpdfdown",
+    "pdfParser": "markitdown",
     "pythonCommand": "python3",
     "doclingCommand": "docling",
     "doclingDevice": "cuda",
@@ -299,10 +313,13 @@ Important MCP tools include:
 | Tool | Purpose |
 |------|---------|
 | `research_lookup` | Graph search, cross-domain evidence, method lineage, method evidence, method registry, research answers |
-| `literature_discovery` | Plan/search/resolve/run/import/status/report/list for topic-level discovery |
+| `literature_discovery` | Plan/search/resolve/run/import/ingest/status/report/list for bounded topic-level discovery |
 | `research_briefing` | Briefing-oriented research summaries over existing graph state |
 | `idea_catalyst` | Cross-domain idea generation and research packet support |
 | `import_workflow` | Import task submission and queue inspection |
+| `agent_materials` | Material packs, project overlays, evidence carts, and research-controller artifacts |
+| `runtime_init` / `create_corpus` | Server-side config initialization and first graph build over MCP |
+| `refresh_corpus` / `refresh_paper_graph` | Corpus-scale and per-paper maintenance jobs |
 
 ## Access And Full-Text Policy
 
@@ -317,7 +334,8 @@ PaperNexus prefers structured open APIs and legal open-access sources.
 | DBLP | REST/API-style metadata access |
 | Europe PMC / PubMed alias | REST API |
 | CORE | REST API when configured |
-| Unpaywall | DOI-based OA status and PDF lookup |
+| papers.cool / PASA | Optional configured search providers |
+| Unpaywall | DOI-based OA status and PDF lookup during source resolution |
 
 Full-text resolution only uses legal open-access PDF sources. If a source needs institutional access, returns HTML instead of PDF, is blocked by anti-bot checks, or has no open PDF, PaperNexus records that status instead of attempting to bypass the restriction.
 
@@ -327,8 +345,10 @@ Full-text resolution only uses legal open-access PDF sources. If a source needs 
 - [Overview](docs/overview/index.md): system summary and core concepts.
 - [Get Started](docs/get-started/index.md): beginner setup and first corpus.
 - [Pipeline](docs/pipeline/index.md): staged build, imports, parser runtime, recovery, and performance.
+- [Literature Discovery](docs/literature-discovery/index.md): MCP topic search, provider defaults, source resolution, and import-readiness boundaries.
 - [Graph](docs/graph/index.md): graph model and cross-domain intelligence.
 - [Interfaces](docs/interfaces/index.md): CLI, Web, HTTP, MCP, and remote import workflows.
+- [Agent Materials](docs/agent-materials/index.md): material packs, project overlays, source-discovery plans, and research-controller artifacts.
 - [Storage](docs/storage/index.md): local storage layout and graph artifacts.
 - [Operations](docs/operations/index.md): service mode, backup, logs, and runtime operations.
 - [Reference](docs/reference/index.md): generated CLI, config, graph schema, HTTP, MCP, script, and module references.

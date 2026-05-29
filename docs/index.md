@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: PaperNexus
-  text: Analysis-first research knowledge graphs for provided paper corpora
-  tagline: Build reusable paper snapshots, multilayer graphs, remote MCP workflows, and cross-domain ideation over the papers you already have.
+  text: Analysis-first research knowledge graphs for paper corpora
+  tagline: Build reusable paper snapshots, multilayer graphs, remote MCP workflows, bounded literature-discovery bridges, and cross-domain ideation over committed graph evidence.
   actions:
     - theme: brand
       text: Get Started
@@ -41,7 +41,7 @@ The goal is to make three things easy:
 
 ## Scope Boundary
 
-PaperNexus is an **analysis and knowledge-graph engine for papers and corpora you already provide**.
+PaperNexus is an **analysis and knowledge-graph engine for paper corpora**, with a clear separation between committed graph state and optional upstream discovery/import workflows.
 
 It is responsible for:
 
@@ -50,13 +50,15 @@ It is responsible for:
 - multilayer graph construction
 - graph-native search, context, impact, and ideation
 - queued import processing and background graph refresh
-- local and remote MCP interfaces over already-indexed corpora
+- bounded MCP literature discovery, legal source-resolution reporting, and optional import submission
+- local and remote MCP interfaces over already-indexed corpora and selected upstream workflows
 
 It is not responsible for:
 
-- discovering papers from arXiv, Semantic Scholar, or the web
-- orchestrating a multi-agent scientific workflow outside the graph engine
-- acting as a general autonomous literature acquisition system
+- making discovery results graph-visible before import tasks and authoritative graph sync complete
+- bypassing paywalls, CAPTCHAs, institutional authentication, or anti-bot restrictions
+- selecting final research directions, proving novelty, or running experiments
+- orchestrating a general autonomous multi-agent research workflow outside the graph/material backend
 
 ## Docs Hubs
 
@@ -73,6 +75,10 @@ It is not responsible for:
     <strong>Pipeline</strong>
     <span>Detailed coverage of staged analysis, imports, queueing, workers, and incremental refresh.</span>
   </a>
+  <a class="paper-card" href="/literature-discovery/">
+    <strong>Literature Discovery</strong>
+    <span>MCP topic search, provider defaults, legal source resolution, and the import boundary before graph visibility.</span>
+  </a>
   <a class="paper-card" href="/graph/">
     <strong>Graph</strong>
     <span>Node layers, schema, catalyst extensions, challenge and takeaway layers, and cross-domain reasoning.</span>
@@ -80,6 +86,10 @@ It is not responsible for:
   <a class="paper-card" href="/interfaces/">
     <strong>Interfaces</strong>
     <span>CLI, MCP, browser UI, authenticated HTTP serve routes, and skill-local remote wrappers.</span>
+  </a>
+  <a class="paper-card" href="/agent-materials/">
+    <strong>Agent Materials</strong>
+    <span>Material packs, project overlays, source-discovery plans, innovation evidence packs, and research-controller artifacts.</span>
   </a>
   <a class="paper-card" href="/storage/">
     <strong>Storage</strong>

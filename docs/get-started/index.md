@@ -11,17 +11,18 @@ npm install
 npm link
 ```
 
-PaperNexus itself is a Node-based application, but PDF analysis depends on parser tooling. The default parser path uses MarkPDFDown with the same `llm` configuration PaperNexus already uses for semantic extraction. If the first parser run fails or produces a degenerate title such as `Abstract`, PaperNexus automatically retries the PDF with Docling before indexing it:
+PaperNexus itself is a Node-based application, but PDF analysis depends on parser tooling. The default parser path uses MarkItDown. If the first parser run fails or produces weak markdown, PaperNexus automatically retries the PDF with Docling before indexing it:
 
 ```bash
-python -m pip install -U markpdfdown
+python -m pip install -U markitdown
 ```
 
-If you want one shared Python runtime setting for MarkPDFDown, OpenDataLoader, Docling VLM, and PaddleOCR-VL, set `analyze.pythonCommand`. Parser-specific fields like `markpdfdownPython` still work and override the shared default when needed.
+If you want one shared Python runtime setting for MarkItDown, MarkPDFDown, OpenDataLoader, Docling VLM, and PaddleOCR-VL, set `analyze.pythonCommand`. Parser-specific fields like `markitdownPython` and `markpdfdownPython` still work and override the shared default when needed.
 
 Optional parser families can be installed separately:
 
 ```bash
+python -m pip install -U markpdfdown
 python -m pip install -U opendataloader-pdf
 pip install docling marker-pdf
 python -m pip install -U "paddleocr[doc-parser]"
@@ -103,9 +104,40 @@ http://127.0.0.1:4821/mcp
 
 This is the preferred control plane for live graph automation, especially for remote imports and queue monitoring.
 
+## 7. Optional: Run Fresh Literature Discovery
+
+Fresh topic search is not part of `papernexus analyze`. It is an explicit MCP workflow exposed as `literature_discovery`.
+
+Use it when you need new candidate papers before importing them into the graph:
+
+```json
+{
+  "operation": "search",
+  "topic": "retrieval augmented experiment planning",
+  "searchMode": "quick",
+  "allowDownloads": false
+}
+```
+
+Use `operation=run` or `resolve` when you want source-resolution artifacts. Use `importResolved=true`, `operation=import`, `operation=ingest`, or `import_workflow` only when resolved full-text sources should enter the import queue.
+
+The important boundary is graph visibility:
+
+```text
+literature_discovery artifacts
+  -> optional import task
+  -> import worker
+  -> authoritative graph sync
+  -> research_lookup / query / context / agent_materials
+```
+
+Do not expect `query`, `research_lookup`, or `agent_materials` to see newly discovered papers until the relevant import task reports completed graph sync.
+
 ## Recommended First Reads After Setup
 
 - [Pipeline Overview](/pipeline/)
+- [Literature Discovery](/literature-discovery/)
 - [Interfaces Overview](/interfaces/)
+- [Remote Import And Skills](/interfaces/remote-import-and-skills)
 - [Storage Overview](/storage/)
 - [Generated Configuration Reference](/reference/generated/config)

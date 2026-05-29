@@ -111,7 +111,7 @@ const CLI_COMMAND_NOTES = {
   stage1: 'Alias for `materialize`.',
   stage2: 'Alias for `llm-optimize`.',
   stage3: 'Alias for `build-graph`.',
-  stage4: 'Alias for `merge-graph` plus staged commit compatibility path.',
+  stage4: 'Alias for `write-index` plus staged commit compatibility path.',
   optimize: 'Resume from existing snapshots and run stages 2-5 together.',
   watch: 'Long-running rebuild loop for already-provided paper directories.',
   probe: 'Connectivity check for the configured LLM provider.',
