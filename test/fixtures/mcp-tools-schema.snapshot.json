@@ -1375,7 +1375,7 @@
         },
         "depth": {
           "type": "string",
-          "default": "default",
+          "default": "deep",
           "enum": [
             "deep",
             "default",
@@ -1699,11 +1699,11 @@
         },
         "searchBudgetMs": {
           "type": "number",
-          "default": 45000
+          "default": 90000
         },
         "searchMode": {
           "type": "string",
-          "default": "balanced",
+          "default": "deep",
           "enum": [
             "balanced",
             "deep",
@@ -1792,6 +1792,9 @@
             "llm-assisted",
             "llm-primary"
           ]
+        },
+        "semanticScholarApiKey": {
+          "type": "string"
         },
         "semanticScholarMaxConcurrent": {
           "type": "number",

@@ -77,6 +77,11 @@ function toOptionalPositiveInteger(value) {
   return Math.max(1, Math.floor(parsed));
 }
 
+function toOptionalNonNegativeInteger(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return undefined;
+  return toNonNegativeInteger(value, 0);
+}
+
 function normalizeBaseUrl(value = '', fallback = '') {
   const normalized = String(value || fallback || '').trim();
   return normalized.replace(/\/+$/, '');
@@ -132,6 +137,20 @@ export function resolveDiscoveryConfig(options = {}) {
       ?? process.env.PAPERNEXUS_OPENALEX_MAX_CONCURRENT,
       MAX_DISCOVERY_PROVIDER_THREADS
     ),
+    semanticScholarRequestDelayMs: toOptionalNonNegativeInteger(firstDefined(
+      options.semanticScholarRequestDelayMs,
+      options.semantic_scholar_request_delay_ms,
+      options.s2RequestDelayMs,
+      options.s2_request_delay_ms
+    )),
+    semanticScholarMaxConcurrent: toOptionalPositiveInteger(firstDefined(
+      options.semanticScholarMaxConcurrent,
+      options.semantic_scholar_max_concurrent
+    )),
+    discoveryRequestMaxResponseBytes: toOptionalPositiveInteger(firstDefined(
+      options.discoveryRequestMaxResponseBytes,
+      options.discovery_request_max_response_bytes
+    )),
     maxRetryAfterMs: Math.min(10000, toPositiveInteger(options.maxRetryAfterMs || options.max_retry_after_ms, 10000)),
     mailto: String(
       options.mailto

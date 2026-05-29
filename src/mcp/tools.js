@@ -774,7 +774,7 @@ export const PAPERNEXUS_TOOLS = [
         depth: {
           type: 'string',
           enum: ['quick', 'default', 'deep'],
-          default: 'default'
+          default: 'deep'
         },
         discipline: {
           type: 'string',
@@ -797,13 +797,13 @@ export const PAPERNEXUS_TOOLS = [
         searchMode: {
           type: 'string',
           enum: ['quick', 'balanced', 'deep'],
-          description: 'Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is the default bounded search; deep is broader but still bounded and returns partial diagnostics before the MCP outer timeout.',
-          default: 'balanced'
+          description: 'Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is a moderate bounded search; deep is the default broader profile but still returns partial diagnostics before the MCP outer timeout.',
+          default: 'deep'
         },
         searchBudgetMs: {
           type: 'number',
           description: 'Soft wall-clock budget for operation=search. Defaults by searchMode are quick=25000, balanced=45000, and deep=90000. When exhausted, PaperNexus stops scheduling new provider queries and returns partial metadata results with diagnostics.',
-          default: 45000
+          default: 90000
         },
         maxQueriesPerProvider: {
           type: 'number',
@@ -1078,19 +1078,23 @@ export const PAPERNEXUS_TOOLS = [
         },
         mailto: {
           type: 'string',
-          description: 'Contact email used for polite API calls and Unpaywall.'
+          description: 'Contact email used for polite API calls and Unpaywall. If omitted, literatureDiscovery.mailto, PAPERNEXUS_DISCOVERY_MAILTO, or PAPERNEXUS_IDENTIFIER_RESOLUTION_MAILTO is used when available.'
         },
         openAlexApiKey: {
           type: 'string',
-          description: 'Optional OpenAlex API key. If omitted, openAlexApiKeyFile, OPENALEX_API_KEY, or ~/.papernexus/openalex_api_key is used when available.'
+          description: 'Optional OpenAlex API key. If omitted, literatureDiscovery.openAlexApiKey, openAlexApiKeyFile, OPENALEX_API_KEY, or ~/.papernexus/openalex_api_key is used when available.'
         },
         openAlexApiKeyFile: {
           type: 'string',
-          description: 'Optional local file containing the OpenAlex API key. Supports ~/ paths. Useful when the key should not be configured in the shell.'
+          description: 'Optional local file containing the OpenAlex API key. Supports ~/ paths and can also be configured as literatureDiscovery.openAlexApiKeyFile.'
+        },
+        semanticScholarApiKey: {
+          type: 'string',
+          description: 'Optional Semantic Scholar Graph API key. If omitted, literatureDiscovery.semanticScholarApiKey, SEMANTIC_SCHOLAR_API_KEY, or S2_API_KEY is used when available.'
         },
         coreApiKey: {
           type: 'string',
-          description: 'Optional CORE API key. If omitted, CORE can also be enabled with CORE_API_KEY in the environment.'
+          description: 'Optional CORE API key. If omitted, literatureDiscovery.coreApiKey or CORE_API_KEY is used when available.'
         },
         timeoutMs: {
           type: 'number',

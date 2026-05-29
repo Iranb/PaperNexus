@@ -81,6 +81,27 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "apiKeyEnv": "OPENAI_API_KEY"
   },
   "literatureDiscovery": {
+    "providers": [
+      "openalex",
+      "semantic_scholar",
+      "crossref",
+      "arxiv"
+    ],
+    "mailto": "",
+    "openAlexApiKey": "",
+    "openAlexApiKeyFile": "",
+    "semanticScholarApiKey": "",
+    "coreApiKey": "",
+    "providerConcurrency": 1,
+    "providerRequestSchedulerDelayMs": 1500,
+    "openAlexRequestDelayMs": 1000,
+    "semanticScholarRequestDelayMs": 2000,
+    "semanticScholarMaxConcurrent": 1,
+    "maxQueriesPerProvider": 2,
+    "maxResultsPerQuery": 10,
+    "discoveryRequestCache": true,
+    "discoveryRequestCacheTtlMs": 900000,
+    "discoveryRequestMaxResponseBytes": 16777216,
     "institutionalAccessMode": "hints-only",
     "browserChannel": "msedge",
     "browserExecutablePath": "",
@@ -158,6 +179,22 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `llm.batchFailureSplitRetryCount` | number | `3` |
 | `llm.apiKeyEnv` | string | `OPENAI_API_KEY` |
 | `literatureDiscovery` | object | section |
+| `literatureDiscovery.providers` | array | `["openalex","semantic_scholar","crossref","arxiv"]` |
+| `literatureDiscovery.mailto` | string | `` |
+| `literatureDiscovery.openAlexApiKey` | string | `` |
+| `literatureDiscovery.openAlexApiKeyFile` | string | `` |
+| `literatureDiscovery.semanticScholarApiKey` | string | `` |
+| `literatureDiscovery.coreApiKey` | string | `` |
+| `literatureDiscovery.providerConcurrency` | number | `1` |
+| `literatureDiscovery.providerRequestSchedulerDelayMs` | number | `1500` |
+| `literatureDiscovery.openAlexRequestDelayMs` | number | `1000` |
+| `literatureDiscovery.semanticScholarRequestDelayMs` | number | `2000` |
+| `literatureDiscovery.semanticScholarMaxConcurrent` | number | `1` |
+| `literatureDiscovery.maxQueriesPerProvider` | number | `2` |
+| `literatureDiscovery.maxResultsPerQuery` | number | `10` |
+| `literatureDiscovery.discoveryRequestCache` | boolean | `true` |
+| `literatureDiscovery.discoveryRequestCacheTtlMs` | number | `900000` |
+| `literatureDiscovery.discoveryRequestMaxResponseBytes` | number | `16777216` |
 | `literatureDiscovery.institutionalAccessMode` | string | `hints-only` |
 | `literatureDiscovery.browserChannel` | string | `msedge` |
 | `literatureDiscovery.browserExecutablePath` | string | `` |

@@ -3451,6 +3451,72 @@ test('MCP tool list includes literature_discovery', async () => {
   assert.ok(tool.inputSchema.properties.doclingCommand);
   assert.ok(tool.inputSchema.properties.openAlexApiKey);
   assert.ok(tool.inputSchema.properties.openAlexApiKeyFile);
+  assert.ok(tool.inputSchema.properties.semanticScholarApiKey);
   assert.ok(tool.inputSchema.properties.openAlexRelatedExpansion);
   assert.ok(tool.inputSchema.properties.maxRelatedPerSeed);
+});
+
+test('literature_discovery reads provider credentials from runtime config', async () => {
+  const rootPath = await createTempCorpus();
+  const requests = [];
+
+  function headerValue(headers = {}, name = '') {
+    const target = name.toLowerCase();
+    if (typeof headers.get === 'function') return headers.get(name) || headers.get(target) || '';
+    return Object.entries(headers || {}).find(([key, value]) => (
+      String(key || '').toLowerCase() === target && String(value || '').trim()
+    ))?.[1] || '';
+  }
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async (input, init = {}) => {
+      const url = new URL(String(input));
+      requests.push({
+        host: url.hostname,
+        apiKey: url.searchParams.get('api_key') || '',
+        mailto: url.searchParams.get('mailto') || '',
+        semanticScholarApiKey: headerValue(init.headers, 'x-api-key'),
+        authorization: headerValue(init.headers, 'authorization')
+      });
+
+      if (url.hostname === 'api.openalex.org') return createJsonResponse({ results: [] });
+      if (url.hostname === 'api.semanticscholar.org') return createJsonResponse({ data: [] });
+      if (url.hostname === 'api.core.ac.uk') return createJsonResponse({ results: [] });
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const output = await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'search',
+      topic: 'provider credentials from config',
+      providers: ['openalex', 'semantic_scholar', 'core'],
+      maxQueries: 1,
+      maxResultsPerQuery: 1,
+      citationExpansion: false,
+      persist: false
+    }, {
+      config: {
+        literatureDiscovery: {
+          mailto: 'paper@example.com',
+          openAlexApiKey: 'openalex-config-key',
+          semanticScholarApiKey: 's2-config-key',
+          coreApiKey: 'core-config-key',
+          providerConcurrency: 1,
+          discoveryRequestCache: false
+        }
+      }
+    });
+    const run = JSON.parse(output);
+
+    assert.deepEqual(run.providers, ['openalex', 'semantic_scholar', 'core']);
+    assert.equal(requests.find((entry) => entry.host === 'api.openalex.org')?.apiKey, 'openalex-config-key');
+    assert.equal(requests.find((entry) => entry.host === 'api.openalex.org')?.mailto, 'paper@example.com');
+    assert.equal(requests.find((entry) => entry.host === 'api.semanticscholar.org')?.semanticScholarApiKey, 's2-config-key');
+    assert.equal(requests.find((entry) => entry.host === 'api.core.ac.uk')?.authorization, 'Bearer core-config-key');
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
 });

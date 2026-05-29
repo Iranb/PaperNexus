@@ -319,7 +319,7 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `discipline` | optional | string | Optional discipline hint such as computer-science, biomedicine, physics-math, chemistry-materials, economics-social-science, humanities-law, or chinese-scholarship. |
 | `providers` | optional | string \| array | Provider allow-list. Default providers are openalex, semantic_scholar, crossref, and arxiv. Implemented opt-in providers include papers_cool, pasa, europe_pmc, pubmed, dblp, and core; unpaywall is used during source resolution. |
 | `maxQueries` | optional | number | Maximum query families to execute after LLM planning and deterministic fallback expansion. For operation=search, defaults by searchMode are quick=4, balanced=6, and deep=10. |
-| `searchMode` | optional | string (quick, balanced, deep) | Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is the default bounded search; deep is broader but still bounded and returns partial diagnostics before the MCP outer timeout. |
+| `searchMode` | optional | string (quick, balanced, deep) | Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is a moderate bounded search; deep is the default broader profile but still returns partial diagnostics before the MCP outer timeout. |
 | `searchBudgetMs` | optional | number | Soft wall-clock budget for operation=search. Defaults by searchMode are quick=25000, balanced=45000, and deep=90000. When exhausted, PaperNexus stops scheduling new provider queries and returns partial metadata results with diagnostics. |
 | `maxQueriesPerProvider` | optional | number | Maximum generated discovery queries sent to each provider. For operation=search, defaults to 2 in quick mode and 3 in balanced/deep mode. |
 | `returnPartial` | optional | boolean | Return completed provider results with partial/diagnostics metadata when budget, timeout, query cap, or provider rate-limit truncates discovery. |
@@ -379,10 +379,11 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `pdfCommand` | optional | string | Optional generic PDF parser command override for inline import processing. |
 | `doclingCommand` | optional | string | Optional Docling command override for inline import processing. |
 | `pythonCommand` | optional | string | Optional Python command override for inline import processing. |
-| `mailto` | optional | string | Contact email used for polite API calls and Unpaywall. |
-| `openAlexApiKey` | optional | string | Optional OpenAlex API key. If omitted, openAlexApiKeyFile, OPENALEX_API_KEY, or ~/.papernexus/openalex_api_key is used when available. |
-| `openAlexApiKeyFile` | optional | string | Optional local file containing the OpenAlex API key. Supports ~/ paths. Useful when the key should not be configured in the shell. |
-| `coreApiKey` | optional | string | Optional CORE API key. If omitted, CORE can also be enabled with CORE_API_KEY in the environment. |
+| `mailto` | optional | string | Contact email used for polite API calls and Unpaywall. If omitted, literatureDiscovery.mailto, PAPERNEXUS_DISCOVERY_MAILTO, or PAPERNEXUS_IDENTIFIER_RESOLUTION_MAILTO is used when available. |
+| `openAlexApiKey` | optional | string | Optional OpenAlex API key. If omitted, literatureDiscovery.openAlexApiKey, openAlexApiKeyFile, OPENALEX_API_KEY, or ~/.papernexus/openalex_api_key is used when available. |
+| `openAlexApiKeyFile` | optional | string | Optional local file containing the OpenAlex API key. Supports ~/ paths and can also be configured as literatureDiscovery.openAlexApiKeyFile. |
+| `semanticScholarApiKey` | optional | string | Optional Semantic Scholar Graph API key. If omitted, literatureDiscovery.semanticScholarApiKey, SEMANTIC_SCHOLAR_API_KEY, or S2_API_KEY is used when available. |
+| `coreApiKey` | optional | string | Optional CORE API key. If omitted, literatureDiscovery.coreApiKey or CORE_API_KEY is used when available. |
 | `timeoutMs` | optional | number | Per-request timeout in milliseconds. |
 | `retryCount` | optional | number | Retry count for transient provider failures such as HTTP 429 and 5xx responses. |
 | `retryBackoffMs` | optional | number | Base retry backoff in milliseconds for transient provider failures. |
