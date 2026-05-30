@@ -7,6 +7,7 @@ import {
   adjudicateCrossPaperCandidates,
   clearLlmRateLimitCooldowns,
   inferChunkSemanticObjectsBatch,
+  inferGraphNodeChecksBatch,
   inferPaperResearchSemanticsBatch,
   inferPaperSemanticObjects,
   inferPaperSemanticObjectsBatch,
@@ -489,6 +490,53 @@ test('inferPaperSemanticObjectsBatch stops later LLM batches after provider rate
     assert.equal(results.every((result) => result.reason === 'rate-limited'), true);
     assert.equal(results.every((result) => result.error === null), true);
     assert.match(results[1].rateLimitCooldownUntil, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(batchEvents.length, 1);
+    assert.equal(batchEvents[0].completed, 3);
+  } finally {
+    await clearLlmRateLimitCooldowns();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('inferGraphNodeChecksBatch stops later node-check batches after provider rate limit', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-check-rate-limit-'));
+  process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = path.join(tempDir, 'llm-rate-limits.json');
+  const batchEvents = [];
+  let fetchCount = 0;
+
+  try {
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return createRateLimitResponse('quota exhausted');
+    };
+
+    const results = await inferGraphNodeChecksBatch(
+      [
+        { id: 'node-1', type: 'Dataset', name: 'training dataset' },
+        { id: 'node-2', type: 'Dataset', name: 'Office-Home dataset' },
+        { id: 'node-3', type: 'Problem', name: 'open-set domain adaptation' }
+      ],
+      {
+        nodeLlmCheck: true,
+        llmProvider: 'openai',
+        llmModel: 'gpt-4o-mini',
+        llmBaseUrl: 'https://api.openai.com/v1',
+        llmApiKey: 'test-key',
+        llmBatchSize: 1,
+        llmRateLimitRetryCount: 0,
+        llmRateLimitRetryDelayMs: 0,
+        llmRateLimitRetryMaxDelayMs: 0,
+        onBatchComplete(event) {
+          batchEvents.push(event);
+        }
+      }
+    );
+
+    assert.equal(fetchCount, 1);
+    assert.equal(results.length, 3);
+    assert.equal(results.every((result) => result.reason === 'rate-limited'), true);
+    assert.equal(results.every((result) => result.error === null), true);
+    assert.match(results[2].rateLimitCooldownUntil, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(batchEvents.length, 1);
     assert.equal(batchEvents[0].completed, 3);
   } finally {
@@ -991,6 +1039,81 @@ test('inferPaperSemanticObjectsBatch writes and resumes optional batch ledger', 
       llmBatchSize: 2,
       llmBatchLedgerDir: tempDir,
       llmBatchRunId: 'ledger-test',
+      llmBatchResume: true
+    });
+    assert.equal(fetchCount, 1);
+    assert.equal(second.every((result) => result.participated), true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('inferGraphNodeChecksBatch writes and resumes optional batch ledger', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-check-ledger-'));
+  let fetchCount = 0;
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Nodes:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const nodes = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                nodes: nodes.map((node) => ({
+                  id: node.id,
+                  verdict: 'keep',
+                  canonicalName: node.name,
+                  confidence: 0.92,
+                  reason: 'valid academic graph node'
+                }))
+              })
+            }
+          }]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'node-1', type: 'Dataset', name: 'Office-Home dataset' },
+    { id: 'node-2', type: 'Problem', name: 'open-set domain adaptation' }
+  ];
+
+  try {
+    const first = await inferGraphNodeChecksBatch(entries, {
+      nodeLlmCheck: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 2,
+      llmBatchLedgerDir: tempDir,
+      llmBatchRunId: 'node-ledger-test'
+    });
+    assert.equal(fetchCount, 1);
+    assert.equal(first.every((result) => result.participated), true);
+
+    const batches = await fs.readFile(path.join(tempDir, 'llm-batches.jsonl'), 'utf8');
+    const results = await fs.readFile(path.join(tempDir, 'llm-results.jsonl'), 'utf8');
+    assert.match(batches, /node-ledger-test/);
+    assert.match(results, /"phase":"node-check"/);
+    assert.match(results, /"status":"completed"/);
+
+    const second = await inferGraphNodeChecksBatch(entries, {
+      nodeLlmCheck: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 2,
+      llmBatchLedgerDir: tempDir,
+      llmBatchRunId: 'node-ledger-test',
       llmBatchResume: true
     });
     assert.equal(fetchCount, 1);

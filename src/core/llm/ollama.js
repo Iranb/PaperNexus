@@ -675,6 +675,7 @@ function buildNodeCheckBatchPrompt(entries) {
   const nodes = entries.map((entry, index) => ({
     id: String(entry.id || `node-${index + 1}`),
     type: cleanText(entry.type || '', 48),
+    layer: cleanText(entry.layer || '', 64),
     name: cleanText(entry.name || '', 180),
     aliases: (entry.aliases || []).slice(0, 8).map((alias) => cleanText(alias, 120)).filter(Boolean),
     paperTitles: (entry.paperTitles || []).slice(0, 6).map((title) => cleanText(title, 180)).filter(Boolean),
@@ -688,7 +689,8 @@ function buildNodeCheckBatchPrompt(entries) {
     'You are validating staged graph nodes for a paper knowledge graph.',
     'Return strict JSON only.',
     'Decide whether each node should be kept, dropped, or renamed.',
-    'Focus on evaluation-layer nodes such as datasets and benchmarks.',
+    'Validate every semantic node as a useful academic-paper graph primitive.',
+    'Drop nodes that are PDF/OCR/parser artifacts, page headers, tables, formulas without semantic labels, author/affiliation text, citation debris, placeholder publication metadata, or generic non-reusable phrases.',
     '',
     'Return this JSON shape:',
     '{',
@@ -699,10 +701,14 @@ function buildNodeCheckBatchPrompt(entries) {
     '}',
     '',
     'Guidelines:',
-    '- Keep specific reusable resources such as Office-Home, CIFAR-10, DomainNet, Oxford-IIIT Pet, ImageNet.',
-    '- Drop generic placeholders such as "training dataset", "test dataset", "source domain data", "target domain benchmark", or any node that is not a specific named resource.',
-    '- Rename only when the node is valid but the name should be normalized into a specific canonical form.',
-    '- If uncertain, prefer keep over drop.',
+    '- Keep coherent paper-grounded Problems, Methods, Claims, Findings, ResearchQuestions, Challenges, Assumptions, Limitations, Takeaways, IdeaFragments, FutureDirections, ResearchGoals, Evidence, Datasets, Benchmarks, and Metrics.',
+    '- Drop parser noise such as "(cid:80)", "v i X r a", "L C s c", "00 Month 0000", "DOI: xxx", markdown table rows, isolated equations, page numbers, email/affiliation blocks, or strings dominated by punctuation.',
+    '- Drop generic placeholders such as "training dataset", "test dataset", "source domain data", "target domain benchmark", "Comprehensive benchmark", "the proposed method", or any node that is not specific enough to retrieve or connect research evidence.',
+    '- For Dataset, Benchmark, and Metric nodes, keep only named reusable resources or concrete metric names; drop broad nouns and one-off table labels.',
+    '- For Problem and Method nodes, keep concise research problems and named or clearly described technical approaches; drop titles, section headings, formulas, and malformed sentence fragments.',
+    '- For Claim, Finding, Evidence, Assumption, Limitation, and FutureDirection nodes, keep complete meaningful statements; drop captions/URLs alone, author metadata, boilerplate, and statements assigned to the wrong type.',
+    '- Rename only when the node is valid but noisy, overlong, or needs a concise canonical academic phrase.',
+    '- If uncertain and the text is coherent academic content, prefer keep over drop.',
     '',
     'Nodes:',
     JSON.stringify(nodes, null, 2)
@@ -3900,17 +3906,60 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
   }
 
   const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const normalizedEntries = entries.map((entry, index) => ({
+    ...entry,
+    id: String(entry?.id || `node-${index + 1}`),
+    __batchIndex: index
+  }));
+  const batches = partitionEntriesByPromptBudget(
+    normalizedEntries,
+    buildNodeCheckBatchPrompt,
+    options,
+    batchSize
+  );
   const results = new Array(entries.length);
-  const totalBatches = Math.max(1, Math.ceil(entries.length / batchSize));
+  const totalBatches = Math.max(1, batches.length);
+  const promptMaxChars = resolveBatchPromptMaxChars(options);
+  const ledger = resolveLlmBatchLedger(options, 'node-check');
+  const completedLedgerBatches = await loadCompletedLlmBatchResults(ledger);
 
-  for (let start = 0; start < entries.length; start += batchSize) {
-    const batch = entries.slice(start, start + batchSize).map((entry, index) => ({
-      ...entry,
-      id: String(entry?.id || `node-${start + index + 1}`)
-    }));
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const batch = batches[batchIndex];
+    let completedAfterBatch = Math.max(...batch.map((entry) => entry.__batchIndex)) + 1;
+    let stopAfterCurrentBatch = false;
+    const prompt = buildNodeCheckBatchPrompt(batch);
+    const promptChars = String(prompt).length;
+    const batchId = llmBatchId(ledger, batch, prompt);
+    const cachedBatch = completedLedgerBatches.get(batchId);
+
+    if (copyCachedLlmBatchResults(results, batch, cachedBatch)) {
+      options.onBatchComplete?.({
+        phase: 'node-check',
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        completed: completedAfterBatch,
+        total: entries.length,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        skipped: true
+      });
+      continue;
+    }
+
+    await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
+      status: 'running',
+      batchId,
+      batchNumber: batchIndex + 1,
+      totalBatches,
+      batchSize: batch.length,
+      promptChars,
+      promptMaxChars,
+      entryIds: batch.map((entry) => entry.id)
+    });
 
     try {
-      const payload = await requestLlmGenerate(config, buildNodeCheckBatchPrompt(batch));
+      const payload = await requestLlmGenerate(config, prompt);
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || config.provider;
       const nodeErrors = new Map(
@@ -3930,7 +3979,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
         const rawError = nodeErrors.get(batchEntry.id);
         const rawNode = nodeResults.get(batchEntry.id);
         if (rawError) {
-          results[start + offset] = {
+          results[batchEntry.__batchIndex] = {
             id: batchEntry.id,
             verdict: 'keep',
             canonicalName: batchEntry.name,
@@ -3945,7 +3994,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
         }
 
         if (!rawNode) {
-          results[start + offset] = {
+          results[batchEntry.__batchIndex] = {
             id: batchEntry.id,
             verdict: 'keep',
             canonicalName: batchEntry.name,
@@ -3959,7 +4008,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
           continue;
         }
 
-        results[start + offset] = {
+        results[batchEntry.__batchIndex] = {
           ...rawNode,
           provider: resultProvider,
           attempted: true,
@@ -3972,7 +4021,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
       for (let offset = 0; offset < batch.length; offset += 1) {
         const batchEntry = batch[offset];
         const rateLimited = isLlmRateLimitError(error);
-        results[start + offset] = {
+        results[batchEntry.__batchIndex] = {
           id: batchEntry.id,
           verdict: 'keep',
           canonicalName: batchEntry.name,
@@ -3985,15 +4034,73 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
           error: rateLimited ? null : error.message
         };
       }
+
+      if (isLlmRateLimitError(error)) {
+        for (let index = completedAfterBatch; index < entries.length; index += 1) {
+          const futureEntry = normalizedEntries[index];
+          results[index] = {
+            id: futureEntry.id,
+            verdict: 'keep',
+            canonicalName: futureEntry.name,
+            confidence: 0,
+            reason: 'rate-limited',
+            provider: failedProvider,
+            attempted: true,
+            participated: false,
+            rateLimitCooldownUntil: getRateLimitCooldownUntil(error),
+            error: null
+          };
+        }
+        completedAfterBatch = entries.length;
+        stopAfterCurrentBatch = true;
+      }
     } finally {
+      const batchResults = collectLlmBatchResults(results, batch);
+      const failedResults = batchResults.filter((result) => (
+        result?.reason === 'request-failed'
+        || result?.reason === 'rate-limited'
+        || result?.error
+      ));
+      const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
+        status,
+        batchId,
+        batchNumber: batchIndex + 1,
+        totalBatches,
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars,
+        entryIds: batch.map((entry) => entry.id),
+        results: batchResults
+      });
+      if (failedResults.length) {
+        await appendLlmBatchLedger(ledger, 'llm-failures.jsonl', {
+          status: 'failed',
+          batchId,
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          promptChars,
+          promptMaxChars,
+          entryIds: batch.map((entry) => entry.id),
+          failedCount: failedResults.length,
+          errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
+        });
+      }
       options.onBatchComplete?.({
         phase: 'node-check',
-        batchNumber: Math.floor(start / batchSize) + 1,
+        batchNumber: batchIndex + 1,
         totalBatches,
-        completed: Math.min(start + batch.length, entries.length),
+        completed: completedAfterBatch,
         total: entries.length,
-        batchSize: batch.length
+        batchSize: batch.length,
+        promptChars,
+        promptMaxChars
       });
+    }
+
+    if (stopAfterCurrentBatch) {
+      break;
     }
   }
 

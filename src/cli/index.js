@@ -339,17 +339,6 @@ function maybeWarnAboutForceUsage(command, flags = {}) {
   );
 }
 
-function maybeWarnAboutDisabledNodeLlmCheck(flags = {}) {
-  if (!flags['node-llm-check']) {
-    return;
-  }
-
-  console.warn(
-    'Warning: `--node-llm-check` is temporarily disabled. '
-    + 'PaperNexus will skip LLM-based node drop/rename decisions for the staged graph.'
-  );
-}
-
 function createCliProgress(total, options = {}) {
   const quiet = Boolean(options.quiet);
   const prefix = options.prefix || 'Progress';
@@ -2570,7 +2559,6 @@ async function main() {
     'optimize'
   ].includes(command)) {
     maybeWarnAboutForceUsage(command, flags);
-    maybeWarnAboutDisabledNodeLlmCheck(flags);
 
     const target = resolveAnalyzeInput(config, configBaseDir, positionals[0]);
     if (!target.input) {

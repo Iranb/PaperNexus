@@ -22,7 +22,7 @@ function createManifestToken(manifest) {
   });
 }
 
-test('mergeGraphCorpus keeps node LLM check disabled even when the flag is requested', async () => {
+test('mergeGraphCorpus applies node LLM check decisions before committing the staged graph', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-check-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-node-check-corpus-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
@@ -114,6 +114,17 @@ test('mergeGraphCorpus keeps node LLM check disabled even when the flag is reque
         confidence: 0.91
       }
     });
+    graph.addNode({
+      id: 'problem:metadata-placeholder',
+      type: NODE_TYPES.PROBLEM,
+      name: '00 Month 0000',
+      properties: {
+        layer: 'ProblemLayer',
+        paperTitles: ['Paper A'],
+        mentionCount: 1,
+        confidence: 0.51
+      }
+    });
     graph.addRelationship({
       id: 'rel:contains-paper',
       sourceId: 'corpus:1',
@@ -145,6 +156,18 @@ test('mergeGraphCorpus keeps node LLM check disabled even when the flag is reque
         layerPath: 'DocumentLayer->EvaluationLayer'
       }
     });
+    graph.addRelationship({
+      id: 'rel:paper-placeholder-problem',
+      sourceId: 'paper:1',
+      targetId: 'problem:metadata-placeholder',
+      type: EDGE_TYPES.SOLVES,
+      properties: {
+        sourcePaperId: 'paper:1',
+        sourcePaperTitle: 'Paper A',
+        evidenceText: 'Received: 00 Month 0000',
+        layerPath: 'DocumentLayer->ProblemLayer'
+      }
+    });
 
     const meta = {
       name: 'node-check-test',
@@ -161,11 +184,13 @@ test('mergeGraphCorpus keeps node LLM check disabled even when the flag is reque
       layers: {
         CorpusLayer: 1,
         DocumentLayer: 1,
-        EvaluationLayer: 2
+        EvaluationLayer: 2,
+        ProblemLayer: 1
       },
       layerPaths: {
         'CorpusLayer->DocumentLayer': 1,
-        'DocumentLayer->EvaluationLayer': 2
+        'DocumentLayer->EvaluationLayer': 2,
+        'DocumentLayer->ProblemLayer': 1
       },
       brainstormView: {
         eligibleNodeCount: 0,
@@ -195,6 +220,43 @@ test('mergeGraphCorpus keeps node LLM check disabled even when the flag is reque
       expectedSources: [{ sourceKey: sourcePath, fingerprint }]
     });
 
+    globalThis.fetch = async () => ({
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  nodes: [
+                    {
+                      id: 'dataset:training',
+                      verdict: 'drop',
+                      confidence: 0.96,
+                      reason: 'generic dataset placeholder'
+                    },
+                    {
+                      id: 'dataset:office-home',
+                      verdict: 'keep',
+                      canonicalName: 'Office-Home dataset',
+                      confidence: 0.97,
+                      reason: 'specific named benchmark dataset'
+                    },
+                    {
+                      id: 'problem:metadata-placeholder',
+                      verdict: 'drop',
+                      confidence: 0.99,
+                      reason: 'publication metadata placeholder, not a research problem'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        };
+      }
+    });
+
     const ingestion = await import('../src/core/ingestion/pipeline.js');
     const merged = await ingestion.mergeGraphCorpus(tempCorpusRoot, {
       nodeLlmCheck: true,
@@ -205,22 +267,29 @@ test('mergeGraphCorpus keeps node LLM check disabled even when the flag is reque
     });
 
     assert.equal(merged.stage, 'graph-merged');
-    assert.equal(merged.graph.nodes.some((node) => node.id === 'dataset:training'), true);
+    assert.equal(merged.graph.nodes.some((node) => node.id === 'dataset:training'), false);
     assert.equal(merged.graph.nodes.some((node) => node.id === 'dataset:office-home'), true);
+    assert.equal(merged.graph.nodes.some((node) => node.id === 'problem:metadata-placeholder'), false);
     assert.equal(
       merged.graph.relationships.some((relationship) => relationship.targetId === 'dataset:training'),
-      true
+      false
+    );
+    assert.equal(
+      merged.graph.relationships.some((relationship) => relationship.targetId === 'problem:metadata-placeholder'),
+      false
     );
     assert.equal(
       merged.graph.relationships.filter((relationship) => relationship.sourceId === 'paper:1' && relationship.type === EDGE_TYPES.EVALUATES_ON).length,
-      2
+      1
     );
 
     const staged = await loadStagedCorpusBuild(tempCorpusRoot);
     assert.equal(staged.state.stage, 'graph-merged');
-    assert.equal(staged.meta.nodeLlmCheck.checkedNodeCount, 0);
-    assert.equal(staged.meta.nodeLlmCheck.droppedNodeCount, 0);
-    assert.equal(staged.state.nodeLlmCheckRequested, false);
+    assert.equal(staged.meta.nodeLlmCheck.checkedNodeCount, 3);
+    assert.equal(staged.meta.nodeLlmCheck.droppedNodeCount, 2);
+    assert.equal(staged.meta.nodeLlmCheck.keptNodeCount, 1);
+    assert.equal(staged.meta.nodeLlmCheck.provider, 'openai');
+    assert.equal(staged.state.nodeLlmCheckRequested, true);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;

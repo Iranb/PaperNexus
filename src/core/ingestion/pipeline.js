@@ -192,7 +192,25 @@ const BRAINSTORM_SCORE_THRESHOLDS = {
   [NODE_TYPES.BENCHMARK]: 0.8
 };
 
-const NODE_LLM_CHECK_ENABLED = false;
+const NODE_LLM_CHECK_ENABLED = true;
+const NODE_LLM_CHECK_TYPES = new Set([
+  NODE_TYPES.PROBLEM,
+  NODE_TYPES.METHOD,
+  NODE_TYPES.CLAIM,
+  NODE_TYPES.FINDING,
+  NODE_TYPES.RESEARCH_QUESTION,
+  NODE_TYPES.CHALLENGE,
+  NODE_TYPES.LIMITATION,
+  NODE_TYPES.ASSUMPTION,
+  NODE_TYPES.EVIDENCE,
+  NODE_TYPES.TAKEAWAY,
+  NODE_TYPES.IDEA_FRAGMENT,
+  NODE_TYPES.FUTURE_DIRECTION,
+  NODE_TYPES.RESEARCH_GOAL,
+  NODE_TYPES.DATASET,
+  NODE_TYPES.BENCHMARK,
+  NODE_TYPES.METRIC
+]);
 const SNAPSHOT_STATE_SIGNATURE_VERSION = 1;
 const SEMANTIC_LLM_SIGNATURE_VERSION = 2;
 const RELATION_LLM_SIGNATURE_VERSION = 1;
@@ -5020,6 +5038,13 @@ function createEmptyNodeLlmCheckSummary(requested = false, overrides = {}) {
   };
 }
 
+function stagedBuildHasCompletedNodeLlmCheck(stagedBuild) {
+  if (!stagedBuild?.state?.nodeLlmCheckRequested) return false;
+  const summary = stagedBuild.state.nodeLlmCheckSummary || stagedBuild.meta?.nodeLlmCheck || null;
+  if (!summary) return false;
+  return Boolean(summary?.participated) || Number(summary?.checkedNodeCount || 0) === 0;
+}
+
 function combineMergeSummaries(left = null, right = null) {
   const base = left || {
     mergedGroupCount: 0,
@@ -5044,22 +5069,34 @@ function combineMergeSummaries(left = null, right = null) {
 
 function collectNodeLlmCheckCandidates(graph) {
   return graph.nodes
-    .filter((node) => node.type === NODE_TYPES.DATASET || node.type === NODE_TYPES.BENCHMARK)
+    .filter((node) => NODE_LLM_CHECK_TYPES.has(node.type))
     .map((node) => {
       const relationships = [...graph.getIncoming(node.id), ...graph.getOutgoing(node.id)];
-      const evidenceTexts = unique(
-        relationships
-          .map((relationship) => relationship.properties?.evidenceText)
-          .filter(Boolean)
-      ).slice(0, 4);
+      const nodeEvidenceTexts = [
+        node.properties?.text,
+        node.properties?.description,
+        node.properties?.domainSpecificText,
+        node.properties?.domainAgnosticText,
+        node.properties?.retrievalText
+      ].filter(Boolean);
+      const relationshipEvidenceTexts = relationships
+        .map((relationship) => relationship.properties?.evidenceText)
+        .filter(Boolean);
+      const evidenceTexts = unique([...nodeEvidenceTexts, ...relationshipEvidenceTexts]).slice(0, 6);
       const relationTypes = unique(relationships.map((relationship) => relationship.type)).slice(0, 8);
+      const paperTitles = unique([
+        ...(Array.isArray(node.properties?.paperTitles) ? node.properties.paperTitles : []),
+        node.properties?.paperTitle,
+        ...relationships.map((relationship) => relationship.properties?.sourcePaperTitle)
+      ].filter(Boolean)).slice(0, 6);
 
       return {
         id: node.id,
         type: node.type,
+        layer: node.properties?.layer || getNodeLayer(node.type),
         name: node.name,
         aliases: node.properties?.aliases || [],
-        paperTitles: node.properties?.paperTitles || [],
+        paperTitles,
         mentionCount: node.properties?.mentionCount || 1,
         confidence: node.properties?.confidence || 0.6,
         evidenceTexts,
@@ -8151,7 +8188,11 @@ export async function mergeGraphCorpus(inputPath, options = {}) {
 
   const metadataConcurrency = resolveMetadataConcurrency(options);
   const wantsNodeLlmCheck = Boolean(NODE_LLM_CHECK_ENABLED && options.nodeLlmCheck);
-  if (!options.force && stagedBuild.state?.stage === 'graph-merged' && (!wantsNodeLlmCheck || stagedBuild.state?.nodeLlmCheckRequested)) {
+  if (
+    !options.force
+    && stagedBuild.state?.stage === 'graph-merged'
+    && (!wantsNodeLlmCheck || stagedBuildHasCompletedNodeLlmCheck(stagedBuild))
+  ) {
     try {
       await assertStagedBuildStillFresh(rootPath, stagedBuild.state, metadataConcurrency);
       return {
@@ -8385,7 +8426,7 @@ export async function writeIndexCorpus(inputPath, options = {}) {
   await assertSingleGraphInputScope(rootPath, absoluteInputs, stagedBuild.state?.inputPaths || stagedBuild.manifest?.inputPaths || stagedBuild.state?.inputPath || stagedBuild.manifest?.inputPath);
   const wantsNodeLlmCheck = Boolean(NODE_LLM_CHECK_ENABLED && options.nodeLlmCheck);
 
-  if (stagedBuild.state?.stage === 'graph-built' || (wantsNodeLlmCheck && !stagedBuild.state?.nodeLlmCheckRequested)) {
+  if (stagedBuild.state?.stage === 'graph-built' || (wantsNodeLlmCheck && !stagedBuildHasCompletedNodeLlmCheck(stagedBuild))) {
     const merged = await mergePreparedGraphBuild(rootPath, stagedBuild, {
       ...options,
       quiet: true
