@@ -13,6 +13,7 @@ Read-only material operations:
 - `import_requisition_pack`: returns missing-but-useful import requests, generated queries, and optional literature-discovery import readiness.
 - `negative_evidence_pack`: records searched queries, filters, direct hits, adjacent hits, absence confidence, and recommended next queries from committed graph state; with `includeProviderEvidence=true`, it also records bounded Semantic Scholar snippet query runs and direct/adjacent provider hit counts. Live-discovery evidence is exposed through `source_discovery_plan` and `research_material_pack`, not persisted by this negative-evidence operation.
 - `experiment_cost_materials`: extracts GPU/runtime/epoch/batch-size/dataset/backbone/code-availability snippets from chunks, source spans, markdown tables, table captions, and figure captions with provenance for Agent inspection.
+- `proposal_graph_session`: runs an episode-local typed proposal graph controller. It validates role actions against frozen snapshots, merges accepted actions deterministically, gates commits on required problem/hypothesis/mechanism/method/novelty/eval/risk structure, and writes committed proposal artifacts without mutating the raw corpus graph.
 
 Project overlay operations:
 
@@ -64,7 +65,7 @@ When `includeProviderEvidence=true` and `includeLiteratureDiscoveryEvidence=true
 
 When `includeLiveDiscoveryEvidence=true` and `includeLiteratureDiscoveryEvidence=true` are both enabled, set `literatureDiscoverySeedLivePapers=true` to pass live-discovery supporting papers into `literature_discovery` as exact seed papers. This is still an explicit bridge: it helps resolve live-discovered papers, but it does not submit imports unless `submitLiteratureDiscoveryImports=true` is also set.
 
-By default this bridge does not submit imports. Set `submitLiteratureDiscoveryImports=true` to enqueue resolved full-text candidates, and set `processLiteratureDiscoveryImports=true` only when the caller intentionally wants the import worker to run inline. Inline processing uses logical batching by default with `literatureDiscoveryImportBatchEnabled=true` and `literatureDiscoveryImportBatchMaxTasks=8`.
+By default this bridge does not submit imports. Set `submitLiteratureDiscoveryImports=true` to enqueue resolved full-text candidates, and set `processLiteratureDiscoveryImports=true` only when the caller intentionally wants the import worker to run inline. Inline processing uses progressive logical batching by default with `literatureDiscoveryImportBatchEnabled=true`, `literatureDiscoveryImportBatchInitialTasks=4`, and `literatureDiscoveryImportBatchMaxTasks=16`.
 
 For controlled sparse fallback, set `runLiteratureDiscoveryIfSparse=true` or `literatureDiscoveryFallbackIfSparse=true`. The backend first counts committed-graph candidates for requested roles, then runs literature discovery only when the sparse-role threshold is met.
 

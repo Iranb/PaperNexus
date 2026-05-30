@@ -32,6 +32,7 @@ Commands:
   papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <markitdown|markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markitdown-python <python>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-auto-gpu <true|false>] [--docling-gpu-min-free-mb <mb>] [--docling-gpu-wait-timeout-ms <ms>] [--docling-gpu-poll-interval-ms <ms>] [--docling-cpu-threads <n>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
+  papernexus clean --corpora <name[,name...]> [--apply] [--allow-non-temp]
   papernexus scrub-degenerate-papers [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
   papernexus answer <query> [--mode <cross_domain_evidence|method_lineage|both>] [--target-domain <domain>] [--method <name>] [--direction <backward|forward|both>] [--max-depth <n>] [--limit <n>] [--corpus <name>]
@@ -229,6 +230,7 @@ Examples:
 | --- | --- | --- |
 | `probe` | Connectivity check for the configured LLM provider. | `papernexus probe [--provider &lt;name&gt;] [--model &lt;name&gt;] [--base-url &lt;url&gt;]  Test LLM connectivity` |
 | `clean` | Remove or reset stored corpus state. | `papernexus clean [--corpus &lt;name&gt;]` |
+| `clean` | Remove or reset stored corpus state. | `papernexus clean --corpora &lt;name[,name...]&gt; [--apply] [--allow-non-temp]` |
 | `backup-export` | Pack the current corpus environment into a portable archive. | `papernexus backup-export [archive-path] [--corpus &lt;name&gt;]` |
 | `backup-unpack` | Unpack a backup archive into an inspectable directory. | `papernexus backup-unpack &lt;archive-path&gt; --output &lt;dir&gt;` |
 | `backup-load` | Restore a backup archive into a fresh output directory. | `papernexus backup-load &lt;archive-path&gt; --output &lt;dir&gt;` |

@@ -540,7 +540,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'import_workflow',
-    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to logical batching with imports.batchEnabled=true and batchMaxTasks=8 unless server config explicitly disables or overrides it.',
+    description: 'Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to progressive logical batching with imports.batchEnabled=true, batchInitialTasks=4, and batchMaxTasks=16 unless server config explicitly disables or overrides it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -643,7 +643,7 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'literature_discovery',
-    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use explicit deep/full settings when recall matters more than latency. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to logical batching with importBatchEnabled=true and importBatchMaxTasks=8.',
+    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use explicit deep/full settings when recall matters more than latency. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to progressive logical batching with importBatchEnabled=true, importBatchInitialTasks=4, and importBatchMaxTasks=16.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1041,8 +1041,18 @@ export const PAPERNEXUS_TOOLS = [
         },
         importBatchMaxTasks: {
           type: 'number',
-          description: 'Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 8.',
-          default: 8
+          description: 'Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 16 and is hard-capped at 16.',
+          default: 16
+        },
+        importBatchInitialTasks: {
+          type: 'number',
+          description: 'Initial progressive import batch target used before queued work proves sustained. Defaults to 4.',
+          default: 4
+        },
+        importBatchProgressive: {
+          type: 'boolean',
+          description: 'Grow inline import batch targets from importBatchInitialTasks up to importBatchMaxTasks while pending work remains. Defaults to true.',
+          default: true
         },
         importMaxPasses: {
           type: 'number',
@@ -1380,13 +1390,13 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'agent_materials',
-    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, and research-controller artifacts without making novelty judgments; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.',
+    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['research_material_pack', 'innovation_evidence_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack', 'research_controller'],
+          enum: ['research_material_pack', 'innovation_evidence_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack', 'research_controller', 'proposal_graph_session'],
           description: 'Material backend operation to run. Overlay operations write only project overlay files, never the raw corpus graph.'
         },
         action: {
@@ -1414,6 +1424,75 @@ export const PAPERNEXUS_TOOLS = [
         targetProblem: {
           type: 'string',
           description: 'Research problem statement used to generate target, near-source, and far-source material queries.'
+        },
+        problem: {
+          type: 'string',
+          description: 'Research problem statement for proposal_graph_session; aliases targetProblem and query.'
+        },
+        runId: {
+          type: 'string',
+          description: 'Optional stable run id for proposal_graph_session artifacts.'
+        },
+        maxRounds: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Maximum proposal graph controller rounds for proposal_graph_session.',
+          default: 3
+        },
+        temporalCutoff: {
+          type: 'string',
+          description: 'Optional temporal cutoff recorded in proposal graph session input.'
+        },
+        proposalActions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: true
+          },
+          description: 'Optional round-0 role actions for proposal_graph_session. Actions are validated against the initial frozen graph snapshot before merge.'
+        },
+        proposalSlates: {
+          oneOf: [
+            {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: true
+              }
+            },
+            {
+              type: 'object',
+              additionalProperties: true
+            }
+          ],
+          description: 'Optional proposal_graph_session role slates by round. Omitted round_id or snapshot_id fields are filled from the current frozen snapshot; explicit stale snapshot ids are rejected.'
+        },
+        proposalRoleId: {
+          type: 'string',
+          description: 'Role id attached to proposalActions when proposal_graph_session wraps them into the first-round slate.'
+        },
+        evidenceRefs: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: true
+          },
+          description: 'Optional evidence references preloaded into the proposal graph session.'
+        },
+        evidenceExport: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Optional evidence export attached to a committed proposal bundle.'
+        },
+        allowLiveDiscovery: {
+          type: 'boolean',
+          description: 'Proposal graph session metadata flag for explicit live-discovery opt-in. The proposal controller itself does not run live discovery implicitly.',
+          default: false
+        },
+        allowImports: {
+          type: 'boolean',
+          description: 'Proposal graph session metadata flag for explicit import opt-in. The proposal controller itself does not submit imports implicitly.',
+          default: false
         },
         ideaComponents: {
           oneOf: [

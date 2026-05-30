@@ -56,7 +56,9 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
   },
   "imports": {
     "batchEnabled": true,
-    "batchMaxTasks": 8,
+    "batchProgressive": true,
+    "batchInitialTasks": 4,
+    "batchMaxTasks": 16,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   },
@@ -64,6 +66,8 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "host": "0.0.0.0",
     "port": 4821,
     "apiToken": "replace-with-your-api-token",
+    "enableRegistryReconcile": true,
+    "registryReconcileIntervalMs": 300000,
     "mcp": {
       "enabled": true,
       "path": "/mcp",
@@ -158,13 +162,17 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `global.corpus` | string | `demo-corpus` |
 | `imports` | object | section |
 | `imports.batchEnabled` | boolean | `true` |
-| `imports.batchMaxTasks` | number | `8` |
+| `imports.batchProgressive` | boolean | `true` |
+| `imports.batchInitialTasks` | number | `4` |
+| `imports.batchMaxTasks` | number | `16` |
 | `imports.batchMaxFiles` | number | `16` |
 | `imports.batchMaxBytes` | number | `104857600` |
 | `serve` | object | section |
 | `serve.host` | string | `0.0.0.0` |
 | `serve.port` | number | `4821` |
 | `serve.apiToken` | string | `replace-with-your-api-token` |
+| `serve.enableRegistryReconcile` | boolean | `true` |
+| `serve.registryReconcileIntervalMs` | number | `300000` |
 | `serve.mcp` | object | section |
 | `serve.mcp.enabled` | boolean | `true` |
 | `serve.mcp.path` | string | `/mcp` |

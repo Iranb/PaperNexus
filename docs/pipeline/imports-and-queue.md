@@ -119,7 +119,9 @@ For MCP/serve workloads, import batching is enabled by default. Configure it und
 {
   "imports": {
     "batchEnabled": true,
-    "batchMaxTasks": 8,
+    "batchProgressive": true,
+    "batchInitialTasks": 4,
+    "batchMaxTasks": 16,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   }
@@ -127,6 +129,7 @@ For MCP/serve workloads, import batching is enabled by default. Configure it und
 ```
 
 Set `"batchEnabled": false` if a deployment needs strictly one import task per graph commit.
+With the default progressive policy, an active queue starts later pending work at 4 tasks per logical batch, then grows to 8 and 16 while pending work remains. If fewer tasks are pending than the current target, the worker reserves all pending tasks immediately as one logical batch instead of waiting to fill the target. When the queue drains, the next burst starts from 4 again.
 
 ## Timeout And Recovery Policy
 

@@ -26,8 +26,11 @@ const DEFAULT_IMPORT_WORKER_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_IMPORT_TASK_TIMEOUT_MS = 45 * 60 * 1000;
 const DEFAULT_IMPORT_PENDING_TIMEOUT_MS = 48 * 60 * 60 * 1000;
 const DEFAULT_IMPORT_PREPARSE_CONCURRENCY = 4;
-const DEFAULT_IMPORT_BATCH_MAX_TASKS = 1;
+const DEFAULT_IMPORT_BATCH_INITIAL_TASKS = 4;
+const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
+const HARD_IMPORT_BATCH_MAX_TASKS = 16;
 const importPreparseInFlight = new Map();
+const importBatchProgressionByRoot = new Map();
 
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
@@ -89,15 +92,99 @@ function resolveOptionalPositiveIntegerOption(value) {
 }
 
 function resolveImportBatchOptions(options = {}) {
-  const maxTasks = resolvePositiveIntegerOption(
+  const configuredMaxTasks = resolvePositiveIntegerOption(
     options.importBatchMaxTasks ?? options.batchMaxTasks,
     DEFAULT_IMPORT_BATCH_MAX_TASKS
+  );
+  const maxTasks = Math.min(configuredMaxTasks, HARD_IMPORT_BATCH_MAX_TASKS);
+  const initialTasks = Math.min(
+    maxTasks,
+    resolvePositiveIntegerOption(
+      options.importBatchInitialTasks ?? options.batchInitialTasks,
+      DEFAULT_IMPORT_BATCH_INITIAL_TASKS
+    )
   );
   return {
     enabled: resolveBooleanOption(options.importBatchEnabled ?? options.batchEnabled, false),
     maxTasks,
+    initialTasks,
+    progressive: resolveBooleanOption(options.importBatchProgressive ?? options.batchProgressive, true),
     maxFiles: resolveOptionalPositiveIntegerOption(options.importBatchMaxFiles ?? options.batchMaxFiles),
     maxBytes: resolveOptionalPositiveIntegerOption(options.importBatchMaxBytes ?? options.batchMaxBytes)
+  };
+}
+
+function getImportBatchProgressionKey(rootPath) {
+  return String(rootPath || '').trim();
+}
+
+function clampImportBatchSize(value, batchOptions = {}) {
+  const maxTasks = Math.max(1, Number(batchOptions.maxTasks || DEFAULT_IMPORT_BATCH_MAX_TASKS));
+  const initialTasks = Math.max(1, Math.min(maxTasks, Number(batchOptions.initialTasks || DEFAULT_IMPORT_BATCH_INITIAL_TASKS)));
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return initialTasks;
+  return Math.max(1, Math.min(maxTasks, Math.floor(numeric)));
+}
+
+function getProgressiveImportBatchTarget(rootPath, batchOptions = {}) {
+  if (!batchOptions.progressive) {
+    return clampImportBatchSize(batchOptions.maxTasks, batchOptions);
+  }
+  const key = getImportBatchProgressionKey(rootPath);
+  return clampImportBatchSize(importBatchProgressionByRoot.get(key), batchOptions);
+}
+
+function resetProgressiveImportBatchTarget(rootPath) {
+  importBatchProgressionByRoot.delete(getImportBatchProgressionKey(rootPath));
+}
+
+function countPendingImportTasks(tasks = []) {
+  return (Array.isArray(tasks) ? tasks : []).filter((task) => {
+    const status = String(task?.status || '').trim().toLowerCase();
+    const stage = String(task?.stage || task?.progress?.stage || '').trim().toLowerCase();
+    return status === 'pending' && (!stage || stage === 'queued');
+  }).length;
+}
+
+async function countPendingImportTasksOnDisk(rootPath) {
+  const payload = await listImportTasks(rootPath);
+  return countPendingImportTasks(payload.tasks || []);
+}
+
+function updateProgressiveImportBatchTarget(rootPath, batchOptions = {}, result = {}, pendingTaskCount = 0) {
+  if (!batchOptions.progressive) {
+    return null;
+  }
+
+  const key = getImportBatchProgressionKey(rootPath);
+  const currentTarget = getProgressiveImportBatchTarget(rootPath, batchOptions);
+  const hasPendingWork = Number(pendingTaskCount || 0) > 0;
+  if (!hasPendingWork) {
+    importBatchProgressionByRoot.delete(key);
+    return {
+      currentTarget,
+      nextTarget: clampImportBatchSize(batchOptions.initialTasks, batchOptions),
+      pendingTaskCount: 0,
+      reset: true
+    };
+  }
+
+  const processedCount = Array.isArray(result.batchTaskIds) && result.batchTaskIds.length
+    ? result.batchTaskIds.length
+    : (Array.isArray(result.completedTaskIds) && result.completedTaskIds.length
+      ? result.completedTaskIds.length
+      : (result.taskId ? 1 : 0));
+  const processedAsBatch = !result.failed && Boolean(result.batchId) && processedCount > 1;
+  const nextTarget = processedAsBatch
+    ? clampImportBatchSize(currentTarget * 2, batchOptions)
+    : clampImportBatchSize(batchOptions.initialTasks, batchOptions);
+
+  importBatchProgressionByRoot.set(key, nextTarget);
+  return {
+    currentTarget,
+    nextTarget,
+    pendingTaskCount,
+    reset: false
   };
 }
 
@@ -820,14 +907,24 @@ export async function runImportQueueOnce(rootPath, options = {}) {
       const failedRecovery = await recoverFailedImportTasks(rootPath, options);
       const quarantineResult = await quarantineStalePendingImportTasks(rootPath, options);
       const batchOptions = resolveImportBatchOptions(options);
-      const useBatchReserve = batchOptions.enabled && batchOptions.maxTasks > 1;
+      const progressiveTarget = getProgressiveImportBatchTarget(rootPath, batchOptions);
+      const reserveBatchOptions = batchOptions.progressive
+        ? {
+            ...batchOptions,
+            maxTasks: progressiveTarget
+          }
+        : batchOptions;
+      const useBatchReserve = reserveBatchOptions.enabled && reserveBatchOptions.maxTasks > 1;
       const reserved = useBatchReserve
-        ? await reserveImportTaskBatch(rootPath, batchOptions)
+        ? await reserveImportTaskBatch(rootPath, reserveBatchOptions)
         : await reserveNextImportTask(rootPath);
       const reservedTasks = Array.isArray(reserved?.tasks)
         ? reserved.tasks.filter(Boolean)
         : (reserved?.task ? [reserved.task] : []);
       if (!reservedTasks.length) {
+        if (batchOptions.progressive) {
+          resetProgressiveImportBatchTarget(rootPath);
+        }
         return {
           processed: false,
           reason: quarantineResult?.count
@@ -843,23 +940,50 @@ export async function runImportQueueOnce(rootPath, options = {}) {
 
       try {
         void startQueuedImportPreparse(rootPath, options, reservedTasks[0]?.id || '').catch(() => {});
+        let result;
         if (useBatchReserve) {
-          return await processImportTaskBatch(rootPath, reserved, options);
+          result = await processImportTaskBatch(rootPath, reserved, options);
+        } else {
+          const processed = await processImportTask(rootPath, reservedTasks[0], options);
+          result = {
+            processed: true,
+            failed: false,
+            taskId: reservedTasks[0].id,
+            completedTaskIds: [reservedTasks[0].id],
+            failedTaskIds: [],
+            result: processed
+          };
         }
-        const result = await processImportTask(rootPath, reservedTasks[0], options);
-        return {
-          processed: true,
-          failed: false,
-          taskId: reservedTasks[0].id,
-          completedTaskIds: [reservedTasks[0].id],
-          failedTaskIds: [],
-          result
-        };
+        if (useBatchReserve && batchOptions.progressive) {
+          const batchProgression = updateProgressiveImportBatchTarget(
+            rootPath,
+            batchOptions,
+            result,
+            await countPendingImportTasksOnDisk(rootPath)
+          );
+          return {
+            ...result,
+            batchProgression
+          };
+        }
+        return result;
       } catch (error) {
         for (const task of reservedTasks) {
           await failImportTask(rootPath, task.id, error);
         }
         const failedTaskIds = reservedTasks.map((task) => task.id);
+        const batchProgression = useBatchReserve && batchOptions.progressive
+          ? updateProgressiveImportBatchTarget(
+              rootPath,
+              batchOptions,
+              {
+                processed: true,
+                failed: true,
+                taskId: reservedTasks[0]?.id || null
+              },
+              await countPendingImportTasksOnDisk(rootPath)
+            )
+          : null;
         return {
           processed: true,
           failed: true,
@@ -868,7 +992,8 @@ export async function runImportQueueOnce(rootPath, options = {}) {
           batchTaskIds: reserved?.batchTaskIds || failedTaskIds,
           completedTaskIds: [],
           failedTaskIds,
-          error: error.message
+          error: error.message,
+          ...(batchProgression ? { batchProgression } : {})
         };
       }
     }, {
@@ -933,6 +1058,14 @@ export async function runImportsForAllCorporaOnce(options = {}) {
 
   return results;
 }
+
+export const __importWorkerTestables = {
+  resolveImportBatchOptions,
+  getProgressiveImportBatchTarget,
+  updateProgressiveImportBatchTarget,
+  resetProgressiveImportBatchTarget,
+  countPendingImportTasks
+};
 
 export function startImportWorker(options = {}) {
   const logger = options.logger || console;

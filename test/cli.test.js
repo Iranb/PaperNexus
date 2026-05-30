@@ -162,6 +162,24 @@ async function createMinimalCorpusFixture(namePrefix = 'cli-run') {
   };
 }
 
+async function createRegisteredCleanCorpus(rootPath, name, paperCount = 1) {
+  const corpusDir = path.join(rootPath, '.papernexus');
+  await fs.mkdir(corpusDir, { recursive: true });
+  await fs.writeFile(path.join(corpusDir, 'meta.json'), `${JSON.stringify({
+    name,
+    indexedAt: new Date().toISOString(),
+    paperCount,
+    nodeCount: paperCount,
+    relationshipCount: 0
+  }, null, 2)}\n`);
+  return {
+    name,
+    rootPath,
+    indexedAt: new Date().toISOString(),
+    paperCount
+  };
+}
+
 test('CLI run status and report accept corpus as the first positional after subcommand', async () => {
   const { tempHome, tempCorpusRoot, env } = await createMinimalCorpusFixture('papernexus-cli-run');
 
@@ -208,6 +226,63 @@ test('CLI run status and report accept corpus as the first positional after subc
   } finally {
     await fs.rm(tempHome, { recursive: true, force: true });
     await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+  }
+});
+
+test('CLI clean supports safe batch dry-run and explicit apply for temporary corpora', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-clean-home-'));
+  const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-clean-first-'));
+  const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-clean-second-'));
+  const env = {
+    ...process.env,
+    PAPERNEXUS_HOME: tempHome
+  };
+
+  try {
+    const first = await createRegisteredCleanCorpus(firstRoot, 'cli-clean-first', 1);
+    const second = await createRegisteredCleanCorpus(secondRoot, 'cli-clean-second', 2);
+    await fs.writeFile(path.join(tempHome, 'registry.json'), `${JSON.stringify({
+      corpora: [first, second]
+    }, null, 2)}\n`);
+
+    const preview = await spawnCli([
+      'clean',
+      '--no-config=true',
+      '--corpora',
+      'cli-clean-first,cli-clean-second'
+    ], { env });
+    assert.equal(preview.code, 0, preview.stderr);
+    assert.match(preview.stdout, /Batch clean preview/);
+    assert.match(preview.stdout, /cli-clean-first: would remove/);
+    assert.match(preview.stdout, /No files were deleted/);
+    await fs.access(path.join(firstRoot, '.papernexus', 'meta.json'));
+    await fs.access(path.join(secondRoot, '.papernexus', 'meta.json'));
+
+    const apply = await spawnCli([
+      'clean',
+      '--no-config=true',
+      '--corpora',
+      'cli-clean-first,cli-clean-second',
+      '--apply'
+    ], { env });
+    assert.equal(apply.code, 0, apply.stderr);
+    assert.match(apply.stdout, /Batch clean completed/);
+    assert.match(apply.stdout, /cli-clean-first: cleaned/);
+
+    await assert.rejects(
+      fs.access(path.join(firstRoot, '.papernexus', 'meta.json')),
+      { code: 'ENOENT' }
+    );
+    await assert.rejects(
+      fs.access(path.join(secondRoot, '.papernexus', 'meta.json')),
+      { code: 'ENOENT' }
+    );
+    const registry = JSON.parse(await fs.readFile(path.join(tempHome, 'registry.json'), 'utf8'));
+    assert.deepEqual(registry.corpora, []);
+  } finally {
+    await fs.rm(tempHome, { recursive: true, force: true });
+    await fs.rm(firstRoot, { recursive: true, force: true });
+    await fs.rm(secondRoot, { recursive: true, force: true });
   }
 });
 

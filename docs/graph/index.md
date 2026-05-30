@@ -157,5 +157,6 @@ These derived structures are part of the practical contract of the system, becau
 ## Read Next
 
 - [Cross-Domain Intelligence](/graph/cross-domain-intelligence)
+- [Proposal Graph Ideation](/graph/proposal-graph-ideation)
 - [KG Innovation Discovery Review](/graph/knowledge-graph-innovation-discovery-review.zh-CN)
 - [Generated Graph Schema Reference](/reference/generated/graph-schema)

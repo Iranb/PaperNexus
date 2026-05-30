@@ -49,6 +49,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/storage/llm-rate-limit-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/llm-rate-limit-store.js) | LLM Rate Limit Store implementation. |
 | [`src/storage/pdf-parse-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/pdf-parse-store.js) | Pdf Parse Store implementation. |
 | [`src/storage/provenance-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/provenance-store.js) | Provenance Store implementation. |
+| [`src/storage/registry-reconcile.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/registry-reconcile.js) | Registry Reconcile implementation. |
 | [`src/storage/registry.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/registry.js) | Global registry of indexed corpora. |
 | [`src/storage/run-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/run-store.js) | Run Store implementation. |
 | [`src/storage/trace-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/trace-store.js) | Trace Store implementation. |
@@ -122,6 +123,9 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/mutations.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/mutations.js) | Mutations implementation. |
 | [`src/core/graph/novelty-scoring.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/novelty-scoring.js) | Novelty Scoring implementation. |
 | [`src/core/graph/prior-art-contrast.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/prior-art-contrast.js) | Prior Art Contrast implementation. |
+| [`src/core/graph/proposal-controller.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/proposal-controller.js) | Proposal Controller implementation. |
+| [`src/core/graph/proposal-graph.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/proposal-graph.js) | Proposal Graph implementation. |
+| [`src/core/graph/proposal-synthesis.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/proposal-synthesis.js) | Proposal Synthesis implementation. |
 | [`src/core/graph/research-intelligence.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/research-intelligence.js) | Research Intelligence implementation. |
 | [`src/core/graph/research-questions.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/research-questions.js) | Research question normalization and graph projection helpers. |
 | [`src/core/graph/reviewer-simulation.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/reviewer-simulation.js) | Reviewer Simulation implementation. |

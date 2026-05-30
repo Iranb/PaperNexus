@@ -25,7 +25,8 @@ const IMPORT_QUEUE_PROGRESS_CONTRACT_VERSION = 'import-queue-progress-v1';
 const IMPORT_STAGE_TOTAL = 4;
 const DEFAULT_FAILED_IMPORT_RETRY_DELAY_MS = 5 * 60 * 1000;
 const DEFAULT_FAILED_IMPORT_RETRY_MAX = 3;
-const DEFAULT_IMPORT_BATCH_MAX_TASKS = 1;
+const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
+const HARD_IMPORT_BATCH_MAX_TASKS = 16;
 const IMPORT_STAGE_WEIGHTS = {
   queued: { index: 0, startPercent: 0, weight: 0 },
   materialize: { index: 1, startPercent: 0, weight: 50 },
@@ -248,8 +249,9 @@ function resolveOptionalPositiveInteger(value) {
 }
 
 function resolveImportBatchReserveLimits(options = {}) {
+  const maxTasks = resolvePositiveInteger(options.maxTasks ?? options.batchMaxTasks, DEFAULT_IMPORT_BATCH_MAX_TASKS);
   return {
-    maxTasks: resolvePositiveInteger(options.maxTasks ?? options.batchMaxTasks, DEFAULT_IMPORT_BATCH_MAX_TASKS),
+    maxTasks: Math.min(maxTasks, HARD_IMPORT_BATCH_MAX_TASKS),
     maxFiles: resolveOptionalPositiveInteger(options.maxFiles ?? options.batchMaxFiles),
     maxBytes: resolveOptionalPositiveInteger(options.maxBytes ?? options.batchMaxBytes)
   };

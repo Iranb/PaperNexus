@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { applyGraphMutations } from '../core/graph/mutations.js';
 import { summarizeCorpusGraph } from '../core/graph/summary.js';
@@ -515,6 +516,115 @@ export async function cleanCorpus(target, cwd = process.cwd()) {
     await unregisterCorpus(rootPath);
   });
   return rootPath;
+}
+
+function normalizeCleanCorpusTargets(targets) {
+  const values = Array.isArray(targets) ? targets : [targets];
+  const normalized = [];
+  const seen = new Set();
+
+  for (const value of values) {
+    const parts = typeof value === 'string' ? value.split(',') : [value];
+    for (const part of parts) {
+      const target = String(part || '').trim();
+      if (!target || seen.has(target)) continue;
+      seen.add(target);
+      normalized.push(target);
+    }
+  }
+
+  return normalized;
+}
+
+function isTemporaryCorpusRoot(rootPath) {
+  const resolved = path.resolve(resolveServerPathReference(rootPath, {
+    baseDir: process.cwd()
+  }));
+  const tmpRoot = path.resolve(os.tmpdir());
+  return resolved === tmpRoot || resolved.startsWith(`${tmpRoot}${path.sep}`);
+}
+
+export async function planCleanCorpora(targets, options = {}) {
+  const names = normalizeCleanCorpusTargets(targets);
+  if (!names.length) {
+    throw new Error('No corpora specified for batch clean.');
+  }
+
+  const registry = await loadRegistry();
+  const allowNonTemporary = options.allowNonTemporary === true;
+  const entries = names.map((name) => {
+    const matched = (registry.corpora || []).find((item) => item.name === name) || null;
+    if (!matched) {
+      return {
+        name,
+        rootPath: '',
+        paperCount: 0,
+        status: 'missing',
+        reason: 'No exact corpus name match in registry.'
+      };
+    }
+
+    if (!allowNonTemporary && !isTemporaryCorpusRoot(matched.rootPath)) {
+      return {
+        name: matched.name,
+        rootPath: matched.rootPath,
+        paperCount: matched.paperCount || 0,
+        status: 'blocked',
+        reason: 'Batch clean only removes temporary-root corpora by default. Pass allowNonTemporary to override.'
+      };
+    }
+
+    return {
+      name: matched.name,
+      rootPath: matched.rootPath,
+      paperCount: matched.paperCount || 0,
+      status: 'ready',
+      reason: ''
+    };
+  });
+
+  return {
+    dryRun: options.dryRun !== false,
+    allowNonTemporary,
+    entries,
+    ready: entries.filter((entry) => entry.status === 'ready'),
+    blocked: entries.filter((entry) => entry.status !== 'ready')
+  };
+}
+
+export async function cleanCorpora(targets, options = {}) {
+  const plan = await planCleanCorpora(targets, options);
+  if (plan.dryRun) {
+    return {
+      ...plan,
+      cleaned: []
+    };
+  }
+
+  if (plan.blocked.length) {
+    const details = plan.blocked
+      .map((entry) => `${entry.name}: ${entry.reason}`)
+      .join('; ');
+    throw new Error(`Refusing batch clean because some corpora are not ready: ${details}`);
+  }
+
+  const cleaned = [];
+  for (const entry of plan.ready) {
+    const rootPath = await cleanCorpus(entry.rootPath, options.cwd || process.cwd());
+    cleaned.push({
+      ...entry,
+      rootPath,
+      status: 'cleaned'
+    });
+  }
+
+  return {
+    ...plan,
+    entries: cleaned,
+    ready: cleaned,
+    blocked: [],
+    cleaned
+  };
 }
 
 function createBackupStamp() {

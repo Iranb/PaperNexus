@@ -83,7 +83,7 @@ literature_discovery search/resolve/run
   -> graph-visible evidence
 ```
 
-Inline import processing defaults to logical batching with `importBatchEnabled=true` and `importBatchMaxTasks=8`. Even when inline processing is requested, callers should still check the final task and graph-sync state before calling a paper "in graph".
+Inline import processing defaults to progressive logical batching with `importBatchEnabled=true`, `importBatchInitialTasks=4`, and `importBatchMaxTasks=16`. Even when inline processing is requested, callers should still check the final task and graph-sync state before calling a paper "in graph".
 
 ## Artifacts
 

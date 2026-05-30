@@ -164,6 +164,47 @@ test('reserveImportTaskBatch reserves oldest pending tasks as one running batch'
   }
 });
 
+test('reserveImportTaskBatch batches all pending tasks when the queue is smaller than the target size', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-underfilled-batch-'));
+
+  try {
+    const {
+      createImportTask,
+      listImportTasks,
+      reserveImportTaskBatch
+    } = await import('../src/storage/import-store.js');
+
+    const tasks = [];
+    for (const name of ['underfilled-one.md', 'underfilled-two.md', 'underfilled-three.md']) {
+      tasks.push(await createImportTask(rootPath, {
+        trigger: 'api',
+        files: [
+          {
+            name,
+            contentBase64: Buffer.from(`# ${name}\n\n## Abstract\n\nQueued below the batch target.\n`, 'utf8').toString('base64'),
+            mimeType: 'text/markdown'
+          }
+        ]
+      }));
+    }
+
+    const reserved = await reserveImportTaskBatch(rootPath, {
+      maxTasks: 8
+    });
+
+    assert.match(reserved.batchId, /^impbatch:/);
+    assert.equal(reserved.singleTask, false);
+    assert.deepEqual(reserved.batchTaskIds, tasks.map((task) => task.id));
+    assert.deepEqual(reserved.tasks.map((task) => task.id), tasks.map((task) => task.id));
+
+    const listed = await listImportTasks(rootPath);
+    assert.equal(listed.summary.pending, 0);
+    assert.equal(listed.summary.running, 3);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('reserveImportTaskBatch respects expansion limits and resumes running tasks alone', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-batch-limits-'));
 

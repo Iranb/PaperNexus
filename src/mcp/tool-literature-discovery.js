@@ -215,7 +215,29 @@ function buildImportProcessingOptions(args = {}, options = {}, importResult = {}
       importConfig.importBatchMaxTasks,
       importConfig.batchMaxTasks,
       importConfig.maxTasks,
-      8
+      16
+    ),
+    importBatchInitialTasks: firstDefined(
+      args.importBatchInitialTasks,
+      args.import_batch_initial_tasks,
+      args.batchInitialTasks,
+      args.batch_initial_tasks,
+      options.importBatchInitialTasks,
+      options.batchInitialTasks,
+      importConfig.importBatchInitialTasks,
+      importConfig.batchInitialTasks,
+      4
+    ),
+    importBatchProgressive: firstDefined(
+      args.importBatchProgressive,
+      args.import_batch_progressive,
+      args.batchProgressive,
+      args.batch_progressive,
+      options.importBatchProgressive,
+      options.batchProgressive,
+      importConfig.importBatchProgressive,
+      importConfig.batchProgressive,
+      true
     ),
     importBatchMaxFiles: firstDefined(
       args.importBatchMaxFiles,

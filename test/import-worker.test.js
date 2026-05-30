@@ -19,6 +19,112 @@ async function waitFor(check, { timeoutMs = 2000, intervalMs = 25 } = {}) {
   return false;
 }
 
+test('import worker grows progressive batch targets while queued work remains', async () => {
+  let batching = null;
+  ({ __importWorkerTestables: batching } = await import('../src/core/imports/worker.js'));
+  const rootPath = path.join(os.tmpdir(), `papernexus-progressive-batch-${Date.now()}-${Math.random()}`);
+  const cappedRootPath = `${rootPath}-capped`;
+
+  try {
+    const options = batching.resolveImportBatchOptions({
+      batchEnabled: true
+    });
+    assert.equal(options.enabled, true);
+    assert.equal(options.maxTasks, 16);
+    assert.equal(options.initialTasks, 4);
+    assert.equal(options.progressive, true);
+
+    assert.equal(batching.getProgressiveImportBatchTarget(rootPath, options), 4);
+
+    let progression = batching.updateProgressiveImportBatchTarget(
+      rootPath,
+      options,
+      {
+        processed: true,
+        failed: false,
+        batchId: 'impbatch:first',
+        batchTaskIds: ['a', 'b', 'c', 'd']
+      },
+      20
+    );
+    assert.equal(progression.currentTarget, 4);
+    assert.equal(progression.nextTarget, 8);
+    assert.equal(batching.getProgressiveImportBatchTarget(rootPath, options), 8);
+
+    progression = batching.updateProgressiveImportBatchTarget(
+      rootPath,
+      options,
+      {
+        processed: true,
+        failed: false,
+        batchId: 'impbatch:second',
+        batchTaskIds: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+      },
+      20
+    );
+    assert.equal(progression.currentTarget, 8);
+    assert.equal(progression.nextTarget, 16);
+    assert.equal(batching.getProgressiveImportBatchTarget(rootPath, options), 16);
+
+    progression = batching.updateProgressiveImportBatchTarget(
+      rootPath,
+      options,
+      {
+        processed: true,
+        failed: false,
+        batchId: 'impbatch:third',
+        batchTaskIds: Array.from({ length: 16 }, (_, index) => `task-${index}`)
+      },
+      2
+    );
+    assert.equal(progression.currentTarget, 16);
+    assert.equal(progression.nextTarget, 16);
+    assert.equal(batching.getProgressiveImportBatchTarget(rootPath, options), 16);
+
+    progression = batching.updateProgressiveImportBatchTarget(
+      rootPath,
+      options,
+      {
+        processed: true,
+        failed: false,
+        batchId: 'impbatch:done',
+        batchTaskIds: ['last']
+      },
+      0
+    );
+    assert.equal(progression.reset, true);
+    assert.equal(progression.nextTarget, 4);
+    assert.equal(batching.getProgressiveImportBatchTarget(rootPath, options), 4);
+
+    const cappedOptions = batching.resolveImportBatchOptions({
+      batchEnabled: true,
+      batchMaxTasks: 64
+    });
+    assert.equal(cappedOptions.maxTasks, 16);
+
+    const lowerMaxOptions = batching.resolveImportBatchOptions({
+      batchEnabled: true,
+      batchMaxTasks: 4
+    });
+    assert.equal(batching.getProgressiveImportBatchTarget(cappedRootPath, lowerMaxOptions), 4);
+    progression = batching.updateProgressiveImportBatchTarget(
+      cappedRootPath,
+      lowerMaxOptions,
+      {
+        processed: true,
+        failed: false,
+        batchId: 'impbatch:capped',
+        batchTaskIds: ['a', 'b', 'c', 'd']
+      },
+      20
+    );
+    assert.equal(progression.nextTarget, 4);
+  } finally {
+    batching?.resetProgressiveImportBatchTarget(rootPath);
+    batching?.resetProgressiveImportBatchTarget(cappedRootPath);
+  }
+});
+
 test('import worker processes queued uploads and merges them into the single graph', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-workspace-'));

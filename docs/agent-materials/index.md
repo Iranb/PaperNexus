@@ -1,6 +1,6 @@
 # Agent Materials
 
-`agent_materials` is the MCP surface for Agent-facing research materials. It assembles graph/source evidence, source-discovery plans, import requisitions, negative-evidence packs, experiment-cost snippets, innovation evidence packs, and research-controller artifacts without turning them into raw corpus graph facts.
+`agent_materials` is the MCP surface for Agent-facing research materials. It assembles graph/source evidence, source-discovery plans, import requisitions, negative-evidence packs, experiment-cost snippets, innovation evidence packs, research-controller artifacts, and episode-local proposal graph sessions without turning them into raw corpus graph facts.
 
 Use this section when an Agent needs structured materials for a research task but must preserve evidence boundaries.
 
@@ -14,6 +14,7 @@ Use this section when an Agent needs structured materials for a research task bu
 | Innovation evidence pack | `operation=innovation_evidence_pack` | Compiles novelty-risk, gap, closest-prior, evidence-sufficiency, and AutoResearch handoff artifacts without proving novelty |
 | Project overlay memory | `paper_role_overlay`, `evidence_cart`, `workflow_state` | Stores project-local judgments outside the raw graph |
 | Research controller | `operation=research_controller` | Writes controller artifacts and approval-gated material-request records outside the raw graph |
+| Proposal graph session | `operation=proposal_graph_session` | Validates role actions against frozen snapshots, commits only gate-passing proposal subgraphs, and writes proposal artifacts outside the raw graph |
 
 ## Operating Rules
 
@@ -21,6 +22,7 @@ Use this section when an Agent needs structured materials for a research task bu
 - Discovery-only and provider-only papers are not graph evidence until import tasks complete and authoritative graph sync is visible.
 - Project overlays are Agent memory, not paper truth.
 - Research-controller outputs are planning artifacts. They do not prove novelty, select a final direction, run experiments, or mutate the raw graph.
+- Proposal graph sessions are episode-local ideation artifacts. They can cite graph or discovery evidence, but they do not write corpus facts.
 
 ## Read Next
 

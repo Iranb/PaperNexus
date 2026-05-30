@@ -48,7 +48,15 @@
           "type": "boolean",
           "default": false
         },
+        "allowImports": {
+          "type": "boolean",
+          "default": false
+        },
         "allowImportSubmission": {
+          "type": "boolean",
+          "default": false
+        },
+        "allowLiveDiscovery": {
           "type": "boolean",
           "default": false
         },
@@ -155,8 +163,19 @@
           "type": "boolean",
           "default": false
         },
+        "evidenceExport": {
+          "type": "object",
+          "additionalProperties": true
+        },
         "evidenceId": {
           "type": "string"
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
         },
         "excludeDomains": {
           "oneOf": [
@@ -368,6 +387,11 @@
           "type": "number",
           "default": 2
         },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        },
         "minDomainDistance": {
           "type": "number",
           "default": 0
@@ -423,6 +447,7 @@
             "negative_evidence_pack",
             "paper_material_view",
             "paper_role_overlay",
+            "proposal_graph_session",
             "research_controller",
             "research_material_pack",
             "source_discovery_plan",
@@ -469,12 +494,40 @@
             }
           ]
         },
+        "problem": {
+          "type": "string"
+        },
         "processLiteratureDiscoveryImports": {
           "type": "boolean",
           "default": false
         },
         "project": {
           "type": "string"
+        },
+        "proposalActions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "proposalRoleId": {
+          "type": "string"
+        },
+        "proposalSlates": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": true
+            }
+          ]
         },
         "provenance": {
           "type": "array",
@@ -534,6 +587,9 @@
               }
             }
           ]
+        },
+        "runId": {
+          "type": "string"
         },
         "runLiteratureDiscoveryIfSparse": {
           "type": "boolean",
@@ -600,6 +656,9 @@
           "type": "string"
         },
         "targetProblem": {
+          "type": "string"
+        },
+        "temporalCutoff": {
           "type": "string"
         },
         "text": {
@@ -1428,9 +1487,17 @@
           "type": "boolean",
           "default": true
         },
+        "importBatchInitialTasks": {
+          "type": "number",
+          "default": 4
+        },
         "importBatchMaxTasks": {
           "type": "number",
-          "default": 8
+          "default": 16
+        },
+        "importBatchProgressive": {
+          "type": "boolean",
+          "default": true
         },
         "importMaxPasses": {
           "type": "number",

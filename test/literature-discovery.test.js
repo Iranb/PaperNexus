@@ -3445,6 +3445,8 @@ test('MCP tool list includes literature_discovery', async () => {
   assert.ok(tool.inputSchema.properties.providerRequestDelayMs);
   assert.ok(tool.inputSchema.properties.maxRetryAfterMs);
   assert.ok(tool.inputSchema.properties.processImports);
+  assert.ok(tool.inputSchema.properties.importBatchInitialTasks);
+  assert.ok(tool.inputSchema.properties.importBatchProgressive);
   assert.ok(tool.inputSchema.properties.importMaxPasses);
   assert.ok(tool.inputSchema.properties.semanticExtraction);
   assert.ok(tool.inputSchema.properties.pdfParser);

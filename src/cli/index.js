@@ -48,6 +48,7 @@ Commands:
   papernexus watch [<path>] [--name <corpus>] [--quiet] [--concurrency <n>] [--semantic-extraction <auto|heuristic-only|llm-assisted|llm-primary>] [--pdf-parser <markitdown|markpdfdown|opendataloader|docling|marker|mineru|paddleocr-vl>] [--pdf-cmd <cmd>] [--python-command <python>] [--pdf-parser-ssh-host <host>] [--markitdown-python <python>] [--markpdfdown-python <python>] [--opendataloader-pdf-python <python>] [--docling-python <python>] [--docling-cmd <cmd>] [--docling-vlm] [--docling-vlm-preset <preset>] [--docling-ssh-host <host>] [--docling-ocr-engine <name>] [--docling-pdf-backend <backend>] [--docling-device <device>] [--docling-cuda-visible-devices <ids>] [--docling-auto-gpu <true|false>] [--docling-gpu-min-free-mb <mb>] [--docling-gpu-wait-timeout-ms <ms>] [--docling-gpu-poll-interval-ms <ms>] [--docling-cpu-threads <n>] [--docling-artifacts-path <path>] [--docling-image-export-mode <mode>] [--docling-enrich-picture-classes] [--docling-enrich-picture-description] [--docling-preload] [--docling-preload-timeout-ms <ms>] [--marker-cmd <cmd>] [--marker-ssh-host <host>] [--mineru-cmd <url>] [--mineru-http-url <url>] [--mineru-remote-failure <error|docling>] [--page-range <pages>] [--pdf-ssh-host <host>] [--debounce-ms <ms>] [--poll-interval-ms <ms>] [--ollama-model <name>] [--ollama-url <url>] [--ollama-relations] [--ollama-ssh-host <host>]
   papernexus probe [--provider <name>] [--model <name>] [--base-url <url>]  Test LLM connectivity
   papernexus clean [--corpus <name>]
+  papernexus clean --corpora <name[,name...]> [--apply] [--allow-non-temp]
   papernexus scrub-degenerate-papers [--corpus <name>]
   papernexus catalyst --target-domain <domain> [--challenge <text>] [--mechanism <name[,name...]>] [--limit <n>] [--corpus <name>]
   papernexus answer <query> [--mode <cross_domain_evidence|method_lineage|both>] [--target-domain <domain>] [--method <name>] [--direction <backward|forward|both>] [--max-depth <n>] [--limit <n>] [--corpus <name>]
@@ -290,6 +291,24 @@ function parseCommaSeparatedList(value) {
     return value.split(',').map((item) => item.trim()).filter(Boolean);
   }
   return [];
+}
+
+function parseCleanCorporaTargets(flags = {}, positionals = []) {
+  const targets = [
+    ...parseCommaSeparatedList(flags.corpora),
+    ...parseCommaSeparatedList(flags['corpus-list'])
+  ];
+  for (const positional of positionals) {
+    targets.push(...parseCommaSeparatedList(positional));
+  }
+  return targets;
+}
+
+function isBatchCleanRequested(flags = {}, positionals = []) {
+  return flags.corpora !== undefined
+    || flags['corpus-list'] !== undefined
+    || positionals.length > 1
+    || (positionals.length === 1 && String(positionals[0] || '').includes(','));
 }
 
 function maybeWarnAboutForceUsage(command, flags = {}) {
@@ -1767,6 +1786,35 @@ function presentCliPath(value) {
   return collapseHomePath(String(value || '').trim());
 }
 
+function renderCleanCorporaResult(result = {}) {
+  const dryRun = result.dryRun !== false;
+  const entries = Array.isArray(result.entries) ? result.entries : [];
+  const lines = [
+    dryRun ? 'Batch clean preview:' : 'Batch clean completed:'
+  ];
+
+  for (const entry of entries) {
+    const status = dryRun
+      ? (entry.status === 'ready' ? 'would remove' : entry.status)
+      : (entry.status || 'cleaned');
+    const details = [
+      `- ${entry.name}: ${status}`,
+      entry.rootPath ? presentCliPath(entry.rootPath) : '',
+      `(${entry.paperCount || 0} papers)`
+    ].filter(Boolean).join(' ');
+    lines.push(entry.reason ? `${details} - ${entry.reason}` : details);
+  }
+
+  if (dryRun) {
+    lines.push('No files were deleted. Re-run with --apply to delete ready temporary corpora.');
+  }
+  if ((result.blocked || []).some((entry) => entry.status === 'blocked')) {
+    lines.push('Non-temporary corpora are blocked by default; use --allow-non-temp only after verifying the root path.');
+  }
+
+  return lines.join('\n');
+}
+
 function formatImportTaskFiles(task = {}) {
   const files = Array.isArray(task.files) ? task.files : [];
   if (!files.length) return 'no files';
@@ -3175,6 +3223,17 @@ async function main() {
   }
 
   if (command === 'clean') {
+    if (isBatchCleanRequested(flags, positionals)) {
+      const targets = parseCleanCorporaTargets(flags, positionals);
+      const result = await runtime.cleanCorpora(targets, {
+        dryRun: !toBoolean(flags.apply, false),
+        allowNonTemporary: toBoolean(firstDefined(flags['allow-non-temp'], flags['allow-non-temporary']), false),
+        cwd: configBaseDir
+      });
+      console.log(renderCleanCorporaResult(result));
+      return;
+    }
+
     const cleanedRoot = await runtime.cleanCorpus(resolveConfiguredCorpus(flags, config, positionals[0], configBaseDir));
     console.log(`Removed PaperNexus index from ${cleanedRoot}`);
     return;

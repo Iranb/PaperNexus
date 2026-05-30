@@ -20,6 +20,7 @@ import { runLiteratureDiscovery } from '../discovery/workflow.js';
 import { submitDiscoveryImports } from '../discovery/import-bridge.js';
 import { runImportQueueUntilIdle } from '../imports/worker.js';
 import { runLiveIdeaCatalyst } from '../graph/idea-catalyst-live.js';
+import { runProposalGraphSession } from '../graph/proposal-controller.js';
 import { loadChunkText, loadPaperChunks } from '../../storage/chunk-store.js';
 import { loadImportTask } from '../../storage/import-store.js';
 import {
@@ -1943,7 +1944,31 @@ function literatureDiscoveryImportProcessingOptions(args = {}, options = {}, imp
       importConfig.importBatchMaxTasks,
       importConfig.batchMaxTasks,
       config.import_batch_max_tasks,
-      8
+      16
+    ),
+    importBatchInitialTasks: firstDefined(
+      args.literatureDiscoveryImportBatchInitialTasks,
+      args.literature_discovery_import_batch_initial_tasks,
+      args.importBatchInitialTasks,
+      args.import_batch_initial_tasks,
+      options.importBatchInitialTasks,
+      options.batchInitialTasks,
+      importConfig.importBatchInitialTasks,
+      importConfig.batchInitialTasks,
+      config.import_batch_initial_tasks,
+      4
+    ),
+    importBatchProgressive: firstDefined(
+      args.literatureDiscoveryImportBatchProgressive,
+      args.literature_discovery_import_batch_progressive,
+      args.importBatchProgressive,
+      args.import_batch_progressive,
+      options.importBatchProgressive,
+      options.batchProgressive,
+      importConfig.importBatchProgressive,
+      importConfig.batchProgressive,
+      config.import_batch_progressive,
+      true
     ),
     importBatchMaxFiles: firstDefined(
       args.literatureDiscoveryImportBatchMaxFiles,
@@ -4885,6 +4910,48 @@ async function maybeExportPayload(payload = {}, args = {}) {
   return exportedPayload;
 }
 
+async function buildProposalGraphSession(args = {}) {
+  const problem = compactText(args.problem || args.targetProblem || args.target_problem || args.query || args.title);
+  if (!problem) throw new Error('proposal_graph_session requires problem, targetProblem, or query.');
+  const targetDomain = compactText(args.targetDomain || args.target_domain);
+  const result = await runProposalGraphSession({
+    run_id: compactText(args.runId || args.run_id),
+    problem,
+    target_domain: targetDomain,
+    max_rounds: args.maxRounds || args.max_rounds,
+    temporal_cutoff: args.temporalCutoff || args.temporal_cutoff,
+    allow_live_discovery: args.allowLiveDiscovery || args.allow_live_discovery,
+    allow_imports: args.allowImports || args.allow_imports,
+    evidence_refs: args.evidenceRefs || args.evidence_refs || [],
+    evidence_export: args.evidenceExport || args.evidence_export,
+    proposal_actions: args.proposalActions || args.proposal_actions || args.actions || [],
+    proposal_slates: args.proposalSlates || args.proposal_slates || args.fixtureSlates || args.fixture_slates,
+    proposal_role_id: args.proposalRoleId || args.proposal_role_id || args.role_id || args.roleId,
+    outputDir: args.outputDir || args.output_dir
+  });
+  return {
+    contractVersion: AGENT_MATERIALS_CONTRACT_VERSION,
+    operation: 'proposal_graph_session',
+    project: compactText(args.project),
+    run_id: result.input.run_id,
+    target_domain: result.input.target_domain,
+    target_problem: result.input.problem,
+    final_status: result.final_status,
+    round_count: result.round_count,
+    graph: result.graph,
+    validation_report: result.validation_report,
+    commit_decisions: result.commit_decisions,
+    edit_decisions: result.edit_decisions,
+    patches: result.patches,
+    role_trace: result.role_trace,
+    proposal_bundle: result.proposal_bundle,
+    evidence_export: result.evidence_export,
+    manifest: result.manifest || null,
+    artifact_paths: result.artifact_paths || null,
+    generatedAt: nowIso()
+  };
+}
+
 export async function executeAgentMaterialsOperation(args = {}, options = {}) {
   const operation = compactText(args.operation).toLowerCase().replace(/[-\s]+/g, '_');
   if (operation === 'paper_material_view') return buildPaperMaterialView(args, options);
@@ -4898,5 +4965,6 @@ export async function executeAgentMaterialsOperation(args = {}, options = {}) {
   if (operation === 'evidence_cart') return buildEvidenceCart(args, options);
   if (operation === 'workflow_state') return buildWorkflowState(args, options);
   if (operation === 'research_controller') return buildResearchController(args, options);
+  if (operation === 'proposal_graph_session') return buildProposalGraphSession(args, options);
   throw new Error(`Unknown agent_materials operation: ${args.operation || '<missing>'}`);
 }

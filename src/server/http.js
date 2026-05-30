@@ -47,6 +47,7 @@ import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
 import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
+import { startRegistryReconcileWorker } from '../storage/registry-reconcile.js';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -83,6 +84,12 @@ function firstNumber(...values) {
   if (raw === undefined) return undefined;
   const normalized = Number(raw);
   return Number.isFinite(normalized) ? normalized : undefined;
+}
+
+function isFalseLike(value) {
+  if (value === false) return true;
+  if (value === true || value === undefined || value === null) return false;
+  return ['0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
 }
 
 function resolveJsonBodyLimitBytes(options = {}) {
@@ -261,6 +268,22 @@ function startNamedWorker(name, enabled, starter, options, logger = console) {
   }
 }
 
+function resolveRegistryReconcileEnabled(options = {}) {
+  const serveConfig = getServeConfig(options);
+  return !isFalseLike(firstDefined(
+    options.enableRegistryReconcile,
+    serveConfig.enableRegistryReconcile
+  ));
+}
+
+function resolveRegistryReconcileIntervalMs(options = {}) {
+  const serveConfig = getServeConfig(options);
+  return firstNumber(
+    options.registryReconcileIntervalMs,
+    serveConfig.registryReconcileIntervalMs
+  );
+}
+
 function isHttpUrl(value) {
   return /^https?:\/\//i.test(String(value || '').trim());
 }
@@ -316,7 +339,21 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       importsConfig.maxTasks,
       importConfig.batchMaxTasks,
       importConfig.maxTasks,
-      8
+      16
+    ),
+    batchInitialTasks: firstNumber(
+      options.importBatchInitialTasks,
+      options.batchInitialTasks,
+      importsConfig.batchInitialTasks,
+      importConfig.batchInitialTasks,
+      4
+    ),
+    batchProgressive: firstDefined(
+      options.importBatchProgressive,
+      options.batchProgressive,
+      importsConfig.batchProgressive,
+      importConfig.batchProgressive,
+      true
     ),
     batchMaxFiles: firstNumber(
       options.importBatchMaxFiles,
@@ -757,6 +794,7 @@ export async function serveCommand(options = {}) {
   const enhancementWorkerStarter = options.startEnhancementWorker || startEnhancementWorker;
   const authoritativeSyncWorkerStarter = options.startAuthoritativeSyncWorker || startAuthoritativeSyncWorker;
   const importWorkerStarter = options.startImportWorker || startImportWorker;
+  const registryReconcileWorkerStarter = options.startRegistryReconcileWorker || startRegistryReconcileWorker;
   const importWorkerOptions = buildImportWorkerOptions(options, rootPaths, workerLogger);
   const enhancementWorker = startNamedWorker(
     'enhancement worker',
@@ -781,6 +819,17 @@ export async function serveCommand(options = {}) {
     options.enableImports !== false,
     importWorkerStarter,
     importWorkerOptions,
+    workerLogger
+  );
+  const registryReconcileWorker = startNamedWorker(
+    'registry reconcile worker',
+    resolveRegistryReconcileEnabled(options),
+    registryReconcileWorkerStarter,
+    {
+      rootPaths,
+      intervalMs: resolveRegistryReconcileIntervalMs(options),
+      logger: workerLogger
+    },
     workerLogger
   );
   const triggerMineruWarmup = options.warmMineruBackends || warmMineruBackends;
@@ -1195,7 +1244,8 @@ export async function serveCommand(options = {}) {
     await Promise.all([
       enhancementWorker?.stop?.(),
       authoritativeSyncWorker?.stop?.(),
-      importWorker?.stop?.()
+      importWorker?.stop?.(),
+      registryReconcileWorker?.stop?.()
     ]);
     await new Promise((resolve) => {
       server.close(resolve);

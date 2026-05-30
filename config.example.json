@@ -45,7 +45,9 @@
   },
   "imports": {
     "batchEnabled": true,
-    "batchMaxTasks": 8,
+    "batchProgressive": true,
+    "batchInitialTasks": 4,
+    "batchMaxTasks": 16,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   },
@@ -53,6 +55,8 @@
     "host": "0.0.0.0",
     "port": 4821,
     "apiToken": "replace-with-your-api-token",
+    "enableRegistryReconcile": true,
+    "registryReconcileIntervalMs": 300000,
     "mcp": {
       "enabled": true,
       "path": "/mcp",
