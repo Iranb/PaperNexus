@@ -47,9 +47,9 @@ PaperNexus can add provider families based on hints and config:
 | --- | ---: | ---: | ---: |
 | `quick` | 25s | 4 | 2 |
 | `balanced` | 45s | 6 | 3 |
-| `deep` | 90s | 10 | 3 |
+| `deep` | 10min | 10 | 3 |
 
-Through the MCP tool, `searchMode` defaults to `deep`. Set `quick` for interactive probes and `balanced` when latency matters more than recall.
+Through the MCP tool, `searchMode` defaults to `deep`, aligned with the default 10-minute HTTP MCP request timeout. Set `quick` for interactive probes and `balanced` when latency matters more than recall.
 
 Search-mode LLM query planning is rule-based by default unless `llmQueryPlanner=true` or `planningMode=llm_augmented` is passed. If LLM planning is enabled and fails or times out, deterministic planning is used.
 

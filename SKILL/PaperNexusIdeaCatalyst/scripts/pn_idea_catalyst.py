@@ -84,7 +84,7 @@ def main() -> int:
             token,
             "idea_catalyst",
             request_arguments,
-            timeout=max(args.request_timeout, 120.0),
+            timeout=max(args.request_timeout, 600.0),
         )
         return emit_result({
             "request": {

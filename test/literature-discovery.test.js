@@ -1790,7 +1790,7 @@ test('runLiteratureDiscovery applies quick search caps while deep search preserv
     assert.ok(quick.diagnostics.skipped.some((entry) => entry.reason === 'search_query_limit'));
     assert.equal(quick.partial, true);
 
-    assert.equal(deep.budget.budgetMs, 90000);
+    assert.equal(deep.budget.budgetMs, 600000);
     assert.equal(deep.diagnostics.searchMode, 'deep');
     assert.equal(deep.diagnostics.planning.queryLimit.applied, true);
     assert.equal(deep.diagnostics.planning.queryLimit.maxQueries, 10);

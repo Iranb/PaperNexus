@@ -72,6 +72,7 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
       "enabled": true,
       "path": "/mcp",
       "transport": "streamable-http",
+      "requestTimeoutMs": 600000,
       "allowSseFallback": false
     }
   },
@@ -177,6 +178,7 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `serve.mcp.enabled` | boolean | `true` |
 | `serve.mcp.path` | string | `/mcp` |
 | `serve.mcp.transport` | string | `streamable-http` |
+| `serve.mcp.requestTimeoutMs` | number | `600000` |
 | `serve.mcp.allowSseFallback` | boolean | `false` |
 | `llm` | object | section |
 | `llm.provider` | string | `openai` |

@@ -77,7 +77,7 @@ def main() -> int:
                 "rebuildPdfMarkdown": not args.no_rebuild_pdf_markdown,
                 "semanticExtraction": str(args.semantic_extraction or "").strip() or None,
             },
-            timeout=max(60.0, args.request_timeout)
+            timeout=max(600.0, args.request_timeout)
         )
         return emit_result(payload, args.json)
     except RemoteScriptError as exc:

@@ -85,6 +85,34 @@ async function postMcp(port, payload, options = {}) {
   return response;
 }
 
+test('getMcpHttpConfig defaults HTTP MCP request timeout to ten minutes', async () => {
+  const { getMcpHttpConfig } = await import('../src/mcp/http.js');
+  assert.equal(getMcpHttpConfig().requestTimeoutMs, 600000);
+
+  const defaultConfig = getMcpHttpConfig({
+    config: {
+      serve: {
+        mcp: {
+          enabled: true
+        }
+      }
+    }
+  });
+  assert.equal(defaultConfig.requestTimeoutMs, 600000);
+
+  const overrideConfig = getMcpHttpConfig({
+    config: {
+      serve: {
+        mcp: {
+          enabled: true,
+          requestTimeoutMs: 123456
+        }
+      }
+    }
+  });
+  assert.equal(overrideConfig.requestTimeoutMs, 123456);
+});
+
 test('serveCommand exposes authenticated MCP over HTTP for initialize, metadata, tools, and resources', async () => {
   const fixture = await createIndexedCorpus('papernexus-mcp-http', 'mcp-http-papers');
   const port = 55000 + Math.floor(Math.random() * 1000);

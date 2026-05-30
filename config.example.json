@@ -61,6 +61,7 @@
       "enabled": true,
       "path": "/mcp",
       "transport": "streamable-http",
+      "requestTimeoutMs": 600000,
       "allowSseFallback": false
     }
   },

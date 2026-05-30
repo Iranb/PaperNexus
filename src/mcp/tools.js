@@ -797,13 +797,13 @@ export const PAPERNEXUS_TOOLS = [
         searchMode: {
           type: 'string',
           enum: ['quick', 'balanced', 'deep'],
-          description: 'Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is a moderate bounded search; deep is the default broader profile but still returns partial diagnostics before the MCP outer timeout.',
+          description: 'Latency/recall profile for operation=search. quick uses the smallest budget and query cap; balanced is a moderate bounded search; deep is the default broader profile aligned with the 10-minute HTTP MCP request budget.',
           default: 'deep'
         },
         searchBudgetMs: {
           type: 'number',
-          description: 'Soft wall-clock budget for operation=search. Defaults by searchMode are quick=25000, balanced=45000, and deep=90000. When exhausted, PaperNexus stops scheduling new provider queries and returns partial metadata results with diagnostics.',
-          default: 90000
+          description: 'Soft wall-clock budget for operation=search. Defaults by searchMode are quick=25000, balanced=45000, and deep=600000. When exhausted, PaperNexus stops scheduling new provider queries and returns partial metadata results with diagnostics.',
+          default: 600000
         },
         maxQueriesPerProvider: {
           type: 'number',
@@ -2450,7 +2450,7 @@ export const PAPERNEXUS_TOOLS = [
         waitTimeoutMs: {
           type: 'number',
           description: 'Maximum milliseconds for operation=wait to poll before returning the latest job state.',
-          default: 30000
+          default: 600000
         },
         pollIntervalMs: {
           type: 'number',

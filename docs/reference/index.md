@@ -12,7 +12,7 @@ The following pages are rebuilt from code and configuration:
 - graph schema reference
 - HTTP serve route reference
 - module map
-- scripts catalog
+- scripts and SKILL wrapper catalog
 
 ## What Is Narrative
 
@@ -32,7 +32,7 @@ The surrounding pages under the main docs hubs are hand-maintained narrative doc
 - [Graph Schema](/reference/generated/graph-schema)
 - [HTTP Serve](/reference/generated/http-serve)
 - [Module Map](/reference/generated/module-map)
-- [Scripts](/reference/generated/scripts)
+- [Scripts & SKILL Wrappers](/reference/generated/scripts)
 - [Idea-Catalyst Historical Replay](/eval/idea-catalyst-historical-replay)
 - [Counterfactual Search](/eval/counterfactual-search)
 - [Ingestion Graph Mutation Execution](/eval/ingestion-graph-mutation-execution)

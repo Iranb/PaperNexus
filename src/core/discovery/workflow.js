@@ -117,7 +117,7 @@ const SEARCH_EXECUTION_PROFILES = {
     retryCount: 0
   },
   deep: {
-    budgetMs: 90000,
+    budgetMs: 10 * 60 * 1000,
     maxQueries: 10,
     maxQueriesPerProvider: 3,
     timeoutMs: 8000,

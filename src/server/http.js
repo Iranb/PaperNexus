@@ -898,6 +898,9 @@ export async function serveCommand(options = {}) {
           return;
         }
 
+        request.setTimeout?.(mcpConfig.requestTimeoutMs);
+        response.setTimeout?.(mcpConfig.requestTimeoutMs);
+
         if (!requireApiToken(request, response, apiToken)) {
           return;
         }
@@ -1216,6 +1219,10 @@ export async function serveCommand(options = {}) {
       });
     }
   });
+
+  if (mcpConfig.enabled) {
+    server.requestTimeout = Math.max(Number(server.requestTimeout || 0), mcpConfig.requestTimeoutMs);
+  }
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);

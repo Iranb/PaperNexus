@@ -5,6 +5,7 @@ import { createJsonRpcError, createJsonRpcSuccess, handleMessage } from './core.
 const JSON_MIME_TYPE = 'application/json; charset=utf-8';
 const SSE_MIME_TYPE = 'text/event-stream; charset=utf-8';
 const DEFAULT_MCP_JSON_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const MCP_SESSION_ID_HEADER = 'Mcp-Session-Id';
 
 function firstDefined(...values) {
@@ -18,6 +19,12 @@ function normalizeMcpPath(value) {
   const raw = typeof value === 'string' ? value.trim() : '';
   if (!raw) return '/mcp';
   return raw.startsWith('/') ? raw : `/${raw}`;
+}
+
+function positiveIntegerOrDefault(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
 }
 
 function sendJson(response, statusCode, payload, headers = {}) {
@@ -125,8 +132,11 @@ function resolveJsonRpcErrorCode(error) {
 }
 
 export function getMcpHttpConfig(options = {}) {
-  const serveConfig = options.config?.serve;
-  const rawConfig = serveConfig?.mcp;
+  const rawServeConfig = options.config?.serve;
+  const serveConfig = rawServeConfig && typeof rawServeConfig === 'object' && !Array.isArray(rawServeConfig)
+    ? rawServeConfig
+    : {};
+  const rawConfig = serveConfig.mcp;
   const mcpConfig = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
     ? rawConfig
     : {};
@@ -137,7 +147,17 @@ export function getMcpHttpConfig(options = {}) {
     transport: typeof mcpConfig.transport === 'string' && mcpConfig.transport.trim()
       ? mcpConfig.transport.trim()
       : 'streamable-http',
-    allowSseFallback: mcpConfig.allowSseFallback === true
+    allowSseFallback: mcpConfig.allowSseFallback === true,
+    requestTimeoutMs: positiveIntegerOrDefault(firstDefined(
+      options.requestTimeoutMs,
+      options.mcpRequestTimeoutMs,
+      mcpConfig.requestTimeoutMs,
+      mcpConfig.request_timeout_ms,
+      mcpConfig.httpRequestTimeoutMs,
+      mcpConfig.http_request_timeout_ms,
+      serveConfig.mcpRequestTimeoutMs,
+      serveConfig.mcp_request_timeout_ms
+    ), DEFAULT_MCP_REQUEST_TIMEOUT_MS)
   };
 }
 

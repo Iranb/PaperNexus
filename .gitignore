@@ -17,6 +17,7 @@ __pycache__/
 !manual/
 !manual/**
 docs/.vitepress/dist/
+docs/.vitepress/cache/
 .omx/
 .gitnexus
 

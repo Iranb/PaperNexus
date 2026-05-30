@@ -26,6 +26,8 @@ export const SERVER_INFO = {
   version: '0.1.0'
 };
 
+const DEFAULT_MCP_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+
 export function createJsonRpcSuccess(id, result) {
   return {
     jsonrpc: '2.0',
@@ -720,7 +722,7 @@ export async function executeTool(name, args, options = {}) {
     }
     if (operation === 'wait') {
       const waitResult = await waitForMcpCreateCorpusJob(args.jobId, {
-        timeoutMs: normalizeMcpNumber(firstMcpValue(args.waitTimeoutMs, args.timeoutMs, args.timeout_ms), 30000),
+        timeoutMs: normalizeMcpNumber(firstMcpValue(args.waitTimeoutMs, args.timeoutMs, args.timeout_ms), DEFAULT_MCP_WAIT_TIMEOUT_MS),
         pollIntervalMs: normalizeMcpNumber(firstMcpValue(args.pollIntervalMs, args.poll_interval_ms), 500)
       });
       return JSON.stringify(renderMcpCreateCorpusJob(waitResult.job, {

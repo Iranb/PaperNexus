@@ -10,4 +10,4 @@ These pages are rebuilt by `npm run docs:generate` and should not be edited dire
 | [Graph Schema Reference](./graph-schema) | `src/core/graph/schema.js` and `src/core/graph/rules.js` |
 | [HTTP Serve Reference](./http-serve) | `src/server/http.js` route declarations |
 | [Module Map Reference](./module-map) | Repository source tree under `src/` and `web/` |
-| [Scripts Reference](./scripts) | Top-level `scripts/` and `SKILL/**/scripts` |
+| [Scripts & SKILL Wrapper Reference](./scripts) | Top-level `scripts/` and `SKILL/**/scripts`, including callable wrapper examples |

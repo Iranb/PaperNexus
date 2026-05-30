@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 600.0
 DEFAULT_REMOTE_STAGING_ROOT = "/tmp/papernexus-import-staging"
 TASK_REGISTRY_VERSION = 1
 

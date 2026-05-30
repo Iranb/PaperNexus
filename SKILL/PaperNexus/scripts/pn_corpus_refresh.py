@@ -76,7 +76,7 @@ def main() -> int:
             token,
             "refresh_corpus",
             payload_args,
-            timeout=max(60.0, args.request_timeout)
+            timeout=max(600.0, args.request_timeout)
         )
         return emit_result(payload, args.json)
     except RemoteScriptError as exc:

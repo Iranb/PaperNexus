@@ -890,7 +890,7 @@
         },
         "waitTimeoutMs": {
           "type": "number",
-          "default": 30000
+          "default": 600000
         }
       }
     }
@@ -1766,7 +1766,7 @@
         },
         "searchBudgetMs": {
           "type": "number",
-          "default": 90000
+          "default": 600000
         },
         "searchMode": {
           "type": "string",
