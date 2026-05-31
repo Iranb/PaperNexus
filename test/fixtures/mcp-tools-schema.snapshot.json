@@ -1444,6 +1444,17 @@
         "discipline": {
           "type": "string"
         },
+        "discoveryOperation": {
+          "type": "string",
+          "enum": [
+            "import",
+            "import_and_process",
+            "ingest",
+            "resolve",
+            "run",
+            "search"
+          ]
+        },
         "discoveryRequestCache": {
           "type": "boolean",
           "default": false
@@ -1633,11 +1644,13 @@
             "ingest",
             "list",
             "plan",
+            "progress",
             "report",
             "resolve",
             "run",
             "search",
             "status",
+            "submit",
             "supplement"
           ]
         },

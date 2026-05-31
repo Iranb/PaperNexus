@@ -342,6 +342,23 @@ function buildDiscoveryDiagnostics({
   };
 }
 
+async function emitDiscoveryProgress(params = {}, update = {}) {
+  if (typeof params.onProgress !== 'function') return;
+  try {
+    await params.onProgress({
+      runId: params.runId,
+      topic: params.topic || params.query || '',
+      operation: resolveDiscoveryOperation(params) || 'run',
+      searchMode: params.searchMode || params.search_mode || '',
+      status: 'running',
+      updatedAt: new Date().toISOString(),
+      ...update
+    });
+  } catch {
+    // Progress reporting must not fail the discovery run itself.
+  }
+}
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -768,6 +785,14 @@ export async function runLiteratureDiscovery(params = {}) {
   const runId = params.runId || createDiscoveryRunId(new Date(generatedAt));
   const operation = resolveDiscoveryOperation(params);
   const searchMode = resolveDiscoverySearchMode(params, operation);
+  await emitDiscoveryProgress(params, {
+    runId,
+    stage: 'planning',
+    status: 'running',
+    startedAt: generatedAt,
+    operation: operation || 'run',
+    searchMode
+  });
   const planningParams = applySearchPlanningDefaults(params, operation, searchMode);
   const seedCandidates = buildSeedPaperCandidates(params);
   const seedEntities = buildSeedEntityCandidates(params);
@@ -786,6 +811,21 @@ export async function runLiteratureDiscovery(params = {}) {
     ? normalizeDiscoveryProviders(params.providers)
     : defaultProvidersForPlan(plan, params);
   const budget = createDiscoveryBudget(params, operation, searchMode);
+  await emitDiscoveryProgress(params, {
+    runId,
+    topic: plan.topic,
+    stage: 'provider_search',
+    status: 'running',
+    operation: operation || 'run',
+    searchMode,
+    queryCount: (plan.queries || []).length,
+    providers: selectedProviders,
+    budget: budget ? {
+      budgetMs: budget.budgetMs,
+      deadlineAt: budget.deadlineAt,
+      remainingMs: Math.max(0, budget.deadlineAt - Date.now())
+    } : null
+  });
   const executionParams = applySearchExecutionDefaults({
     ...params,
     providers: selectedProviders
@@ -798,7 +838,27 @@ export async function runLiteratureDiscovery(params = {}) {
     ...executionParams,
     ...config,
     budget,
-    plan
+    plan,
+    onProgress: (progress) => emitDiscoveryProgress(params, {
+      runId,
+      topic: plan.topic,
+      stage: 'provider_search',
+      status: 'running',
+      operation: operation || 'run',
+      searchMode,
+      ...progress
+    })
+  });
+  await emitDiscoveryProgress(params, {
+    runId,
+    topic: plan.topic,
+    stage: 'provider_search',
+    status: 'running',
+    event: 'provider_search_completed',
+    rawCandidateCount: seedCandidates.length + providerResult.candidates.length,
+    providerCandidateCount: providerResult.candidates.length,
+    partial: providerResult.partial,
+    budget: providerResult.budget || null
   });
   const initialMerged = mergeDiscoveryCandidates({
     topic: plan.topic,
@@ -810,7 +870,17 @@ export async function runLiteratureDiscovery(params = {}) {
   });
   const maxCandidates = resolveMaxCandidates(params, plan);
   const initialWindow = selectCandidateWindow(initialMerged, seedCandidates, maxCandidates);
-  const citationExpansion = shouldExpandCitations(params, plan)
+  const expandCitations = shouldExpandCitations(params, plan);
+  if (expandCitations) {
+    await emitDiscoveryProgress(params, {
+      runId,
+      topic: plan.topic,
+      stage: 'citation_expansion',
+      status: 'running',
+      candidateCount: initialWindow.length
+    });
+  }
+  const citationExpansion = expandCitations
     ? await expandDiscoveryCitations({
         ...config,
         candidates: initialWindow,
@@ -828,6 +898,16 @@ export async function runLiteratureDiscovery(params = {}) {
           failedSeeds: 0
         }
       };
+  if (expandCitations) {
+    await emitDiscoveryProgress(params, {
+      runId,
+      topic: plan.topic,
+      stage: 'citation_expansion',
+      status: 'running',
+      event: 'citation_expansion_completed',
+      citationExpansion: citationExpansion.summary
+    });
+  }
   const merged = mergeDiscoveryCandidates({
     topic: plan.topic,
     preferredVenuePacks: plan.preferredVenuePacks,
@@ -838,6 +918,14 @@ export async function runLiteratureDiscovery(params = {}) {
     ]
   });
   const candidateWindow = selectCandidateWindow(merged, seedCandidates, maxCandidates);
+  await emitDiscoveryProgress(params, {
+    runId,
+    topic: plan.topic,
+    stage: 'source_resolution',
+    status: 'running',
+    candidateCount: candidateWindow.length,
+    skipped: params.resolveSources === false
+  });
   const resolution = params.resolveSources === false
     ? {
         candidates: candidateWindow.map((candidate) => ({
@@ -923,6 +1011,24 @@ export async function runLiteratureDiscovery(params = {}) {
   run.metadataGraph = buildDiscoveryMetadataGraph(run.candidates);
   run.coverage = buildCoverage(run);
   const saved = params.persist === false ? null : await saveDiscoveryRun(rootPath, run);
+  const deferCompletedProgress = Boolean(params.deferCompletedProgress || params.defer_completed_progress);
+  await emitDiscoveryProgress(params, {
+    runId,
+    topic: plan.topic,
+    stage: deferCompletedProgress ? 'discovery_completed' : 'completed',
+    status: deferCompletedProgress ? 'running' : 'completed',
+    completedAt: deferCompletedProgress ? null : new Date().toISOString(),
+    coverage: run.coverage,
+    rawCandidateCount: run.rawCandidateCount,
+    candidateCount: run.candidates.length,
+    partial: run.partial,
+    artifacts: saved ? {
+      runJsonPath: saved.runJsonPath,
+      reportPath: saved.reportPath,
+      downloadManifestPath: saved.downloadManifestPath,
+      latestPath: saved.latestPath
+    } : null
+  });
   return {
     ...run,
     artifacts: saved ? {

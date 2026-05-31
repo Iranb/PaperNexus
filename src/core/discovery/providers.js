@@ -1359,6 +1359,7 @@ async function runProviderQuery(provider, fetcher, query, config) {
 export async function executeProviderQueries(params = {}) {
   const plan = params.plan || {};
   const baseConfig = resolveDiscoveryConfig(params);
+  const onProgress = typeof params.onProgress === 'function' ? params.onProgress : null;
   const config = {
     ...baseConfig,
     budget: normalizeExecutionBudget(params.budget || params.discoveryBudget || params.discovery_budget),
@@ -1393,6 +1394,42 @@ export async function executeProviderQueries(params = {}) {
   };
   const providerResults = new Array(config.providers.length);
   let nextProviderIndex = 0;
+  let completedQueries = 0;
+  let successfulQueries = 0;
+  let failedQueries = 0;
+  let skippedQueries = 0;
+  let timedOutQueries = 0;
+  let rateLimitedQueries = 0;
+  let candidateCount = 0;
+
+  function budgetSnapshot() {
+    return config.budget ? {
+      budgetMs: config.budget.budgetMs,
+      deadlineAt: config.budget.deadlineAt,
+      remainingMs: remainingBudgetMs(config.budget),
+      budgetExhausted: budgetExhausted(config)
+    } : null;
+  }
+
+  async function emitProgress(update = {}) {
+    if (!onProgress) return;
+    try {
+      await onProgress({
+        completedQueries,
+        successfulQueries,
+        failedQueries,
+        skippedQueries,
+        timedOutQueries,
+        rateLimitedQueries,
+        candidateCount,
+        budget: budgetSnapshot(),
+        updatedAt: new Date().toISOString(),
+        ...update
+      });
+    } catch {
+      // Progress callbacks are observational only.
+    }
+  }
 
   async function worker() {
     while (nextProviderIndex < config.providers.length) {
@@ -1416,9 +1453,16 @@ export async function executeProviderQueries(params = {}) {
         truncationReason: ''
       };
       const providerStartedAt = Date.now();
+      await emitProgress({
+        event: 'provider_started',
+        provider,
+        providerIndex,
+        providerCount: config.providers.length
+      });
 
       if (!fetcher) {
         diagnostic.skippedQueries = 1;
+        skippedQueries += 1;
         diagnostic.truncated = true;
         diagnostic.truncationReason = 'provider-not-implemented';
         diagnostic.elapsedMs = Date.now() - providerStartedAt;
@@ -1433,6 +1477,12 @@ export async function executeProviderQueries(params = {}) {
           candidateBatches,
           diagnostic
         };
+        await emitProgress({
+          event: 'provider_skipped',
+          provider,
+          providerIndex,
+          reason: 'provider-not-implemented'
+        });
         continue;
       }
 
@@ -1444,6 +1494,7 @@ export async function executeProviderQueries(params = {}) {
       const queryLimitSkipped = Math.max(0, eligibleQueries.length - runnableQueries.length);
       if (queryLimitSkipped > 0) {
         diagnostic.skippedQueries += queryLimitSkipped;
+        skippedQueries += queryLimitSkipped;
         diagnostic.truncated = true;
         diagnostic.truncationReason = 'query_limit';
       }
@@ -1451,42 +1502,85 @@ export async function executeProviderQueries(params = {}) {
       for (let queryIndex = 0; queryIndex < runnableQueries.length; queryIndex += 1) {
         const query = runnableQueries[queryIndex];
         if (budgetExhausted(config)) {
-          const skippedQueries = runnableQueries.slice(queryIndex);
-          for (const skippedQuery of skippedQueries) {
+          const skippedProviderQueries = runnableQueries.slice(queryIndex);
+          for (const skippedQuery of skippedProviderQueries) {
             queryResults.push(buildSkippedQueryResult(provider, skippedQuery, 'budget_exhausted'));
           }
-          diagnostic.skippedQueries += skippedQueries.length;
+          diagnostic.skippedQueries += skippedProviderQueries.length;
+          skippedQueries += skippedProviderQueries.length;
           diagnostic.truncated = true;
           diagnostic.truncationReason = 'budget_exhausted';
+          await emitProgress({
+            event: 'provider_queries_skipped',
+            provider,
+            providerIndex,
+            reason: 'budget_exhausted',
+            skippedProviderQueries: skippedProviderQueries.length
+          });
           break;
         }
         if (hasRunProviderQuery) await waitForProviderRequestDelay(config);
+        await emitProgress({
+          event: 'query_started',
+          provider,
+          providerIndex,
+          queryId: query.id,
+          query: query.query
+        });
         const result = await runProviderQuery(provider, fetcher, query, config);
         hasRunProviderQuery = true;
         runCount += 1;
         diagnostic.completedQueries += 1;
+        completedQueries += 1;
         if (result.queryResult.ok) {
           diagnostic.successfulQueries += 1;
+          successfulQueries += 1;
         } else {
           diagnostic.failedQueries += 1;
+          failedQueries += 1;
         }
-        if (result.queryResult.reason === 'timeout') diagnostic.timeouts += 1;
-        if (isRateLimitedQueryResult(result.queryResult)) diagnostic.rateLimited += 1;
+        if (result.queryResult.reason === 'timeout') {
+          diagnostic.timeouts += 1;
+          timedOutQueries += 1;
+        }
+        if (isRateLimitedQueryResult(result.queryResult)) {
+          diagnostic.rateLimited += 1;
+          rateLimitedQueries += 1;
+        }
         queryResults.push(result.queryResult);
         candidateBatches.push(result.candidates);
+        candidateCount += result.candidates.length;
+        await emitProgress({
+          event: 'query_completed',
+          provider,
+          providerIndex,
+          queryId: query.id,
+          query: query.query,
+          ok: result.queryResult.ok,
+          reason: result.queryResult.reason || '',
+          queryCandidateCount: result.candidates.length
+        });
 
         if (
           config.skipRemainingProviderQueriesOnRateLimit
           && isRateLimitedQueryResult(result.queryResult)
           && queryIndex + 1 < runnableQueries.length
         ) {
-          const skippedQueries = runnableQueries.slice(queryIndex + 1);
-          for (const skippedQuery of skippedQueries) {
+          const skippedProviderQueries = runnableQueries.slice(queryIndex + 1);
+          for (const skippedQuery of skippedProviderQueries) {
             queryResults.push(buildSkippedQueryResult(provider, skippedQuery, 'provider_rate_limited'));
           }
-          diagnostic.skippedQueries += skippedQueries.length;
+          diagnostic.skippedQueries += skippedProviderQueries.length;
+          skippedQueries += skippedProviderQueries.length;
           diagnostic.truncated = true;
           diagnostic.truncationReason = 'provider_rate_limited';
+          await emitProgress({
+            event: 'provider_queries_skipped',
+            provider,
+            providerIndex,
+            reason: 'provider_rate_limited',
+            skippedProviderQueries: skippedProviderQueries.length
+          });
           break;
         }
       }
@@ -1498,6 +1592,12 @@ export async function executeProviderQueries(params = {}) {
         candidateBatches,
         diagnostic
       };
+      await emitProgress({
+        event: 'provider_completed',
+        provider,
+        providerIndex,
+        diagnostic
+      });
     }
   }
 

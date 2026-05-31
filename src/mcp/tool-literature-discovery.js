@@ -8,7 +8,14 @@ import {
 } from '../core/discovery/workflow.js';
 import { submitDiscoveryImports } from '../core/discovery/import-bridge.js';
 import { runImportQueueUntilIdle } from '../core/imports/worker.js';
-import { listDiscoveryRuns, loadDiscoveryRun, saveDiscoveryRun } from '../core/discovery/store.js';
+import {
+  createDiscoveryRunId,
+  listDiscoveryRuns,
+  loadDiscoveryProgress,
+  loadDiscoveryRun,
+  saveDiscoveryProgress,
+  saveDiscoveryRun
+} from '../core/discovery/store.js';
 import { loadImportTask } from '../storage/import-store.js';
 import {
   createDiscoverySupplementationInterface,
@@ -19,6 +26,15 @@ import { createContentSha256, createSourceIdentity, normalizePaperIdentifiers } 
 function normalizeOperation(value) {
   return String(value || '').trim().toLowerCase().replace(/-/g, '_');
 }
+
+const SUBMITTABLE_DISCOVERY_OPERATIONS = new Set([
+  'search',
+  'resolve',
+  'run',
+  'import',
+  'ingest',
+  'import_and_process'
+]);
 
 function normalizeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -102,6 +118,49 @@ function findImportResultForCandidate(candidate = {}, importsByKey = new Map()) 
 
 function firstDefined(...values) {
   return values.find((value) => value !== undefined);
+}
+
+function resolveSubmittedDiscoveryOperation(args = {}) {
+  const requested = normalizeOperation(firstDefined(
+    args.discoveryOperation,
+    args.discovery_operation,
+    args.submittedOperation,
+    args.submitted_operation,
+    args.targetOperation,
+    args.target_operation
+  ));
+  return SUBMITTABLE_DISCOVERY_OPERATIONS.has(requested) ? requested : 'search';
+}
+
+function safeProgressError(error) {
+  return {
+    message: error?.message || String(error || 'unknown error'),
+    name: error?.name || 'Error'
+  };
+}
+
+async function writeLiteratureDiscoveryProgress(rootPath, progress = {}) {
+  return saveDiscoveryProgress(rootPath, {
+    ...progress,
+    updatedAt: progress.updatedAt || new Date().toISOString()
+  });
+}
+
+function createLiteratureDiscoveryProgressWriter(rootPath, base = {}) {
+  return async (progress = {}) => {
+    try {
+      await writeLiteratureDiscoveryProgress(rootPath, {
+        ...base,
+        ...progress,
+        runId: base.runId || progress.runId,
+        topic: progress.topic || base.topic || '',
+        operation: progress.operation || base.operation || '',
+        searchMode: progress.searchMode || base.searchMode || ''
+      });
+    } catch {
+      // Progress persistence is best-effort and should not fail discovery.
+    }
+  };
 }
 
 function enabledFlag(value) {
@@ -736,12 +795,99 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
     }, null, 2);
   }
 
+  if (operation === 'submit') {
+    const submittedOperation = resolveSubmittedDiscoveryOperation(args);
+    const submittedAt = new Date().toISOString();
+    const runId = compactText(args.runId || args.run_id) || createDiscoveryRunId(new Date(submittedAt));
+    const topic = compactText(args.topic || args.query);
+    const searchMode = compactText(args.searchMode || args.search_mode);
+    const writer = createLiteratureDiscoveryProgressWriter(rootPath, {
+      runId,
+      rootPath,
+      topic,
+      operation: submittedOperation,
+      searchMode,
+      submittedAt
+    });
+    await writer({
+      status: 'queued',
+      stage: 'queued',
+      event: 'submitted',
+      submittedAt
+    });
+
+    const backgroundArgs = {
+      ...args,
+      operation: submittedOperation,
+      discoveryOperation: submittedOperation,
+      discovery_operation: submittedOperation,
+      runId,
+      persist: true
+    };
+    const backgroundOptions = {
+      ...options,
+      onLiteratureDiscoveryProgress: writer
+    };
+
+    setImmediate(() => {
+      void executeLiteratureDiscoveryTool(backgroundArgs, backgroundOptions).catch(async (error) => {
+        try {
+          await writer({
+            status: 'failed',
+            stage: 'failed',
+            event: 'failed',
+            completedAt: new Date().toISOString(),
+            error: safeProgressError(error)
+          });
+        } catch {
+          // Background failure state is best-effort.
+        }
+      });
+    });
+
+    return JSON.stringify({
+      contractVersion: 'literature-discovery-submit-v1',
+      runId,
+      rootPath,
+      operation: submittedOperation,
+      searchMode,
+      status: 'submitted',
+      stage: 'queued',
+      submittedAt,
+      progress: await loadDiscoveryProgress(rootPath, runId),
+      next: {
+        progress: {
+          operation: 'progress',
+          corpus: args.corpus || rootPath,
+          runId
+        },
+        report: {
+          operation: 'report',
+          corpus: args.corpus || rootPath,
+          runId
+        }
+      }
+    }, null, 2);
+  }
+
+  if (operation === 'progress') {
+    const progress = await loadDiscoveryProgress(rootPath, args.runId || args.run_id);
+    if (!progress) {
+      throw new Error('No literature discovery progress found.');
+    }
+    return JSON.stringify(progress, null, 2);
+  }
+
   if (operation === 'status' || operation === 'report') {
     const run = await loadDiscoveryRun(rootPath, args.runId || args.run_id);
-    if (!run) {
+    if (run) {
+      return JSON.stringify(run, null, 2);
+    }
+    const progress = await loadDiscoveryProgress(rootPath, args.runId || args.run_id);
+    if (!progress) {
       throw new Error('No literature discovery run found.');
     }
-    return JSON.stringify(run, null, 2);
+    return JSON.stringify(progress, null, 2);
   }
 
   if (operation === 'supplement') {
@@ -817,25 +963,67 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
     || operation === 'ingest'
     || operation === 'import_and_process'
   ) {
+    const progressWriter = typeof options.onLiteratureDiscoveryProgress === 'function'
+      ? options.onLiteratureDiscoveryProgress
+      : null;
     const run = await runLiteratureDiscovery({
       ...buildDiscoveryParams(rootPath, args, options),
+      runId: args.runId || args.run_id,
       operation,
       discoveryOperation: operation,
       resolveSources: operation === 'search' ? false : (args.resolveSources ?? args.resolve_sources),
-      persist: args.persist !== false
+      persist: args.persist !== false,
+      deferCompletedProgress: shouldSubmitImports(operation, args),
+      onProgress: progressWriter || undefined
     });
 
     if (shouldSubmitImports(operation, args)) {
+      await progressWriter?.({
+        runId: run.runId,
+        topic: run.topic,
+        operation,
+        searchMode: run.diagnostics?.searchMode || '',
+        status: 'running',
+        stage: 'import_submit',
+        event: 'import_submit_started',
+        candidateCount: run.candidates.length
+      });
       let importResult = await submitDiscoveryImports({
         corpus: args.corpus || rootPath,
         candidates: run.candidates,
         maxImported: args.maxImported || args.max_imported,
         options
       });
+      await progressWriter?.({
+        runId: run.runId,
+        topic: run.topic,
+        operation,
+        searchMode: run.diagnostics?.searchMode || '',
+        status: 'running',
+        stage: 'import_submit',
+        event: 'import_submit_completed',
+        importSummary: {
+          submitted: importResult.submitted || 0,
+          deduped: importResult.deduped || 0,
+          completed: importResult.completed || 0,
+          failed: importResult.failed || 0
+        }
+      });
       if (shouldProcessImports(operation, args)) {
         importResult = await refreshImportTaskStatuses(rootPath, importResult);
         const processableTaskCount = countProcessableImportTasks(importResult);
         const maxPasses = explicitImportMaxPasses(args, options);
+        await progressWriter?.({
+          runId: run.runId,
+          topic: run.topic,
+          operation,
+          searchMode: run.diagnostics?.searchMode || '',
+          status: 'running',
+          stage: 'import_processing',
+          event: 'import_processing_started',
+          processableTaskCount,
+          maxPasses: maxPasses ?? null
+        });
         const processing = processableTaskCount > 0 || maxPasses !== undefined
           ? await runImportQueueUntilIdle(rootPath, buildImportProcessingOptions(args, options, importResult))
           : {
@@ -848,6 +1036,16 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
           ...(await refreshImportTaskStatuses(rootPath, importResult)),
           processing
         };
+        await progressWriter?.({
+          runId: run.runId,
+          topic: run.topic,
+          operation,
+          searchMode: run.diagnostics?.searchMode || '',
+          status: 'running',
+          stage: 'import_processing',
+          event: 'import_processing_completed',
+          processing
+        });
       }
       const nextRun = applyImportResultsToRun(run, importResult);
       nextRun.coverage = {
@@ -857,6 +1055,19 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
       if (args.persist !== false) {
         await saveDiscoveryRun(rootPath, nextRun);
       }
+      await progressWriter?.({
+        runId: nextRun.runId,
+        topic: nextRun.topic,
+        operation,
+        searchMode: nextRun.diagnostics?.searchMode || '',
+        status: 'completed',
+        stage: 'completed',
+        event: 'completed',
+        completedAt: new Date().toISOString(),
+        coverage: nextRun.coverage,
+        importSummary: nextRun.importSummary || null,
+        artifacts: nextRun.artifacts || null
+      });
       return JSON.stringify(nextRun, null, 2);
     }
 

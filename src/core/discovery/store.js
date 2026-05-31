@@ -8,6 +8,8 @@ export function createDiscoveryRunId(date = new Date()) {
   return `disc-${date.toISOString().replace(/[:.]/g, '-')}`;
 }
 
+export const DISCOVERY_PROGRESS_CONTRACT_VERSION = 'literature-discovery-progress-v1';
+
 export function getDiscoveryPaths(rootPath, runId = '') {
   const discoveryDir = path.join(getCorpusPaths(rootPath).corpusDir, 'discovery');
   const runsDir = path.join(discoveryDir, 'runs');
@@ -21,6 +23,70 @@ export function getDiscoveryPaths(rootPath, runId = '') {
     downloadManifestPath: runDir ? path.join(runDir, 'download-manifest.json') : '',
     latestPath: path.join(discoveryDir, 'latest.json')
   };
+}
+
+export function getDiscoveryProgressPaths(rootPath, runId = '') {
+  const paths = getDiscoveryPaths(rootPath, runId);
+  return {
+    ...paths,
+    progressPath: paths.runDir ? path.join(paths.runDir, 'progress.json') : '',
+    latestProgressPath: path.join(paths.discoveryDir, 'latest-progress.json')
+  };
+}
+
+function normalizeProgressRunId(value = '') {
+  const runId = String(value || '').trim();
+  if (!runId) throw new Error('literature discovery progress requires runId.');
+  if (!/^[A-Za-z0-9._:-]+$/.test(runId)) {
+    throw new Error(`Invalid literature discovery runId: ${runId}`);
+  }
+  return runId;
+}
+
+export async function saveDiscoveryProgress(rootPath, progress = {}) {
+  const runId = normalizeProgressRunId(progress.runId || progress.run_id);
+  const paths = getDiscoveryProgressPaths(rootPath, runId);
+  const previous = await readJson(paths.progressPath, null);
+  const now = new Date().toISOString();
+  const record = {
+    contractVersion: DISCOVERY_PROGRESS_CONTRACT_VERSION,
+    ...(previous || {}),
+    ...progress,
+    runId,
+    rootPath,
+    status: progress.status || previous?.status || 'running',
+    stage: progress.stage || previous?.stage || 'running',
+    submittedAt: progress.submittedAt || previous?.submittedAt || now,
+    startedAt: progress.startedAt || previous?.startedAt || null,
+    completedAt: progress.completedAt || previous?.completedAt || null,
+    updatedAt: progress.updatedAt || now
+  };
+  await ensureDir(paths.runDir);
+  await writeJson(paths.progressPath, record);
+  await writeJson(paths.latestProgressPath, {
+    runId,
+    status: record.status,
+    stage: record.stage,
+    topic: record.topic || '',
+    operation: record.operation || '',
+    searchMode: record.searchMode || '',
+    updatedAt: record.updatedAt,
+    progressPath: paths.progressPath
+  });
+  return {
+    ...paths,
+    progress: record
+  };
+}
+
+export async function loadDiscoveryProgress(rootPath, runId = '') {
+  let resolvedRunId = String(runId || '').trim();
+  if (!resolvedRunId) {
+    const latest = await readJson(getDiscoveryProgressPaths(rootPath).latestProgressPath, null);
+    resolvedRunId = latest?.runId || '';
+  }
+  if (!resolvedRunId) return null;
+  return readJson(getDiscoveryProgressPaths(rootPath, normalizeProgressRunId(resolvedRunId)).progressPath, null);
 }
 
 export function renderDiscoveryReport(run = {}) {

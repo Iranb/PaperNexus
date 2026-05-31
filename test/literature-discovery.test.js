@@ -3522,3 +3522,78 @@ test('literature_discovery reads provider credentials from runtime config', asyn
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
+
+test('literature_discovery submit writes progress snapshots for polling', async () => {
+  const rootPath = await createTempCorpus();
+
+  try {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'dblp.org') {
+        return createJsonResponse({
+          result: {
+            hits: {
+              hit: []
+            }
+          }
+        });
+      }
+      assert.fail(`unexpected request ${url.toString()}`);
+    };
+
+    const submitted = JSON.parse(await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'submit',
+      discoveryOperation: 'search',
+      topic: 'async literature progress test',
+      providers: ['dblp'],
+      llmQueryPlanner: false,
+      maxQueries: 1,
+      maxResultsPerQuery: 1,
+      citationExpansion: false,
+      resolveSources: false
+    }, {
+      config: {
+        literatureDiscovery: {
+          providerConcurrency: 1,
+          discoveryRequestCache: false
+        }
+      }
+    }));
+
+    assert.equal(submitted.status, 'submitted');
+    assert.equal(submitted.operation, 'search');
+    assert.ok(submitted.runId);
+    assert.equal(submitted.progress.status, 'queued');
+
+    let progress = null;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      progress = JSON.parse(await executeLiteratureDiscoveryTool({
+        corpus: rootPath,
+        operation: 'progress',
+        runId: submitted.runId
+      }));
+      if (progress.status === 'completed' || progress.status === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.equal(progress.status, 'completed');
+    assert.equal(progress.stage, 'completed');
+    assert.equal(progress.runId, submitted.runId);
+    assert.equal(progress.operation, 'search');
+    assert.ok(progress.coverage);
+
+    const run = JSON.parse(await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'status',
+      runId: submitted.runId
+    }));
+    assert.equal(run.runId, submitted.runId);
+    assert.equal(run.contractVersion, 'literature-discovery-v1');
+  } finally {
+    resetDiscoveryRequestSchedulerForTests();
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});

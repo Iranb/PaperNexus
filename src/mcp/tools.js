@@ -643,15 +643,20 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'literature_discovery',
-    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use explicit deep/full settings when recall matters more than latency. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to progressive logical batching with importBatchEnabled=true, importBatchInitialTasks=4, and importBatchMaxTasks=16.',
+    description: 'Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use operation=submit plus progress/report polling for broad or long-running searches so MCP client timeouts do not lose server-side state. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to progressive logical batching with importBatchEnabled=true, importBatchInitialTasks=4, and importBatchMaxTasks=16.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['plan', 'search', 'resolve', 'run', 'import', 'ingest', 'import_and_process', 'supplement', 'status', 'report', 'list'],
+          enum: ['plan', 'search', 'resolve', 'run', 'import', 'ingest', 'import_and_process', 'submit', 'progress', 'supplement', 'status', 'report', 'list'],
           default: 'run',
-          description: 'plan/search/run/resolve produce discovery artifacts and do not by themselves make papers graph-visible. import submits resolved full text to the import queue. ingest/import_and_process also process imports inline, but graph visibility still depends on completed import tasks. status/report/list inspect persisted discovery runs.'
+          description: 'plan/search/run/resolve produce discovery artifacts and do not by themselves make papers graph-visible. submit starts a background search/run/resolve/import job and returns a runId for progress/report polling. progress returns the running snapshot. import submits resolved full text to the import queue. ingest/import_and_process also process imports inline, but graph visibility still depends on completed import tasks. status/report/list inspect persisted discovery runs.'
+        },
+        discoveryOperation: {
+          type: 'string',
+          enum: ['search', 'resolve', 'run', 'import', 'ingest', 'import_and_process'],
+          description: 'When operation=submit, the actual discovery operation to run in the background. Defaults to search.'
         },
         corpus: {
           type: 'string',
@@ -1186,7 +1191,7 @@ export const PAPERNEXUS_TOOLS = [
         },
         runId: {
           type: 'string',
-          description: 'Discovery run id for status/report or supplement operations. If omitted for status/report, the latest run is used.'
+          description: 'Discovery run id for progress/status/report or supplement operations. If omitted for progress/status/report, the latest run/progress snapshot is used.'
         },
         limit: {
           type: 'number',
