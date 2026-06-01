@@ -55,6 +55,16 @@ Stable wrapper expectations:
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.
 - MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true`, `batchProgressive=true`, `batchInitialTasks=4`, and `batchMaxTasks=16`; wrappers continue tracking per-task ids.
 
+## AutoResearch Graph-of-Evidence Contract
+
+AutoResearch / `$autoreskill` clients may build a local Graph-of-Evidence idea package from PaperNexus outputs without changing the MCP interface. The PaperNexus side remains additive:
+
+- `literature_discovery` and `import_workflow` provide asynchronous discovery/import state.
+- `agent_materials proposal_graph_session`, material views, negative evidence packs, and evidence carts provide source-backed material.
+- Skill clients compile those remote outputs into local `.autoreskill/ideation/EVIDENCE_GRAPH_PROJECTION.json`, `IDEA_BUILD_BRIEF.json/md`, `GOE_IDEA_AUDIT.json`, and `IDEA_TRACK_SEEDS.json`.
+
+These `.autoreskill` artifacts are client-side projections. They must not be treated as PaperNexus graph mutations, and they must not require a new MCP schema. A client may mark `unknown_after_timeout`, `async_wait`, `metadata_only`, or `degraded` locally, but graph-grounded claims still require import queue completion plus authoritative sync or explicit split-reading/material evidence.
+
 ## Current Harness Changes
 
 The 2026-05-12 harness work is internal/additive:

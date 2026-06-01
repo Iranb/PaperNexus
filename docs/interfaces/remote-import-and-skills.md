@@ -80,6 +80,16 @@ For broad or high-risk discovery, prefer `literature_discovery operation=submit`
 
 For source-discovery or AutoResearch ideation work, split broad searches into `target`, `near`, and `far` lanes. The lane split makes target-domain priors, near-source methods, and far-source transfer candidates independently retryable, and it prevents one slow lane from hiding the state of the others.
 
+For `$autoreskill` idea construction, the recommended client-side path is:
+
+1. run target / near / far discovery lanes with durable submit/poll ledgers
+2. screen candidates into `PAPER_SELECTION_SCORECARD.json`
+3. route usable papers to import, material view, or split-reading evidence
+4. capture proposal graph or material evidence through MCP
+5. compile local GOE artifacts: `EVIDENCE_GRAPH_PROJECTION.json`, `IDEA_BUILD_BRIEF.json/md`, `GOE_IDEA_AUDIT.json`, and `IDEA_TRACK_SEEDS.json`
+
+The GOE files are local AutoResearch artifacts. They are useful for resumable ideation and ScientistOne-style provenance, but they do not replace MCP queue/status evidence and they do not make metadata-only discovery graph-grounded.
+
 Discovery and material paper lists are publication-date aware: dated candidates are returned newest-first, year-only metadata is used when no full date exists, and undated records keep stable fallback ordering. This is an ordering rule only; it does not change import readiness or graph visibility.
 
 Agents should therefore report interim results precisely:
