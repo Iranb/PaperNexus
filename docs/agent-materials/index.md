@@ -19,6 +19,7 @@ Use this section when an Agent needs structured materials for a research task bu
 ## Operating Rules
 
 - Provider evidence, live discovery, literature discovery, import submission, import processing, and experiment planning are opt-in paths.
+- Paper-like arrays such as `candidate_papers`, provider/live/literature discovery candidates, and `supporting_papers` are ordered newest-first when publication metadata is available; undated records retain stable fallback ordering after dated records.
 - Discovery-only and provider-only papers are not graph evidence until import tasks complete and authoritative graph sync is visible.
 - Project overlays are Agent memory, not paper truth.
 - Research-controller outputs are planning artifacts. They do not prove novelty, select a final direction, run experiments, or mutate the raw graph.

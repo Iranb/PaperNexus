@@ -33,6 +33,17 @@ export const S2_FIELDS_OF_STUDY = [
 ];
 
 const DEFAULT_SNIPPET_FIELDS = [
+  'paper.title',
+  'paper.authors',
+  'paper.year',
+  'paper.publicationDate',
+  'paper.publicationDateOrYear',
+  'paper.venue',
+  'paper.url',
+  'paper.externalIds',
+  'paper.fieldsOfStudy',
+  'paper.isOpenAccess',
+  'paper.openAccessPdf',
   'snippet.text',
   'snippet.snippetKind',
   'snippet.section',
@@ -157,12 +168,29 @@ function semanticScholarPaperId(paper = {}) {
 function normalizePaper(paper = {}, fallback = {}) {
   const externalIds = normalizeExternalIds(paper.externalIds || fallback.externalIds);
   const corpusId = paper.corpusId ?? fallback.corpusId ?? externalIds.CorpusId ?? '';
+  const year = Number.isFinite(Number(paper.year ?? fallback.year)) ? Number(paper.year ?? fallback.year) : null;
+  const publicationDate = compactText(
+    paper.publicationDate
+    || paper.publication_date
+    || fallback.publicationDate
+    || fallback.publication_date
+  );
+  const publicationDateOrYear = compactText(
+    paper.publicationDateOrYear
+    || paper.publication_date_or_year
+    || fallback.publicationDateOrYear
+    || fallback.publication_date_or_year
+    || publicationDate
+    || year
+  );
   return {
     paperId: paper.paperId || fallback.paperId || '',
     corpusId: corpusId === undefined || corpusId === null ? '' : String(corpusId),
     title: compactText(paper.title || fallback.title),
     authors: normalizeAuthors(paper.authors || fallback.authors),
-    year: Number.isFinite(Number(paper.year ?? fallback.year)) ? Number(paper.year ?? fallback.year) : null,
+    year,
+    publicationDate: publicationDate || null,
+    publicationDateOrYear: publicationDateOrYear || null,
     venue: compactText(paper.venue || fallback.venue),
     url: compactText(paper.url || fallback.url),
     externalIds,
@@ -273,6 +301,8 @@ export async function fetchSemanticScholarPaperAbstract(paper, params = {}) {
     'title',
     'abstract',
     'year',
+    'publicationDate',
+    'publicationDateOrYear',
     'venue',
     'url',
     'externalIds',

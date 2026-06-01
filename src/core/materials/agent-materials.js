@@ -24,6 +24,10 @@ import { runProposalGraphSession } from '../graph/proposal-controller.js';
 import { loadChunkText, loadPaperChunks } from '../../storage/chunk-store.js';
 import { loadImportTask } from '../../storage/import-store.js';
 import {
+  pickLatestPublicationDateFields,
+  sortPaperRecordsByPublicationDateDesc
+} from '../paper-date.js';
+import {
   executeEvidenceCart,
   executePaperRoleOverlay,
   executeWorkflowState,
@@ -136,6 +140,55 @@ function firstDefined(...values) {
     && value !== null
     && String(value).trim() !== ''
   )) ?? '';
+}
+
+function publicationFieldsFromRecords(...records) {
+  const fields = pickLatestPublicationDateFields(...records);
+  return {
+    year: fields.year || null,
+    publicationDate: fields.publicationDate || null,
+    publication_date: fields.publicationDate || null
+  };
+}
+
+function withPublicationFields(record = {}, ...extraRecords) {
+  const base = record && typeof record === 'object' && !Array.isArray(record)
+    ? record
+    : { title: compactText(record) };
+  const fields = publicationFieldsFromRecords(base, ...extraRecords);
+  return {
+    ...base,
+    year: fields.year || base.year || null,
+    publicationDate: fields.publicationDate || base.publicationDate || base.publication_date || null,
+    publication_date: fields.publicationDate || base.publication_date || base.publicationDate || null
+  };
+}
+
+function compareMaterialCandidateFallback(left = {}, right = {}) {
+  return Number(right.score || 0) - Number(left.score || 0)
+    || String(left.title || '').localeCompare(String(right.title || ''))
+    || String(left.paper_id || left.paper_key || '').localeCompare(String(right.paper_id || right.paper_key || ''));
+}
+
+function sortMaterialPaperRecords(records = [], limit = null) {
+  const sorted = sortPaperRecordsByPublicationDateDesc(records.map((record) => withPublicationFields(record)), {
+    fallbackCompare: compareMaterialCandidateFallback
+  });
+  return limit === null ? sorted : sorted.slice(0, limit);
+}
+
+function sortCandidatePapersByRole(candidates = []) {
+  const roleOrder = [];
+  const byRole = new Map();
+  for (const candidate of candidates) {
+    const role = candidate.role || '';
+    if (!byRole.has(role)) {
+      byRole.set(role, []);
+      roleOrder.push(role);
+    }
+    byRole.get(role).push(candidate);
+  }
+  return roleOrder.flatMap((role) => sortMaterialPaperRecords(byRole.get(role) || []));
 }
 
 function normalizeObject(value) {
@@ -848,6 +901,7 @@ function identifiersFromProviderPaper(paper = {}) {
 function normalizeProviderHit(result = {}, record = {}) {
   const paper = result.paper || {};
   const identifiers = identifiersFromProviderPaper(paper);
+  const publicationFields = publicationFieldsFromRecords(paper, result);
   const providerPaperId = paper.paperId || (paper.corpusId ? `CorpusId:${paper.corpusId}` : '') || identifiers.doi || identifiers.arxivId || '';
   const openAccessPdf = typeof paper.openAccessPdf === 'string'
     ? paper.openAccessPdf
@@ -865,7 +919,9 @@ function normalizeProviderHit(result = {}, record = {}) {
     provider_paper_id: providerPaperId || null,
     paper_id: providerPaperId || `provider:${stableHash(paper.title || result.text || record.query, 16)}`,
     title: paper.title || null,
-    year: paper.year ?? null,
+    year: publicationFields.year || paper.year || null,
+    publicationDate: publicationFields.publicationDate || paper.publicationDate || paper.publication_date || null,
+    publication_date: publicationFields.publication_date || paper.publication_date || paper.publicationDate || null,
     venue: paper.venue || null,
     url: paper.url || null,
     identifiers,
@@ -1070,6 +1126,7 @@ function providerCandidatesFromEvidence(providerEvidence = {}, limit = 5) {
   const candidates = flattenProviderHits(providerEvidence).map((hit) => ({
     paper_id: hit.paper_id,
     title: hit.title,
+    ...publicationFieldsFromRecords(hit),
     role: hit.role,
     layer: hit.layer,
     source_domain: hit.source_domain,
@@ -1136,7 +1193,7 @@ function providerSeedPapersFromEvidence(providerEvidence = {}, limit = 8) {
     seeds.push({
       id: paperId || `provider:${stableHash(title, 16)}`,
       title,
-      year: hit.year || null,
+      ...publicationFieldsFromRecords(hit),
       venue: hit.venue || null,
       identifiers,
       abstract: truncate(hit.text || hit.abstract || '', 800),
@@ -1280,7 +1337,7 @@ function normalizeLiveDiscoveryEvidence(live = {}, config = {}, sparsity = {}) {
     source_search_queries: entry.source_search_queries || [],
     rationale: entry.rationale || ''
   })).filter((entry) => entry.source_domain);
-  const supportingPapers = asArray(evidenceExport.supporting_papers);
+  const supportingPapers = sortMaterialPaperRecords(asArray(evidenceExport.supporting_papers));
   return {
     ...liveDiscoveryPolicy(config),
     status: 'ok',
@@ -1435,6 +1492,7 @@ function liveDiscoveryCandidatesFromEvidence(liveEvidence = {}, context = {}, ta
     return {
       paper_id: compactText(paper.paper_key) || `live:${stableHash(paper.title || sourceDomain, 16)}`,
       title: compactText(paper.title || paper.paper_key),
+      ...publicationFieldsFromRecords(paper),
       role: classification.role,
       layer: classification.layer,
       source_domain: sourceDomain || null,
@@ -1507,7 +1565,7 @@ function liveDiscoverySeedPapersFromEvidence(liveEvidence = {}, limit = 8) {
       id: paperKey || `live:${stableHash(title, 16)}`,
       title,
       authors: asArray(paper.authors),
-      year: paper.year || paper.publication_year || paper.publicationYear || null,
+      ...publicationFieldsFromRecords(paper),
       venue: paper.venue || paper.journal || paper.conference || null,
       identifiers,
       abstract: truncate(abstract, 800),
@@ -1770,7 +1828,7 @@ function normalizeLiteratureDiscoveryCandidate(candidate = {}, manifest = {}) {
     canonical_id: candidate.canonicalId || candidate.canonical_id || null,
     title: compactText(candidate.title),
     authors: asArray(candidate.authors),
-    year: candidate.year || null,
+    ...publicationFieldsFromRecords(candidate),
     venue: candidate.venue || null,
     identifiers,
     abstract: truncate(candidate.abstract || candidate.summary || '', 600),
@@ -1793,9 +1851,10 @@ function normalizeLiteratureDiscoveryCandidate(candidate = {}, manifest = {}) {
 
 function literatureDiscoveryCandidatesFromEvidence(evidence = {}, limit = 12) {
   if (evidence.status !== 'ok') return [];
-  return asArray(evidence.candidates).slice(0, limit).map((candidate) => ({
+  return sortMaterialPaperRecords(asArray(evidence.candidates), limit).map((candidate) => ({
     paper_id: candidate.canonical_id || candidate.candidate_id || `literature:${stableHash(candidate.title || JSON.stringify(candidate), 16)}`,
     title: candidate.title,
+    ...publicationFieldsFromRecords(candidate),
     role: 'literature_discovery_candidate',
     layer: 'online_discovery',
     score: candidate.identity_confidence === 'strong' ? 0.55 : 0.35,
@@ -2361,13 +2420,14 @@ function collectGraphPaperCandidates(graph, queries = [], limit = 5) {
   for (const query of queries) {
     const result = searchGraph(graph, query, { limit: Math.max(limit, 8) });
     for (const group of result.groups || []) {
-      if (candidates.length >= limit) return candidates;
+      if (candidates.length >= limit) return sortMaterialPaperRecords(candidates);
       if (group.scope !== 'paper') continue;
       if (seen.has(group.id)) continue;
       seen.add(group.id);
       candidates.push({
         paper_id: group.id,
         title: group.title,
+        ...publicationFieldsFromRecords(group),
         query,
         score: Number(group.score || 0),
         matches: group.matches || [],
@@ -2375,7 +2435,7 @@ function collectGraphPaperCandidates(graph, queries = [], limit = 5) {
       });
     }
   }
-  return candidates;
+  return sortMaterialPaperRecords(candidates);
 }
 
 function collectGraphDomainNames(graph) {
@@ -2501,9 +2561,7 @@ function mergeCandidateLists(candidates = [], limit = 5) {
       byKey.set(key, candidate);
     }
   }
-  return [...byKey.values()]
-    .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
-    .slice(0, limit);
+  return sortMaterialPaperRecords([...byKey.values()], limit);
 }
 
 function collectDomainPaperCandidates(graph, sourceDomainQueries = [], role, limit = 5) {
@@ -2622,6 +2680,14 @@ export async function buildSourceDiscoveryPlan(args = {}, options = {}) {
     literatureDiscoveryEvidence,
     context.manifest
   );
+  const candidatePapers = sortCandidatePapersByRole([
+    ...targetCandidates.map((entry) => ({ ...entry, role: 'target_prior', layer: 'target_domain' })),
+    ...nearCandidates.map((entry) => ({ ...entry, role: 'near_source_method', layer: 'near_source' })),
+    ...farCandidates.map((entry) => ({ ...entry, role: 'far_source_story', layer: 'far_source' })),
+    ...providerCandidates,
+    ...liveDiscoveryCandidates,
+    ...literatureDiscoveryCandidates
+  ]);
 
   return {
     contractVersion: AGENT_MATERIALS_CONTRACT_VERSION,
@@ -2648,14 +2714,7 @@ export async function buildSourceDiscoveryPlan(args = {}, options = {}) {
       proximal_leakage: entry.proximal_leakage
     })),
     candidate_source_domains: router.candidate_source_domains,
-    candidate_papers: [
-      ...targetCandidates.map((entry) => ({ ...entry, role: 'target_prior', layer: 'target_domain' })),
-      ...nearCandidates.map((entry) => ({ ...entry, role: 'near_source_method', layer: 'near_source' })),
-      ...farCandidates.map((entry) => ({ ...entry, role: 'far_source_story', layer: 'far_source' })),
-      ...providerCandidates,
-      ...liveDiscoveryCandidates,
-      ...literatureDiscoveryCandidates
-    ],
+    candidate_papers: candidatePapers,
     provider_evidence: {
       ...providerEvidence,
       persistence: providerEvidencePersistence

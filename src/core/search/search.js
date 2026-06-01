@@ -3,6 +3,11 @@ import { isBrainstormEligibleNode, isBrainstormSupportNode } from '../graph/brai
 import { normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
 import { buildBrainstormCommunityContext, deriveDomainCommunityProfile } from './brainstorm-communities.js';
 import { scoreTokenOverlap, tokenizeWithoutStopwords, truncate, jaccardSimilarity, unique } from '../../lib/utils.js';
+import {
+  comparePaperPublicationDateDesc,
+  pickLatestPublicationDateFields,
+  sortPaperRecordsByPublicationDateDesc
+} from '../paper-date.js';
 
 const MAX_SEARCH_RESULT_LIMIT = 50;
 const MAX_IMPACT_DEPTH = 8;
@@ -109,6 +114,30 @@ function resolveNodeScope(node) {
   };
 }
 
+function publicationFieldsForSearchHit(graph, node = {}, scope = {}) {
+  if (scope.scope !== 'paper') return { year: null, publicationDate: null };
+  const paperNode = findPaperById(graph, scope.id);
+  return pickLatestPublicationDateFields(
+    node,
+    node.properties || {},
+    paperNode,
+    paperNode?.properties || {}
+  );
+}
+
+function compareSearchScoreFallback(left = {}, right = {}) {
+  return Number(right.score || 0) - Number(left.score || 0)
+    || Number(right.matchCount || 0) - Number(left.matchCount || 0)
+    || String(left.title || '').localeCompare(String(right.title || ''));
+}
+
+function compareSearchGroups(left = {}, right = {}) {
+  if (left.scope === 'paper' && right.scope === 'paper') {
+    return comparePaperPublicationDateDesc(left, right, compareSearchScoreFallback);
+  }
+  return compareSearchScoreFallback(left, right);
+}
+
 function nodeMatchesView(node, view = 'all') {
   if (!node) return false;
   if (view === 'brainstorm') {
@@ -208,9 +237,11 @@ export function searchGraph(graph, query, options = {}) {
     if (score <= 0.2) continue;
 
     const scope = resolveNodeScope(node);
+    const publicationFields = publicationFieldsForSearchHit(graph, node, scope);
     hits.push({
       node,
       scope,
+      ...publicationFields,
       score,
       excerpt: truncate(node.properties?.text || node.properties?.abstract || node.properties?.evidenceText || node.name, 220)
     });
@@ -227,10 +258,15 @@ export function searchGraph(graph, query, options = {}) {
       scope: hit.scope.scope,
       score: 0,
       matchCount: 0,
+      year: null,
+      publicationDate: null,
       matches: []
     };
+    const publicationFields = pickLatestPublicationDateFields(existing, hit);
     existing.matchCount += 1;
     existing.score += hit.score;
+    existing.year = publicationFields.year || existing.year || null;
+    existing.publicationDate = publicationFields.publicationDate || existing.publicationDate || null;
     if (existing.matches.length < 4) {
       existing.matches.push({
         nodeId: hit.node.id,
@@ -245,7 +281,7 @@ export function searchGraph(graph, query, options = {}) {
   return {
     query,
     groups: [...grouped.values()]
-      .sort((left, right) => right.score - left.score)
+      .sort(compareSearchGroups)
       .slice(0, limit)
   };
 }
@@ -454,9 +490,12 @@ function collectRelevantPaperIds(graph, query, relationIndex, options = {}) {
     }
   }
 
-  return [...paperIds]
+  const papers = [...paperIds]
     .map((paperId) => findPaperById(graph, paperId))
-    .filter(Boolean)
+    .filter(Boolean);
+  return sortPaperRecordsByPublicationDateDesc(papers, {
+    fallbackCompare: (left, right) => String(left.name || '').localeCompare(String(right.name || ''))
+  })
     .slice(0, 8);
 }
 

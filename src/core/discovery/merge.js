@@ -4,6 +4,10 @@ import {
   paperStrongIdentityOverlap
 } from '../../lib/paper-identifiers.js';
 import { jaccardSimilarity, scoreTokenOverlap, tokenizeWithoutStopwords, unique } from '../../lib/utils.js';
+import {
+  comparePaperPublicationDateDesc,
+  pickLatestPublicationDateFields
+} from '../paper-date.js';
 
 const FUZZY_MERGE_TITLE_THRESHOLD = 0.86;
 const RELATION_TITLE_THRESHOLD = 0.72;
@@ -215,6 +219,7 @@ function scoreCandidate(candidate, topicTokens, preferredVenuePacks = []) {
 
 function mergeGroupWithCandidate(group, candidate, mergeEvidence = null) {
   const identity = mergePaperIdentity(group, candidate);
+  const publicationFields = pickLatestPublicationDateFields(group, candidate);
   const providerRecords = [
     ...(group.providerRecords || []),
     {
@@ -253,8 +258,8 @@ function mergeGroupWithCandidate(group, candidate, mergeEvidence = null) {
     id: identity.canonicalId || group.id || candidate.id,
     title: pickBestText(group.title, candidate.title),
     authors: mergeUniqueArrays(group.authors || [], candidate.authors || []),
-    year: group.year || candidate.year || null,
-    publicationDate: group.publicationDate || candidate.publicationDate || null,
+    year: publicationFields.year || group.year || candidate.year || null,
+    publicationDate: publicationFields.publicationDate || group.publicationDate || candidate.publicationDate || null,
     venue: pickFirst(group.venue, candidate.venue),
     venueFamily: pickFirst(group.venueFamily, candidate.venueFamily),
     venueType: pickFirst(group.venueType, candidate.venueType),
@@ -346,6 +351,13 @@ function attachRelationHints(groups = []) {
   });
 }
 
+function compareCandidateScoreFallback(left = {}, right = {}) {
+  return Number(right.selectionScore || 0) - Number(left.selectionScore || 0)
+    || Number(right.providerAgreementCount || 0) - Number(left.providerAgreementCount || 0)
+    || Number(right.citationCount || 0) - Number(left.citationCount || 0)
+    || String(left.title).localeCompare(String(right.title));
+}
+
 export function mergeDiscoveryCandidates(params = {}) {
   const topicTokens = tokenizeWithoutStopwords(params.topic || '');
   const preferredVenuePacks = Array.isArray(params.preferredVenuePacks) ? params.preferredVenuePacks : [];
@@ -382,9 +394,7 @@ export function mergeDiscoveryCandidates(params = {}) {
       };
     })
     .sort((left, right) => (
-      right.selectionScore - left.selectionScore
-      || right.providerAgreementCount - left.providerAgreementCount
-      || Number(right.citationCount || 0) - Number(left.citationCount || 0)
-      || String(left.title).localeCompare(String(right.title))
+      (left.screening?.decision === 'include' ? 0 : 1) - (right.screening?.decision === 'include' ? 0 : 1)
+      || comparePaperPublicationDateDesc(left, right, compareCandidateScoreFallback)
     ));
 }

@@ -160,6 +160,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/materials/agent-materials.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/agent-materials.js) | Agent-facing material pack, paper material view, source discovery plan, and import requisition assembly. |
 | [`src/core/materials/project-overlay.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/project-overlay.js) | Project-level Agent overlay storage for paper roles, evidence carts, and workflow state. |
 | [`src/core/materials/research-controller.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/research-controller.js) | Research Controller implementation. |
+| [`src/core/paper-date.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/paper-date.js) | Paper Date implementation. |
 | [`src/core/search/brainstorm-communities.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/search/brainstorm-communities.js) | Brainstorm Communities implementation. |
 | [`src/core/search/search.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/search/search.js) | Query, context, impact, idea, and brainstorming retrieval logic. |
 

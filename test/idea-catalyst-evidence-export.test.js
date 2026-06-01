@@ -110,6 +110,27 @@ test('idea-catalyst evidence export remains source-backed when falsification pla
   assert.equal(beatProvenance.beat_id, 'beat:reflective-tutor');
 });
 
+test('idea-catalyst evidence export sorts supporting papers by newest publication date', () => {
+  const result = evidenceExport({
+    source_domain_analyses: [{
+      source_domain: 'Psychology',
+      takeaways: [],
+      supporting_papers: [
+        { paper_key: 'paper:old', title: 'Older Source', year: 2023, snippets: [] },
+        { paper_key: 'paper:new', title: 'Newer Source', publicationDate: '2026-05-01', snippets: [] },
+        { paper_key: 'paper:undated', title: 'Undated Source', snippets: [] }
+      ]
+    }]
+  });
+
+  assert.deepEqual(result.supporting_papers.map((paper) => paper.paper_key), [
+    'paper:new',
+    'paper:old',
+    'paper:undated'
+  ]);
+  assert.equal(result.supporting_papers[0].publicationDate, '2026-05-01');
+});
+
 test('idea-catalyst evidence export downgrades stale falsification claim refs to weak evidence', () => {
   const result = evidenceExport({
     counterfactuals: [],

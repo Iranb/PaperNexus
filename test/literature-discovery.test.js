@@ -737,6 +737,59 @@ test('mergeDiscoveryCandidates dedupes fuzzy title matches with secondary eviden
   assert.ok(merged[0].dedupeEvidence.some((entry) => entry.reason === 'fuzzy_title_with_secondary_evidence'));
 });
 
+test('mergeDiscoveryCandidates carries the latest publication date across duplicate provider records', () => {
+  const candidates = [
+    createDiscoveryCandidate({
+      provider: 'openalex',
+      title: 'Adaptive Calibration for Discovery',
+      authors: ['Ada Lovelace'],
+      year: 2024,
+      identifiers: { doi: '10.1234/adaptive-calibration' }
+    }),
+    createDiscoveryCandidate({
+      provider: 'semantic_scholar',
+      title: 'Adaptive Calibration for Discovery',
+      authors: ['Ada Lovelace'],
+      publicationDate: '2026-04-15',
+      identifiers: { doi: '10.1234/adaptive-calibration' }
+    })
+  ];
+
+  const merged = mergeDiscoveryCandidates({
+    topic: 'adaptive calibration discovery',
+    candidates
+  });
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].year, 2026);
+  assert.equal(merged[0].publicationDate, '2026-04-15');
+});
+
+test('mergeDiscoveryCandidates orders included papers by publication date before score fallback', () => {
+  const merged = mergeDiscoveryCandidates({
+    topic: 'adaptive calibration discovery',
+    candidates: [
+      createDiscoveryCandidate({
+        provider: 'crossref',
+        title: 'Adaptive Calibration Discovery Benchmark',
+        year: 2024,
+        citationCount: 500,
+        identifiers: { doi: '10.1234/older-calibration' }
+      }),
+      createDiscoveryCandidate({
+        provider: 'openalex',
+        title: 'Adaptive Calibration Discovery Methods',
+        publicationDate: '2026-02-01',
+        citationCount: 1,
+        identifiers: { doi: '10.1234/newer-calibration' }
+      })
+    ]
+  });
+
+  assert.equal(merged[0].title, 'Adaptive Calibration Discovery Methods');
+  assert.equal(merged[1].title, 'Adaptive Calibration Discovery Benchmark');
+});
+
 test('mergeDiscoveryCandidates preserves conflicting strong identities and records relation hints', () => {
   const candidates = [
     createDiscoveryCandidate({
@@ -799,7 +852,7 @@ test('mergeDiscoveryCandidates ranks expanded-query title matches into the candi
       createDiscoveryCandidate({
         provider: 'crossref',
         title: 'Recent Advances in Open Set Recognition: A Survey',
-        year: 2020,
+        year: 2026,
         citationCount: 1,
         retrievalEvidence: [{
           provider: 'crossref',

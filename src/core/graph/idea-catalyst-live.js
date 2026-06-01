@@ -19,6 +19,11 @@ import {
   truncate,
   unique
 } from '../../lib/utils.js';
+import {
+  publicationDateFromRecord,
+  publicationYearFromRecord,
+  sortPaperRecordsByPublicationDateDesc
+} from '../paper-date.js';
 import { buildIdeaCatalystEvidenceExport } from './idea-catalyst-evidence-export.js';
 import {
   LIVE_IDEA_CATALYST_PACKET_V2_VERSION,
@@ -803,6 +808,20 @@ function groupSnippetsByPaper(snippets = []) {
   return [...grouped.values()];
 }
 
+function compareGroupedPaperFallback(left = {}, right = {}) {
+  return Number(right.snippets?.length || 0) - Number(left.snippets?.length || 0)
+    || String(left.paper?.title || '').localeCompare(String(right.paper?.title || ''));
+}
+
+function publicationFieldsForLivePaper(entry = {}) {
+  const publicationDate = publicationDateFromRecord(entry);
+  return {
+    year: publicationYearFromRecord(entry),
+    publicationDate,
+    publication_date: publicationDate
+  };
+}
+
 async function retrieveSourceEvidence(sourceDomain, challenge, params = {}) {
   const maxPapersPerQuery = toPositiveInteger(
     params.maxPapersPerQuery || params.max_papers_per_query,
@@ -823,7 +842,9 @@ async function retrieveSourceEvidence(sourceDomain, challenge, params = {}) {
   return {
     retrievals,
     snippets,
-    papers: groupSnippetsByPaper(snippets),
+    papers: sortPaperRecordsByPublicationDateDesc(groupSnippetsByPaper(snippets), {
+      fallbackCompare: compareGroupedPaperFallback
+    }),
     challenge
   };
 }
@@ -1000,6 +1021,7 @@ async function analyzeSourceDomain(sourceDomain, challenge, params, options) {
       paper_key: entry.paper_key,
       title: entry.paper.title || '',
       authors: entry.paper.authors || [],
+      ...publicationFieldsForLivePaper(entry),
       snippets: entry.snippets.slice(0, 3).map((snippet) => ({
         snippet_id: snippet.snippetId,
         text: snippet.text,

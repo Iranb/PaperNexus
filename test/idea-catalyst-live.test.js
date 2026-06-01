@@ -21,13 +21,14 @@ function createJsonResponse(payload, status = 200) {
   };
 }
 
-function snippet(corpusId, title, text, score = 0.8) {
+function snippet(corpusId, title, text, score = 0.8, metadata = {}) {
   return {
     score,
     paper: {
       corpusId,
       title,
-      authors: ['A. Researcher']
+      authors: ['A. Researcher'],
+      ...metadata
     },
     snippet: {
       text,
@@ -193,9 +194,9 @@ test('runLiveIdeaCatalyst executes snippet retrieval, majority pruning, and pair
         return createJsonResponse({
           retrievalVersion: 'psychology',
           data: [
-            snippet('psy1', 'Metacontrol in Goal Pursuit', 'Metacontrol balances persistence and flexibility as goals change.'),
-            snippet('psy2', 'Cognitive Control Adaptation', 'Cognitive control adapts prospectively to expected goal switches.'),
-            snippet('psy3', 'Unrelated Memory Study', 'Memory recall varies across conditions.')
+            snippet('psy1', 'Metacontrol in Goal Pursuit', 'Metacontrol balances persistence and flexibility as goals change.', 0.8, { publicationDate: '2024-02-01' }),
+            snippet('psy2', 'Cognitive Control Adaptation', 'Cognitive control adapts prospectively to expected goal switches.', 0.8, { publicationDate: '2026-01-15' }),
+            snippet('psy3', 'Unrelated Memory Study', 'Memory recall varies across conditions.', 0.8, { year: 2023 })
           ]
         });
       }
@@ -237,6 +238,17 @@ test('runLiveIdeaCatalyst executes snippet retrieval, majority pruning, and pair
     assert.equal(result.targetFieldOfStudy, 'Computer Science');
     assert.equal(result.source_domain_analyses.length, 3);
     assert.equal(result.source_domain_analyses.find((entry) => entry.source_domain === 'Psychology').accepted, true);
+    assert.deepEqual(
+      result.source_domain_analyses
+        .find((entry) => entry.source_domain === 'Psychology')
+        .supporting_papers
+        .map((paper) => paper.paper_key),
+      ['psy2', 'psy1']
+    );
+    assert.equal(
+      result.source_domain_analyses.find((entry) => entry.source_domain === 'Psychology').supporting_papers[0].publicationDate,
+      '2026-01-15'
+    );
     assert.equal(result.source_domain_analyses.find((entry) => entry.source_domain === 'Economics').accepted, false);
     assert.equal(result.source_domain_analyses.find((entry) => entry.source_domain === 'Economics').pruning_decision, 'pruned_below_majority_relevance');
     assert.equal(result.interdisciplinary_ranking.ranking_backend, 'llm-pairwise-v1');

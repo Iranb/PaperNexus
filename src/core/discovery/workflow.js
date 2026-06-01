@@ -16,6 +16,7 @@ import { expandDiscoveryCitations } from './citation-expansion.js';
 import { extractResearchEntitiesFromText } from './entities.js';
 import { createPaperIdentity, normalizePaperIdentifiers } from '../../lib/paper-identifiers.js';
 import { stableHash, unique } from '../../lib/utils.js';
+import { sortPaperRecordsByPublicationDateDesc } from '../paper-date.js';
 
 function countStrongIdentity(candidates = []) {
   return candidates.filter((candidate) => candidate.identityConfidence === 'strong').length;
@@ -669,8 +670,18 @@ function attachEntityQueries(plan = {}, seedEntities = [], params = {}) {
   };
 }
 
+function compareDiscoveryCandidateFallback(left = {}, right = {}) {
+  return Number(right.selectionScore || 0) - Number(left.selectionScore || 0)
+    || Number(right.providerAgreementCount || 0) - Number(left.providerAgreementCount || 0)
+    || Number(right.citationCount || 0) - Number(left.citationCount || 0)
+    || String(left.title || '').localeCompare(String(right.title || ''));
+}
+
 function selectCandidateWindow(candidates = [], seedCandidates = [], maxCandidates = 120) {
   const limit = Math.max(1, Math.floor(Number(maxCandidates || 120)));
+  const orderedCandidates = sortPaperRecordsByPublicationDateDesc(candidates, {
+    fallbackCompare: compareDiscoveryCandidateFallback
+  });
   const seedKeys = new Set(seedCandidates.flatMap((seed) => [
     seed.canonicalId,
     seed.normalizedTitle,
@@ -680,7 +691,7 @@ function selectCandidateWindow(candidates = [], seedCandidates = [], maxCandidat
   const selected = [];
   const selectedKeys = new Set();
 
-  for (const candidate of candidates) {
+  for (const candidate of orderedCandidates) {
     const candidateKeys = [
       candidate.canonicalId,
       candidate.normalizedTitle,
@@ -691,16 +702,20 @@ function selectCandidateWindow(candidates = [], seedCandidates = [], maxCandidat
     if (!candidateKeys.some((candidateKey) => seedKeys.has(candidateKey)) || selectedKeys.has(key)) continue;
     selected.push(candidate);
     selectedKeys.add(key);
-    if (selected.length >= limit) return selected;
+    if (selected.length >= limit) return sortPaperRecordsByPublicationDateDesc(selected, {
+      fallbackCompare: compareDiscoveryCandidateFallback
+    });
   }
-  for (const candidate of candidates) {
+  for (const candidate of orderedCandidates) {
     const key = candidate.canonicalId || candidate.normalizedTitle || candidate.title || candidate.id;
     if (selectedKeys.has(key)) continue;
     selected.push(candidate);
     selectedKeys.add(key);
     if (selected.length >= limit) break;
   }
-  return selected;
+  return sortPaperRecordsByPublicationDateDesc(selected, {
+    fallbackCompare: compareDiscoveryCandidateFallback
+  });
 }
 
 function buildDiscoveryMetadataGraph(candidates = []) {

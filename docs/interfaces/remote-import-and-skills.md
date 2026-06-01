@@ -75,6 +75,8 @@ The important boundary is that discovery and graph ingestion are intentionally a
 
 For interactive search, prefer `operation=search`. It is metadata-only by default and has explicit latency profiles: `quick` uses a 25s budget and 4 query cap, `balanced` uses a 45s budget and 6 query cap, and `deep` is the MCP default broader profile with a bounded 10-minute budget and 10 query cap, aligned with the default HTTP MCP request timeout. Search-mode LLM query planning is rule-based by default; if explicitly enabled, it is capped to 8s/12s/18s for quick/balanced/deep and returns deterministic planning fallback on timeout or failure. This keeps discovery an optional upstream substrate instead of a blocking graph path.
 
+Discovery and material paper lists are publication-date aware: dated candidates are returned newest-first, year-only metadata is used when no full date exists, and undated records keep stable fallback ordering. This is an ordering rule only; it does not change import readiness or graph visibility.
+
 Agents should therefore report interim results precisely:
 
 - use "discovered" for candidates in a discovery report

@@ -1,6 +1,11 @@
 import { stableHash } from '../../lib/utils.js';
 import { createProvenanceEnvelope } from '../../storage/provenance-store.js';
 import { buildIdeaCatalystInnovationArtifacts } from './innovation-contracts.js';
+import {
+  publicationDateFromRecord,
+  publicationYearFromRecord,
+  sortPaperRecordsByPublicationDateDesc
+} from '../paper-date.js';
 
 export const IDEA_CATALYST_EVIDENCE_EXPORT_VERSION = 'papernexus-idea-catalyst-evidence-v1';
 
@@ -64,6 +69,21 @@ function supportingPaperAuditFields(paper = {}, defaults = {}) {
     evidence_hash: evidenceHash,
     source_anchor: anchor || null
   };
+}
+
+function publicationFieldsForSupportingPaper(paper = {}) {
+  const publicationDate = publicationDateFromRecord(paper);
+  return {
+    year: publicationYearFromRecord(paper),
+    publicationDate,
+    publication_date: publicationDate
+  };
+}
+
+function compareSupportingPaperFallback(left = {}, right = {}) {
+  return Number(right.snippet_count || 0) - Number(left.snippet_count || 0)
+    || String(left.title || '').localeCompare(String(right.title || ''))
+    || String(left.paper_key || '').localeCompare(String(right.paper_key || ''));
 }
 
 function normalizeMode(mode, live, graphPayload) {
@@ -204,6 +224,7 @@ function collectSupportingPapers(live = {}, graphPayload = {}, fragments = [], d
       title: compactText(paper.title),
       source_domain: compactText(analysis.source_domain),
       snippet_count: asArray(paper.snippets).length,
+      ...publicationFieldsForSupportingPaper(paper),
       ...supportingPaperAuditFields(paper, {
         ...defaults,
         ...analysis,
@@ -216,6 +237,7 @@ function collectSupportingPapers(live = {}, graphPayload = {}, fragments = [], d
     paper_key: compactText(paper.paper_key || paper.paperId || paper.paper_id),
     title: compactText(paper.title || paper.paperTitle || paper.paper_title),
     source_domain: compactText(fragment.source_domain),
+    ...publicationFieldsForSupportingPaper(paper),
     ...supportingPaperAuditFields(paper, {
       ...defaults,
       source_domain: fragment.source_domain,
@@ -224,15 +246,18 @@ function collectSupportingPapers(live = {}, graphPayload = {}, fragments = [], d
   })));
   const bundle = graphPayload.packetBundle || graphPayload.packet_bundle || {};
   const graphPapers = asArray(bundle.supporting_papers || graphPayload.supporting_papers);
-  return uniqueBy([...livePapers, ...fragmentPapers, ...graphPapers]
+  return sortPaperRecordsByPublicationDateDesc(uniqueBy([...livePapers, ...fragmentPapers, ...graphPapers]
     .map((entry) => ({
       paper_key: compactText(entry.paper_key || entry.paperId || entry.paper_id || entry.sourceKey || entry.source_key),
       title: compactText(entry.title || entry.paper_title || entry.paperTitle),
       source_domain: compactText(entry.source_domain || entry.domain),
       snippet_count: Number(entry.snippet_count || entry.snippetCount || 0),
+      ...publicationFieldsForSupportingPaper(entry),
       ...supportingPaperAuditFields(entry, defaults)
     }))
-    .filter((entry) => entry.paper_key || entry.title), (entry) => entry.paper_key || entry.title);
+    .filter((entry) => entry.paper_key || entry.title), (entry) => entry.paper_key || entry.title), {
+    fallbackCompare: compareSupportingPaperFallback
+  });
 }
 
 function collectIdeaFragments(live = {}, graphPayload = {}) {

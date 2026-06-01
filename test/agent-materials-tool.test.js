@@ -512,19 +512,22 @@ test('agent_materials opt-in provider evidence records provider hits without imp
     const query = url.searchParams.get('query') || '';
     assert.equal(url.searchParams.get('limit'), '1');
     const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'query';
+    const requestIndex = requests.length;
     return createJsonResponse({
       retrievalVersion: 'provider-evidence-test',
       data: [{
         score: 0.73,
         paper: {
-          paperId: `s2-${slug}`,
-          corpusId: `9${requests.length}`,
-          title: `Provider Evidence for ${slug}`,
-          year: 2025,
+          paperId: `s2-${requestIndex}-${slug}`,
+          corpusId: `9${requestIndex}`,
+          title: `Provider Evidence ${requestIndex} for ${slug}`,
+          year: requestIndex === 1 ? 2024 : 2026,
+          publicationDate: requestIndex === 1 ? '2024-01-01' : '2026-01-01',
+          publicationDateOrYear: requestIndex === 1 ? '2024-01-01' : '2026-01-01',
           venue: 'Provider Test',
           url: `https://example.test/${slug}`,
           externalIds: {
-            DOI: `10.1234/${slug}`
+            DOI: `10.1234/${requestIndex}-${slug}`
           },
           fieldsOfStudy: ['Computer Science'],
           isOpenAccess: true,
@@ -562,6 +565,9 @@ test('agent_materials opt-in provider evidence records provider hits without imp
     assert.equal(plan.provider_evidence.persistence.status, 'persisted');
     assert.equal(plan.provider_evidence.persistence.persisted_count, 2);
     assert.ok(plan.candidate_papers.some((entry) => entry.provider === 'semantic_scholar_snippets'));
+    const providerPapers = plan.candidate_papers.filter((entry) => entry.provider === 'semantic_scholar_snippets');
+    assert.equal(providerPapers.length, 2);
+    assert.equal(providerPapers[0].publicationDate, '2026-01-01');
     assert.ok(plan.import_requisitions.some((entry) => entry.why_needed.includes('Provider evidence hit')));
 
     const literatureCalls = [];

@@ -101,6 +101,37 @@ test('graph search helpers clamp externally supplied traversal bounds', () => {
   assert.equal(brainstorm.exploredHops, 4);
 });
 
+test('graph search orders paper groups by newest publication date', () => {
+  const graph = createKnowledgeGraph();
+  for (const paper of [
+    { id: 'paper:older', title: 'Adaptive calibration older paper', year: 2024 },
+    { id: 'paper:newest', title: 'Adaptive calibration newest paper', publicationDate: '2026-03-10' },
+    { id: 'paper:undated', title: 'Adaptive calibration undated paper' }
+  ]) {
+    graph.addNode({
+      id: paper.id,
+      type: NODE_TYPES.PAPER,
+      name: paper.title,
+      properties: {
+        paperId: paper.id,
+        paperTitle: paper.title,
+        abstract: 'adaptive calibration graph retrieval',
+        year: paper.year,
+        publicationDate: paper.publicationDate
+      }
+    });
+  }
+
+  const result = searchGraph(graph, 'adaptive calibration', { limit: 10 });
+
+  assert.deepEqual(result.groups.map((group) => group.id), [
+    'paper:newest',
+    'paper:older',
+    'paper:undated'
+  ]);
+  assert.equal(result.groups[0].publicationDate, '2026-03-10');
+});
+
 test('catalyst graph helpers clamp large result and source-domain bounds', () => {
   const graph = createCatalystFixtureGraph();
   const bridges = queryCrossDomainBridges(graph, {

@@ -49,6 +49,8 @@ The router uses committed graph domain nodes and paper/node domain properties. I
 
 Source-domain candidates promoted into `research_material_pack.groups[].items[]` keep additive `source_domain`, `domain_distance`, and `proximal_leakage` fields so Agents can inspect where near/far materials came from.
 
+Paper candidate arrays are publication-date aware. `candidate_papers`, provider-derived candidates, live-discovery supporting papers, and literature-discovery candidates are sorted newest-first when `publicationDate`, `publicationDateOrYear`, or `year` metadata is present. Role grouping remains intact in `source_discovery_plan`; within each role, dated papers precede undated papers, and undated papers use the previous stable score/title fallback.
+
 Provider evidence is explicit opt-in. Set `includeProviderEvidence=true` to run bounded read-only Semantic Scholar snippet searches over generated target/source queries. The backend records `provider_evidence.query_runs[]`, discovered provider candidates, provider-backed import requisitions, and `materials.provider_snippets[]` for material-pack items. This does not resolve PDFs, enqueue imports, or write graph facts.
 
 Set `persistProviderEvidence=true` with a `project` to copy returned provider snippets into the project `evidence_cart` as `provider_snippet` items. This creates recoverable Agent memory while keeping raw corpus graph state unchanged. Use `providerEvidencePersistLimit` to cap persisted snippets.

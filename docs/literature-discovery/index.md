@@ -53,6 +53,12 @@ Through the MCP tool, `searchMode` defaults to `deep`, aligned with the default 
 
 Search-mode LLM query planning is rule-based by default unless `llmQueryPlanner=true` or `planningMode=llm_augmented` is passed. If LLM planning is enabled and fails or times out, deterministic planning is used.
 
+## Candidate Ordering
+
+Paper-oriented discovery outputs are newest-first by default. `search`, `resolve`, `run`, `status`, and `report` preserve the same merged candidate order: full `publicationDate` values are compared first, year-only metadata is treated as a lower-precision date within that year, and undated records fall back to the previous stable score/provider/citation/title ordering.
+
+This ordering is applied after candidate relevance and screening, and before top-N candidate windows are truncated. It does not make metadata-only discoveries graph-visible; the import boundary still applies.
+
 ## Source Resolution And Access Policy
 
 Source resolution is open-access first. PaperNexus records status instead of bypassing access controls.

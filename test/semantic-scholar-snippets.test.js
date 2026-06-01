@@ -41,6 +41,7 @@ test('searchSemanticScholarSnippets calls snippet search with field filter and a
         assert.equal(url.searchParams.get('query'), 'adaptive collaboration');
         assert.equal(url.searchParams.get('fieldsOfStudy'), 'Computer Science');
         assert.equal(url.searchParams.get('limit'), '2');
+        assert.ok(url.searchParams.get('fields').includes('paper.publicationDate'));
         return createJsonResponse({
           retrievalVersion: 'test-snippets',
           data: [{
@@ -62,6 +63,8 @@ test('searchSemanticScholarSnippets calls snippet search with field filter and a
           title: 'Adaptive Collaboration',
           abstract: 'Adaptive systems can update interaction policies as collaborators change goals and constraints.',
           year: 2024,
+          publicationDate: '2024-06-01',
+          publicationDateOrYear: '2024-06-01',
           fieldsOfStudy: ['Computer Science']
         });
       }
@@ -81,6 +84,7 @@ test('searchSemanticScholarSnippets calls snippet search with field filter and a
     assert.equal(result.resultCount, 1);
     assert.equal(result.abstractFallbackCount, 1);
     assert.match(result.results[0].text, /update interaction policies/);
+    assert.equal(result.results[0].paper.publicationDate, '2024-06-01');
     assert.equal(requests.length, 2);
   } finally {
     resetDiscoveryRequestSchedulerForTests();
