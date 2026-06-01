@@ -90,6 +90,7 @@ npm bin -g
 - Legal full-text handling with explicit statuses such as `open_pdf`, `needs_institution`, `no_open_pdf`, `anti_bot_blocked`, and `html_not_pdf`.
 - Discovery artifacts include `discovery.json`, `report.md`, `download-manifest.json`, and `latest.json`.
 - Import submission is explicit: use `importResolved`, `processImports`, or `import_workflow`, then wait for completed graph sync before treating results as graph evidence.
+- Broad or long-running discovery should use `operation=submit` plus `progress`/`report` polling; a client timeout after submit is an unknown state, not success.
 
 **Knowledge graph**
 
@@ -106,7 +107,7 @@ npm bin -g
 **Operations**
 
 - Browser dashboard, local MCP, remote HTTP MCP, authenticated HTTP routes, macOS background services, logs, backup export, and backup unpack.
-- Python wrapper scripts for remote import, queue inspection, graph queries, paper index lookup, research chains, and stage sync.
+- Python wrapper scripts for remote import, queue inspection, timeout-resilient discovery ledgers, graph queries, paper index lookup, research chains, and stage sync.
 
 ## System Workflow
 
@@ -123,7 +124,7 @@ papers (.pdf / .md)
 Fresh literature search is an optional upstream bridge, not an implicit part of `analyze`:
 
 ```text
-literature_discovery search/run
+literature_discovery search/run or submit -> progress/report
   -> discovery artifacts and legal source-resolution status
   -> optional importResolved / import_workflow
   -> import worker + graph sync

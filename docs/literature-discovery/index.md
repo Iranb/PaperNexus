@@ -14,6 +14,7 @@ The public tool is declared in `src/mcp/tools.js`, implemented by `src/mcp/tool-
 | `search` | Run bounded metadata search. Source resolution is disabled by default for this operation. | None |
 | `resolve` | Search and resolve legal Markdown/PDF sources or access hints. | None |
 | `run` | Default discovery run with persisted artifacts and source-resolution behavior from arguments/config. | None |
+| `submit` | Start a background `search`, `resolve`, `run`, `import`, `ingest`, or `import_and_process` job and return a `runId` for polling. | None by itself |
 | `import` | Submit resolved full-text sources to the import queue. | Not visible until import and graph sync complete |
 | `ingest`, `import_and_process` | Submit resolved sources and run import processing inline. | Visible only after completed import and graph sync |
 | `supplement` | Add or correct one candidate in an existing run, optionally importing it. | Same import boundary |
@@ -53,6 +54,21 @@ Through the MCP tool, `searchMode` defaults to `deep`, aligned with the default 
 
 Search-mode LLM query planning is rule-based by default unless `llmQueryPlanner=true` or `planningMode=llm_augmented` is passed. If LLM planning is enabled and fails or times out, deterministic planning is used.
 
+## Timeout-Resilient Broad Discovery
+
+For broad source discovery, do not rely on one interactive MCP call finishing inside the client wait limit. Use `operation=submit` and poll the returned or deterministic `runId`:
+
+```text
+literature_discovery submit
+  -> literature_discovery progress
+  -> literature_discovery report
+  -> optional import_workflow queue_progress/status
+```
+
+If the client times out or the transport fails after a submit attempt, record the result as `unknown_after_timeout`. That state means the server may have accepted the job, so callers should reconcile with `progress`, `report`, and `list` before retrying.
+
+For AutoResearch-style ideation, split large searches into `target`, `near`, and `far` lanes. This keeps target-domain priors, near-source methods, and far-source transfer candidates independently retryable and auditable.
+
 ## Candidate Ordering
 
 Paper-oriented discovery outputs are newest-first by default. `search`, `resolve`, `run`, `status`, and `report` preserve the same merged candidate order: full `publicationDate` values are compared first, year-only metadata is treated as a lower-precision date within that year, and undated records fall back to the previous stable score/provider/citation/title ordering.
@@ -82,6 +98,7 @@ Import is explicit:
 ```text
 literature_discovery search/resolve/run
   -> discovery artifacts
+  -> optional submit/progress/report for broad jobs
   -> importResolved=true or operation=import/ingest/import_and_process
   -> import queue task
   -> import_workflow wait

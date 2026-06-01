@@ -46,6 +46,7 @@ Shell fallback wrappers:
 - `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
 - `python3 SKILL/PaperNexus/scripts/pn_import_submit.py`
 - `python3 SKILL/PaperNexus/scripts/pn_import_queue.py`
+- `python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py`
 - `python3 SKILL/PaperNexus/scripts/pn_agent_materials.py`
 - `python3 SKILL/PaperNexus/scripts/pn_graph_query.py`
 - `python3 SKILL/PaperNexus/scripts/pn_research_chains.py`
@@ -122,6 +123,34 @@ Latency rule:
 - Do not treat "discovery completed", "downloaded", "resolved", "submitted", or "deduped" as "already in the graph".
 - During graph-build delay, answer from `literature_discovery report` and label it as discovery evidence, not graph evidence.
 - If the user needs immediate analysis before import finishes, use discovery artifacts for paper lists and clearly say graph-grounded analysis is pending import completion.
+
+Timeout-safe rule:
+
+- High-risk MCP calls include broad/deep `literature_discovery search/run/resolve`, `ingest`, `import_and_process`, `processImports=true`, `import_workflow wait`, `agent_materials` with provider/live/literature/import opt-ins, research-controller material execution with the same opt-ins, `refresh_corpus`, source-backed `create_corpus` without async mode, and graph refresh/rebuild calls.
+- Prefer `literature_discovery operation=submit` for broad work, then use `progress`, `report`, and `list` with the returned or deterministic `runId`.
+- If a client-side wait limit or transport failure happens after a submit attempt, record the result as `unknown_after_timeout`, not success. Reconcile remote state with `progress`, `report`, `list`, and any import queue task ids before retrying.
+- For AutoResearch ideation, split broad discovery into `target`, `near`, and `far` lanes so target-domain priors, near-neighbor methods, and far-source transfers can be retried and screened independently.
+- When shell fallback is needed, use `python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py` to keep a local ledger for lane submit, poll, reconcile, and import queue progress:
+
+```bash
+python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
+  --corpus "<corpus>" \
+  --workflow-id "<project-or-run-id>" \
+  --ledger "/absolute/path/resilient-discovery-ledger.json" \
+  submit --lane target --lane near --lane far --topic "<research topic>"
+
+python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
+  --corpus "<corpus>" \
+  --workflow-id "<project-or-run-id>" \
+  --ledger "/absolute/path/resilient-discovery-ledger.json" \
+  poll
+
+python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
+  --corpus "<corpus>" \
+  --workflow-id "<project-or-run-id>" \
+  --ledger "/absolute/path/resilient-discovery-ledger.json" \
+  queue
+```
 
 ## Remote Import Checklist
 

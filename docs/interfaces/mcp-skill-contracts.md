@@ -49,6 +49,7 @@ Stable wrapper expectations:
 - `pn_graph_query.py` owns read-only graph query/context/idea workflows.
 - `pn_research_chains.py` owns chain and briefing workflows.
 - `pn_agent_materials.py` owns Agent material pack, innovation evidence pack, source discovery plan, paper material view, negative evidence, experiment-cost materials, explicit `--include-cost-llm-extraction`, import requisition, `--auto-discover-sources`, graph-native source-router hints, opt-in provider-evidence/live-discovery/literature-discovery evidence, sparse live/literature-discovery fallback, opt-in `--literature-discovery-seed-provider-papers` and `--literature-discovery-seed-live-papers`, explicit literature-discovery import submission/processing, persistence flags, proposal graph sessions, paper role overlay, evidence cart, and workflow state workflows.
+- `pn_resilient_discovery.py` owns timeout-resilient literature-discovery lane submission, polling, reconciliation, and import queue progress reads through existing `literature_discovery` and `import_workflow` operations. It is additive and must not change MCP tool schemas.
 - `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py` own remote import submission and tracking.
 - Skill wrappers should not call private `/api/*` routes for live graph control.
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.

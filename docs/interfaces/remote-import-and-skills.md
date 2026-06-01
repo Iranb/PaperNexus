@@ -31,6 +31,7 @@ Important wrappers include:
 - `pn_import_submit.py`
 - `pn_import_queue.py`
 - `pn_batch_import.py`
+- `pn_resilient_discovery.py`
 - `pn_paper_index.py`
 - `pn_graph_query.py`
 - `pn_research_chains.py`
@@ -75,6 +76,10 @@ The important boundary is that discovery and graph ingestion are intentionally a
 
 For interactive search, prefer `operation=search`. It is metadata-only by default and has explicit latency profiles: `quick` uses a 25s budget and 4 query cap, `balanced` uses a 45s budget and 6 query cap, and `deep` is the MCP default broader profile with a bounded 10-minute budget and 10 query cap, aligned with the default HTTP MCP request timeout. Search-mode LLM query planning is rule-based by default; if explicitly enabled, it is capped to 8s/12s/18s for quick/balanced/deep and returns deterministic planning fallback on timeout or failure. This keeps discovery an optional upstream substrate instead of a blocking graph path.
 
+For broad or high-risk discovery, prefer `literature_discovery operation=submit` and then poll `progress`, `report`, and `list`. If a client-side wait limit or transport failure happens after a submit attempt, record the local state as `unknown_after_timeout`; do not call it successful or failed until remote state has been reconciled. The shell fallback wrapper `pn_resilient_discovery.py` implements this ledger pattern without changing MCP tool schemas.
+
+For source-discovery or AutoResearch ideation work, split broad searches into `target`, `near`, and `far` lanes. The lane split makes target-domain priors, near-source methods, and far-source transfer candidates independently retryable, and it prevents one slow lane from hiding the state of the others.
+
 Discovery and material paper lists are publication-date aware: dated candidates are returned newest-first, year-only metadata is used when no full date exists, and undated records keep stable fallback ordering. This is an ordering rule only; it does not change import readiness or graph visibility.
 
 Agents should therefore report interim results precisely:
@@ -84,6 +89,28 @@ Agents should therefore report interim results precisely:
 - use "in graph" only after import queue completion and authoritative sync readiness
 
 When graph build is delayed, use `literature_discovery status` / `report` for the paper list and `import_workflow queue_progress`, `status`, or `wait` for graph-readiness. `import_workflow wait` now waits for the authoritative sync job by default; pass `waitForAuthoritativeSync=false` only when you intentionally want raw import-task completion. Do not rerun graph queries just because discovery finished.
+
+Timeout-resilient shell fallback:
+
+```bash
+python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
+  --corpus "<corpus>" \
+  --workflow-id "<project-or-run-id>" \
+  --ledger "/absolute/path/resilient-discovery-ledger.json" \
+  submit --lane target --lane near --lane far --topic "<research topic>"
+
+python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
+  --corpus "<corpus>" \
+  --workflow-id "<project-or-run-id>" \
+  --ledger "/absolute/path/resilient-discovery-ledger.json" \
+  poll
+
+python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
+  --corpus "<corpus>" \
+  --workflow-id "<project-or-run-id>" \
+  --ledger "/absolute/path/resilient-discovery-ledger.json" \
+  queue
+```
 
 Recommended server-side inspection command:
 
