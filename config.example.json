@@ -50,6 +50,8 @@
     "batchProgressive": true,
     "batchInitialTasks": 4,
     "batchMaxTasks": 16,
+    "batchCoalesceMs": 0,
+    "batchCoalescePollMs": 250,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   },

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
   listAuthoritativeSyncHistory,
@@ -11,6 +12,14 @@ import {
   listImportTasksPayload
 } from '../server/api.js';
 import { getImportWorkerCoverageSnapshot } from '../core/imports/worker.js';
+import { getDefaultRuntimeConfigRoot } from '../lib/config.js';
+import { ensureDir, readJson, writeJson } from '../lib/fs.js';
+
+const IMPORT_WORKFLOW_ASYNC_JOB_CONTRACT_VERSION = 'papernexus-import-workflow-job-v1';
+const DEFAULT_ASYNC_WAIT_TIMEOUT_MS = 60 * 1000;
+const DEFAULT_ASYNC_POLL_INTERVAL_MS = 500;
+const IMPORT_WORKFLOW_OPERATIONS = new Set(['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait']);
+const ASYNC_JOB_OPERATIONS = new Set(['submit_async', 'async_status', 'async_wait']);
 
 function normalizeOperation(value) {
   return String(value || '').trim().toLowerCase().replace(/-/g, '_');
@@ -24,6 +33,206 @@ function enabledFlag(value, fallback = false) {
   if (value === undefined || value === null) return fallback;
   if (value === true || value === false) return value;
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function normalizeAsyncExecutionMode(value) {
+  return String(value || '').trim().toLowerCase().replace(/-/g, '_');
+}
+
+function shouldRunOperationAsync(args = {}, operation = '') {
+  if (ASYNC_JOB_OPERATIONS.has(operation)) return false;
+  if (args.async === true || args.asynchronous === true) return true;
+  const executionMode = normalizeAsyncExecutionMode(args.executionMode || args.execution_mode || args.runMode || args.run_mode);
+  return ['async', 'asynchronous', 'background', 'queued', 'queue'].includes(executionMode);
+}
+
+function normalizeAsyncImportWorkflowJobId(value) {
+  const jobId = String(value || '').trim();
+  if (!jobId) {
+    throw new Error('import_workflow async_status/async_wait requires jobId.');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(jobId)) {
+    throw new Error(`Invalid import_workflow async jobId: ${jobId}`);
+  }
+  return jobId;
+}
+
+function getAsyncImportWorkflowJobsDir(options = {}) {
+  const configured = String(options.importWorkflowJobRootPath || options.importWorkflowJobsDir || '').trim();
+  return configured || path.join(getDefaultRuntimeConfigRoot(), 'mcp-jobs', 'import-workflow');
+}
+
+function getAsyncImportWorkflowJobPath(jobId, options = {}) {
+  return path.join(getAsyncImportWorkflowJobsDir(options), `${normalizeAsyncImportWorkflowJobId(jobId)}.json`);
+}
+
+function nowIsoString() {
+  return new Date().toISOString();
+}
+
+async function writeAsyncImportWorkflowJob(job, options = {}) {
+  await ensureDir(getAsyncImportWorkflowJobsDir(options));
+  await writeJson(getAsyncImportWorkflowJobPath(job.jobId, options), job);
+}
+
+async function readAsyncImportWorkflowJob(jobId, options = {}) {
+  const normalizedJobId = normalizeAsyncImportWorkflowJobId(jobId);
+  const job = await readJson(getAsyncImportWorkflowJobPath(normalizedJobId, options), null);
+  if (!job) {
+    throw new Error(`import_workflow async job not found: ${normalizedJobId}`);
+  }
+  return job;
+}
+
+function isAsyncImportWorkflowJobInProgress(job = {}) {
+  const status = String(job.status || '').trim().toLowerCase();
+  return status === 'queued' || status === 'running';
+}
+
+function renderAsyncImportWorkflowJob(job, extra = {}) {
+  const inProgress = isAsyncImportWorkflowJobInProgress(job);
+  return {
+    contractVersion: IMPORT_WORKFLOW_ASYNC_JOB_CONTRACT_VERSION,
+    jobId: job.jobId,
+    status: job.status,
+    stage: job.stage,
+    requestedOperation: job.requestedOperation,
+    submittedAt: job.createdAt,
+    startedAt: job.startedAt || null,
+    completedAt: job.completedAt || null,
+    updatedAt: job.updatedAt,
+    corpus: job.corpus || null,
+    arguments: job.arguments || {},
+    result: job.result || null,
+    error: job.error || null,
+    next: inProgress
+      ? {
+          tool: 'import_workflow',
+          arguments: {
+            operation: 'async_status',
+            jobId: job.jobId
+          }
+        }
+      : null,
+    ...extra
+  };
+}
+
+function buildAsyncImportWorkflowExecutionArgs(args = {}, requestedOperation = '') {
+  const executionArgs = {
+    ...args,
+    operation: requestedOperation
+  };
+  delete executionArgs.async;
+  delete executionArgs.asynchronous;
+  delete executionArgs.executionMode;
+  delete executionArgs.execution_mode;
+  delete executionArgs.runMode;
+  delete executionArgs.run_mode;
+  delete executionArgs.asyncOperation;
+  delete executionArgs.async_operation;
+  delete executionArgs.targetOperation;
+  delete executionArgs.target_operation;
+  delete executionArgs.jobId;
+  delete executionArgs.job_id;
+  delete executionArgs.waitTimeoutMs;
+  delete executionArgs.wait_timeout_ms;
+  delete executionArgs.timeoutMs;
+  delete executionArgs.timeout_ms;
+  delete executionArgs.pollIntervalMs;
+  delete executionArgs.poll_interval_ms;
+  return executionArgs;
+}
+
+async function runAsyncImportWorkflowJob(job, options = {}) {
+  const runningJob = {
+    ...job,
+    status: 'running',
+    stage: 'running',
+    startedAt: nowIsoString(),
+    updatedAt: nowIsoString()
+  };
+  await writeAsyncImportWorkflowJob(runningJob, options);
+
+  try {
+    const result = await executeImportWorkflowTool(job.arguments, options);
+    await writeAsyncImportWorkflowJob({
+      ...runningJob,
+      status: 'completed',
+      stage: 'completed',
+      completedAt: nowIsoString(),
+      updatedAt: nowIsoString(),
+      result
+    }, options);
+  } catch (error) {
+    await writeAsyncImportWorkflowJob({
+      ...runningJob,
+      status: 'failed',
+      stage: 'failed',
+      completedAt: nowIsoString(),
+      updatedAt: nowIsoString(),
+      error: {
+        name: error?.name || 'Error',
+        message: error?.message || String(error)
+      }
+    }, options);
+  }
+}
+
+async function submitAsyncImportWorkflowJob(args = {}, options = {}) {
+  const requestedOperation = normalizeOperation(args.asyncOperation || args.async_operation || args.targetOperation || args.target_operation || args.operation);
+  if (!IMPORT_WORKFLOW_OPERATIONS.has(requestedOperation)) {
+    throw new Error('import_workflow submit_async requires asyncOperation to be a normal import_workflow operation.');
+  }
+  const executionArgs = buildAsyncImportWorkflowExecutionArgs(args, requestedOperation);
+  const now = nowIsoString();
+  const job = {
+    version: 1,
+    type: 'import_workflow',
+    jobId: randomUUID(),
+    status: 'queued',
+    stage: 'queued',
+    requestedOperation,
+    createdAt: now,
+    updatedAt: now,
+    corpus: typeof executionArgs.corpus === 'string' && executionArgs.corpus.trim() ? executionArgs.corpus.trim() : null,
+    arguments: executionArgs,
+    result: null,
+    error: null
+  };
+
+  await writeAsyncImportWorkflowJob(job, options);
+  setImmediate(() => {
+    void runAsyncImportWorkflowJob(job, options);
+  });
+  return renderAsyncImportWorkflowJob(job);
+}
+
+async function waitForAsyncImportWorkflowJob(jobId, args = {}, options = {}) {
+  const rawTimeoutMs = args.waitTimeoutMs ?? args.wait_timeout_ms ?? args.timeoutMs ?? args.timeout_ms;
+  const timeoutMs = rawTimeoutMs === undefined
+    ? DEFAULT_ASYNC_WAIT_TIMEOUT_MS
+    : Math.max(0, Number(rawTimeoutMs) || 0);
+  const timeoutSeconds = args.timeout === undefined ? undefined : Number(args.timeout);
+  const effectiveTimeoutMs = timeoutSeconds === undefined || !Number.isFinite(timeoutSeconds)
+    ? timeoutMs
+    : Math.max(0, timeoutSeconds * 1000);
+  const rawPollIntervalMs = args.pollIntervalMs ?? args.poll_interval_ms;
+  const pollIntervalMs = rawPollIntervalMs === undefined
+    ? Math.max(50, Number(args.interval || 0) ? Number(args.interval) * 1000 : DEFAULT_ASYNC_POLL_INTERVAL_MS)
+    : Math.max(50, Number(rawPollIntervalMs) || DEFAULT_ASYNC_POLL_INTERVAL_MS);
+  const deadline = Date.now() + effectiveTimeoutMs;
+  let job = await readAsyncImportWorkflowJob(jobId, options);
+
+  while (isAsyncImportWorkflowJobInProgress(job) && Date.now() < deadline) {
+    await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+    job = await readAsyncImportWorkflowJob(jobId, options);
+  }
+
+  return {
+    job,
+    timedOut: isAsyncImportWorkflowJobInProgress(job)
+  };
 }
 
 function normalizePathLeaf(value) {
@@ -144,6 +353,27 @@ async function waitForAuthoritativeSyncJob(rootPath, task, deadline, intervalSec
 export async function executeImportWorkflowTool(args = {}, options = {}) {
   const operation = normalizeOperation(args.operation);
   const candidate = typeof args.corpus === 'string' && args.corpus.trim() ? args.corpus.trim() : undefined;
+
+  if (operation === 'submit_async') {
+    return submitAsyncImportWorkflowJob(args, options);
+  }
+  if (operation === 'async_status') {
+    const job = await readAsyncImportWorkflowJob(args.jobId || args.job_id, options);
+    return renderAsyncImportWorkflowJob(job);
+  }
+  if (operation === 'async_wait') {
+    const waitResult = await waitForAsyncImportWorkflowJob(args.jobId || args.job_id, args, options);
+    return renderAsyncImportWorkflowJob(waitResult.job, {
+      timedOut: waitResult.timedOut
+    });
+  }
+  if (shouldRunOperationAsync(args, operation)) {
+    return submitAsyncImportWorkflowJob({
+      ...args,
+      asyncOperation: operation,
+      operation: 'submit_async'
+    }, options);
+  }
 
   switch (operation) {
     case 'submit':

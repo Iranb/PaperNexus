@@ -186,3 +186,76 @@ test('import_workflow queue_progress reports uncovered worker roots', async () =
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
+
+test('import_workflow can run queue_progress as an asynchronous MCP job', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-async-'));
+  const jobRootPath = path.join(rootPath, '.test-mcp-jobs');
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-async-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'async-progress-paper.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Async Progress Paper\n\n## Abstract\n\nAn async progress test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+
+    const submitPayload = await executeImportWorkflowTool({
+      operation: 'queue_progress',
+      corpus: rootPath,
+      taskIds: [task.id],
+      async: true
+    }, {
+      importWorkflowJobRootPath: jobRootPath
+    });
+
+    assert.equal(submitPayload.contractVersion, 'papernexus-import-workflow-job-v1');
+    assert.equal(submitPayload.status, 'queued');
+    assert.equal(submitPayload.requestedOperation, 'queue_progress');
+    assert.ok(submitPayload.jobId);
+    assert.equal(submitPayload.result, null);
+    assert.deepEqual(submitPayload.next.arguments, {
+      operation: 'async_status',
+      jobId: submitPayload.jobId
+    });
+
+    const waitPayload = await executeImportWorkflowTool({
+      operation: 'async_wait',
+      jobId: submitPayload.jobId,
+      waitTimeoutMs: 5000,
+      pollIntervalMs: 25
+    }, {
+      importWorkflowJobRootPath: jobRootPath
+    });
+
+    assert.equal(waitPayload.contractVersion, 'papernexus-import-workflow-job-v1');
+    assert.equal(waitPayload.status, 'completed');
+    assert.equal(waitPayload.timedOut, false);
+    assert.equal(waitPayload.result.summary.total, 1);
+    assert.equal(waitPayload.result.tasks[0].id, task.id);
+
+    const statusPayload = await executeImportWorkflowTool({
+      operation: 'async_status',
+      jobId: submitPayload.jobId
+    }, {
+      importWorkflowJobRootPath: jobRootPath
+    });
+
+    assert.equal(statusPayload.status, 'completed');
+    assert.equal(statusPayload.result.summary.total, 1);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});

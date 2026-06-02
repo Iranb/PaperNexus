@@ -28,6 +28,11 @@ const DEFAULT_IMPORT_PENDING_TIMEOUT_MS = 48 * 60 * 60 * 1000;
 const DEFAULT_IMPORT_PREPARSE_CONCURRENCY = 4;
 const DEFAULT_IMPORT_BATCH_INITIAL_TASKS = 4;
 const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
+const DEFAULT_IMPORT_BATCH_COALESCE_MS = 0;
+const DEFAULT_IMPORT_BATCH_COALESCE_POLL_MS = 250;
+const HARD_IMPORT_BATCH_COALESCE_MS = 5 * 60 * 1000;
+const HARD_IMPORT_BATCH_COALESCE_POLL_MS = 10_000;
+const IMPORT_PERFORMANCE_CONTRACT_VERSION = 'import-performance-v1';
 const HARD_IMPORT_BATCH_MAX_TASKS = 16;
 const importPreparseInFlight = new Map();
 const importBatchProgressionByRoot = new Map();
@@ -92,6 +97,12 @@ function resolveOptionalPositiveIntegerOption(value) {
   return Math.floor(numeric);
 }
 
+function resolveNonNegativeIntegerOption(value, fallback = 0, maximum = Number.MAX_SAFE_INTEGER) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return fallback;
+  return Math.min(maximum, Math.floor(numeric));
+}
+
 function resolveImportBatchOptions(options = {}) {
   const configuredMaxTasks = resolvePositiveIntegerOption(
     options.importBatchMaxTasks ?? options.batchMaxTasks,
@@ -111,7 +122,17 @@ function resolveImportBatchOptions(options = {}) {
     initialTasks,
     progressive: resolveBooleanOption(options.importBatchProgressive ?? options.batchProgressive, true),
     maxFiles: resolveOptionalPositiveIntegerOption(options.importBatchMaxFiles ?? options.batchMaxFiles),
-    maxBytes: resolveOptionalPositiveIntegerOption(options.importBatchMaxBytes ?? options.batchMaxBytes)
+    maxBytes: resolveOptionalPositiveIntegerOption(options.importBatchMaxBytes ?? options.batchMaxBytes),
+    coalesceMs: resolveNonNegativeIntegerOption(
+      options.importBatchCoalesceMs ?? options.batchCoalesceMs,
+      DEFAULT_IMPORT_BATCH_COALESCE_MS,
+      HARD_IMPORT_BATCH_COALESCE_MS
+    ),
+    coalescePollMs: Math.max(25, resolveNonNegativeIntegerOption(
+      options.importBatchCoalescePollMs ?? options.batchCoalescePollMs,
+      DEFAULT_IMPORT_BATCH_COALESCE_POLL_MS,
+      HARD_IMPORT_BATCH_COALESCE_POLL_MS
+    ))
   };
 }
 
@@ -168,6 +189,75 @@ function countPendingImportTasks(tasks = []) {
 async function countPendingImportTasksOnDisk(rootPath) {
   const payload = await listImportTasks(rootPath);
   return countPendingImportTasks(payload.tasks || []);
+}
+
+function summarizeImportBatchCoalesceTasks(tasks = []) {
+  const normalizedTasks = Array.isArray(tasks) ? tasks : [];
+  const pending = countPendingImportTasks(normalizedTasks);
+  const running = normalizedTasks.filter((task) => (
+    String(task?.status || '').trim().toLowerCase() === 'running'
+  )).length;
+  return {
+    total: normalizedTasks.length,
+    pending,
+    running
+  };
+}
+
+function shouldWaitForImportBatchCoalesce(summary = {}, batchOptions = {}) {
+  const targetTasks = Math.max(1, Number(batchOptions.maxTasks || 1) || 1);
+  return Boolean(batchOptions.enabled)
+    && Number(batchOptions.coalesceMs || 0) > 0
+    && targetTasks > 1
+    && Number(summary.running || 0) === 0
+    && Number(summary.pending || 0) > 0
+    && Number(summary.pending || 0) < targetTasks;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0) || 0)));
+}
+
+async function waitForImportBatchCoalesce(rootPath, batchOptions = {}) {
+  const coalesceMs = Math.max(0, Number(batchOptions.coalesceMs || 0) || 0);
+  if (!coalesceMs) return null;
+
+  const targetTasks = Math.max(1, Number(batchOptions.maxTasks || 1) || 1);
+  const startedAt = Date.now();
+  let payload = await listImportTasks(rootPath);
+  let summary = summarizeImportBatchCoalesceTasks(payload.tasks || []);
+  if (!shouldWaitForImportBatchCoalesce(summary, batchOptions)) {
+    return {
+      waited: false,
+      waitedMs: 0,
+      targetTasks,
+      pendingTaskCount: summary.pending,
+      runningTaskCount: summary.running,
+      reason: summary.running ? 'running-task' : (summary.pending >= targetTasks ? 'target-filled' : 'no-pending')
+    };
+  }
+
+  const deadline = startedAt + coalesceMs;
+  const pollMs = Math.max(25, Number(batchOptions.coalescePollMs || DEFAULT_IMPORT_BATCH_COALESCE_POLL_MS) || DEFAULT_IMPORT_BATCH_COALESCE_POLL_MS);
+  let reason = 'timeout';
+  while (Date.now() < deadline) {
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+    payload = await listImportTasks(rootPath);
+    summary = summarizeImportBatchCoalesceTasks(payload.tasks || []);
+    if (!shouldWaitForImportBatchCoalesce(summary, batchOptions)) {
+      reason = summary.running ? 'running-task' : (summary.pending >= targetTasks ? 'target-filled' : 'no-pending');
+      break;
+    }
+  }
+
+  return {
+    waited: true,
+    waitedMs: Math.max(0, Date.now() - startedAt),
+    targetTasks,
+    pendingTaskCount: summary.pending,
+    runningTaskCount: summary.running,
+    reason
+  };
 }
 
 function updateProgressiveImportBatchTarget(rootPath, batchOptions = {}, result = {}, pendingTaskCount = 0) {
@@ -331,6 +421,126 @@ function createBatchProgressReporter(rootPath, taskIds = [], stage, batchId) {
       await Promise.all(reporters.map((reporter) => reporter.flush()));
     }
   };
+}
+
+function elapsedMs(startedAt) {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function roundMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return undefined;
+  return Math.round(numeric * 100) / 100;
+}
+
+function sumKnownStageTimings(stageTimingsMs = {}) {
+  return ['materialize', 'llmOptimize', 'fastCommit']
+    .map((key) => Number(stageTimingsMs[key]))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .reduce((total, value) => total + value, 0);
+}
+
+function summarizeNumericValues(values = []) {
+  const numbers = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  if (!numbers.length) {
+    return {
+      min: null,
+      max: null,
+      mean: null,
+      total: 0
+    };
+  }
+  const total = numbers.reduce((sum, value) => sum + value, 0);
+  return {
+    min: Math.min(...numbers),
+    max: Math.max(...numbers),
+    mean: Math.round((total / numbers.length) * 100) / 100,
+    total
+  };
+}
+
+function createLlmBatchMetricsCollector() {
+  const completedEvents = [];
+  const retryEvents = [];
+  return {
+    recordComplete(event = {}) {
+      completedEvents.push({
+        phase: String(event.phase || '').trim() || null,
+        batchNumber: Number(event.batchNumber || 0) || null,
+        totalBatches: Number(event.totalBatches || 0) || null,
+        completed: Number(event.completed || 0) || 0,
+        total: Number(event.total || 0) || 0,
+        batchSize: Number(event.batchSize || 0) || 0,
+        promptChars: Number(event.promptChars || 0) || 0,
+        promptMaxChars: Number(event.promptMaxChars || 0) || 0,
+        skipped: Boolean(event.skipped)
+      });
+    },
+    recordRetry(event = {}) {
+      retryEvents.push({
+        phase: String(event.phase || '').trim() || null,
+        batchNumber: Number(event.batchNumber || 0) || null,
+        batchSize: Number(event.batchSize || 0) || 0,
+        retryBatchCount: Number(event.retryBatchCount || 0) || 0,
+        retryBatchSize: Number(event.retryBatchSize || 0) || 0,
+        remainingRetries: Number(event.remainingRetries || 0) || 0,
+        promptChars: Number(event.promptChars || 0) || 0,
+        promptMaxChars: Number(event.promptMaxChars || 0) || 0,
+        error: event.error ? String(event.error) : null
+      });
+    },
+    summary() {
+      const phases = uniqueSortedStrings(completedEvents.map((event) => event.phase).filter(Boolean));
+      const effectiveBatchSizes = completedEvents.map((event) => event.batchSize).filter((value) => value > 0);
+      const promptChars = completedEvents.map((event) => event.promptChars).filter((value) => value > 0);
+      const promptMaxChars = completedEvents.map((event) => event.promptMaxChars).filter((value) => value > 0);
+      return {
+        completedBatchCount: completedEvents.length,
+        skippedBatchCount: completedEvents.filter((event) => event.skipped).length,
+        retryEventCount: retryEvents.length,
+        phases,
+        effectiveBatchSizes,
+        promptChars: summarizeNumericValues(promptChars),
+        promptMaxChars: promptMaxChars.length ? Math.max(...promptMaxChars) : null,
+        retries: retryEvents
+      };
+    }
+  };
+}
+
+function setImportPerformanceMetrics(result = {}, metrics = {}) {
+  const existingMetrics = result.metrics && typeof result.metrics === 'object' && !Array.isArray(result.metrics)
+    ? result.metrics
+    : {};
+  const existingPerformance = existingMetrics.importPerformance && typeof existingMetrics.importPerformance === 'object'
+    ? existingMetrics.importPerformance
+    : {};
+  const stageTimingsMs = {
+    ...(existingPerformance.stageTimingsMs || {}),
+    ...(metrics.stageTimingsMs || {})
+  };
+  for (const [key, value] of Object.entries(stageTimingsMs)) {
+    const rounded = roundMs(value);
+    if (rounded === undefined) delete stageTimingsMs[key];
+    else stageTimingsMs[key] = rounded;
+  }
+  if (stageTimingsMs.total === undefined) {
+    const summed = sumKnownStageTimings(stageTimingsMs);
+    if (summed) stageTimingsMs.total = roundMs(summed);
+  }
+
+  result.metrics = {
+    ...existingMetrics,
+    importPerformance: {
+      contractVersion: IMPORT_PERFORMANCE_CONTRACT_VERSION,
+      ...existingPerformance,
+      ...metrics,
+      stageTimingsMs
+    }
+  };
+  return result.metrics.importPerformance;
 }
 
 async function mapWithConcurrency(items, concurrency, iteratee) {
@@ -558,6 +768,7 @@ async function assertImportTaskStoredFilesExist(task) {
 }
 
 async function processImportTask(rootPath, task, options = {}) {
+  const taskStartedAt = Date.now();
   await waitForImportTaskPreparse(rootPath, task.id);
   const corpusMeta = await loadCorpusMeta(rootPath);
   let inputPath = await resolveTaskInputPath(rootPath, task);
@@ -587,11 +798,15 @@ async function processImportTask(rootPath, task, options = {}) {
   const result = {
     ...(task.result || {})
   };
+  const stageTimingsMs = {
+    ...(result.metrics?.importPerformance?.stageTimingsMs || {})
+  };
 
   if (startStage === 'materialize') {
     await assertImportTaskStoredFilesExist(task);
     await markImportTaskStage(rootPath, task.id, 'materialize', 'stage materialize');
     const materializeProgress = createTaskProgressReporter(rootPath, task.id, 'materialize');
+    const materializeStartedAt = Date.now();
     const materialized = await materializeCorpus(materializeInputPath, {
       ...sharedOptions,
       mergeWithExistingManifestSources: true,
@@ -614,6 +829,7 @@ async function processImportTask(rootPath, task, options = {}) {
       paperCount: materialized?.meta?.paperCount || 0,
       timings: materialized?.timings || null
     };
+    stageTimingsMs.materialize = elapsedMs(materializeStartedAt);
     inputPath = await resolveTaskInputPath(rootPath, task);
   }
 
@@ -621,13 +837,26 @@ async function processImportTask(rootPath, task, options = {}) {
 
   await markImportTaskStage(rootPath, task.id, 'llm-optimize', 'stage llm-optimize');
   const llmProgress = createTaskProgressReporter(rootPath, task.id, 'llm-optimize');
+  const llmMetrics = createLlmBatchMetricsCollector();
+  const upstreamOnLlmBatchComplete = sharedOptions.onLlmBatchComplete;
+  const upstreamOnLlmBatchRetry = sharedOptions.onLlmBatchRetry;
+  const llmStartedAt = Date.now();
   const optimized = await llmOptimizeCorpus(inputPath, {
     ...sharedOptions,
     changedSourceKeys,
     onProgress(event = {}) {
       void llmProgress.report(event);
+    },
+    onLlmBatchComplete(event = {}) {
+      llmMetrics.recordComplete(event);
+      upstreamOnLlmBatchComplete?.(event);
+    },
+    onLlmBatchRetry(event = {}) {
+      llmMetrics.recordRetry(event);
+      upstreamOnLlmBatchRetry?.(event);
     }
   });
+  stageTimingsMs.llmOptimize = elapsedMs(llmStartedAt);
   await llmProgress.report({
     stagePercent: 100,
     currentStep: 'llm optimization complete',
@@ -640,6 +869,7 @@ async function processImportTask(rootPath, task, options = {}) {
 
   await markImportTaskStage(rootPath, task.id, 'fast-commit', 'stage fast-commit');
   const fastCommitProgress = createTaskProgressReporter(rootPath, task.id, 'fast-commit');
+  const fastCommitStartedAt = Date.now();
   const committed = await fastCommitCorpus(inputPath, {
     ...sharedOptions,
     changedSourceKeys,
@@ -648,6 +878,7 @@ async function processImportTask(rootPath, task, options = {}) {
       void fastCommitProgress.report(event);
     }
   });
+  stageTimingsMs.fastCommit = elapsedMs(fastCommitStartedAt);
   await fastCommitProgress.report({
     stagePercent: 100,
     currentStep: 'fast commit complete',
@@ -665,6 +896,18 @@ async function processImportTask(rootPath, task, options = {}) {
     status: committed?.meta?.authoritativeSyncStatus || 'pending',
     jobId: committed?.syncJob?.jobId || null
   };
+  stageTimingsMs.total = elapsedMs(taskStartedAt);
+  setImportPerformanceMetrics(result, {
+    mode: 'single',
+    taskId: task.id,
+    batchId: null,
+    batchTaskCount: 1,
+    changedSourceKeyCount: changedSourceKeys.length,
+    optimizedReused: Boolean(optimized?.reused),
+    fastCommitReused: Boolean(committed?.reused),
+    stageTimingsMs,
+    llmBatches: llmMetrics.summary()
+  });
 
   await completeImportTask(rootPath, task.id, result);
 
@@ -699,6 +942,7 @@ async function materializeImportTaskForBatch(rootPath, task, options = {}, conte
   await assertImportTaskStoredFilesExist(task);
   await markImportTaskStage(rootPath, task.id, 'materialize', `stage materialize batch ${context.batchId}`);
   const materializeProgress = createTaskProgressReporter(rootPath, task.id, 'materialize');
+  const materializeStartedAt = Date.now();
   const materialized = await materializeCorpus(materializeInputPath, {
     ...sharedOptions,
     mergeWithExistingManifestSources: true,
@@ -725,6 +969,16 @@ async function materializeImportTaskForBatch(rootPath, task, options = {}, conte
 
   inputPath = await resolveTaskInputPath(rootPath, task);
   const changedSourceKeys = await resolveTaskChangedSourceKeys(rootPath, task);
+  setImportPerformanceMetrics(result, {
+    mode: 'batch',
+    taskId: task.id,
+    batchId: context.batchId,
+    batchTaskCount: Array.isArray(context.batchTaskIds) ? context.batchTaskIds.length : 0,
+    changedSourceKeyCount: changedSourceKeys.length,
+    stageTimingsMs: {
+      materialize: elapsedMs(materializeStartedAt)
+    }
+  });
   return {
     task,
     inputPath,
@@ -745,6 +999,7 @@ async function failBatchEntries(rootPath, entries = [], error) {
 }
 
 async function processImportTaskBatch(rootPath, batch, options = {}) {
+  const batchStartedAt = Date.now();
   const tasks = Array.isArray(batch?.tasks) ? batch.tasks.filter(Boolean) : [];
   if (!tasks.length) {
     return {
@@ -814,19 +1069,33 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
   };
   let optimized = null;
   let committed = null;
+  const sharedStageTimingsMs = {};
+  const llmMetrics = createLlmBatchMetricsCollector();
+  const upstreamOnLlmBatchComplete = sharedOptions.onLlmBatchComplete;
+  const upstreamOnLlmBatchRetry = sharedOptions.onLlmBatchRetry;
 
   try {
     await Promise.all(materializedEntries.map((entry) => (
       markImportTaskStage(rootPath, entry.task.id, 'llm-optimize', `stage llm-optimize batch ${batchId}`)
     )));
     const llmProgress = createBatchProgressReporter(rootPath, completedTaskIds, 'llm-optimize', batchId);
+    const llmStartedAt = Date.now();
     optimized = await llmOptimizeCorpus(inputPath, {
       ...sharedOptions,
       changedSourceKeys: batchChangedSourceKeys,
       onProgress(event = {}) {
         void llmProgress.report(event);
+      },
+      onLlmBatchComplete(event = {}) {
+        llmMetrics.recordComplete(event);
+        upstreamOnLlmBatchComplete?.(event);
+      },
+      onLlmBatchRetry(event = {}) {
+        llmMetrics.recordRetry(event);
+        upstreamOnLlmBatchRetry?.(event);
       }
     });
+    sharedStageTimingsMs.llmOptimize = elapsedMs(llmStartedAt);
     await llmProgress.report({
       stagePercent: 100,
       currentStep: `batch ${batchId} llm optimization complete`,
@@ -838,6 +1107,7 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
       markImportTaskStage(rootPath, entry.task.id, 'fast-commit', `stage fast-commit batch ${batchId}`)
     )));
     const fastCommitProgress = createBatchProgressReporter(rootPath, completedTaskIds, 'fast-commit', batchId);
+    const fastCommitStartedAt = Date.now();
     committed = await fastCommitCorpus(inputPath, {
       ...sharedOptions,
       changedSourceKeys: batchChangedSourceKeys,
@@ -846,6 +1116,7 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
         void fastCommitProgress.report(event);
       }
     });
+    sharedStageTimingsMs.fastCommit = elapsedMs(fastCommitStartedAt);
     await fastCommitProgress.report({
       stagePercent: 100,
       currentStep: `batch ${batchId} fast commit complete`,
@@ -867,6 +1138,23 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
   }
 
   for (const entry of materializedEntries) {
+    const entryStageTimingsMs = {
+      ...(entry.result.metrics?.importPerformance?.stageTimingsMs || {}),
+      ...sharedStageTimingsMs
+    };
+    entryStageTimingsMs.total = sumKnownStageTimings(entryStageTimingsMs);
+    setImportPerformanceMetrics(entry.result, {
+      mode: 'batch',
+      taskId: entry.task.id,
+      batchId,
+      batchTaskCount: batchTaskIds.length,
+      changedSourceKeyCount: entry.changedSourceKeys.length,
+      batchChangedSourceKeyCount: batchChangedSourceKeys.length,
+      optimizedReused: Boolean(optimized?.reused),
+      fastCommitReused: Boolean(committed?.reused),
+      stageTimingsMs: entryStageTimingsMs,
+      llmBatches: llmMetrics.summary()
+    });
     const taskResult = {
       ...entry.result,
       optimized: {
@@ -911,7 +1199,23 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
     taskId: completedTaskIds[0] || batchTaskIds[0] || null,
     completedTaskIds,
     failedTaskIds,
-    result: committed
+    result: committed,
+    metrics: {
+      importPerformance: {
+        contractVersion: IMPORT_PERFORMANCE_CONTRACT_VERSION,
+        mode: 'batch',
+        batchId,
+        batchTaskCount: batchTaskIds.length,
+        completedTaskCount: completedTaskIds.length,
+        failedTaskCount: failedTaskIds.length,
+        batchChangedSourceKeyCount: batchChangedSourceKeys.length,
+        stageTimingsMs: {
+          ...sharedStageTimingsMs,
+          total: elapsedMs(batchStartedAt)
+        },
+        llmBatches: llmMetrics.summary()
+      }
+    }
   };
 }
 
@@ -934,6 +1238,9 @@ export async function runImportQueueOnce(rootPath, options = {}) {
           }
         : batchOptions;
       const useBatchReserve = reserveBatchOptions.enabled && reserveBatchOptions.maxTasks > 1;
+      const batchCoalescing = useBatchReserve
+        ? await waitForImportBatchCoalesce(rootPath, reserveBatchOptions)
+        : null;
       const reserved = useBatchReserve
         ? await reserveImportTaskBatch(rootPath, reserveBatchOptions)
         : await reserveNextImportTask(rootPath);
@@ -953,7 +1260,8 @@ export async function runImportQueueOnce(rootPath, options = {}) {
           recoveredFailedTaskIds: failedRecovery.recovered.map((entry) => entry.taskId),
           supersededFailedTaskIds: failedRecovery.superseded.map((entry) => entry.taskId),
           quarantinedTaskIds: quarantineResult?.tasks?.map((task) => task.taskId) || [],
-          quarantineBatchId: quarantineResult?.batchId || null
+          quarantineBatchId: quarantineResult?.batchId || null,
+          ...(batchCoalescing?.waited ? { batchCoalescing } : {})
         };
       }
 
@@ -982,10 +1290,14 @@ export async function runImportQueueOnce(rootPath, options = {}) {
           );
           return {
             ...result,
-            batchProgression
+            batchProgression,
+            ...(batchCoalescing?.waited ? { batchCoalescing } : {})
           };
         }
-        return result;
+        return {
+          ...result,
+          ...(batchCoalescing?.waited ? { batchCoalescing } : {})
+        };
       } catch (error) {
         for (const task of reservedTasks) {
           await failImportTask(rootPath, task.id, error);
@@ -1012,7 +1324,8 @@ export async function runImportQueueOnce(rootPath, options = {}) {
           completedTaskIds: [],
           failedTaskIds,
           error: error.message,
-          ...(batchProgression ? { batchProgression } : {})
+          ...(batchProgression ? { batchProgression } : {}),
+          ...(batchCoalescing?.waited ? { batchCoalescing } : {})
         };
       }
     }, {
@@ -1084,7 +1397,9 @@ export const __importWorkerTestables = {
   getProgressiveImportBatchTarget,
   updateProgressiveImportBatchTarget,
   resetProgressiveImportBatchTarget,
-  countPendingImportTasks
+  countPendingImportTasks,
+  summarizeImportBatchCoalesceTasks,
+  shouldWaitForImportBatchCoalesce
 };
 
 export function startImportWorker(options = {}) {

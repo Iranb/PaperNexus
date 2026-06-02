@@ -558,7 +558,11 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (submit, list, status, progress, queue_progress, log, wait) | Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
+| `operation` | required | string (submit, list, status, progress, queue_progress, log, wait, submit_async, async_status, async_wait) | Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout. submit_async starts a background import_workflow operation and returns a jobId; use async_status/async_wait to read the result. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`, `submit_async`, `async_status`, `async_wait`. |
+| `asyncOperation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Normal import_workflow operation to run in the background when operation=submit_async. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
+| `jobId` | optional | string | Background import_workflow job id returned by submit_async or by a normal operation with async=true; required for async_status or async_wait. |
+| `executionMode` | optional | string (sync, async) | When set to async on a normal import_workflow operation, submit it as a background job instead of blocking. Allowed values: `sync`, `async`. |
+| `async` | optional | boolean | Alias for executionMode=async on a normal import_workflow operation. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `taskId` | optional | string | Import task id for status, log, or wait. |
 | `paperId` | optional | string | Optional paper id used to resolve a task when taskId is omitted. |
@@ -579,6 +583,9 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 | `timeout` | optional | number | Maximum seconds to wait for completion when operation is wait. By default this also includes the downstream authoritative graph sync job for completed imports. Default: `1800`. |
 | `interval` | optional | number | Polling interval in seconds when operation is wait. Default: `2`. |
 | `waitForAuthoritativeSync` | optional | boolean | When operation is wait, keep waiting after the import task completes until its authoritative graph sync job is completed, failed, or superseded. Defaults to true. |
+| `waitTimeoutMs` | optional | number | Maximum milliseconds for operation=async_wait to poll before returning the latest job state. Default: `60000`. |
+| `timeoutMs` | optional | number | Alias for waitTimeoutMs when operation=async_wait. |
+| `pollIntervalMs` | optional | number | Polling interval in milliseconds when operation=async_wait. Default: `500`. |
 
 ### Examples
 
@@ -732,6 +739,8 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `importBatchMaxTasks` | optional | number | Maximum import tasks to reserve into one logical batch during inline import processing. Defaults to 16 and is hard-capped at 16. Default: `16`. |
 | `importBatchInitialTasks` | optional | number | Initial progressive import batch target used before queued work proves sustained. Defaults to 4. Default: `4`. |
 | `importBatchProgressive` | optional | boolean | Grow inline import batch targets from importBatchInitialTasks up to importBatchMaxTasks while pending work remains. Defaults to true. Default: `true`. |
+| `importBatchCoalesceMs` | optional | number | Optional milliseconds to wait before reserving an underfilled inline import batch. Defaults to 0 for immediate processing; use a small backlog value to let bursts fill the logical batch. Default: `0`. |
+| `importBatchCoalescePollMs` | optional | number | Polling interval in milliseconds while waiting for importBatchCoalesceMs to fill an underfilled inline import batch. |
 | `importMaxPasses` | optional | number | Maximum import queue tasks to process inline when processImports is true. Defaults to the number of newly submitted tasks. Default: `20`. |
 | `maxImported` | optional | number | Maximum resolved full-text sources to submit when importResolved is true. Metadata-only candidates remain in discovery artifacts but are not graph-visible until materialized through import. Default: `20`. |
 | `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction mode for inline import processing. Allowed values: `auto`, `heuristic-only`, `llm-assisted`, `llm-primary`. |

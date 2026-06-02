@@ -1204,11 +1204,33 @@
         "arxivId": {
           "type": "string"
         },
+        "async": {
+          "type": "boolean"
+        },
+        "asyncOperation": {
+          "type": "string",
+          "enum": [
+            "list",
+            "log",
+            "progress",
+            "queue_progress",
+            "status",
+            "submit",
+            "wait"
+          ]
+        },
         "corpus": {
           "type": "string"
         },
         "doi": {
           "type": "string"
+        },
+        "executionMode": {
+          "type": "string",
+          "enum": [
+            "async",
+            "sync"
+          ]
         },
         "files": {
           "type": "array",
@@ -1231,18 +1253,24 @@
         "issn": {
           "type": "string"
         },
+        "jobId": {
+          "type": "string"
+        },
         "limit": {
           "type": "number"
         },
         "operation": {
           "type": "string",
           "enum": [
+            "async_status",
+            "async_wait",
             "list",
             "log",
             "progress",
             "queue_progress",
             "status",
             "submit",
+            "submit_async",
             "wait"
           ]
         },
@@ -1254,6 +1282,10 @@
         },
         "pmid": {
           "type": "string"
+        },
+        "pollIntervalMs": {
+          "type": "number",
+          "default": 500
         },
         "serverFilePath": {
           "type": "string"
@@ -1277,12 +1309,19 @@
           "type": "number",
           "default": 1800
         },
+        "timeoutMs": {
+          "type": "number"
+        },
         "trigger": {
           "type": "string",
           "default": "mcp"
         },
         "waitForAuthoritativeSync": {
           "type": "boolean"
+        },
+        "waitTimeoutMs": {
+          "type": "number",
+          "default": 60000
         }
       }
     }
@@ -1493,6 +1532,13 @@
         "generateArxivMarkdownSources": {
           "type": "boolean",
           "default": false
+        },
+        "importBatchCoalesceMs": {
+          "type": "number",
+          "default": 0
+        },
+        "importBatchCoalescePollMs": {
+          "type": "number"
         },
         "importBatchEnabled": {
           "type": "boolean",

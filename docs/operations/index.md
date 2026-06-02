@@ -103,6 +103,8 @@ This is the fastest source when one PDF appears stuck but the queue task itself 
 
 When import backlog grows, split the problem into two categories before doing anything destructive.
 
+First inspect completed task metrics when they exist. `result.metrics.importPerformance.stageTimingsMs` separates materialization, Stage 2 LLM optimization, fast commit, and total wall time; `llmBatches` shows whether work ran through chunk semantic/relation batches or paper-level fallback. If Stage 2 dominates, parser/GPU tuning is probably not the limiting factor.
+
 ### Case A: `running > 0`
 
 That means the queue worker is consuming tasks and at least one task is live.
@@ -124,6 +126,8 @@ Focus on:
 - whether imports are enabled in that process
 - whether the worker sees the correct corpus root
 - whether an old worker lock or multi-instance deployment is preventing progress
+
+If `imports.batchCoalesceMs` is configured, a short worker-held wait for more pending tasks is expected while the queue is underfilled. Treat it as suspicious only after it exceeds the configured coalescing window plus the normal worker heartbeat/timeout policy.
 
 ## Timeout And Quarantine Strategy
 

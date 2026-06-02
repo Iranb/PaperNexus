@@ -239,6 +239,18 @@ This is the important fix that prevents:
 
 from happening again.
 
+When worker-side batching is enabled, several pending imports can share the same scoped Stage 2 call and fast commit. The batch is still logical: task ids, directories, logs, status, and recovery state remain per task. `imports.batchCoalesceMs` can optionally hold an underfilled batch for a short bounded window so bursty submissions are grouped before Stage 2 starts. Leave it at the default `0` when first-paper latency matters more than throughput.
+
+Every completed import now records `result.metrics.importPerformance`. Operators should use this object before guessing where the time went. The fields include:
+
+- `contractVersion: "import-performance-v1"`
+- `mode: "single"` or `"batch"`
+- per-task and batch counts such as `changedSourceKeyCount`, `batchTaskCount`, and `batchChangedSourceKeyCount`
+- `stageTimingsMs.materialize`, `stageTimingsMs.llmOptimize`, `stageTimingsMs.fastCommit`, and `stageTimingsMs.total`
+- `llmBatches`, including the observed semantic/relation or chunk semantic/chunk relation batch events
+
+For chunk-based Stage 2, the LLM batch phases are reported as `chunk-semantic-extraction` and `chunk-relation-extraction`. Paper-level fallback uses `semantic-extraction` and `relation-extraction`.
+
 ## Current Timing Shape
 
 Recent production-style measurements after the latest import fixes showed roughly:
@@ -256,7 +268,7 @@ The main bottleneck is currently **LLM latency**, not PDF parsing.
 This has two operational consequences:
 
 - making Docling more parallel will not help most normal imports
-- batching multiple changed papers into one LLM Stage 2 call would produce the largest future throughput improvement
+- batching multiple changed papers into one LLM Stage 2 call produces the largest immediate throughput improvement
 
 ## Import LLM Defaults
 

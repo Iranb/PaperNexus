@@ -363,6 +363,19 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       importConfig.batchProgressive,
       true
     ),
+    batchCoalesceMs: firstNumber(
+      options.importBatchCoalesceMs,
+      options.batchCoalesceMs,
+      importsConfig.batchCoalesceMs,
+      importConfig.batchCoalesceMs,
+      0
+    ),
+    batchCoalescePollMs: firstNumber(
+      options.importBatchCoalescePollMs,
+      options.batchCoalescePollMs,
+      importsConfig.batchCoalescePollMs,
+      importConfig.batchCoalescePollMs
+    ),
     batchMaxFiles: firstNumber(
       options.importBatchMaxFiles,
       options.batchMaxFiles,

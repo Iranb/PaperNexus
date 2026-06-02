@@ -122,6 +122,8 @@ For MCP/serve workloads, import batching is enabled by default. Configure it und
     "batchProgressive": true,
     "batchInitialTasks": 4,
     "batchMaxTasks": 16,
+    "batchCoalesceMs": 0,
+    "batchCoalescePollMs": 250,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   }
@@ -130,6 +132,10 @@ For MCP/serve workloads, import batching is enabled by default. Configure it und
 
 Set `"batchEnabled": false` if a deployment needs strictly one import task per graph commit.
 With the default progressive policy, an active queue starts later pending work at 4 tasks per logical batch, then grows to 8 and 16 while pending work remains. If fewer tasks are pending than the current target, the worker reserves all pending tasks immediately as one logical batch instead of waiting to fill the target. When the queue drains, the next burst starts from 4 again.
+
+`batchCoalesceMs` is an optional throughput knob for bursty uploads. The default is `0`, which preserves lowest-latency behavior. When set to a positive value, the worker briefly polls for more `pending / queued` tasks before reserving an underfilled logical batch. This can reduce repeated Stage 2 LLM calls when agents submit many papers over a few seconds, at the cost of adding up to that configured delay before the first task starts. `batchCoalescePollMs` controls the queue polling interval during that bounded wait.
+
+Completed tasks now include `result.metrics.importPerformance` with `contractVersion`, per-task/batch counts, `stageTimingsMs`, and `llmBatches`. For a worker batch, each task keeps its own status and logs while sharing the same batch id and shared Stage 2 / fast-commit timing summary.
 
 ## Timeout And Recovery Policy
 
@@ -312,6 +318,8 @@ The wrapper batch and the worker batch are different layers:
 - the worker batch is a graph-commit optimization that can complete several queued task ids with one shared LLM optimization and one shared authoritative sync job
 
 Status and wait commands do not need new arguments for worker batching. They still read per-task queue state; tasks completed by one worker batch simply share `result.batch.batchId` and the same `result.authoritativeSync.jobId`.
+
+When coalescing is enabled, queue progress can show a worker lock held while the worker waits for additional fresh `pending / queued` tasks. This is expected only inside the configured `batchCoalesceMs` window. A task should not be called stuck unless it exceeds the normal running/pending timeout policies outside that bounded wait.
 
 ## CLI Queue Inspection
 

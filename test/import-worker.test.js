@@ -33,6 +33,7 @@ test('import worker grows progressive batch targets while queued work remains', 
     assert.equal(options.maxTasks, 16);
     assert.equal(options.initialTasks, 4);
     assert.equal(options.progressive, true);
+    assert.equal(options.coalesceMs, 0);
 
     assert.equal(batching.getProgressiveImportBatchTarget(rootPath, options), 4);
 
@@ -119,6 +120,33 @@ test('import worker grows progressive batch targets while queued work remains', 
       20
     );
     assert.equal(progression.nextTarget, 4);
+
+    const coalesceOptions = batching.resolveImportBatchOptions({
+      batchEnabled: true,
+      batchMaxTasks: 8,
+      batchCoalesceMs: 90,
+      batchCoalescePollMs: 5
+    });
+    assert.equal(coalesceOptions.coalesceMs, 90);
+    assert.equal(coalesceOptions.coalescePollMs, 25);
+    const coalesceSummary = batching.summarizeImportBatchCoalesceTasks([
+      { id: 'pending-a', status: 'pending', stage: 'queued' },
+      { id: 'pending-b', status: 'pending', stage: 'queued' }
+    ]);
+    assert.deepEqual(coalesceSummary, {
+      total: 2,
+      pending: 2,
+      running: 0
+    });
+    assert.equal(batching.shouldWaitForImportBatchCoalesce(coalesceSummary, coalesceOptions), true);
+    assert.equal(
+      batching.shouldWaitForImportBatchCoalesce({ pending: 8, running: 0 }, coalesceOptions),
+      false
+    );
+    assert.equal(
+      batching.shouldWaitForImportBatchCoalesce({ pending: 2, running: 1 }, coalesceOptions),
+      false
+    );
   } finally {
     batching?.resetProgressiveImportBatchTarget(rootPath);
     batching?.resetProgressiveImportBatchTarget(cappedRootPath);
@@ -288,6 +316,15 @@ test('import worker batches queued markdown uploads into one graph commit when e
     assert.equal(loadedSecondTask.status, 'completed');
     assert.equal(loadedFirstTask.result.batch.batchId, result.batchId);
     assert.equal(loadedSecondTask.result.batch.batchId, result.batchId);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.contractVersion, 'import-performance-v1');
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.mode, 'batch');
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.batchTaskCount, 2);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.changedSourceKeyCount, 1);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.batchChangedSourceKeyCount, 2);
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.materialize, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.llmOptimize, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.fastCommit, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.total, 'number');
     assert.equal(
       loadedFirstTask.result.authoritativeSync.jobId,
       loadedSecondTask.result.authoritativeSync.jobId

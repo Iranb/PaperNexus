@@ -54,7 +54,8 @@ Stable wrapper expectations:
 - `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py` own remote import submission and tracking.
 - Skill wrappers should not call private `/api/*` routes for live graph control.
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.
-- MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true`, `batchProgressive=true`, `batchInitialTasks=4`, and `batchMaxTasks=16`; wrappers continue tracking per-task ids.
+- MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true`, `batchProgressive=true`, `batchInitialTasks=4`, `batchMaxTasks=16`, and `batchCoalesceMs=0`; wrappers continue tracking per-task ids.
+- `import_workflow` also exposes a non-blocking MCP job wrapper: pass `async=true` on a normal operation or call `operation=submit_async` with `asyncOperation`, then poll `operation=async_status` by `jobId`. This is a client-timeout guard for slow queue reads and does not make discovered/imported papers graph-grounded before task completion and authoritative sync.
 
 ## AutoResearch Graph-of-Evidence Contract
 

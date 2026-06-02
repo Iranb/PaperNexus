@@ -624,6 +624,8 @@ test('llmOptimizeCorpus reuses existing semantic and relation results when confi
   const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
   let semanticFetchCount = 0;
   let relationFetchCount = 0;
+  const llmBatchEvents = [];
+  const legacyBatchEvents = [];
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -728,11 +730,37 @@ We study cache-first stage reuse for paper B.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
-      llmBatchSize: 8
+      llmBatchSize: 8,
+      onLlmBatchComplete(event) {
+        llmBatchEvents.push(event);
+      },
+      onBatchComplete(event) {
+        legacyBatchEvents.push(event);
+      }
     });
     assert.equal(firstStage2.stage, 'llm-optimized');
     assert.equal(semanticFetchCount, 1);
     assert.equal(relationFetchCount, 1);
+    assert.deepEqual(llmBatchEvents.map((event) => event.phase), [
+      'chunk-semantic-extraction',
+      'chunk-relation-extraction'
+    ]);
+    assert.deepEqual(llmBatchEvents.map((event) => event.stage), [
+      'llm-optimize',
+      'llm-optimize'
+    ]);
+    for (const event of llmBatchEvents) {
+      assert.equal(event.batchNumber, 1);
+      assert.equal(event.totalBatches, 1);
+      assert.equal(event.batchSize, event.total);
+      assert.ok(event.total >= 2);
+      assert.equal(typeof event.promptChars, 'number');
+      assert.ok(event.promptChars > 0);
+    }
+    assert.deepEqual(legacyBatchEvents.map((event) => event.phase), [
+      'chunk-semantic-extraction',
+      'chunk-relation-extraction'
+    ]);
     const ledgerRoot = path.join(tempCorpusRoot, '.papernexus', 'llm-jobs', 'stage2-ledger');
     const ledgerRuns = await fs.readdir(ledgerRoot);
     assert.equal(ledgerRuns.length, 1);

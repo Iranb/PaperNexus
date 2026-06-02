@@ -400,6 +400,8 @@ test('serveCommand forwards analyze parser config into the import worker', async
           batchMaxTasks: 4,
           batchInitialTasks: 2,
           batchProgressive: false,
+          batchCoalesceMs: 75000,
+          batchCoalescePollMs: 1000,
           batchMaxFiles: 12,
           batchMaxBytes: 1048576
         },
@@ -432,6 +434,8 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].batchMaxTasks, 4);
       assert.equal(calls[0].batchInitialTasks, 2);
       assert.equal(calls[0].batchProgressive, false);
+      assert.equal(calls[0].batchCoalesceMs, 75000);
+      assert.equal(calls[0].batchCoalescePollMs, 1000);
       assert.equal(calls[0].batchMaxFiles, 12);
       assert.equal(calls[0].batchMaxBytes, 1048576);
     } finally {

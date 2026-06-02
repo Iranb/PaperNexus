@@ -637,6 +637,27 @@ function buildImportProcessingOptions(args = {}, options = {}, importResult = {}
       importConfig.batchProgressive,
       true
     ),
+    importBatchCoalesceMs: firstDefined(
+      args.importBatchCoalesceMs,
+      args.import_batch_coalesce_ms,
+      args.batchCoalesceMs,
+      args.batch_coalesce_ms,
+      options.importBatchCoalesceMs,
+      options.batchCoalesceMs,
+      importConfig.importBatchCoalesceMs,
+      importConfig.batchCoalesceMs,
+      0
+    ),
+    importBatchCoalescePollMs: firstDefined(
+      args.importBatchCoalescePollMs,
+      args.import_batch_coalesce_poll_ms,
+      args.batchCoalescePollMs,
+      args.batch_coalesce_poll_ms,
+      options.importBatchCoalescePollMs,
+      options.batchCoalescePollMs,
+      importConfig.importBatchCoalescePollMs,
+      importConfig.batchCoalescePollMs
+    ),
     importBatchMaxFiles: firstDefined(
       args.importBatchMaxFiles,
       args.import_batch_max_files,

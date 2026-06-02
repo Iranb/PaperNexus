@@ -61,6 +61,8 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "batchProgressive": true,
     "batchInitialTasks": 4,
     "batchMaxTasks": 16,
+    "batchCoalesceMs": 0,
+    "batchCoalescePollMs": 250,
     "batchMaxFiles": 16,
     "batchMaxBytes": 104857600
   },
@@ -170,6 +172,8 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `imports.batchProgressive` | boolean | `true` |
 | `imports.batchInitialTasks` | number | `4` |
 | `imports.batchMaxTasks` | number | `16` |
+| `imports.batchCoalesceMs` | number | `0` |
+| `imports.batchCoalescePollMs` | number | `250` |
 | `imports.batchMaxFiles` | number | `16` |
 | `imports.batchMaxBytes` | number | `104857600` |
 | `serve` | object | section |

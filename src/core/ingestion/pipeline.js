@@ -2663,6 +2663,20 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
   let completedRelationTasks = 0;
   const semanticWorkRecords = chunkReadyRecords.filter((record) => record.sourceState.llmRefreshState?.semanticRequired);
   const semanticChunkCount = semanticWorkRecords.reduce((sum, record) => sum + (record.selectedChunks?.length || 0), 0);
+  const reportChunkLlmBatchComplete = (phase, event = {}) => {
+    options.onLlmBatchComplete?.({
+      ...event,
+      phase: event.phase || phase,
+      stage: 'llm-optimize'
+    });
+  };
+  const reportChunkLlmBatchRetry = (phase, event = {}) => {
+    options.onLlmBatchRetry?.({
+      ...event,
+      phase: event.phase || phase,
+      stage: 'llm-optimize'
+    });
+  };
 
   if (allowSemantic && semanticChunkCount) {
     const semanticTasks = [];
@@ -2708,6 +2722,8 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
             ...options,
             llmBatchSize: batchSize,
             onBatchComplete(event = {}) {
+              options.onBatchComplete?.(event);
+              reportChunkLlmBatchComplete('chunk-semantic-extraction', event);
               if (!quiet) {
                 emitPipelineProgress(options, {
                   stage: 'llm-optimize',
@@ -2718,6 +2734,10 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
                   message: `chunk semantic batch ${event.batchNumber}/${Math.max(1, event.totalBatches || 1)}`
                 });
               }
+            },
+            onBatchRetry(event = {}) {
+              options.onBatchRetry?.(event);
+              reportChunkLlmBatchRetry('chunk-semantic-extraction', event);
             }
           })
         : [];
@@ -2944,7 +2964,25 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
               text: item.chunk.text
             })), {
               ...options,
-              llmBatchSize: batchSize
+              llmBatchSize: batchSize,
+              onBatchComplete(event = {}) {
+                options.onBatchComplete?.(event);
+                reportChunkLlmBatchComplete('chunk-relation-extraction', event);
+                if (!quiet) {
+                  emitPipelineProgress(options, {
+                    stage: 'llm-optimize',
+                    currentStep: 'chunk relation extraction',
+                    processedUnits: Math.min(relationTaskRuns.length + Number(event.completed || 0), relationTasks.length),
+                    totalUnits: relationTasks.length,
+                    stagePercent: relationTasks.length ? (((relationTaskRuns.length + Number(event.completed || 0)) / relationTasks.length) * 100) : 100,
+                    message: `chunk relation batch ${event.batchNumber}/${Math.max(1, event.totalBatches || 1)}`
+                  });
+                }
+              },
+              onBatchRetry(event = {}) {
+                options.onBatchRetry?.(event);
+                reportChunkLlmBatchRetry('chunk-relation-extraction', event);
+              }
             })
           : [];
 
@@ -3211,6 +3249,20 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
     && shouldUsePaperLevelFallback(record)
   )).length;
   const totalLlmUnits = semanticPending.length + relationPendingCount;
+  const reportLlmBatchComplete = (phase, event = {}) => {
+    options.onLlmBatchComplete?.({
+      ...event,
+      phase: event.phase || phase,
+      stage: 'llm-optimize'
+    });
+  };
+  const reportLlmBatchRetry = (phase, event = {}) => {
+    options.onLlmBatchRetry?.({
+      ...event,
+      phase: event.phase || phase,
+      stage: 'llm-optimize'
+    });
+  };
   emitPipelineProgress(options, {
     stage: 'llm-optimize',
     currentStep: semanticPending.length ? 'semantic extraction' : 'relation extraction',
@@ -3244,7 +3296,15 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
         })),
         {
           ...options,
-          llmBatchSize: batchSize
+          llmBatchSize: batchSize,
+          onBatchComplete(event = {}) {
+            options.onBatchComplete?.(event);
+            reportLlmBatchComplete('semantic-extraction', event);
+          },
+          onBatchRetry(event = {}) {
+            options.onBatchRetry?.(event);
+            reportLlmBatchRetry('semantic-extraction', event);
+          }
         }
       );
 
@@ -3320,7 +3380,15 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
         })),
         {
           ...options,
-          llmBatchSize: batchSize
+          llmBatchSize: batchSize,
+          onBatchComplete(event = {}) {
+            options.onBatchComplete?.(event);
+            reportLlmBatchComplete('relation-extraction', event);
+          },
+          onBatchRetry(event = {}) {
+            options.onBatchRetry?.(event);
+            reportLlmBatchRetry('relation-extraction', event);
+          }
         }
       );
 

@@ -546,8 +546,26 @@ export const PAPERNEXUS_TOOLS = [
       properties: {
         operation: {
           type: 'string',
+          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait', 'submit_async', 'async_status', 'async_wait'],
+          description: 'Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout. submit_async starts a background import_workflow operation and returns a jobId; use async_status/async_wait to read the result.'
+        },
+        asyncOperation: {
+          type: 'string',
           enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait'],
-          description: 'Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout.'
+          description: 'Normal import_workflow operation to run in the background when operation=submit_async.'
+        },
+        jobId: {
+          type: 'string',
+          description: 'Background import_workflow job id returned by submit_async or by a normal operation with async=true; required for async_status or async_wait.'
+        },
+        executionMode: {
+          type: 'string',
+          enum: ['sync', 'async'],
+          description: 'When set to async on a normal import_workflow operation, submit it as a background job instead of blocking.'
+        },
+        async: {
+          type: 'boolean',
+          description: 'Alias for executionMode=async on a normal import_workflow operation.'
         },
         corpus: {
           type: 'string',
@@ -636,6 +654,20 @@ export const PAPERNEXUS_TOOLS = [
         waitForAuthoritativeSync: {
           type: 'boolean',
           description: 'When operation is wait, keep waiting after the import task completes until its authoritative graph sync job is completed, failed, or superseded. Defaults to true.'
+        },
+        waitTimeoutMs: {
+          type: 'number',
+          description: 'Maximum milliseconds for operation=async_wait to poll before returning the latest job state.',
+          default: 60000
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Alias for waitTimeoutMs when operation=async_wait.'
+        },
+        pollIntervalMs: {
+          type: 'number',
+          description: 'Polling interval in milliseconds when operation=async_wait.',
+          default: 500
         }
       },
       required: ['operation']
@@ -1058,6 +1090,15 @@ export const PAPERNEXUS_TOOLS = [
           type: 'boolean',
           description: 'Grow inline import batch targets from importBatchInitialTasks up to importBatchMaxTasks while pending work remains. Defaults to true.',
           default: true
+        },
+        importBatchCoalesceMs: {
+          type: 'number',
+          description: 'Optional milliseconds to wait before reserving an underfilled inline import batch. Defaults to 0 for immediate processing; use a small backlog value to let bursts fill the logical batch.',
+          default: 0
+        },
+        importBatchCoalescePollMs: {
+          type: 'number',
+          description: 'Polling interval in milliseconds while waiting for importBatchCoalesceMs to fill an underfilled inline import batch.'
         },
         importMaxPasses: {
           type: 'number',
