@@ -100,8 +100,10 @@ papernexus init
 可选的 LLM 设置：
 
 - 如果只需要本地 Ollama 流程，选择 `ollama`
-- 如果需要云 API，选择 `openai` 或 `anthropic`
+- 如果需要云 API，选择 `deepseek`、`openai` 或 `anthropic`
 - 如果 macOS 上出现钥匙串提示，输入您的提供商 API 密钥，而不是登录密码
+
+DeepSeek 会使用 chat-completions JSON mode。由于 DeepSeek 不支持 PaperNexus 的多论文 LLM batch prompt，PaperNexus 会自动把 DeepSeek 的 LLM 推理降为单条请求处理。
 
 这会将运行时配置写入：
 

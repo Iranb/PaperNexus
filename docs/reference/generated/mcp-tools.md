@@ -683,7 +683,7 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `planningMode` | optional | string (rule_based, llm_augmented) | Query planning mode. operation=search defaults to rule_based unless llmQueryPlanner=true or planningMode=llm_augmented is explicit; non-search discovery keeps the configured LLM planner behavior. Allowed values: `rule_based`, `llm_augmented`. |
 | `llmQueryPlanner` | optional | boolean | Use the configured LLM to split the topic into orthogonal literature-search queries before deterministic query expansion. Defaults to true for non-search discovery; operation=search defaults to false unless explicitly enabled. Missing, timing out, or failing LLM config falls back to deterministic planning. Default: `true`. |
 | `maxLlmQueries` | optional | number | Maximum LLM-planned orthogonal queries inserted before deterministic expansion. Defaults by depth are quick=3, default=4, deep=8; operation=search caps these to quick=2, balanced=2, and deep=4. Default: `4`. |
-| `llmProvider` | optional | string | Optional LLM provider override for query planning, such as openai, anthropic, or ollama. Defaults to PaperNexus llm config. |
+| `llmProvider` | optional | string | Optional LLM provider override for query planning, such as deepseek, openai, anthropic, or ollama. Defaults to PaperNexus llm config. |
 | `llmModel` | optional | string | Optional LLM model override for query planning. Defaults to PaperNexus llm config. |
 | `llmBaseUrl` | optional | string | Optional LLM API base URL override for query planning. Defaults to PaperNexus llm config. |
 | `maxResultsPerQuery` | optional | number | Maximum provider results per query. Default: `20`. |
@@ -1011,7 +1011,7 @@ Assemble Agent-facing research materials from committed graph/source state and m
 | `includeCostLlmExtraction` | optional | boolean | Opt in to bounded LLM structured extraction for experiment_cost_materials. Default false to avoid implicit LLM calls. Default: `false`. |
 | `costLlmRecordLimit` | optional | number | Maximum paper material records sent to the opt-in experiment-cost LLM extractor. Default: `16`. |
 | `costLlmMaxInputChars` | optional | number | Maximum characters from paper material records sent to the opt-in experiment-cost LLM extractor. Default: `12000`. |
-| `costLlmProvider` | optional | string | Optional LLM provider override for opt-in experiment-cost extraction, for example ollama, openai, or anthropic. |
+| `costLlmProvider` | optional | string | Optional LLM provider override for opt-in experiment-cost extraction, for example deepseek, ollama, openai, or anthropic. |
 | `costLlmModel` | optional | string | Optional LLM model override for opt-in experiment-cost extraction. |
 | `costLlmBaseUrl` | optional | string | Optional LLM base URL override for opt-in experiment-cost extraction, including OpenAI-compatible Qwen endpoints. |
 | `costLlmApiKeyEnv` | optional | string | Optional environment variable name containing the API key for opt-in experiment-cost extraction. |
@@ -1182,7 +1182,7 @@ Initialize or update the PaperNexus runtime config non-interactively over MCP, e
 | `serveMcpEnabled` | optional | boolean | When provided, write serve.mcp.enabled for HTTP MCP serving. |
 | `serveMcpPath` | optional | string | When provided, write serve.mcp.path. Relative values are normalized with a leading slash. |
 | `llm` | optional | object | Optional LLM config metadata. Raw API keys are intentionally rejected; use apiKeyEnv or keychain metadata. |
-| `llm.provider` | optional | string (ollama, openai, anthropic) | LLM provider. Allowed values: `ollama`, `openai`, `anthropic`. |
+| `llm.provider` | optional | string (ollama, openai, deepseek, anthropic) | LLM provider. Allowed values: `ollama`, `openai`, `deepseek`, `anthropic`. |
 | `llm.model` | optional | string | Model identifier exposed by the provider. |
 | `llm.baseUrl` | optional | string | Provider API base URL. |
 | `llm.relations` | optional | boolean | Enable LLM-assisted relation extraction. |

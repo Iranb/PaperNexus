@@ -3315,17 +3315,20 @@ async function callConfiguredCostLlmJson(prompt, config = {}) {
     throw new Error('LLM is not configured for experiment cost extraction.');
   }
 
-  if (config.provider === 'openai') {
+  if (config.provider === 'openai' || config.provider === 'deepseek') {
     const apiKey = config.apiKey || await loadLlmApiKey(config);
     if (!apiKey) {
-      throw new Error(`Missing API key for experiment cost extraction. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv('openai')} or configure PaperNexus LLM auth.`);
+      throw new Error(`Missing API key for experiment cost extraction. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv(config.provider)} or configure PaperNexus LLM auth.`);
     }
+    const tokenBudget = Math.min(2400, Math.max(512, Number(config.maxTokens || 1600)));
     const body = {
       model: config.model,
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },
       temperature: 0.1,
-      max_completion_tokens: Math.min(2400, Math.max(512, Number(config.maxTokens || 1600)))
+      ...(config.provider === 'deepseek'
+        ? { max_tokens: tokenBudget }
+        : { max_completion_tokens: tokenBudget })
     };
     if (shouldDisableThinkingForJsonMode(config)) body.enable_thinking = false;
     const payload = await postJson(`${config.baseUrl}/chat/completions`, body, {

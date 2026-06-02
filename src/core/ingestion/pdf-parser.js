@@ -650,6 +650,7 @@ function normalizeMarkPdfDownModelName(provider, model) {
   if (!normalizedModel) return '';
   if (normalizedModel.includes('/')) return normalizedModel;
   if (normalizedProvider === 'openai') return `openai/${normalizedModel}`;
+  if (normalizedProvider === 'deepseek') return `deepseek/${normalizedModel}`;
   if (normalizedProvider === 'anthropic') return `anthropic/${normalizedModel}`;
   if (normalizedProvider === 'ollama') return `ollama/${normalizedModel}`;
   return normalizedModel;
@@ -700,7 +701,7 @@ async function buildMarkPdfDownRuntime(options = {}) {
   }
 
   const apiKey = llmConfig.apiKey || await loadLlmApiKey(llmConfig);
-  if ((provider === 'openai' || provider === 'anthropic') && !apiKey) {
+  if ((provider === 'openai' || provider === 'deepseek' || provider === 'anthropic') && !apiKey) {
     throw new Error(
       `MarkPDFDown requires an API key for the ${provider} provider. `
       + `Configure \`llm.apiKey\`, \`llm.apiKeySource="keychain"\`, or ${llmConfig.apiKeyEnv || 'the provider API key env var'}.`
@@ -718,7 +719,7 @@ async function buildMarkPdfDownRuntime(options = {}) {
     RETRY_TIMES: String(resolveMarkPdfDownRetryTimes(options))
   };
 
-  if (provider === 'openai') {
+  if (provider === 'openai' || provider === 'deepseek') {
     env.OPENAI_API_KEY = apiKey;
     if (llmConfig.baseUrl) {
       env.OPENAI_BASE_URL = llmConfig.baseUrl;

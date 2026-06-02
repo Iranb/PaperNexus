@@ -2455,6 +2455,7 @@ function normalizeLlmProvider(value) {
   if (!normalized) return '';
   if (normalized === 'claude' || normalized === 'claudecode' || normalized === 'anthropic') return 'anthropic';
   if (normalized === 'openai') return 'openai';
+  if (normalized === 'deepseek') return 'deepseek';
   return 'ollama';
 }
 
@@ -2530,7 +2531,7 @@ export async function updateLlmConfigPayload(nextLlmConfig, options = {}) {
       baseUrl: nextBaseUrl,
       relations: currentConfig?.llm?.relations ?? currentConfig?.ollama?.relations ?? true,
       timeoutMs: currentConfig?.llm?.timeoutMs ?? currentConfig?.ollama?.timeoutMs,
-      batchSize: currentConfig?.llm?.batchSize ?? currentConfig?.ollama?.batchSize,
+      batchSize: provider === 'deepseek' ? 1 : currentConfig?.llm?.batchSize ?? currentConfig?.ollama?.batchSize,
       maxTokens: currentConfig?.llm?.maxTokens,
       apiKeyEnv: shouldRotateApiKeyEnv
         ? getDefaultLlmApiKeyEnv(provider)

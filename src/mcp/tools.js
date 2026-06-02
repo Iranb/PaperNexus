@@ -836,7 +836,7 @@ export const PAPERNEXUS_TOOLS = [
         },
         llmProvider: {
           type: 'string',
-          description: 'Optional LLM provider override for query planning, such as openai, anthropic, or ollama. Defaults to PaperNexus llm config.'
+          description: 'Optional LLM provider override for query planning, such as deepseek, openai, anthropic, or ollama. Defaults to PaperNexus llm config.'
         },
         llmModel: {
           type: 'string',
@@ -2083,7 +2083,7 @@ export const PAPERNEXUS_TOOLS = [
         },
         costLlmProvider: {
           type: 'string',
-          description: 'Optional LLM provider override for opt-in experiment-cost extraction, for example ollama, openai, or anthropic.'
+          description: 'Optional LLM provider override for opt-in experiment-cost extraction, for example deepseek, ollama, openai, or anthropic.'
         },
         costLlmModel: {
           type: 'string',
@@ -2289,7 +2289,7 @@ export const PAPERNEXUS_TOOLS = [
           properties: {
             provider: {
               type: 'string',
-              enum: ['ollama', 'openai', 'anthropic'],
+              enum: ['ollama', 'openai', 'deepseek', 'anthropic'],
               description: 'LLM provider.'
             },
             model: {

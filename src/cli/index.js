@@ -92,7 +92,7 @@ Scope boundary:
   - broader autonomous multi-agent orchestration and final research decisions live outside PaperNexus.
 
 LLM Fallback Options:
-  --fallback-provider <openai|anthropic|ollama>
+  --fallback-provider <openai|deepseek|anthropic|ollama>
     Provider to use when the primary LLM is rate limited. Fallback is off unless a fallback model is configured.
   --fallback-model <name>
     Model identifier for the fallback provider.
@@ -473,6 +473,7 @@ function buildSuggestedCorpusName(inputs, fallback = 'my-corpus') {
 
 function getDefaultInitLlmModel(provider) {
   if (provider === 'openai') return 'gpt-4o-mini';
+  if (provider === 'deepseek') return 'deepseek-chat';
   if (provider === 'anthropic') return 'claude-3-5-sonnet-latest';
   return 'qwen2.5:0.5b';
 }
@@ -1058,14 +1059,14 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
     let shouldPromptForKeychain = false;
 
     if (configureLlmNow) {
-      console.log('LLM provider: choose a provider from the list below. Use `openai` for OpenAI-compatible cloud APIs, `anthropic` for Claude-compatible APIs, or `ollama` for local models.');
+      console.log('LLM provider: choose a provider from the list below. Use `deepseek` for DeepSeek JSON mode, `openai` for OpenAI-compatible cloud APIs, `anthropic` for Claude-compatible APIs, or `ollama` for local models.');
       const requestedProvider = (await prompt.promptChoice(
         'LLM provider',
-        ['ollama', 'openai', 'anthropic'],
+        ['ollama', 'openai', 'deepseek', 'anthropic'],
         currentLlm.provider || (currentLegacyOllama.model ? 'ollama' : 'ollama')
       )).trim().toLowerCase();
       llmProvider = init.resolveLlmConfig({ llmProvider: requestedProvider }).provider;
-      if (!['ollama', 'openai', 'anthropic'].includes(llmProvider)) {
+      if (!['ollama', 'openai', 'deepseek', 'anthropic'].includes(llmProvider)) {
         throw new Error(`Unsupported LLM provider: ${requestedProvider}`);
       }
 
@@ -1102,7 +1103,7 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
       };
       delete nextLlm.apiKey;
 
-      if (llmProvider === 'openai' || llmProvider === 'anthropic') {
+      if (llmProvider === 'openai' || llmProvider === 'deepseek' || llmProvider === 'anthropic') {
         nextLlm.apiKeyEnv = currentLlm.apiKeyEnv || init.getDefaultLlmApiKeyEnv(llmProvider);
         
         // Show available backends
@@ -1188,7 +1189,7 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
     if (nextLlm?.provider && nextLlm?.model) {
       console.log(`LLM: ${nextLlm.provider} · ${nextLlm.model}`);
     }
-    if ((llmProvider === 'openai' || llmProvider === 'anthropic') && !keychainConfiguredNow) {
+    if ((llmProvider === 'openai' || llmProvider === 'deepseek' || llmProvider === 'anthropic') && !keychainConfiguredNow) {
       console.log('Tip: run `papernexus auth llm set --provider <name> --base-url <url>` later to store your API key in Keychain.');
     }
     console.log('Next: run `papernexus analyze` to build the first index. Add `--force` only when you intentionally want a full rebuild.');
@@ -1383,17 +1384,15 @@ async function handleApiKeyCommand(flags, config, configBaseDir, configPath) {
   }
   
   // Check for valid provider
-  if (provider !== 'openai' && provider !== 'anthropic') {
+  if (provider !== 'openai' && provider !== 'deepseek' && provider !== 'anthropic') {
     console.log(`Provider "${provider}" doesn't require an API key.`);
-    console.log('This command is for OpenAI or Anthropic API keys.');
-    console.log('Use --provider openai or --provider anthropic');
+    console.log('This command is for OpenAI, DeepSeek, or Anthropic API keys.');
+    console.log('Use --provider openai, --provider deepseek, or --provider anthropic');
     return;
   }
   
   // Get base URL
-  const defaultBaseUrl = provider === 'anthropic' 
-    ? 'https://api.anthropic.com/v1'
-    : 'https://api.openai.com/v1';
+  const defaultBaseUrl = auth.getDefaultLlmBaseUrl(provider);
   const baseUrl = flags['base-url'] || config?.llm?.baseUrl || defaultBaseUrl;
   
   // Build service/account
@@ -1438,7 +1437,7 @@ async function handleApiKeyCommand(flags, config, configBaseDir, configPath) {
   await auth.setKeychainSecret({ service, account, secret: secret.trim() });
   
   // Get model from config or use default
-  const defaultModel = provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini';
+  const defaultModel = getDefaultInitLlmModel(provider);
   const model = config?.llm?.model || defaultModel;
   
   // Update config
@@ -1472,8 +1471,8 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
   const auth = await loadAuthModules();
   const resolved = auth.resolveLlmConfig(buildLlmOptions(flags, config));
 
-  if (resolved.provider !== 'openai' && resolved.provider !== 'anthropic') {
-    throw new Error('`papernexus auth llm` is for API-key providers. Use `--provider openai` for OpenAI-compatible endpoints like DashScope, or `--provider claudecode` / `anthropic` for Claude-compatible endpoints.');
+  if (resolved.provider !== 'openai' && resolved.provider !== 'deepseek' && resolved.provider !== 'anthropic') {
+    throw new Error('`papernexus auth llm` is for API-key providers. Use `--provider deepseek` for DeepSeek, `--provider openai` for OpenAI-compatible endpoints like DashScope, or `--provider claudecode` / `anthropic` for Claude-compatible endpoints.');
   }
 
   const service = String(
@@ -1509,7 +1508,7 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
     console.log(`  Model: ${resolved.model}`);
     console.log(`  Base URL: ${resolved.baseUrl}`);
     
-    if (resolved.provider === 'openai' || resolved.provider === 'anthropic') {
+    if (resolved.provider === 'openai' || resolved.provider === 'deepseek' || resolved.provider === 'anthropic') {
       console.log(`  API Key Source: ${resolved.apiKeySource || 'environment variable / not configured'}`);
       if (resolved.apiKeySource === 'keychain') {
         console.log(`  API Key Service: ${resolved.apiKeyService}`);
@@ -1526,7 +1525,7 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
     }
     
     console.log('\nTo configure your LLM API key, run:');
-    console.log('  papernexus auth llm set --provider openai --base-url https://api.openai.com/v1');
+    console.log('  papernexus auth llm set --provider deepseek --model deepseek-chat --base-url https://api.deepseek.com');
     return;
   }
 
@@ -1646,6 +1645,11 @@ async function handleProbeLlmCommand(flags, config) {
       baseUrl: baseUrl || 'https://coding.dashscope.aliyuncs.com/v1',
       provider: 'openai'
     },
+    deepseek: {
+      model: model || 'deepseek-chat',
+      baseUrl: baseUrl || 'https://api.deepseek.com',
+      provider: 'deepseek'
+    },
     anthropic: {
       model: model || 'claude-sonnet-4-20250514',
       baseUrl: baseUrl || 'https://api.anthropic.com/v1',
@@ -1679,7 +1683,7 @@ async function handleProbeLlmCommand(flags, config) {
   try {
     let response;
 
-    if (provider === 'openai' || selectedConfig.provider === 'openai') {
+    if (provider === 'openai' || provider === 'deepseek' || selectedConfig.provider === 'openai' || selectedConfig.provider === 'deepseek') {
       response = await fetch(`${selectedConfig.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -1720,7 +1724,7 @@ async function handleProbeLlmCommand(flags, config) {
     const result = await response.json();
 
     let reply;
-    if (provider === 'openai' || selectedConfig.provider === 'openai') {
+    if (provider === 'openai' || provider === 'deepseek' || selectedConfig.provider === 'openai' || selectedConfig.provider === 'deepseek') {
       reply = result.choices?.[0]?.message?.content;
     } else {
       reply = result.content?.[0]?.text;

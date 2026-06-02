@@ -210,6 +210,22 @@ Minimal default parser and LLM config:
 }
 ```
 
+DeepSeek can be configured as an OpenAI-compatible cloud provider:
+
+```json
+{
+  "llm": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "baseUrl": "https://api.deepseek.com",
+    "batchSize": 1,
+    "apiKeyEnv": "DEEPSEEK_API_KEY"
+  }
+}
+```
+
+DeepSeek uses chat-completions JSON mode with `response_format: {"type":"json_object"}`. Because DeepSeek does not support PaperNexus multi-paper LLM batch prompts, PaperNexus automatically runs DeepSeek LLM extraction one item at a time even if a larger batch size is configured.
+
 If Docling should reuse a shared model cache or pin a GPU:
 
 ```json

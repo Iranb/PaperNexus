@@ -513,17 +513,19 @@ async function callFixedCorpusQueryAnalysisLlm(queryCase = {}, options = {}) {
     throw new Error('Fixed-corpus query analysis requires an LLM model or a fixedCorpusQueryAnalyzer hook.');
   }
 
-  if (config.provider === 'openai') {
+  if (config.provider === 'openai' || config.provider === 'deepseek') {
     const apiKey = config.apiKey || await loadLlmApiKey(config);
     if (!apiKey) {
-      throw new Error(`Missing API key for fixed-corpus query analysis. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv('openai')} or run papernexus auth llm set.`);
+      throw new Error(`Missing API key for fixed-corpus query analysis. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv(config.provider)} or run papernexus auth llm set.`);
     }
     const payload = await postJson(`${config.baseUrl}/chat/completions`, {
       model: config.model,
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },
       temperature: 0.1,
-      max_completion_tokens: config.maxTokens || 800
+      ...(config.provider === 'deepseek'
+        ? { max_tokens: config.maxTokens || 800 }
+        : { max_completion_tokens: config.maxTokens || 800 })
     }, {
       authorization: `Bearer ${apiKey}`
     }, config.timeoutMs);

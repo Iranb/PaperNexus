@@ -76,7 +76,7 @@ Scope boundary:
   - broader autonomous multi-agent orchestration and final research decisions live outside PaperNexus.
 
 LLM Fallback Options:
-  --fallback-provider <openai|anthropic|ollama>
+  --fallback-provider <openai|deepseek|anthropic|ollama>
     Provider to use when the primary LLM is rate limited. Fallback is off unless a fallback model is configured.
   --fallback-model <name>
     Model identifier for the fallback provider.

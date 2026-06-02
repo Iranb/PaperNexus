@@ -80,3 +80,45 @@ test('updateLlmConfigPayload rotates default keychain account when provider chan
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('updateLlmConfigPayload persists DeepSeek defaults and single-item batch size', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-deepseek-config-'));
+  const configPath = path.join(tempDir, 'config.json');
+
+  try {
+    const payload = await updateLlmConfigPayload({
+      provider: 'deepseek',
+      model: 'deepseek-chat'
+    }, {
+      config: {
+        llm: {
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          baseUrl: 'https://api.openai.com/v1',
+          batchSize: 8,
+          apiKeySource: 'keychain',
+          apiKeyService: 'papernexus.llm',
+          apiKeyAccount: 'openai:https://api.openai.com/v1'
+        }
+      },
+      configBaseDir: tempDir,
+      configPath
+    });
+
+    assert.equal(payload.llm.provider, 'deepseek');
+    assert.equal(payload.llm.model, 'deepseek-chat');
+    assert.equal(payload.llm.baseUrl, 'https://api.deepseek.com');
+    assert.equal(payload.llm.apiKeyEnv, 'DEEPSEEK_API_KEY');
+    assert.equal(payload.llm.apiKeyAccount, 'deepseek:https://api.deepseek.com');
+    assert.equal(payload.llm.batchSize, 1);
+
+    const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    assert.equal(saved.llm.provider, 'deepseek');
+    assert.equal(saved.llm.baseUrl, 'https://api.deepseek.com');
+    assert.equal(saved.llm.apiKeyEnv, 'DEEPSEEK_API_KEY');
+    assert.equal(saved.llm.apiKeyAccount, 'deepseek:https://api.deepseek.com');
+    assert.equal(saved.llm.batchSize, 1);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

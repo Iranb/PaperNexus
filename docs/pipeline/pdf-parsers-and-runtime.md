@@ -278,6 +278,7 @@ The behavior is:
 - if an API key is required for the configured provider, PaperNexus resolves it the same way other LLM flows do
 - if the project LLM config is missing or incomplete, MarkItDown automatically falls back to non-LLM mode
 - if you explicitly set `markitdownUseLlm: false`, LLM mode is disabled even if project `llm.*` exists
+- DeepSeek is treated as an OpenAI-compatible JSON-mode endpoint, but PaperNexus forces DeepSeek LLM extraction to single-item requests because DeepSeek does not support multi-paper batch prompts
 
 This makes MarkItDown align with the rest of the system instead of demanding a second, parser-specific LLM configuration block.
 
@@ -507,6 +508,25 @@ If a task is `completed` with `recovery.status = superseded`, it is also safe to
     "model": "gpt-4o",
     "baseUrl": "https://api.openai.com/v1",
     "apiKeySource": "keychain"
+  }
+}
+```
+
+### DeepSeek JSON-mode cloud provider
+
+```json
+{
+  "analyze": {
+    "pdfParser": "markitdown",
+    "markitdownPython": "python3",
+    "doclingCommand": "docling"
+  },
+  "llm": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "baseUrl": "https://api.deepseek.com",
+    "batchSize": 1,
+    "apiKeyEnv": "DEEPSEEK_API_KEY"
   }
 }
 ```

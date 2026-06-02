@@ -215,6 +215,116 @@ test('inferPaperSemanticObjects disables thinking for DashScope Qwen3 JSON mode'
   assert.deepEqual(requestBody.response_format, { type: 'json_object' });
 });
 
+test('inferPaperSemanticObjects sends DeepSeek JSON-mode chat requests', async () => {
+  let requestUrl = '';
+  let requestBody = null;
+  let requestHeaders = null;
+  globalThis.fetch = async (url, options) => {
+    requestUrl = String(url);
+    requestBody = JSON.parse(options.body);
+    requestHeaders = options.headers;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  problems: [
+                    {
+                      name: 'deepseek json mode extraction',
+                      type: 'Problem',
+                      evidenceText: 'DeepSeek JSON mode extraction is tested.',
+                      sectionHeading: 'Abstract',
+                      sectionRole: 'abstract',
+                      confidence: 0.91
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const result = await inferPaperSemanticObjects(
+    {
+      title: 'DeepSeek JSON Mode',
+      sections: [
+        { heading: 'Abstract', role: 'abstract', text: 'DeepSeek JSON mode extraction is tested.' }
+      ]
+    },
+    {
+      abstract: 'A DeepSeek JSON mode paper.',
+      problems: [],
+      methods: [],
+      claims: []
+    },
+    {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'deepseek',
+      llmModel: 'deepseek-chat',
+      llmApiKey: 'deepseek-test-key',
+      llmMaxTokens: 1024
+    }
+  );
+
+  assert.equal(requestUrl, 'https://api.deepseek.com/chat/completions');
+  assert.equal(requestHeaders.authorization, 'Bearer deepseek-test-key');
+  assert.equal(requestBody.model, 'deepseek-chat');
+  assert.deepEqual(requestBody.response_format, { type: 'json_object' });
+  assert.equal(requestBody.max_tokens, 1024);
+  assert.equal(Object.hasOwn(requestBody, 'max_completion_tokens'), false);
+  assert.equal(result.provider, 'deepseek');
+  assert.equal(result.problems[0].name, 'deepseek json mode extraction');
+});
+
+test('inferPaperSemanticObjects reports empty DeepSeek JSON-mode content as request failure', async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: ''
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const result = await inferPaperSemanticObjects(
+    {
+      title: 'Empty DeepSeek JSON Mode',
+      sections: [
+        { heading: 'Abstract', role: 'abstract', text: 'DeepSeek may return empty content.' }
+      ]
+    },
+    {
+      abstract: 'A test paper.',
+      problems: [],
+      methods: [],
+      claims: []
+    },
+    {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'deepseek',
+      llmModel: 'deepseek-chat',
+      llmApiKey: 'deepseek-test-key'
+    }
+  );
+
+  assert.equal(result.provider, 'deepseek');
+  assert.equal(result.participated, false);
+  assert.equal(result.reason, 'request-failed');
+  assert.match(result.error, /empty content/i);
+});
+
 test('inferPaperSemanticObjects records a one-hour OpenAI-compatible 429 cooldown without surfacing an error', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-rate-limit-state-'));
   const statePath = path.join(tempDir, 'llm-rate-limits.json');
@@ -980,6 +1090,62 @@ test('batch LLM inference reports batch progress callbacks', async () => {
   assert.equal(batchEvents[1].completed, 3);
 });
 
+test('inferPaperSemanticObjectsBatch forces DeepSeek requests to single-item batches', async () => {
+  const batchEvents = [];
+  const requestPaperCounts = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+    requestPaperCounts.push(papers.length);
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  papers: papers.map((paper) => ({
+                    id: paper.id,
+                    problems: []
+                  }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} },
+    { id: 'paper-3', parsedPaper: { title: 'C', sections: [] }, semanticPaper: {} }
+  ];
+
+  const results = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'deepseek',
+    llmModel: 'deepseek-chat',
+    llmApiKey: 'deepseek-test-key',
+    llmBatchSize: 3,
+    onBatchComplete(event) {
+      batchEvents.push(event);
+    }
+  });
+
+  assert.equal(results.length, 3);
+  assert.deepEqual(requestPaperCounts, [1, 1, 1]);
+  assert.equal(batchEvents.length, 3);
+  assert.equal(batchEvents.every((event) => event.batchSize === 1), true);
+  assert.equal(results.every((result) => result.provider === 'deepseek' && result.participated), true);
+});
+
 test('inferPaperSemanticObjectsBatch writes and resumes optional batch ledger', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-batch-ledger-'));
   let fetchCount = 0;
@@ -1506,6 +1672,38 @@ test('resolveLlmConfig fills default Keychain binding fields for keychain-backed
   assert.equal(config.apiKeySource, 'keychain');
   assert.equal(config.apiKeyService, 'papernexus.llm');
   assert.equal(config.apiKeyAccount, 'openai:https://coding.dashscope.aliyuncs.com/v1');
+});
+
+test('resolveLlmConfig resolves DeepSeek defaults and disables batch inference', () => {
+  const config = resolveLlmConfig({
+    llmProvider: 'deepseek',
+    llmModel: 'deepseek-chat',
+    llmBatchSize: 8,
+    llmApiKeySource: 'keychain'
+  });
+
+  assert.equal(config.provider, 'deepseek');
+  assert.equal(config.baseUrl, 'https://api.deepseek.com');
+  assert.equal(config.apiKeyEnv, 'DEEPSEEK_API_KEY');
+  assert.equal(config.apiKeyAccount, 'deepseek:https://api.deepseek.com');
+  assert.equal(config.batchSize, 1);
+});
+
+test('resolveLlmConfig caps DeepSeek fallback batch size at one', () => {
+  const config = resolveLlmConfig({
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBatchSize: 8,
+    llmFallbackProvider: 'deepseek',
+    llmFallbackModel: 'deepseek-chat',
+    llmFallbackBatchSize: 8
+  });
+
+  assert.equal(config.batchSize, 8);
+  assert.equal(config.fallback.provider, 'deepseek');
+  assert.equal(config.fallback.baseUrl, 'https://api.deepseek.com');
+  assert.equal(config.fallback.apiKeyEnv, 'DEEPSEEK_API_KEY');
+  assert.equal(config.fallback.batchSize, 1);
 });
 
 test('resolveLlmConfig exposes bounded LLM retry settings for rate-limited providers', () => {

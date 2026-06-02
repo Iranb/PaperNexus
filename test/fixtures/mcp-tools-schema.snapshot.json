@@ -2411,6 +2411,7 @@
               "type": "string",
               "enum": [
                 "anthropic",
+                "deepseek",
                 "ollama",
                 "openai"
               ]

@@ -72,6 +72,7 @@ The 2026-05-12 harness work is internal/additive:
 - Retrieval benchmark run artifacts add `run-manifest.json`, `queries.jsonl`, `per-query-results.jsonl`, `failures.jsonl`, `checkpoint.json`, `time.txt`, `report.json`, and `report.md`.
 - Retrieval benchmark CLI adds optional `--run-id`, `--resume`, `--continue-on-error`, `--fixed-corpus-cache-dir`, and `--query-decomposition`.
 - LLM extraction can write optional batch ledgers when `llmBatchLedgerDir` is supplied.
+- DeepSeek is available through the existing `llm.provider="deepseek"` configuration and existing MCP fields. It uses JSON mode on the OpenAI-compatible chat-completions endpoint, and PaperNexus internally forces DeepSeek LLM extraction to single-item requests because DeepSeek does not support multi-paper batch prompts.
 - Graph-v2 verification reports additional telemetry fields.
 
 These changes do not add, remove, or rename public MCP tools or skill wrapper commands.

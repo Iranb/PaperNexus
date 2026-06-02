@@ -39,6 +39,7 @@ try {
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
+const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_TIMEOUT_MS = 45000;
 const DEFAULT_BATCH_SIZE = 8;
 const DEFAULT_BATCH_PROMPT_MAX_CHARS = 24000;
@@ -720,6 +721,7 @@ function normalizeProviderName(value) {
   if (!normalized) return '';
   if (normalized === 'claude' || normalized === 'claudecode' || normalized === 'anthropic') return 'anthropic';
   if (normalized === 'openai') return 'openai';
+  if (normalized === 'deepseek') return 'deepseek';
   if (normalized === 'ollama') return 'ollama';
   return normalized;
 }
@@ -728,6 +730,7 @@ export function getDefaultLlmBaseUrl(provider) {
   const normalized = normalizeProviderName(provider);
   if (normalized === 'openai') return DEFAULT_OPENAI_BASE_URL;
   if (normalized === 'anthropic') return DEFAULT_ANTHROPIC_BASE_URL;
+  if (normalized === 'deepseek') return DEFAULT_DEEPSEEK_BASE_URL;
   return DEFAULT_OLLAMA_BASE_URL;
 }
 
@@ -735,7 +738,30 @@ export function getDefaultLlmApiKeyEnv(provider) {
   const normalized = normalizeProviderName(provider);
   if (normalized === 'openai') return 'OPENAI_API_KEY';
   if (normalized === 'anthropic') return 'ANTHROPIC_API_KEY';
+  if (normalized === 'deepseek') return 'DEEPSEEK_API_KEY';
   return '';
+}
+
+function isOpenAiCompatibleProvider(provider) {
+  return provider === 'openai' || provider === 'deepseek';
+}
+
+function isDeepSeekProvider(config = {}) {
+  if (!config || typeof config !== 'object') return false;
+  return normalizeProviderName(config.provider) === 'deepseek';
+}
+
+function getOpenAiCompatibleProviderLabel(config = {}) {
+  return isDeepSeekProvider(config) ? 'DeepSeek' : 'OpenAI';
+}
+
+function resolveProviderDefaultBaseUrl(provider) {
+  return getDefaultLlmBaseUrl(provider);
+}
+
+function resolveEffectiveLlmBatchSize(config = {}, fallback = DEFAULT_BATCH_SIZE) {
+  if (isDeepSeekProvider(config) || isDeepSeekProvider(config.fallback)) return 1;
+  return Math.max(1, Number(config.batchSize || fallback));
 }
 
 function inferLegacyOllamaUsage(options = {}) {
@@ -874,7 +900,7 @@ function resolveLlmFallbackConfig(options = {}, primaryConfig = {}) {
     return null;
   }
 
-  const defaultBaseUrl = getDefaultLlmBaseUrl(provider);
+  const defaultBaseUrl = resolveProviderDefaultBaseUrl(provider);
   const baseUrl = String(pickDefined(
     options.llmFallbackBaseUrl,
     options.llmFallbackUrl,
@@ -911,12 +937,14 @@ function resolveLlmFallbackConfig(options = {}, primaryConfig = {}) {
       primaryConfig.timeoutMs,
       DEFAULT_TIMEOUT_MS
     )),
-    batchSize: Number(pickDefined(
-      options.llmFallbackBatchSize,
-      process.env.PAPERNEXUS_LLM_FALLBACK_BATCH_SIZE,
-      primaryConfig.batchSize,
-      DEFAULT_BATCH_SIZE
-    )),
+    batchSize: provider === 'deepseek'
+      ? 1
+      : Number(pickDefined(
+          options.llmFallbackBatchSize,
+          process.env.PAPERNEXUS_LLM_FALLBACK_BATCH_SIZE,
+          primaryConfig.batchSize,
+          DEFAULT_BATCH_SIZE
+        )),
     maxTokens: Number(pickDefined(
       options.llmFallbackMaxTokens,
       process.env.PAPERNEXUS_LLM_FALLBACK_MAX_TOKENS,
@@ -1003,11 +1031,7 @@ export function resolveLlmConfig(options = {}) {
     process.env.PAPERNEXUS_OLLAMA_RELATIONS
   );
   const enabled = Boolean(relationsFlag === true || relationsFlag === '1' || relationsFlag === 'true' || model);
-  const defaultBaseUrl = provider === 'openai'
-    ? DEFAULT_OPENAI_BASE_URL
-    : provider === 'anthropic'
-      ? DEFAULT_ANTHROPIC_BASE_URL
-      : DEFAULT_OLLAMA_BASE_URL;
+  const defaultBaseUrl = resolveProviderDefaultBaseUrl(provider);
   const apiKeySource = String(pickDefined(
     options.llmApiKeySource,
     process.env.PAPERNEXUS_LLM_API_KEY_SOURCE,
@@ -1046,13 +1070,15 @@ export function resolveLlmConfig(options = {}) {
       process.env.PAPERNEXUS_OLLAMA_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS
     )),
-    batchSize: Number(pickDefined(
-      options.llmBatchSize,
-      process.env.PAPERNEXUS_LLM_BATCH_SIZE,
-      options.ollamaBatchSize,
-      process.env.PAPERNEXUS_OLLAMA_BATCH_SIZE,
-      DEFAULT_BATCH_SIZE
-    )),
+    batchSize: provider === 'deepseek'
+      ? 1
+      : Number(pickDefined(
+          options.llmBatchSize,
+          process.env.PAPERNEXUS_LLM_BATCH_SIZE,
+          options.ollamaBatchSize,
+          process.env.PAPERNEXUS_OLLAMA_BATCH_SIZE,
+          DEFAULT_BATCH_SIZE
+        )),
     maxTokens: Number(pickDefined(
       options.llmMaxTokens,
       process.env.PAPERNEXUS_LLM_MAX_TOKENS,
@@ -2053,6 +2079,7 @@ function tryJsonRepair(candidate) {
 }
 
 async function requestOpenAiGenerate(config, prompt) {
+  const providerLabel = getOpenAiCompatibleProviderLabel(config);
   const apiKey = config.apiKey || await loadLlmApiKey(config);
   if (apiKey && !config.apiKey) {
     config.apiKey = apiKey;
@@ -2060,7 +2087,7 @@ async function requestOpenAiGenerate(config, prompt) {
 
   if (!apiKey) {
     throw new Error(
-      `Missing API key for the OpenAI-compatible provider. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv('openai')}, llm.apiKey, or run \`papernexus auth llm set\`.`
+      `Missing API key for the ${providerLabel}-compatible provider. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv(config.provider)}, llm.apiKey, or run \`papernexus auth llm set\`.`
     );
   }
 
@@ -2075,16 +2102,21 @@ async function requestOpenAiGenerate(config, prompt) {
     response_format: {
       type: 'json_object'
     },
-    max_completion_tokens: config.maxTokens,
     temperature: 0.1
   };
+
+  if (isDeepSeekProvider(config)) {
+    requestBody.max_tokens = config.maxTokens;
+  } else {
+    requestBody.max_completion_tokens = config.maxTokens;
+  }
 
   if (shouldDisableThinkingForJsonMode(config)) {
     requestBody.enable_thinking = false;
   }
 
   const response = await fetchLlmJsonWithRetry(
-    'OpenAI',
+    providerLabel,
     `${config.baseUrl}/chat/completions`,
     {
       method: 'POST',
@@ -2097,9 +2129,12 @@ async function requestOpenAiGenerate(config, prompt) {
     config
   );
 
-  return {
-    text: extractOpenAiText(response)
-  };
+  const text = extractOpenAiText(response);
+  if (isDeepSeekProvider(config) && !String(text || '').trim()) {
+    throw new Error('DeepSeek JSON mode returned empty content; retry with a shorter prompt or a larger max_tokens value.');
+  }
+
+  return { text };
 }
 
 function extractAnthropicText(payload) {
@@ -2151,7 +2186,7 @@ async function requestAnthropicGenerate(config, prompt) {
 }
 
 async function requestLlmGenerateDirect(config, prompt) {
-  if (config.provider === 'openai') {
+  if (isOpenAiCompatibleProvider(config.provider)) {
     return requestOpenAiGenerate(config, prompt);
   }
 
@@ -2444,7 +2479,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
     }));
   }
 
-  const batchSize = Math.max(1, Number(plan.config?.batchSize || DEFAULT_BATCH_SIZE));
+  const batchSize = resolveEffectiveLlmBatchSize(plan.config);
   const normalizedEntries = entries.map((entry, index) => ({
     ...entry,
     id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${index + 1}`),
@@ -2872,7 +2907,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
     });
   }
 
-  const batchSize = Math.max(1, Number(plan.config?.batchSize || DEFAULT_BATCH_SIZE));
+  const batchSize = resolveEffectiveLlmBatchSize(plan.config);
   const normalizedEntries = entries.map((entry, index) => ({
     ...normalizeChunkBatchEntry(entry, index),
     __batchIndex: index
@@ -3251,7 +3286,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
     });
   }
 
-  const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const batchSize = resolveEffectiveLlmBatchSize(config);
   const normalizedEntries = entries.map((entry, index) => ({
     ...normalizeChunkBatchEntry(entry, index),
     __batchIndex: index
@@ -3626,7 +3661,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
     }));
   }
 
-  const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const batchSize = resolveEffectiveLlmBatchSize(config);
   const normalizedEntries = entries.map((entry, index) => ({
       ...entry,
       id: String(entry?.id || entry?.parsedPaper?.paperId || entry?.semanticPaper?.paperId || `paper-${index + 1}`),
@@ -3905,7 +3940,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
     }));
   }
 
-  const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const batchSize = resolveEffectiveLlmBatchSize(config);
   const normalizedEntries = entries.map((entry, index) => ({
     ...entry,
     id: String(entry?.id || `node-${index + 1}`),
@@ -4139,7 +4174,7 @@ export async function adjudicateCrossPaperCandidates(candidates, options = {}) {
     ? options.crossPaperJudgmentCache
     : null;
   const judgments = [];
-  const batchSize = Math.max(1, Number(config.batchSize || DEFAULT_BATCH_SIZE));
+  const batchSize = resolveEffectiveLlmBatchSize(config);
   const pendingCandidates = [];
 
   for (const candidate of candidates) {

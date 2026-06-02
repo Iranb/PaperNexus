@@ -655,17 +655,19 @@ async function callBenchmarkLlmJson(prompt, options = {}) {
     throw new Error('Task evaluation requires an LLM model. Set llm.model in config or pass --llm-model.');
   }
 
-  if (config.provider === 'openai') {
+  if (config.provider === 'openai' || config.provider === 'deepseek') {
     const apiKey = config.apiKey || await loadLlmApiKey(config);
     if (!apiKey) {
-      throw new Error(`Missing API key for benchmark task evaluation. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv('openai')} or run papernexus auth llm set.`);
+      throw new Error(`Missing API key for benchmark task evaluation. Set ${config.apiKeyEnv || getDefaultLlmApiKeyEnv(config.provider)} or run papernexus auth llm set.`);
     }
     const payload = await postJson(`${config.baseUrl}/chat/completions`, {
       model: config.model,
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },
       temperature: 0.1,
-      max_completion_tokens: config.maxTokens || 2048
+      ...(config.provider === 'deepseek'
+        ? { max_tokens: config.maxTokens || 2048 }
+        : { max_completion_tokens: config.maxTokens || 2048 })
     }, {
       authorization: `Bearer ${apiKey}`
     }, config.timeoutMs);
