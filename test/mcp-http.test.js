@@ -467,3 +467,53 @@ test('serveCommand background workers ignore an invalid configured storage index
     await cleanupIndexedCorpus(fixture);
   }
 });
+
+test('serveCommand background workers scan all configured storage indexDirs', async () => {
+  const first = await createIndexedCorpus('papernexus-mcp-http-worker-root-a', 'mcp-http-worker-root-a');
+  const second = await createIndexedCorpus('papernexus-mcp-http-worker-root-b', 'mcp-http-worker-root-b');
+  const port = 57600 + Math.floor(Math.random() * 500);
+  const capturedRoots = {
+    enhancement: null,
+    authoritativeSync: null,
+    import: null
+  };
+  const makeStarter = (key) => (options = {}) => {
+    capturedRoots[key] = options.rootPaths;
+    return {
+      stop() {}
+    };
+  };
+
+  const { serveCommand } = await import('../src/server/http.js');
+  const serverHandle = await serveCommand({
+    host: '127.0.0.1',
+    port,
+    apiToken: 'test',
+    enableMineruWarmup: false,
+    enableLiteratureDiscoveryRecovery: false,
+    config: {
+      serve: {
+        apiToken: 'test'
+      },
+      storage: {
+        indexDirs: [
+          first.tempCorpusRoot,
+          second.tempCorpusRoot
+        ]
+      }
+    },
+    startEnhancementWorker: makeStarter('enhancement'),
+    startAuthoritativeSyncWorker: makeStarter('authoritativeSync'),
+    startImportWorker: makeStarter('import')
+  });
+
+  try {
+    assert.deepEqual(capturedRoots.enhancement, [first.tempCorpusRoot, second.tempCorpusRoot]);
+    assert.deepEqual(capturedRoots.authoritativeSync, [first.tempCorpusRoot, second.tempCorpusRoot]);
+    assert.deepEqual(capturedRoots.import, [first.tempCorpusRoot, second.tempCorpusRoot]);
+  } finally {
+    await serverHandle.stop();
+    await cleanupIndexedCorpus(second);
+    await cleanupIndexedCorpus(first);
+  }
+});

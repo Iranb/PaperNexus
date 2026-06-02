@@ -89,6 +89,33 @@ export async function loadDiscoveryProgress(rootPath, runId = '') {
   return readJson(getDiscoveryProgressPaths(rootPath, normalizeProgressRunId(resolvedRunId)).progressPath, null);
 }
 
+export async function listDiscoveryProgress(rootPath, limit = 20) {
+  const paths = getDiscoveryPaths(rootPath);
+  let entries = [];
+  try {
+    entries = await fs.readdir(paths.runsDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+
+  const records = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const progress = await readJson(getDiscoveryProgressPaths(rootPath, entry.name).progressPath, null);
+    if (!progress) continue;
+    records.push(progress);
+  }
+
+  return records
+    .sort((left, right) => {
+      const leftTime = String(left.updatedAt || left.completedAt || left.startedAt || left.submittedAt || '');
+      const rightTime = String(right.updatedAt || right.completedAt || right.startedAt || right.submittedAt || '');
+      return rightTime.localeCompare(leftTime);
+    })
+    .slice(0, Math.max(1, Math.floor(Number(limit || 20))));
+}
+
 export function renderDiscoveryReport(run = {}) {
   const coverage = run.coverage || {};
   const downloadSummary = countDiscoveryDownloadManifestStatuses(buildDiscoveryDownloadManifest(run));

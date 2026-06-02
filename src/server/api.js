@@ -12,7 +12,7 @@ import {
 } from '../storage/corpus-store.js';
 import { resolveLlmConfig, getDefaultLlmApiKeyEnv, getDefaultLlmBaseUrl } from '../core/llm/ollama.js';
 import { getNodeLayer, NODE_TYPES } from '../core/graph/schema.js';
-import { resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
+import { normalizeStorageIndexDirs, resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
 import { collapseHomePath, isServerPathReference, resolveServerPathReference } from '../lib/server-paths.js';
 import { buildDefaultLlmKeychainAccount } from '../lib/keychain.js';
 import { stableHash, unique } from '../lib/utils.js';
@@ -200,35 +200,108 @@ export function createApiCache() {
   };
 }
 
-export async function getConfiguredRootPath(options = {}) {
-  const raw = options.config?.storage?.indexDir;
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return null;
-  }
-  const rootPath = resolvePathWithHome(raw.trim(), options.configBaseDir || process.cwd());
+async function validateConfiguredRootPath(rootPath) {
   const { metaPath } = getCorpusPaths(rootPath);
-  return (await fileExists(metaPath)) && (await hasCorpusGraphStore(rootPath))
-    ? rootPath
-    : null;
+  if (!(await fileExists(metaPath))) {
+    return 'missing_meta';
+  }
+  if (!(await hasCorpusGraphStore(rootPath))) {
+    return 'missing_graph_store';
+  }
+  return '';
 }
 
-async function loadConfiguredCorpusEntry(options = {}) {
-  const rootPath = await getConfiguredRootPath(options);
-  if (!rootPath) {
-    return null;
+function normalizeExplicitWorkerRootPaths(options = {}) {
+  const rawRootPaths = Array.isArray(options.rootPaths)
+    ? options.rootPaths
+    : [];
+  const baseDir = options.configBaseDir || process.cwd();
+  const seen = new Set();
+  const rootPaths = [];
+  for (const entry of rawRootPaths) {
+    const raw = String(entry || '').trim();
+    if (!raw) continue;
+    const resolved = resolvePathWithHome(raw, baseDir);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    rootPaths.push(resolved);
+  }
+  return rootPaths;
+}
+
+export async function getConfiguredRootPaths(options = {}) {
+  const explicitRootPaths = normalizeExplicitWorkerRootPaths(options);
+  if (explicitRootPaths.length) {
+    return {
+      rootPaths: explicitRootPaths,
+      defaultRootPath: explicitRootPaths[0],
+      invalidRootPaths: [],
+      source: Array.isArray(options.rootPaths) ? 'options.rootPaths' : 'options.workerRootPaths',
+      configured: true
+    };
   }
 
-  try {
-    const meta = await loadCorpusMeta(rootPath);
-    return {
-      name: meta.name,
-      rootPath,
-      indexedAt: meta.indexedAt,
-      paperCount: meta.paperCount
-    };
-  } catch {
-    return null;
+  const normalized = normalizeStorageIndexDirs(options.config || {}, {
+    baseDir: options.configBaseDir || process.cwd()
+  });
+  const rootPaths = [];
+  const invalidRootPaths = [];
+
+  for (const entry of normalized.entries) {
+    const reason = await validateConfiguredRootPath(entry.resolved);
+    if (reason) {
+      invalidRootPaths.push({
+        input: entry.input,
+        resolved: entry.resolved,
+        reason
+      });
+      continue;
+    }
+    rootPaths.push(entry.resolved);
   }
+
+  const explicitDefaultRootPath = normalized.explicitDefaultRootPath && rootPaths.includes(normalized.explicitDefaultRootPath)
+    ? normalized.explicitDefaultRootPath
+    : null;
+  const defaultRootPath = explicitDefaultRootPath || (rootPaths.length === 1 ? rootPaths[0] : null);
+
+  return {
+    rootPaths,
+    defaultRootPath,
+    explicitDefaultRootPath,
+    defaultExplicit: Boolean(explicitDefaultRootPath),
+    invalidRootPaths,
+    source: normalized.source,
+    configured: normalized.configured
+  };
+}
+
+export async function getConfiguredRootPath(options = {}) {
+  const configured = await getConfiguredRootPaths(options);
+  return configured.defaultRootPath || null;
+}
+
+async function loadConfiguredCorpusEntries(options = {}) {
+  const configured = await getConfiguredRootPaths(options);
+  if (!configured.rootPaths.length) return [];
+
+  const entries = [];
+  for (const rootPath of configured.rootPaths) {
+    try {
+      const meta = await loadCorpusMeta(rootPath);
+      entries.push({
+        name: meta.name,
+        rootPath,
+        indexedAt: meta.indexedAt,
+        paperCount: meta.paperCount,
+        configured: true,
+        default: rootPath === configured.defaultRootPath
+      });
+    } catch {
+      // A root may become unreadable after validation; leave it out of list responses.
+    }
+  }
+  return entries;
 }
 
 async function readPathStamp(filePath) {
@@ -279,10 +352,10 @@ async function resolveCachedPayload(cacheMap, key, stamp, loader) {
 }
 
 export async function listCorporaPayload(options = {}) {
-  const configuredCorpus = await loadConfiguredCorpusEntry(options);
-  if (configuredCorpus) {
+  const configuredCorpora = await loadConfiguredCorpusEntries(options);
+  if (configuredCorpora.length) {
     return presentPortablePayload({
-      corpora: [configuredCorpus],
+      corpora: configuredCorpora,
       generatedAt: new Date().toISOString()
     }, options);
   }
@@ -309,22 +382,30 @@ export async function listCorporaPayload(options = {}) {
 }
 
 export async function resolveCorpusForApi(candidate, options = {}) {
-  const configuredRoot = await getConfiguredRootPath(options);
-  if (configuredRoot) {
-    if (!candidate) {
-      return configuredRoot;
-    }
-
+  const configured = await getConfiguredRootPaths(options);
+  if (configured.rootPaths.length) {
     try {
-      const configuredMeta = await loadCorpusMeta(configuredRoot);
-      if (
-        candidate === configuredRoot
-        || candidate === configuredMeta.name
-      ) {
-        return configuredRoot;
+      for (const configuredRoot of configured.rootPaths) {
+        const configuredMeta = await loadCorpusMeta(configuredRoot);
+        if (
+          candidate === configuredRoot
+          || candidate === configuredMeta.name
+        ) {
+          return configuredRoot;
+        }
       }
     } catch {
-      // Fall through to legacy resolution paths when the configured root is unavailable.
+      // Fall through to legacy resolution paths when configured metadata is unavailable.
+    }
+
+    if (!candidate) {
+      if (configured.rootPaths.length === 1 || configured.defaultRootPath) {
+        return configured.defaultRootPath || configured.rootPaths[0];
+      }
+      throw new Error(
+        'Multiple configured storage index roots are available. Pass corpus/rootPath explicitly '
+        + 'or set storage.defaultIndexDir before using graph read/write APIs without a corpus.'
+      );
     }
   }
 
@@ -341,6 +422,38 @@ export async function resolveCorpusForApi(candidate, options = {}) {
   }
 
   return registry.corpora[0].rootPath;
+}
+
+export async function configuredWorkerCoveragePayload(rootPath, options = {}) {
+  const explicitWorkerRootPaths = normalizeExplicitWorkerRootPaths({
+    ...options,
+    rootPaths: Array.isArray(options.workerRootPaths) ? options.workerRootPaths : options.rootPaths
+  });
+  const configured = explicitWorkerRootPaths.length
+    ? {
+        rootPaths: explicitWorkerRootPaths,
+        invalidRootPaths: [],
+        source: Array.isArray(options.workerRootPaths) ? 'options.workerRootPaths' : 'options.rootPaths'
+      }
+    : await getConfiguredRootPaths(options);
+  const normalizedRootPath = resolvePathWithHome(rootPath, options.configBaseDir || process.cwd());
+  const covered = configured.rootPaths.length
+    ? configured.rootPaths.includes(normalizedRootPath)
+    : true;
+  const invalidRootPaths = (configured.invalidRootPaths || []).map((entry) => ({
+    input: entry.input,
+    resolved: entry.resolved,
+    reason: entry.reason
+  }));
+
+  return {
+    covered,
+    coveredRootPath: covered ? normalizedRootPath : null,
+    configuredRootCount: configured.rootPaths.length,
+    source: configured.rootPaths.length ? configured.source : 'registry_fallback',
+    blockedReason: covered ? null : 'root_not_configured',
+    invalidRootPaths
+  };
 }
 
 export async function corpusPayload(candidate, options = {}) {

@@ -60,12 +60,14 @@ For broad source discovery, do not rely on one interactive MCP call finishing in
 
 ```text
 literature_discovery submit
-  -> literature_discovery progress
-  -> literature_discovery report
+  -> literature_discovery_progress
+  -> literature_discovery report when terminal or reportable
   -> optional import_workflow queue_progress/status
 ```
 
-If the client times out or the transport fails after a submit attempt, record the result as `unknown_after_timeout`. That state means the server may have accepted the job, so callers should reconcile with `progress`, `report`, and `list` before retrying.
+`literature_discovery_progress` is read-only and returns the current stage/status, candidate counts, stale-progress detection, conservative ETA when the progress snapshot contains a discovery budget, and a default 5-minute `nextPollAt` recommendation. Use that recommendation to schedule a timer instead of blocking the agent thread.
+
+If the client times out or the transport fails after a submit attempt, record the result as `unknown_after_timeout`. That state means the server may have accepted the job, so callers should reconcile with `literature_discovery_progress`, `progress`, `report`, and `list` before retrying.
 
 For AutoResearch-style ideation, split large searches into `target`, `near`, and `far` lanes. This keeps target-domain priors, near-source methods, and far-source transfer candidates independently retryable and auditable.
 
@@ -98,7 +100,7 @@ Import is explicit:
 ```text
 literature_discovery search/resolve/run
   -> discovery artifacts
-  -> optional submit/progress/report for broad jobs
+  -> optional submit/literature_discovery_progress/progress/report for broad jobs
   -> importResolved=true or operation=import/ingest/import_and_process
   -> import queue task
   -> import_workflow wait

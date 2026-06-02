@@ -31,6 +31,7 @@ const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
 const HARD_IMPORT_BATCH_MAX_TASKS = 16;
 const importPreparseInFlight = new Map();
 const importBatchProgressionByRoot = new Map();
+const importWorkerSeenByRoot = new Map();
 
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
@@ -116,6 +117,24 @@ function resolveImportBatchOptions(options = {}) {
 
 function getImportBatchProgressionKey(rootPath) {
   return String(rootPath || '').trim();
+}
+
+function markImportWorkerSeen(rootPath, corpusName = '') {
+  const key = String(rootPath || '').trim();
+  if (!key) return;
+  importWorkerSeenByRoot.set(key, {
+    rootPath: key,
+    corpusName: corpusName || key,
+    lastWorkerSeenAt: new Date().toISOString()
+  });
+}
+
+export function getImportWorkerCoverageSnapshot(rootPath = '') {
+  const key = String(rootPath || '').trim();
+  if (key) {
+    return importWorkerSeenByRoot.get(key) || null;
+  }
+  return [...importWorkerSeenByRoot.values()];
 }
 
 function clampImportBatchSize(value, batchOptions = {}) {
@@ -1049,6 +1068,7 @@ export async function runImportsForAllCorporaOnce(options = {}) {
   const results = [];
 
   for (const corpus of roots) {
+    markImportWorkerSeen(corpus.rootPath, corpus.name);
     results.push({
       rootPath: corpus.rootPath,
       corpusName: corpus.name,

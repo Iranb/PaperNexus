@@ -5,10 +5,12 @@ import {
 } from '../storage/authoritative-sync-store.js';
 import {
   createImportTaskPayload,
+  configuredWorkerCoveragePayload,
   importTaskLogPayload,
   importTaskPayload,
   listImportTasksPayload
 } from '../server/api.js';
+import { getImportWorkerCoverageSnapshot } from '../core/imports/worker.js';
 
 function normalizeOperation(value) {
   return String(value || '').trim().toLowerCase().replace(/-/g, '_');
@@ -193,10 +195,17 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       if (Number.isFinite(limit) && limit > 0) {
         tasks = tasks.slice(0, limit);
       }
+      const workerCoverage = await configuredWorkerCoveragePayload(payload.rootPath, options);
+      const workerSeen = getImportWorkerCoverageSnapshot(payload.rootPath);
       return {
         rootPath: payload.rootPath,
         summary: summarizeProgressTasks(tasks),
         queueSummary: payload.summary,
+        workerCoverage: {
+          ...workerCoverage,
+          lastWorkerSeenAt: workerSeen?.lastWorkerSeenAt || null,
+          workerObserved: Boolean(workerSeen)
+        },
         tasks,
         generatedAt: new Date().toISOString()
       };

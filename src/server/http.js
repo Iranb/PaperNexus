@@ -36,7 +36,7 @@ import {
   reflectionChainPayload,
   researchBriefPayload,
   reviewerSimulatePayload,
-  getConfiguredRootPath,
+  getConfiguredRootPaths,
   storylinePayload,
   storylineBriefPayload,
   theoryBriefPayload,
@@ -46,6 +46,7 @@ import { getMcpHttpConfig, handleMcpHttpRequest } from '../mcp/http.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
+import { startLiteratureDiscoveryRecoveryWorker } from '../mcp/tool-literature-discovery.js';
 import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 import { startRegistryReconcileWorker } from '../storage/registry-reconcile.js';
 
@@ -119,18 +120,6 @@ function formatBackgroundError(error) {
     return compact;
   }
   return `${compact.slice(0, MAX_BACKGROUND_ERROR_LENGTH - 3)}...`;
-}
-
-async function getConfiguredRootPaths(options = {}) {
-  const explicit = Array.isArray(options.rootPaths)
-    ? options.rootPaths.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  if (explicit.length) {
-    return explicit;
-  }
-
-  const configuredRoot = await getConfiguredRootPath(options);
-  return configuredRoot ? [configuredRoot] : undefined;
 }
 
 function resolveApiToken(options = {}) {
@@ -250,6 +239,25 @@ function describeWorkerRoots(rootPaths) {
     return rootPaths[0];
   }
   return `${rootPaths.length} configured corpora`;
+}
+
+function logConfiguredWorkerRoots(rootResolution = {}, logger = console) {
+  const rootPaths = rootResolution.rootPaths || [];
+  if (!rootResolution.configured && !rootPaths.length) {
+    logger.log?.('[serve] worker root scope: registry fallback (all indexed corpora)');
+    return;
+  }
+
+  logger.log?.(
+    `[serve] configured worker roots: ${rootPaths.length} valid`
+    + (rootResolution.invalidRootPaths?.length ? `, ${rootResolution.invalidRootPaths.length} invalid` : '')
+  );
+  for (const rootPath of rootPaths) {
+    logger.log?.(`[serve] worker root: ${rootPath}`);
+  }
+  for (const invalid of rootResolution.invalidRootPaths || []) {
+    logger.warn?.(`[serve] invalid worker root ignored: ${invalid.input || invalid.resolved} (${invalid.reason || 'invalid'})`);
+  }
 }
 
 function startNamedWorker(name, enabled, starter, options, logger = console) {
@@ -787,13 +795,16 @@ export async function serveCommand(options = {}) {
   const host = options.host || '127.0.0.1';
   const apiToken = resolveApiToken(options);
   const mcpConfig = getMcpHttpConfig(options);
-  const rootPaths = await getConfiguredRootPaths(options);
+  const rootResolution = await getConfiguredRootPaths(options);
+  const rootPaths = rootResolution.rootPaths.length ? rootResolution.rootPaths : undefined;
   const webRoot = buildWebRoot();
   const apiCache = createApiCache();
   const workerLogger = options.logger || console;
+  logConfiguredWorkerRoots(rootResolution, workerLogger);
   const enhancementWorkerStarter = options.startEnhancementWorker || startEnhancementWorker;
   const authoritativeSyncWorkerStarter = options.startAuthoritativeSyncWorker || startAuthoritativeSyncWorker;
   const importWorkerStarter = options.startImportWorker || startImportWorker;
+  const literatureDiscoveryRecoveryWorkerStarter = options.startLiteratureDiscoveryRecoveryWorker || startLiteratureDiscoveryRecoveryWorker;
   const registryReconcileWorkerStarter = options.startRegistryReconcileWorker || startRegistryReconcileWorker;
   const importWorkerOptions = buildImportWorkerOptions(options, rootPaths, workerLogger);
   const enhancementWorker = startNamedWorker(
@@ -819,6 +830,18 @@ export async function serveCommand(options = {}) {
     options.enableImports !== false,
     importWorkerStarter,
     importWorkerOptions,
+    workerLogger
+  );
+  const literatureDiscoveryRecoveryWorker = startNamedWorker(
+    'literature discovery recovery worker',
+    options.enableLiteratureDiscoveryRecovery !== false,
+    literatureDiscoveryRecoveryWorkerStarter,
+    {
+      ...options,
+      rootPaths,
+      intervalMs: options.literatureDiscoveryRecoveryIntervalMs,
+      logger: workerLogger
+    },
     workerLogger
   );
   const registryReconcileWorker = startNamedWorker(
@@ -887,6 +910,7 @@ export async function serveCommand(options = {}) {
         configBaseDir: options.configBaseDir || process.cwd(),
         portablePaths: true,
         logger: workerLogger,
+        workerRootPaths: rootPaths,
         onImportTaskCreated() {
           importWorker?.pollNow?.();
         }
@@ -913,6 +937,7 @@ export async function serveCommand(options = {}) {
           jsonBodyLimitBytes: options.jsonBodyLimitBytes,
           portablePaths: true,
           logger: workerLogger,
+          workerRootPaths: rootPaths,
           onImportTaskCreated() {
             importWorker?.pollNow?.();
           }
@@ -1252,6 +1277,7 @@ export async function serveCommand(options = {}) {
       enhancementWorker?.stop?.(),
       authoritativeSyncWorker?.stop?.(),
       importWorker?.stop?.(),
+      literatureDiscoveryRecoveryWorker?.stop?.(),
       registryReconcileWorker?.stop?.()
     ]);
     await new Promise((resolve) => {

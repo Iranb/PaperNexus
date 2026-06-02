@@ -266,7 +266,7 @@ function classifyMcpTool(toolName) {
   if (['list_corpora', 'corpus_status', 'corpus_sources', 'query', 'context', 'impact', 'ideas', 'brainstorm', 'domain_distance', 'extract_takeaways', 'interdisciplinary_potential', 'research_lookup', 'research_briefing'].includes(toolName)) {
     return 'Graph & Research Lookup';
   }
-  if (['import_workflow', 'literature_discovery'].includes(toolName)) {
+  if (['import_workflow', 'literature_discovery', 'literature_discovery_progress'].includes(toolName)) {
     return 'Discovery & Imports';
   }
   if (['idea_catalyst', 'agent_materials'].includes(toolName)) {

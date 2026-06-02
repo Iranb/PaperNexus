@@ -1207,6 +1207,44 @@ export const PAPERNEXUS_TOOLS = [
     }
   },
   {
+    name: 'literature_discovery_progress',
+    description: 'Read persisted literature_discovery progress snapshots without starting provider search, materializing reports, or touching the import queue. Returns current stage/status, candidate counts, stale-progress detection, conservative ETA when the discovery budget is known, and a default 5-minute next-poll recommendation for agents that should schedule a wakeup instead of blocking.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        corpus: {
+          type: 'string',
+          description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
+        },
+        runId: {
+          type: 'string',
+          description: 'Specific literature discovery run id. If omitted, returns latest/recent progress snapshots.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum progress snapshots returned when runId is omitted.',
+          default: 10
+        },
+        includeCompleted: {
+          type: 'boolean',
+          description: 'Include completed discovery runs in recent progress summaries when runId is omitted.',
+          default: true
+        },
+        pollIntervalMinutes: {
+          type: 'number',
+          description: 'Recommended next polling interval for non-terminal runs. Defaults to 5 minutes so agents can schedule a timer instead of synchronous polling.',
+          default: 5
+        },
+        staleAfterMinutes: {
+          type: 'number',
+          description: 'Mark a non-terminal progress snapshot stale when updatedAt is older than this many minutes.',
+          default: 10
+        }
+      },
+      required: []
+    }
+  },
+  {
     name: 'idea_catalyst',
     description: 'Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle with v2 innovation artifacts: must-cite set, novelty certificate, review packet, storyline DAG, and counterfactual falsification plans.',
     inputSchema: {
@@ -2248,8 +2286,18 @@ export const PAPERNEXUS_TOOLS = [
           description: 'Alias for corpus.'
         },
         indexDir: {
-          type: 'string',
-          description: 'Directory where the generated .papernexus index should live. Defaults to the existing storage.indexDir or ~/.papernexus/index-store.'
+          type: ['string', 'array'],
+          items: {
+            type: 'string'
+          },
+          description: 'Directory where the generated .papernexus index should live, or an array of worker-scanned index roots. Defaults to the existing storage.indexDir/storage.indexDirs or ~/.papernexus/index-store.'
+        },
+        indexDirs: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          description: 'Multiple PaperNexus index roots to persist as storage.indexDirs so one serve worker can scan several corpora.'
         },
         rootPath: {
           type: 'string',

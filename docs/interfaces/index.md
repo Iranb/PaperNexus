@@ -37,13 +37,14 @@ The public MCP surface has five practical groups:
 | --- | --- | --- |
 | Corpus and graph reads | `list_corpora`, `corpus_status`, `corpus_sources`, `query`, `context`, `impact`, `ideas`, `brainstorm`, `domain_distance`, `extract_takeaways`, `interdisciplinary_potential` | Already committed corpus graph state |
 | High-level research reads | `research_lookup`, `research_briefing`, `idea_catalyst` | Already committed graph state plus bounded derived packets |
-| Import and discovery | `literature_discovery`, `import_workflow` | Discovery artifacts and import queues |
+| Import and discovery | `literature_discovery`, `literature_discovery_progress`, `import_workflow` | Discovery artifacts, progress snapshots, and import queues |
 | Runtime and graph maintenance | `runtime_init`, `create_corpus`, `refresh_corpus`, `refresh_paper_graph`, `mutate_graph` | Runtime config, corpus build/refresh jobs, and schema-aware graph mutations |
 | Agent material backend | `agent_materials` | Committed graph/source materials plus project overlay state outside the raw graph |
 
 Two boundaries matter for callers:
 
 - `literature_discovery` produces candidate and source-resolution artifacts before graph ingestion.
+- `literature_discovery_progress` is the read-only status/ETA check for long-running discovery jobs.
 - `research_lookup`, `query`, `context`, and most `agent_materials` material reads only treat papers as graph evidence after import completion and graph sync.
 
 ## Skill-Local Wrappers

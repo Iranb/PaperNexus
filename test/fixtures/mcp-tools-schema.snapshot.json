@@ -1908,6 +1908,37 @@
     }
   },
   {
+    "name": "literature_discovery_progress",
+    "inputSchema": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "includeCompleted": {
+          "type": "boolean",
+          "default": true
+        },
+        "limit": {
+          "type": "number",
+          "default": 10
+        },
+        "pollIntervalMinutes": {
+          "type": "number",
+          "default": 5
+        },
+        "runId": {
+          "type": "string"
+        },
+        "staleAfterMinutes": {
+          "type": "number",
+          "default": 10
+        }
+      }
+    }
+  },
+  {
     "name": "mutate_graph",
     "inputSchema": {
       "type": "object",
@@ -2374,7 +2405,19 @@
           "type": "string"
         },
         "indexDir": {
-          "type": "string"
+          "type": [
+            "string",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "indexDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "llm": {
           "type": "object",

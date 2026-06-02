@@ -5,7 +5,9 @@
     ]
   },
   "storage": {
-    "indexDir": "~/.papernexus/index-store"
+    "indexDir": "~/.papernexus/index-store",
+    "indexDirs": [],
+    "defaultIndexDir": "~/.papernexus/index-store"
   },
   "analyze": {
     "name": "demo-corpus",

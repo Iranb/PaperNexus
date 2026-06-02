@@ -37,6 +37,72 @@ export function resolvePathWithHome(value, baseDir = process.cwd()) {
   return path.resolve(baseDir, raw);
 }
 
+function normalizeStringListValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+
+  return [];
+}
+
+function normalizeStorageConfig(config = {}) {
+  const storage = config?.storage;
+  return storage && typeof storage === 'object' && !Array.isArray(storage) ? storage : {};
+}
+
+export function normalizeStorageIndexDirs(config = {}, options = {}) {
+  const storage = normalizeStorageConfig(config);
+  const baseDir = options.baseDir || options.cwd || process.cwd();
+  const indexDirs = normalizeStringListValue(storage.indexDirs);
+  const indexDirValues = normalizeStringListValue(storage.indexDir);
+  const rawRootPaths = indexDirs.length ? indexDirs : indexDirValues;
+  const source = indexDirs.length
+    ? 'storage.indexDirs'
+    : (indexDirValues.length ? 'storage.indexDir' : 'none');
+  const seen = new Set();
+  const rootPaths = [];
+  const entries = [];
+
+  for (const input of rawRootPaths) {
+    const resolved = resolvePathWithHome(input, baseDir);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    rootPaths.push(resolved);
+    entries.push({ input, resolved });
+  }
+
+  const defaultInput = normalizeStringListValue(
+    storage.defaultIndexDir
+      ?? storage.defaultRootPath
+      ?? storage.defaultCorpusRoot
+      ?? storage.defaultCorpusPath
+  )[0] || '';
+  const resolvedDefault = defaultInput ? resolvePathWithHome(defaultInput, baseDir) : '';
+  const explicitDefaultRootPath = resolvedDefault && seen.has(resolvedDefault) ? resolvedDefault : null;
+  const defaultRootPath = explicitDefaultRootPath || (rootPaths[0] || null);
+
+  return {
+    rootPaths,
+    defaultRootPath,
+    explicitDefaultRootPath,
+    defaultExplicit: Boolean(explicitDefaultRootPath),
+    entries,
+    source,
+    configured: rootPaths.length > 0
+  };
+}
+
+export function getPrimaryStorageIndexDir(config = {}, baseDir = process.cwd()) {
+  const normalized = normalizeStorageIndexDirs(config, { baseDir });
+  return normalized.defaultRootPath || normalized.rootPaths[0] || undefined;
+}
+
 export function getDefaultRuntimeConfigRoot() {
   return resolvePapernexusHome();
 }

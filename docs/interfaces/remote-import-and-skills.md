@@ -70,13 +70,14 @@ The important boundary is that discovery and graph ingestion are intentionally a
 - `literature_discovery plan` and `search` produce query plans and metadata candidates; they do not mutate the graph.
 - `literature_discovery run` / `resolve` can persist discovery artifacts and legal source-resolution results; the graph still may not contain those papers.
 - `literature_discovery import` or `importResolved=true` submits resolved full text to the import queue.
+- `literature_discovery_progress` reads persisted discovery progress snapshots and returns stage/status, candidate counts, stale-state detection, conservative ETA when a budget is known, and a default 5-minute next-poll recommendation without starting search or materializing reports.
 - `literature_discovery ingest`, `import_and_process`, or `processImports=true` asks PaperNexus to process imports inline, defaulting to progressive worker-side logical batching with `importBatchEnabled=true`, `importBatchInitialTasks=4`, and `importBatchMaxTasks=16`; this can still be long-running because parsing, semantic extraction, fast commit, and authoritative graph sync can lag behind discovery.
 - `import_workflow submit` only accepts tasks into the queue; the MCP serve import worker defaults to `imports.batchEnabled=true`, `batchProgressive=true`, `batchInitialTasks=4`, and `batchMaxTasks=16`, so multiple pending tasks can share one graph commit unless server config explicitly disables batching.
 - `research_lookup`, `research_briefing`, and `idea_catalyst mode=graph` only see papers safely after the corresponding `import_workflow wait` has returned `status=completed`, `stage=completed`, and an authoritative sync status of `completed` or `superseded`.
 
 For interactive search, prefer `operation=search`. It is metadata-only by default and has explicit latency profiles: `quick` uses a 25s budget and 4 query cap, `balanced` uses a 45s budget and 6 query cap, and `deep` is the MCP default broader profile with a bounded 10-minute budget and 10 query cap, aligned with the default HTTP MCP request timeout. Search-mode LLM query planning is rule-based by default; if explicitly enabled, it is capped to 8s/12s/18s for quick/balanced/deep and returns deterministic planning fallback on timeout or failure. This keeps discovery an optional upstream substrate instead of a blocking graph path.
 
-For broad or high-risk discovery, prefer `literature_discovery operation=submit` and then poll `progress`, `report`, and `list`. If a client-side wait limit or transport failure happens after a submit attempt, record the local state as `unknown_after_timeout`; do not call it successful or failed until remote state has been reconciled. The shell fallback wrapper `pn_resilient_discovery.py` implements this ledger pattern without changing MCP tool schemas.
+For broad or high-risk discovery, prefer `literature_discovery operation=submit`, then use `literature_discovery_progress` to schedule timer-based rechecks and call `report` only when a run is terminal or reportable. If a client-side wait limit or transport failure happens after a submit attempt, record the local state as `unknown_after_timeout`; do not call it successful or failed until remote state has been reconciled. The shell fallback wrapper `pn_resilient_discovery.py` implements this ledger pattern and should prefer the read-only progress tool when available.
 
 For source-discovery or AutoResearch ideation work, split broad searches into `target`, `near`, and `far` lanes. The lane split makes target-domain priors, near-source methods, and far-source transfer candidates independently retryable, and it prevents one slow lane from hiding the state of the others.
 
@@ -98,7 +99,7 @@ Agents should therefore report interim results precisely:
 - use "submitted" for accepted import tasks
 - use "in graph" only after import queue completion and authoritative sync readiness
 
-When graph build is delayed, use `literature_discovery status` / `report` for the paper list and `import_workflow queue_progress`, `status`, or `wait` for graph-readiness. `import_workflow wait` now waits for the authoritative sync job by default; pass `waitForAuthoritativeSync=false` only when you intentionally want raw import-task completion. Do not rerun graph queries just because discovery finished.
+When graph build is delayed, use `literature_discovery_progress` for current discovery state, `literature_discovery status` / `report` for the paper list, and `import_workflow queue_progress`, `status`, or `wait` for graph-readiness. `import_workflow wait` now waits for the authoritative sync job by default; pass `waitForAuthoritativeSync=false` only when you intentionally want raw import-task completion. Do not rerun graph queries just because discovery finished.
 
 Timeout-resilient shell fallback:
 

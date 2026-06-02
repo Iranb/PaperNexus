@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileExists } from '../lib/fs.js';
-import { applyProcessConfig, getDefaultRuntimeConfigPath, getDefaultRuntimeConfigRoot, loadRuntimeConfig, resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
+import { applyProcessConfig, getDefaultRuntimeConfigPath, getDefaultRuntimeConfigRoot, getPrimaryStorageIndexDir, loadRuntimeConfig, resolvePathWithHome, saveRuntimeConfig } from '../lib/config.js';
 import { collapseHomePath } from '../lib/server-paths.js';
 import { toNumber } from '../lib/utils.js';
 import { getWatchTmpLogPath } from '../lib/watch-log.js';
@@ -449,12 +449,7 @@ function normalizeConfiguredInputs(value, baseDir) {
 }
 
 function resolveStorageRoot(config, baseDir) {
-  const indexDir = getStorageConfig(config).indexDir;
-  if (typeof indexDir !== 'string' || !indexDir.trim()) {
-    return undefined;
-  }
-
-  return resolvePathWithHome(indexDir.trim(), baseDir);
+  return getPrimaryStorageIndexDir(config, baseDir);
 }
 
 function splitCommaSeparated(value) {

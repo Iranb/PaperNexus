@@ -12,7 +12,9 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     ]
   },
   "storage": {
-    "indexDir": "~/.papernexus/index-store"
+    "indexDir": "~/.papernexus/index-store",
+    "indexDirs": [],
+    "defaultIndexDir": "~/.papernexus/index-store"
   },
   "analyze": {
     "name": "demo-corpus",
@@ -128,6 +130,8 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `sources.inputs` | array | `["~/.papernexus/papers"]` |
 | `storage` | object | section |
 | `storage.indexDir` | string | `~/.papernexus/index-store` |
+| `storage.indexDirs` | array | `[]` |
+| `storage.defaultIndexDir` | string | `~/.papernexus/index-store` |
 | `analyze` | object | section |
 | `analyze.name` | string | `demo-corpus` |
 | `analyze.semanticExtraction` | string | `llm-primary` |

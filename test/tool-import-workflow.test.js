@@ -144,3 +144,45 @@ test('import_workflow queue_progress reports individual tasks completed by one w
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
+
+test('import_workflow queue_progress reports uncovered worker roots', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-uncovered-'));
+  const otherRootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-covered-other-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-uncovered-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'uncovered-paper.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Uncovered Paper\n\n## Abstract\n\nA worker coverage test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+
+    const payload = await executeImportWorkflowTool({
+      operation: 'queue_progress',
+      corpus: rootPath
+    }, {
+      workerRootPaths: [otherRootPath]
+    });
+
+    assert.equal(payload.summary.pending, 1);
+    assert.equal(payload.workerCoverage.covered, false);
+    assert.equal(payload.workerCoverage.blockedReason, 'root_not_configured');
+    assert.equal(payload.workerCoverage.configuredRootCount, 1);
+  } finally {
+    await fs.rm(otherRootPath, { recursive: true, force: true });
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});

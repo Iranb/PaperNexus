@@ -17,6 +17,7 @@ import { executeIdeaCatalystTool } from './tool-idea-catalyst.js';
 import { executeAgentMaterialsTool } from './tool-agent-materials.js';
 import { executeImportWorkflowTool } from './tool-import-workflow.js';
 import { executeLiteratureDiscoveryTool } from './tool-literature-discovery.js';
+import { executeLiteratureDiscoveryProgressTool } from './tool-literature-discovery-progress.js';
 import { executeResearchBriefingTool } from './tool-research-briefing.js';
 import { executeResearchLookupTool } from './tool-research-lookup.js';
 import { PAPERNEXUS_TOOLS } from './tools.js';
@@ -82,6 +83,24 @@ function normalizeMcpStringList(value) {
       .filter(Boolean);
   }
 
+  return [];
+}
+
+function normalizeMcpPathListValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeMcpString(item))
+      .filter(Boolean);
+  }
+  const normalized = normalizeMcpString(value);
+  return normalized ? [normalized] : [];
+}
+
+function firstMcpPathList(...values) {
+  for (const value of values) {
+    const normalized = normalizeMcpPathListValue(value);
+    if (normalized.length) return normalized;
+  }
   return [];
 }
 
@@ -617,12 +636,17 @@ export async function executeTool(name, args, options = {}) {
       throw new Error('runtime_init requires corpus or corpusName.');
     }
 
-    const indexDir = firstMcpString(
-      args.indexDir,
-      args.rootPath,
-      currentStorage.indexDir,
-      path.join(getDefaultRuntimeConfigRoot(), 'index-store')
-    );
+    const explicitIndexDirs = firstMcpPathList(args.indexDirs, args.index_dirs);
+    const configuredIndexDirs = firstMcpPathList(currentStorage.indexDirs, currentStorage.indexDir);
+    const indexDirs = explicitIndexDirs.length
+      ? explicitIndexDirs
+      : firstMcpPathList(
+        args.indexDir,
+        args.rootPath,
+        configuredIndexDirs,
+        path.join(getDefaultRuntimeConfigRoot(), 'index-store')
+      );
+    const indexDir = indexDirs[0];
     const pdfParser = firstMcpString(args.pdfParser, currentAnalyze.pdfParser, 'markitdown');
     const serveHost = firstMcpString(args.serveHost, args.host, currentServe.host, '127.0.0.1');
     const servePort = normalizeMcpNumber(firstMcpValue(args.servePort, args.port, currentServe.port), 4821);
@@ -649,7 +673,8 @@ export async function executeTool(name, args, options = {}) {
       },
       storage: {
         ...currentStorage,
-        indexDir
+        indexDir,
+        indexDirs: indexDirs.length > 1 ? indexDirs : []
       },
       analyze: {
         ...currentAnalyze,
@@ -686,6 +711,7 @@ export async function executeTool(name, args, options = {}) {
     });
     const savedBaseDir = resolveMcpConfigBaseDir(saved.path, options);
     const resolvedIndexDir = resolvePathWithHome(indexDir, savedBaseDir);
+    const resolvedIndexDirs = indexDirs.map((entry) => resolvePathWithHome(entry, savedBaseDir));
 
     return JSON.stringify({
       contractVersion: 'papernexus-runtime-init-v1',
@@ -694,7 +720,9 @@ export async function executeTool(name, args, options = {}) {
       resolvedSourceInputs,
       corpus: corpusName,
       indexDir,
+      indexDirs,
       resolvedIndexDir,
+      resolvedIndexDirs,
       pdfParser,
       serve: {
         host: nextServe.host,
@@ -757,7 +785,7 @@ export async function executeTool(name, args, options = {}) {
     const rootPathInput = firstMcpString(
       args.rootPath,
       args.indexDir,
-      storageConfig.indexDir,
+      firstMcpPathList(storageConfig.indexDirs, storageConfig.indexDir)[0],
       sourceInputs.length ? '' : path.join(getDefaultRuntimeConfigRoot(), 'index-store')
     );
     const rootPath = rootPathInput ? resolvePathWithHome(rootPathInput, configBaseDir) : undefined;
@@ -943,6 +971,10 @@ export async function executeTool(name, args, options = {}) {
 
   if (name === 'literature_discovery') {
     return executeLiteratureDiscoveryTool(args, options);
+  }
+
+  if (name === 'literature_discovery_progress') {
+    return executeLiteratureDiscoveryProgressTool(args, options);
   }
 
   if (name === 'idea_catalyst') {

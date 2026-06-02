@@ -25,6 +25,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 | [`research_briefing`](#tool-research_briefing) | Graph & Research Lookup | `operation` | Run typed chain, brief, and paper-enhancement retrieval through one remote HTTP MCP tool surface. |
 | [`import_workflow`](#tool-import_workflow) | Discovery & Imports | `operation` | Drive the remote import queue through a single MCP tool that can submit, list, inspect, monitor progress, log, and wait on import tasks. This is the authoritative readiness check after literature_discovery import: graph queries should only assume visibility after the relevant task reports status=completed and stage=completed. The MCP serve import worker defaults to progressive logical batching with imports.batchEnabled=true, batchInitialTasks=4, and batchMaxTasks=16 unless server config explicitly disables or overrides it. |
 | [`literature_discovery`](#tool-literature_discovery) | Discovery & Imports | `operation` | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use operation=submit plus progress/report polling for broad or long-running searches so MCP client timeouts do not lose server-side state. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to progressive logical batching with importBatchEnabled=true, importBatchInitialTasks=4, and importBatchMaxTasks=16. |
+| [`literature_discovery_progress`](#tool-literature_discovery_progress) | Discovery & Imports | None | Read persisted literature_discovery progress snapshots without starting provider search, materializing reports, or touching the import queue. Returns current stage/status, candidate counts, stale-progress detection, conservative ETA when the discovery budget is known, and a default 5-minute next-poll recommendation for agents that should schedule a wakeup instead of blocking. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Ideation & Agent Materials | `problem`, `targetDomain` | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle with v2 innovation artifacts: must-cite set, novelty certificate, review packet, storyline DAG, and counterfactual falsification plans. |
 | [`agent_materials`](#tool-agent_materials) | Ideation & Agent Materials | `operation` | Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph. |
 | [`mutate_graph`](#tool-mutate_graph) | Operations & Maintenance | `operations` | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
@@ -796,6 +797,33 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 }
 ```
 
+## Tool: literature_discovery_progress
+
+<a id="tool-literature_discovery_progress"></a>
+
+**Area:** Discovery & Imports
+
+**Required top-level arguments:** None
+
+### Function
+
+Read persisted literature_discovery progress snapshots without starting provider search, materializing reports, or touching the import queue. Returns current stage/status, candidate counts, stale-progress detection, conservative ETA when the discovery budget is known, and a default 5-minute next-poll recommendation for agents that should schedule a wakeup instead of blocking.
+
+### Parameters
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
+| `runId` | optional | string | Specific literature discovery run id. If omitted, returns latest/recent progress snapshots. |
+| `limit` | optional | number | Maximum progress snapshots returned when runId is omitted. Default: `10`. |
+| `includeCompleted` | optional | boolean | Include completed discovery runs in recent progress summaries when runId is omitted. Default: `true`. |
+| `pollIntervalMinutes` | optional | number | Recommended next polling interval for non-terminal runs. Defaults to 5 minutes so agents can schedule a timer instead of synchronous polling. Default: `5`. |
+| `staleAfterMinutes` | optional | number | Mark a non-terminal progress snapshot stale when updatedAt is older than this many minutes. Default: `10`. |
+
+### Examples
+
+No curated examples are defined for this entry yet.
+
 ## Tool: idea_catalyst
 
 <a id="tool-idea_catalyst"></a>
@@ -1173,7 +1201,8 @@ Initialize or update the PaperNexus runtime config non-interactively over MCP, e
 | `sources` | optional | array \| string | Alias for sourceInputs. Strings may be comma-separated. |
 | `corpus` | required | string | Friendly corpus name to write into analyze.name and global.corpus. |
 | `corpusName` | optional | string | Alias for corpus. |
-| `indexDir` | optional | string | Directory where the generated .papernexus index should live. Defaults to the existing storage.indexDir or ~/.papernexus/index-store. |
+| `indexDir` | optional | string \| array | Directory where the generated .papernexus index should live, or an array of worker-scanned index roots. Defaults to the existing storage.indexDir/storage.indexDirs or ~/.papernexus/index-store. |
+| `indexDirs` | optional | array&lt;string&gt; | Multiple PaperNexus index roots to persist as storage.indexDirs so one serve worker can scan several corpora. |
 | `rootPath` | optional | string | Alias for indexDir. |
 | `configPath` | optional | string | Optional runtime config path to create or update. If omitted, the default PaperNexus runtime config is used. |
 | `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl) | Default PDF parser to write into analyze.pdfParser. Default: `"markitdown"`. Allowed values: `markitdown`, `markpdfdown`, `opendataloader`, `docling`, `marker`, `mineru`, `paddleocr-vl`. |

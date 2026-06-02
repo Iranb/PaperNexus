@@ -594,6 +594,7 @@ test('runtime_init and create_corpus expose zero-to-first-build setup over MCP',
     const savedConfig = JSON.parse(await fs.readFile(localConfigPath, 'utf8'));
     assert.deepEqual(savedConfig.sources.inputs, [localSourceRoot]);
     assert.equal(savedConfig.storage.indexDir, localIndexRoot);
+    assert.deepEqual(savedConfig.storage.indexDirs, []);
     assert.equal(savedConfig.analyze.name, 'mcp-created');
     assert.equal(savedConfig.global.corpus, 'mcp-created');
     assert.equal(savedConfig.analyze.pdfParser, 'markitdown');
@@ -651,6 +652,50 @@ test('runtime_init and create_corpus expose zero-to-first-build setup over MCP',
     }
     await fs.rm(localIndexRoot, { recursive: true, force: true });
     await fs.rm(localSourceRoot, { recursive: true, force: true });
+    await fs.rm(localHome, { recursive: true, force: true });
+  }
+});
+
+test('runtime_init persists multiple storage indexDirs while keeping indexDir compatible', async () => {
+  const localHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-init-multi-home-'));
+  const firstIndexRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-init-multi-index-a-'));
+  const secondIndexRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-init-multi-index-b-'));
+  const localConfigPath = path.join(localHome, 'config.json');
+  let localPending = null;
+
+  try {
+    localPending = startMcpClient({
+      ...process.env,
+      PAPERNEXUS_HOME: localHome,
+      PAPERNEXUS_GRAPH_BACKEND: 'json'
+    });
+    await localPending.request('initialize', {});
+
+    const initResult = await localPending.request('tools/call', {
+      name: 'runtime_init',
+      arguments: {
+        configPath: localConfigPath,
+        corpus: 'mcp-multi-index',
+        indexDirs: [firstIndexRoot, secondIndexRoot],
+        pdfParser: 'markitdown'
+      }
+    });
+    const initPayload = JSON.parse(initResult.content[0].text);
+
+    assert.equal(initPayload.contractVersion, 'papernexus-runtime-init-v1');
+    assert.equal(initPayload.indexDir, firstIndexRoot);
+    assert.deepEqual(initPayload.indexDirs, [firstIndexRoot, secondIndexRoot]);
+    assert.deepEqual(initPayload.resolvedIndexDirs, [firstIndexRoot, secondIndexRoot]);
+
+    const savedConfig = JSON.parse(await fs.readFile(localConfigPath, 'utf8'));
+    assert.equal(savedConfig.storage.indexDir, firstIndexRoot);
+    assert.deepEqual(savedConfig.storage.indexDirs, [firstIndexRoot, secondIndexRoot]);
+  } finally {
+    if (localPending) {
+      await localPending.close();
+    }
+    await fs.rm(secondIndexRoot, { recursive: true, force: true });
+    await fs.rm(firstIndexRoot, { recursive: true, force: true });
     await fs.rm(localHome, { recursive: true, force: true });
   }
 });

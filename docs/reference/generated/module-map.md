@@ -21,6 +21,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/mcp/tool-agent-materials.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-agent-materials.js) | Handler for the Agent-facing material backend MCP tool. |
 | [`src/mcp/tool-idea-catalyst.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-idea-catalyst.js) | Handler for the one-shot idea-catalyst MCP tool. |
 | [`src/mcp/tool-import-workflow.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-import-workflow.js) | Handler for submit, progress, queue, and wait operations over the import queue. |
+| [`src/mcp/tool-literature-discovery-progress.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-literature-discovery-progress.js) | Tool Literature Discovery Progress implementation. |
 | [`src/mcp/tool-literature-discovery.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-literature-discovery.js) | Tool Literature Discovery implementation. |
 | [`src/mcp/tool-research-briefing.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-research-briefing.js) | Typed chain and brief retrieval surface for remote callers. |
 | [`src/mcp/tool-research-lookup.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tool-research-lookup.js) | Lookup and brainstorming surface for remote callers. |

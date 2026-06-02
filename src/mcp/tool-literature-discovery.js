@@ -10,6 +10,7 @@ import { submitDiscoveryImports } from '../core/discovery/import-bridge.js';
 import { runImportQueueUntilIdle } from '../core/imports/worker.js';
 import {
   createDiscoveryRunId,
+  listDiscoveryProgress,
   listDiscoveryRuns,
   loadDiscoveryProgress,
   loadDiscoveryRun,
@@ -17,10 +18,12 @@ import {
   saveDiscoveryRun
 } from '../core/discovery/store.js';
 import { loadImportTask } from '../storage/import-store.js';
+import { loadRegistry } from '../storage/registry.js';
 import {
   createDiscoverySupplementationInterface,
   resolveDiscoverySources
 } from '../core/discovery/source-resolution.js';
+import { resolvePathWithHome } from '../lib/config.js';
 import { createContentSha256, createSourceIdentity, normalizePaperIdentifiers } from '../lib/paper-identifiers.js';
 
 function normalizeOperation(value) {
@@ -35,6 +38,11 @@ const SUBMITTABLE_DISCOVERY_OPERATIONS = new Set([
   'ingest',
   'import_and_process'
 ]);
+const TERMINAL_DISCOVERY_STATUSES = new Set(['completed', 'failed', 'cancelled', 'canceled', 'blocked']);
+const TERMINAL_DISCOVERY_STAGES = new Set(['completed', 'failed', 'cancelled', 'canceled', 'blocked']);
+const DEFAULT_DISCOVERY_RECOVERY_INTERVAL_MS = 60_000;
+const DEFAULT_DISCOVERY_RECOVERY_STALE_MS = 30 * 60 * 1000;
+const SECRET_RECOVERY_ARG_PATTERN = /(api.?key|token|secret|password)$/i;
 
 function normalizeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -139,11 +147,199 @@ function safeProgressError(error) {
   };
 }
 
+function parseTimeMs(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sanitizeDiscoveryRecoveryArgs(args = {}) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(normalizeObject(args))) {
+    if (SECRET_RECOVERY_ARG_PATTERN.test(key)) continue;
+    if (value === undefined) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
+function isTerminalDiscoveryProgress(progress = {}) {
+  const status = String(progress.status || '').trim().toLowerCase();
+  const stage = String(progress.stage || '').trim().toLowerCase();
+  return TERMINAL_DISCOVERY_STATUSES.has(status) || TERMINAL_DISCOVERY_STAGES.has(stage);
+}
+
+function isRecoverableDiscoveryProgress(progress = {}, staleMs = DEFAULT_DISCOVERY_RECOVERY_STALE_MS, nowMs = Date.now()) {
+  if (!progress?.runId || isTerminalDiscoveryProgress(progress)) return false;
+  const status = String(progress.status || '').trim().toLowerCase();
+  const stage = String(progress.stage || '').trim().toLowerCase();
+  if (status === 'queued' || stage === 'queued') return true;
+  if (status !== 'running') return false;
+  const updatedAtMs = parseTimeMs(progress.updatedAt || progress.startedAt || progress.submittedAt);
+  return updatedAtMs !== null && nowMs - updatedAtMs > staleMs;
+}
+
+function buildRecoveryDiscoveryArgs(progress = {}) {
+  const recoveredArgs = sanitizeDiscoveryRecoveryArgs(progress.recovery?.args || progress.recoveryArgs || {});
+  if (Object.keys(recoveredArgs).length) {
+    return {
+      ...recoveredArgs,
+      operation: resolveSubmittedDiscoveryOperation(recoveredArgs),
+      discoveryOperation: resolveSubmittedDiscoveryOperation(recoveredArgs),
+      discovery_operation: resolveSubmittedDiscoveryOperation(recoveredArgs)
+    };
+  }
+
+  const topic = compactText(progress.topic || progress.query);
+  if (!topic) return null;
+  const operation = resolveSubmittedDiscoveryOperation({
+    operation: progress.operation || 'search'
+  });
+  return {
+    topic,
+    query: topic,
+    operation,
+    discoveryOperation: operation,
+    discovery_operation: operation,
+    searchMode: compactText(progress.searchMode || progress.search_mode),
+    search_mode: compactText(progress.searchMode || progress.search_mode)
+  };
+}
+
 async function writeLiteratureDiscoveryProgress(rootPath, progress = {}) {
   return saveDiscoveryProgress(rootPath, {
     ...progress,
     updatedAt: progress.updatedAt || new Date().toISOString()
   });
+}
+
+async function recoverLiteratureDiscoveryProgress(rootPath, progress = {}, options = {}) {
+  const runId = compactText(progress.runId);
+  if (!runId) return { recovered: false, reason: 'missing-run-id' };
+  const recoveryArgs = buildRecoveryDiscoveryArgs(progress);
+  const writer = createLiteratureDiscoveryProgressWriter(rootPath, {
+    runId,
+    rootPath,
+    topic: progress.topic || recoveryArgs?.topic || '',
+    operation: progress.operation || recoveryArgs?.operation || '',
+    searchMode: progress.searchMode || recoveryArgs?.searchMode || '',
+    submittedAt: progress.submittedAt || new Date().toISOString()
+  });
+
+  if (!recoveryArgs) {
+    await writer({
+      status: 'blocked',
+      stage: 'blocked',
+      event: 'recovery_blocked',
+      blockedReason: 'missing_recovery_args',
+      completedAt: new Date().toISOString()
+    });
+    return { recovered: false, runId, reason: 'missing_recovery_args' };
+  }
+
+  await writer({
+    status: 'running',
+    stage: 'recovery_claimed',
+    event: 'recovery_claimed',
+    recoveredAt: new Date().toISOString()
+  });
+
+  try {
+    const executeDiscovery = options.executeLiteratureDiscoveryTool || executeLiteratureDiscoveryTool;
+    await executeDiscovery({
+      ...recoveryArgs,
+      corpus: recoveryArgs.corpus || rootPath,
+      runId,
+      persist: recoveryArgs.persist !== false
+    }, {
+      ...options,
+      onLiteratureDiscoveryProgress: writer
+    });
+    return { recovered: true, runId };
+  } catch (error) {
+    await writer({
+      status: 'failed',
+      stage: 'failed',
+      event: 'recovery_failed',
+      completedAt: new Date().toISOString(),
+      error: safeProgressError(error)
+    });
+    return { recovered: false, runId, reason: error?.message || 'recovery-failed' };
+  }
+}
+
+async function resolveDiscoveryRecoveryRootPaths(options = {}) {
+  const baseDir = options.configBaseDir || process.cwd();
+  const seen = new Set();
+  const normalizeRoots = (values = []) => {
+    const roots = [];
+    for (const item of values) {
+      const raw = String(item || '').trim();
+      if (!raw) continue;
+      const resolved = resolvePathWithHome(raw, baseDir);
+      if (seen.has(resolved)) continue;
+      seen.add(resolved);
+      roots.push(resolved);
+    }
+    return roots;
+  };
+  const configuredRoots = normalizeRoots(Array.isArray(options.rootPaths) ? options.rootPaths : []);
+  if (configuredRoots.length) return configuredRoots;
+  const registry = await loadRegistry();
+  return normalizeRoots((registry.corpora || []).map((corpus) => corpus.rootPath));
+}
+
+export function startLiteratureDiscoveryRecoveryWorker(options = {}) {
+  const logger = options.logger || console;
+  const intervalMs = Math.max(5000, Number(options.intervalMs || options.discoveryRecoveryIntervalMs || DEFAULT_DISCOVERY_RECOVERY_INTERVAL_MS));
+  const staleMs = Math.max(60_000, Number(options.staleMs || options.discoveryRecoveryStaleMs || DEFAULT_DISCOVERY_RECOVERY_STALE_MS));
+  let closed = false;
+  let running = false;
+  let timer = null;
+
+  const tick = async () => {
+    if (closed || running) return;
+    running = true;
+    try {
+      const rootPaths = await resolveDiscoveryRecoveryRootPaths(options);
+      for (const rootPath of rootPaths) {
+        const progressRecords = await listDiscoveryProgress(rootPath, options.discoveryRecoveryLimit || 50);
+        for (const progress of progressRecords) {
+          if (!isRecoverableDiscoveryProgress(progress, staleMs)) continue;
+          const result = await recoverLiteratureDiscoveryProgress(rootPath, progress, options);
+          if (result.recovered) {
+            logger.log?.(`[literature_discovery] recovered run ${result.runId} for ${rootPath}`);
+          } else {
+            logger.warn?.(`[literature_discovery] recovery skipped run ${result.runId || progress.runId} for ${rootPath}: ${result.reason}`);
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn?.(`[literature_discovery] recovery worker failed (${error?.message || error})`);
+    } finally {
+      running = false;
+      schedule();
+    }
+  };
+
+  const schedule = () => {
+    if (closed) return;
+    clearTimeout(timer);
+    timer = setTimeout(tick, intervalMs);
+  };
+
+  timer = setTimeout(tick, Math.min(2500, intervalMs));
+  return {
+    stop() {
+      closed = true;
+      clearTimeout(timer);
+    },
+    pollNow() {
+      clearTimeout(timer);
+      setTimeout(tick, 0);
+    }
+  };
 }
 
 function createLiteratureDiscoveryProgressWriter(rootPath, base = {}) {
@@ -813,7 +1009,18 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
       status: 'queued',
       stage: 'queued',
       event: 'submitted',
-      submittedAt
+      submittedAt,
+      recovery: {
+        args: sanitizeDiscoveryRecoveryArgs({
+          ...args,
+          operation: submittedOperation,
+          discoveryOperation: submittedOperation,
+          discovery_operation: submittedOperation,
+          runId,
+          persist: true
+        }),
+        submittedAt
+      }
     });
 
     const backgroundArgs = {
