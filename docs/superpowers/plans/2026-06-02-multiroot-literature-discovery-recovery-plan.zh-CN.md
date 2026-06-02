@@ -30,6 +30,7 @@ The user-visible result is:
 - [x] 2026-06-02 10:45 CST Added multi-root config normalization while preserving the old string `storage.indexDir` contract.
 - [x] 2026-06-02 10:55 CST Updated `serve` worker startup so enhancement, authoritative sync, import, registry reconcile, and literature discovery recovery receive the same configured root set.
 - [x] 2026-06-02 11:00 CST Added persisted literature discovery progress listing and a read-only `literature_discovery_progress` MCP tool.
+- [x] 2026-06-02 11:32 CST Added compatible restart diagnostics to existing `literature_discovery progress/list/report` responses.
 - [x] 2026-06-02 11:05 CST Added server-side literature discovery restart recovery for queued and stale running runs.
 - [x] 2026-06-02 11:08 CST Added tests and regenerated config/MCP docs.
 - [x] 2026-06-02 11:10 CST Pushed implementation commit `5f32cf62e21a24971821cbe9ed4ec1887e9bb9d7` to `origin/main`.
@@ -57,6 +58,10 @@ Decision: Add a read-only `literature_discovery_progress` MCP tool instead of ov
 Rationale: Progress inspection must not trigger another search/import side effect. The addition is backward-compatible because existing MCP tool names and schemas continue to work.
 Date/Author: 2026-06-02 / Codex
 
+Decision: Also add optional diagnostics to existing `literature_discovery progress/list/report` responses.
+Rationale: The Obsidian ExecPlan requires the original polling operations to distinguish queued/running/import-handoff/covered/uncovered states. Keeping the old payload and adding optional `runLifecycle`, `resumeState`, `importHandoff`, and `workerCoverage` fields preserves compatibility while satisfying that requirement.
+Date/Author: 2026-06-02 / Codex
+
 Decision: On 41, keep `storage.indexDir` and `storage.defaultIndexDir` set to `/data1/whw/worldmodels/.papernexus`, and add the PN-ICML and GCD roots through `storage.indexDirs`.
 Rationale: This preserves default corpus behavior while making workers cover the roots that actually contain stale queues.
 Date/Author: 2026-06-02 / Codex
@@ -76,7 +81,7 @@ Relevant implementation files:
 - `src/server/http.js`: starts background workers with all valid configured roots and logs coverage at startup.
 - `src/core/imports/worker.js`: records import worker coverage observations and continues scanning all configured roots.
 - `src/core/discovery/store.js`: lists persisted discovery progress snapshots.
-- `src/mcp/tool-literature-discovery.js`: persists recovery metadata on submit and starts the restart recovery worker.
+- `src/mcp/tool-literature-discovery.js`: persists recovery metadata on submit, starts the restart recovery worker, and exposes compatible progress/list/report diagnostics.
 - `src/mcp/tool-literature-discovery-progress.js`: exposes read-only progress inspection.
 - `src/mcp/core.js` and `src/mcp/tools.js`: wire MCP tool schemas and runtime init support.
 
@@ -248,6 +253,7 @@ MCP interface:
 
 - Existing `literature_discovery` operations remain compatible.
 - New additive tool: `literature_discovery_progress`.
+- Existing `literature_discovery progress/list/report` payloads add optional `runLifecycle`, `resumeState`, `importHandoff`, and `workerCoverage`.
 - `runtime_init` accepts `indexDir` as string or array and accepts `indexDirs`.
 
 Runtime dependencies:

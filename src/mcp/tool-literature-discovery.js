@@ -7,7 +7,7 @@ import {
   runLiteratureDiscovery
 } from '../core/discovery/workflow.js';
 import { submitDiscoveryImports } from '../core/discovery/import-bridge.js';
-import { runImportQueueUntilIdle } from '../core/imports/worker.js';
+import { getImportWorkerCoverageSnapshot, runImportQueueUntilIdle } from '../core/imports/worker.js';
 import {
   createDiscoveryRunId,
   listDiscoveryProgress,
@@ -25,6 +25,7 @@ import {
 } from '../core/discovery/source-resolution.js';
 import { resolvePathWithHome } from '../lib/config.js';
 import { createContentSha256, createSourceIdentity, normalizePaperIdentifiers } from '../lib/paper-identifiers.js';
+import { configuredWorkerCoveragePayload } from '../server/api.js';
 
 function normalizeOperation(value) {
   return String(value || '').trim().toLowerCase().replace(/-/g, '_');
@@ -178,6 +179,148 @@ function isRecoverableDiscoveryProgress(progress = {}, staleMs = DEFAULT_DISCOVE
   if (status !== 'running') return false;
   const updatedAtMs = parseTimeMs(progress.updatedAt || progress.startedAt || progress.submittedAt);
   return updatedAtMs !== null && nowMs - updatedAtMs > staleMs;
+}
+
+function collectDiscoveryImportTaskIds(...sources) {
+  const ids = [];
+  const push = (value) => {
+    const normalized = compactText(value);
+    if (normalized) ids.push(normalized);
+  };
+
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    for (const entry of source.importSummary?.results || []) {
+      push(entry.taskId || entry.task_id);
+    }
+    for (const entry of source.candidates || []) {
+      push(entry.import?.taskId || entry.import?.task_id);
+    }
+    for (const value of source.importTaskIds || source.import_task_ids || []) {
+      push(value);
+    }
+  }
+
+  return unique(ids);
+}
+
+function emptyDiscoveryQueueState() {
+  return {
+    total: 0,
+    pending: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    blocked: 0,
+    unknown: 0
+  };
+}
+
+async function summarizeDiscoveryImportQueue(rootPath, taskIds = []) {
+  const queueState = emptyDiscoveryQueueState();
+  const tasks = [];
+
+  for (const taskId of taskIds) {
+    const task = await loadImportTask(rootPath, taskId).catch(() => null);
+    if (!task) {
+      queueState.unknown += 1;
+      tasks.push({ taskId, status: 'unknown', stage: '' });
+      continue;
+    }
+    const status = normalizeOperation(task.status || 'unknown');
+    queueState.total += 1;
+    if (Object.prototype.hasOwnProperty.call(queueState, status)) {
+      queueState[status] += 1;
+    } else {
+      queueState.unknown += 1;
+    }
+    tasks.push({
+      taskId,
+      status,
+      stage: task.stage || '',
+      updatedAt: task.updatedAt || null
+    });
+  }
+
+  if (!queueState.total && queueState.unknown) {
+    queueState.total = queueState.unknown;
+  }
+
+  return { queueState, tasks };
+}
+
+function inferDiscoveryLifecycleState(progress = {}, run = {}, importHandoff = null) {
+  const status = normalizeOperation(progress.status || run.status || '');
+  const stage = normalizeOperation(progress.stage || run.stage || '');
+  if (status === 'queued') return 'queued';
+  if (status === 'blocked') return 'blocked';
+  if (status === 'failed') return 'failed';
+  if (status === 'completed' || stage === 'completed') return 'completed';
+  if (stage === 'import_submit') return 'waiting_import_requisition';
+  if (stage === 'import_processing') return 'waiting_import_tasks';
+  if (importHandoff?.taskIds?.length) {
+    const queue = importHandoff.queueState || {};
+    if ((queue.pending || 0) > 0 || (queue.running || 0) > 0) return 'waiting_import_tasks';
+    if ((queue.completed || 0) > 0 && (queue.failed || 0) === 0) return 'graph_materialization_complete';
+  }
+  if (status === 'running' || stage) return 'running';
+  return 'unknown';
+}
+
+async function buildDiscoveryDiagnostics(rootPath, progress = {}, run = {}, options = {}) {
+  progress = normalizeObject(progress);
+  run = normalizeObject(run);
+  const taskIds = collectDiscoveryImportTaskIds(progress, run);
+  const importQueue = await summarizeDiscoveryImportQueue(rootPath, taskIds);
+  const workerCoverage = await configuredWorkerCoveragePayload(rootPath, options);
+  const workerSeen = getImportWorkerCoverageSnapshot(rootPath);
+  const importHandoff = {
+    requisitionId: progress.importRequisitionId || progress.import_requisition_id || run.importRequisitionId || run.import_requisition_id || null,
+    taskIds,
+    queueState: importQueue.queueState,
+    tasks: importQueue.tasks
+  };
+  const state = inferDiscoveryLifecycleState(progress, run, importHandoff);
+  const blockedReason = progress.blockedReason || progress.blocked_reason || (workerCoverage.covered ? null : 'root_not_configured');
+  const staleMs = Math.max(60_000, Number(options.discoveryRecoveryStaleMs || DEFAULT_DISCOVERY_RECOVERY_STALE_MS));
+
+  return {
+    runLifecycle: {
+      state,
+      status: progress.status || run.status || '',
+      stage: progress.stage || run.stage || '',
+      leaseOwner: progress.leaseOwner || progress.lease_owner || null,
+      lastHeartbeatAt: progress.lastHeartbeatAt || progress.last_heartbeat_at || progress.updatedAt || null,
+      lastRecoveredAt: progress.lastRecoveredAt || progress.last_recovered_at || progress.recoveredAt || null,
+      updatedAt: progress.updatedAt || run.generatedAt || null
+    },
+    resumeState: {
+      recoverable: Boolean(progress?.runId && isRecoverableDiscoveryProgress(progress, staleMs)),
+      blockedReason,
+      coveredByWorker: workerCoverage.covered
+    },
+    importHandoff,
+    workerCoverage: {
+      ...workerCoverage,
+      lastWorkerSeenAt: workerSeen?.lastWorkerSeenAt || null,
+      workerObserved: Boolean(workerSeen)
+    }
+  };
+}
+
+async function decorateDiscoveryProgressPayload(rootPath, progress = {}, options = {}) {
+  return {
+    ...progress,
+    ...(await buildDiscoveryDiagnostics(rootPath, progress, null, options))
+  };
+}
+
+async function decorateDiscoveryRunPayload(rootPath, run = {}, options = {}) {
+  const progress = run?.runId ? await loadDiscoveryProgress(rootPath, run.runId) : null;
+  return {
+    ...run,
+    ...(await buildDiscoveryDiagnostics(rootPath, progress || {}, run, options))
+  };
 }
 
 function buildRecoveryDiscoveryArgs(progress = {}) {
@@ -985,9 +1128,15 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
   const rootPath = await resolveCorpus(args.corpus);
 
   if (operation === 'list') {
+    const progressRecords = await listDiscoveryProgress(rootPath, args.limit);
     return JSON.stringify({
       rootPath,
-      runs: await listDiscoveryRuns(rootPath, args.limit)
+      runs: await listDiscoveryRuns(rootPath, args.limit),
+      progress: await Promise.all(
+        progressRecords.map((progress) => decorateDiscoveryProgressPayload(rootPath, progress, options))
+      ),
+      workerCoverage: (await buildDiscoveryDiagnostics(rootPath, {}, {}, options)).workerCoverage,
+      generatedAt: new Date().toISOString()
     }, null, 2);
   }
 
@@ -1082,19 +1231,19 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
     if (!progress) {
       throw new Error('No literature discovery progress found.');
     }
-    return JSON.stringify(progress, null, 2);
+    return JSON.stringify(await decorateDiscoveryProgressPayload(rootPath, progress, options), null, 2);
   }
 
   if (operation === 'status' || operation === 'report') {
     const run = await loadDiscoveryRun(rootPath, args.runId || args.run_id);
     if (run) {
-      return JSON.stringify(run, null, 2);
+      return JSON.stringify(await decorateDiscoveryRunPayload(rootPath, run, options), null, 2);
     }
     const progress = await loadDiscoveryProgress(rootPath, args.runId || args.run_id);
     if (!progress) {
       throw new Error('No literature discovery run found.');
     }
-    return JSON.stringify(progress, null, 2);
+    return JSON.stringify(await decorateDiscoveryProgressPayload(rootPath, progress, options), null, 2);
   }
 
   if (operation === 'supplement') {

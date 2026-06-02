@@ -67,6 +67,8 @@ literature_discovery submit
 
 `literature_discovery_progress` is read-only and returns the current stage/status, candidate counts, stale-progress detection, conservative ETA when the progress snapshot contains a discovery budget, and a default 5-minute `nextPollAt` recommendation. Use that recommendation to schedule a timer instead of blocking the agent thread.
 
+The original `literature_discovery` polling operations also carry restart diagnostics. `operation=progress`, `operation=report`, and `operation=list` preserve their previous payloads while adding `runLifecycle`, `resumeState`, `importHandoff`, and `workerCoverage`. Use these fields to distinguish a queued run, an active run, a run waiting on import tasks, a covered pending import queue, and a root that is not covered by the current serve workers.
+
 If the client times out or the transport fails after a submit attempt, record the result as `unknown_after_timeout`. That state means the server may have accepted the job, so callers should reconcile with `literature_discovery_progress`, `progress`, `report`, and `list` before retrying.
 
 For AutoResearch-style ideation, split large searches into `target`, `near`, and `far` lanes. This keeps target-domain priors, near-source methods, and far-source transfer candidates independently retryable and auditable.

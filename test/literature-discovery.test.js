@@ -17,9 +17,10 @@ import { mergeDiscoveryCandidates } from '../src/core/discovery/merge.js';
 import { resolveDiscoverySources } from '../src/core/discovery/source-resolution.js';
 import { submitDiscoveryImports } from '../src/core/discovery/import-bridge.js';
 import { buildLiteratureDiscoveryRunPlan, runLiteratureDiscovery } from '../src/core/discovery/workflow.js';
-import { loadDiscoveryRun, saveDiscoveryRun } from '../src/core/discovery/store.js';
+import { loadDiscoveryRun, saveDiscoveryProgress, saveDiscoveryRun } from '../src/core/discovery/store.js';
 import { handleMessage } from '../src/mcp/core.js';
 import { executeLiteratureDiscoveryTool } from '../src/mcp/tool-literature-discovery.js';
+import { createImportTask } from '../src/storage/import-store.js';
 import { createContentSha256, createPaperIdentity } from '../src/lib/paper-identifiers.js';
 
 const originalFetch = globalThis.fetch;
@@ -3647,6 +3648,99 @@ test('literature_discovery submit writes progress snapshots for polling', async 
   } finally {
     resetDiscoveryRequestSchedulerForTests();
     globalThis.fetch = originalFetch;
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('literature_discovery progress, report, and list include recovery diagnostics', async () => {
+  const rootPath = await createTempCorpus();
+  const runId = 'diagnostic-run';
+
+  try {
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'diagnostic-paper.md',
+          content: '# Diagnostic Paper\n\nA queued import task used for discovery diagnostics.',
+          paperMetadata: {
+            title: 'Diagnostic Paper'
+          }
+        }
+      ]
+    });
+    const importSummary = {
+      submitted: 1,
+      deduped: 0,
+      completed: 0,
+      failed: 0,
+      results: [
+        {
+          status: 'submitted',
+          taskId: task.id
+        }
+      ]
+    };
+
+    await saveDiscoveryProgress(rootPath, {
+      runId,
+      topic: 'diagnostic discovery',
+      operation: 'import',
+      status: 'running',
+      stage: 'import_processing',
+      updatedAt: new Date().toISOString(),
+      importSummary
+    });
+    await saveDiscoveryRun(rootPath, {
+      runId,
+      contractVersion: 'literature-discovery-v1',
+      topic: 'diagnostic discovery',
+      generatedAt: new Date().toISOString(),
+      candidates: [
+        {
+          id: 'diag:paper',
+          title: 'Diagnostic Paper',
+          import: {
+            status: 'submitted',
+            taskId: task.id
+          }
+        }
+      ],
+      importSummary
+    });
+
+    const options = { rootPaths: [rootPath] };
+    const progress = JSON.parse(await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'progress',
+      runId
+    }, options));
+    assert.equal(progress.runLifecycle.state, 'waiting_import_tasks');
+    assert.equal(progress.workerCoverage.covered, true);
+    assert.equal(progress.workerCoverage.configuredRootCount, 1);
+    assert.equal(progress.resumeState.coveredByWorker, true);
+    assert.equal(progress.importHandoff.taskIds.includes(task.id), true);
+    assert.equal(progress.importHandoff.queueState.pending, 1);
+
+    const report = JSON.parse(await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'report',
+      runId
+    }, options));
+    assert.equal(report.runLifecycle.state, 'waiting_import_tasks');
+    assert.equal(report.workerCoverage.covered, true);
+    assert.equal(report.importHandoff.queueState.pending, 1);
+
+    const list = JSON.parse(await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'list',
+      limit: 5
+    }, options));
+    assert.equal(list.workerCoverage.covered, true);
+    assert.equal(
+      list.progress.some((entry) => entry.runId === runId && entry.importHandoff.queueState.pending === 1),
+      true
+    );
+  } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
