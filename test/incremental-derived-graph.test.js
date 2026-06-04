@@ -98,6 +98,170 @@ function createSemanticPaper({
   };
 }
 
+function createMethodOnlySemanticPaper({
+  paperId,
+  paperTitle,
+  sourceKey,
+  sourcePath,
+  methodName
+}) {
+  return {
+    paperId,
+    paperTitle,
+    sourceKey,
+    sourcePath,
+    sourceMarkdownPath: sourcePath,
+    sourcePdfPath: null,
+    sourceKind: 'markdown',
+    sourceFingerprint: `fp:${paperId}:${methodName}`,
+    authors: ['Researcher Example'],
+    abstract: `${paperTitle} studies ${methodName}.`,
+    fieldOfStudy: 'Generalized Category Discovery',
+    fieldCandidates: ['Generalized Category Discovery'],
+    domainTags: ['Generalized Category Discovery'],
+    abstractMechanismObjects: [],
+    problems: [],
+    methods: [
+      {
+        name: methodName,
+        text: methodName,
+        evidenceText: `${paperTitle} uses ${methodName}.`,
+        fieldOfStudy: 'Generalized Category Discovery',
+        fieldCandidates: ['Generalized Category Discovery'],
+        domainTags: ['Generalized Category Discovery'],
+        abstractMechanismObjects: [],
+        confidence: 0.84
+      }
+    ],
+    datasets: [],
+    benchmarks: [],
+    metrics: [],
+    claims: [],
+    findings: [],
+    researchGoals: [],
+    limitations: [],
+    assumptions: [],
+    evidences: [],
+    futureDirections: [],
+    llmRelations: []
+  };
+}
+
+test('fastCommitCorpus skips full lite-state diff when delta source entries cover the changed paper', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-fast-delta-source-'));
+  const corpusName = 'fast-delta-source-test';
+  const corpusId = buildCorpusId(corpusName, tempRoot);
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+
+  try {
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    const sourcePath = path.join(tempRoot, 'paper.md');
+    await fs.writeFile(sourcePath, '# Fast delta paper\n', 'utf8');
+
+    const initialPaper = createMethodOnlySemanticPaper({
+      paperId: 'paper:fast-delta',
+      paperTitle: 'Fast Delta Commit for GCD',
+      sourceKey: 'source:fast-delta',
+      sourcePath,
+      methodName: 'prototype replay filter'
+    });
+
+    const committedGraph = createKnowledgeGraph();
+    committedGraph.addNode({
+      id: corpusId,
+      type: NODE_TYPES.CORPUS,
+      name: corpusName,
+      properties: {
+        layer: 'CorpusLayer',
+        rootPath: tempRoot
+      }
+    });
+
+    const initialDelta = await buildGraphDeltaPayload({
+      corpusName,
+      rootPath: tempRoot,
+      committedGraph,
+      semanticPapers: [initialPaper]
+    });
+    const initialGraph = applyGraphDeltaPayload(committedGraph, initialDelta);
+    postIngestionRefinement(initialGraph);
+
+    const initialMeta = {
+      name: corpusName,
+      rootPath: tempRoot,
+      indexedAt: new Date().toISOString(),
+      paperCount: 1,
+      sourceCount: 1,
+      nodeCount: initialGraph.nodeCount,
+      relationshipCount: initialGraph.relationshipCount,
+      domainDistanceMatrix: deriveDomainTaxonomyFromGraph(initialGraph)
+    };
+    const initialManifest = {
+      corpusName,
+      rootPath: tempRoot,
+      inputPath: tempRoot,
+      inputPaths: [tempRoot],
+      sourceMode: 'markdown',
+      indexedAt: initialMeta.indexedAt,
+      sources: [
+        {
+          sourceKey: initialPaper.sourceKey,
+          paperId: initialPaper.paperId,
+          paperTitle: initialPaper.paperTitle,
+          sourcePath: initialPaper.sourcePath,
+          sourceMarkdownPath: initialPaper.sourceMarkdownPath,
+          kind: 'markdown',
+          fingerprint: initialPaper.sourceFingerprint,
+          activeInGraph: true
+        }
+      ]
+    };
+
+    await saveCorpus(tempRoot, initialGraph, initialMeta, {
+      liteViewMode: 'incremental',
+      liteViewSources: initialManifest.sources
+    });
+    await saveSourceManifest(tempRoot, initialManifest);
+    await saveSemanticPaperSnapshot(tempRoot, initialPaper.sourceKey, initialPaper);
+
+    const updatedPaper = createMethodOnlySemanticPaper({
+      paperId: initialPaper.paperId,
+      paperTitle: initialPaper.paperTitle,
+      sourceKey: initialPaper.sourceKey,
+      sourcePath,
+      methodName: 'semantic neighbor calibration'
+    });
+    await saveSemanticPaperSnapshot(tempRoot, updatedPaper.sourceKey, updatedPaper);
+
+    const result = await fastCommitCorpus(tempRoot, {
+      changedSourceKeys: [updatedPaper.sourceKey],
+      quiet: true
+    });
+
+    const paths = getCorpusPaths(tempRoot);
+    const litePayload = JSON.parse(await fs.readFile(paths.liteGraphPath, 'utf8'));
+
+    assert.equal(result.fastCommitMetrics.contractVersion, 'fast-commit-phases-v1');
+    assert.equal(result.fastCommitMetrics.mode, 'delta');
+    assert.equal(result.fastCommitMetrics.affectedLiteSourceStrategy, 'delta-source-entries');
+    assert.equal(result.fastCommitMetrics.skippedFullLiteStateDiff, true);
+    assert.equal(result.fastCommitMetrics.affectedLiteSourceFallbackReason, null);
+    assert.equal(result.fastCommitMetrics.phaseTimingsMs.buildLiteState, undefined);
+    assert.equal(result.fastCommitMetrics.phaseTimingsMs.diffLiteState, undefined);
+    assert.equal(typeof result.fastCommitMetrics.phaseTimingsMs.writeDelta, 'number');
+    assert.ok(litePayload.nodes.some((node) => node.name === 'semantic neighbor calibration'));
+    assert.equal(litePayload.nodes.some((node) => node.name === 'prototype replay filter'), false);
+  } finally {
+    if (previousBackend === undefined) {
+      delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    } else {
+      process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    }
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('fastCommitCorpus incrementally refreshes derived graph layers and persisted domain distance metadata', async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-incremental-derived-'));
   const corpusName = 'incremental-derived-test';
@@ -218,8 +382,12 @@ test('fastCommitCorpus incrementally refreshes derived graph layers and persiste
     });
     await saveSemanticPaperSnapshot(tempRoot, updatedPsychPaper.sourceKey, updatedPsychPaper);
 
+    const progressEvents = [];
     const result = await fastCommitCorpus(tempRoot, {
-      changedSourceKeys: [updatedPsychPaper.sourceKey]
+      changedSourceKeys: [updatedPsychPaper.sourceKey],
+      onProgress(event = {}) {
+        progressEvents.push(event);
+      }
     });
 
     const paths = getCorpusPaths(tempRoot);
@@ -227,6 +395,14 @@ test('fastCommitCorpus incrementally refreshes derived graph layers and persiste
 
     assert.ok(result.meta.domainDistanceMatrix?.domains?.includes('Education'));
     assert.ok(result.meta.domainDistanceMatrix?.domains?.includes('Psychology'));
+    assert.equal(result.fastCommitMetrics.contractVersion, 'fast-commit-phases-v1');
+    assert.equal(result.fastCommitMetrics.mode, 'delta');
+    assert.equal(typeof result.fastCommitMetrics.phaseTimingsMs.buildLiteState, 'number');
+    assert.equal(typeof result.fastCommitMetrics.phaseTimingsMs.writeDelta, 'number');
+    assert.ok(progressEvents.some((event) => event.diagnostics?.contractVersion === 'fast-commit-progress-diagnostics-v1'));
+    assert.ok(progressEvents.some((event) => typeof event.diagnostics?.fastCommitPhasesMs?.buildDelta === 'number'));
+    assert.ok(progressEvents.some((event) => event.currentStep === 'fast commit complete'
+      && typeof event.diagnostics?.fastCommitPhasesMs?.writeDelta === 'number'));
     assert.deepEqual(litePayload.derived?.domainDistanceMatrix, result.meta.domainDistanceMatrix);
     assert.ok(
       litePayload.nodes.some((node) => node.type === NODE_TYPES.ABSTRACT_MECHANISM && node.name === 'memory rehearsal routing')

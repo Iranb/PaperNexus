@@ -547,7 +547,7 @@ export const PAPERNEXUS_TOOLS = [
         operation: {
           type: 'string',
           enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait', 'submit_async', 'async_status', 'async_wait'],
-          description: 'Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout. submit_async starts a background import_workflow operation and returns a jobId; use async_status/async_wait to read the result.'
+          description: 'Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until task completion by default, can target graph-visible or semantic-complete readiness, and submit_async starts a background import_workflow operation returning a jobId for async_status/async_wait.'
         },
         asyncOperation: {
           type: 'string',
@@ -620,6 +620,41 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Optional source provider/origin label used to build sourceId.'
         },
+        processingProfile: {
+          type: 'string',
+          enum: ['full', 'fast-md-structural', 'fast-md-background-semantic', 'long-context-full-md'],
+          description: 'Optional import processing profile for submit. Use fast-md-background-semantic for markdown graph-visible ingest with background semantic enrichment.'
+        },
+        completionPolicy: {
+          type: 'string',
+          enum: ['full', 'graph-visible', 'semantic-complete'],
+          description: 'Optional completion policy for submit. graph-visible lets fast markdown imports complete when local structural graph visibility is ready.'
+        },
+        importExecutionMode: {
+          type: 'string',
+          enum: ['serial', 'dag'],
+          description: 'Optional internal import execution mode for submit. This is distinct from executionMode=sync|async, which only controls whether the MCP tool call waits.'
+        },
+        llmContextWindowTokens: {
+          type: 'number',
+          minimum: 1,
+          description: 'Optional task-level LLM context window declaration for submit. Use 1000000 for the default long-context markdown optimization path.'
+        },
+        llmExtractionStrategy: {
+          type: 'string',
+          enum: ['long-context-first', 'chunk-first', 'auto'],
+          description: 'Optional task-level markdown LLM extraction strategy. long-context-first is the default optimized path for 1M-context models.'
+        },
+        llmLongContextMaxPapersPerCall: {
+          type: 'number',
+          minimum: 1,
+          description: 'Optional task-level cap for how many markdown papers are packed into one long-context LLM call.'
+        },
+        llmBatchConcurrency: {
+          type: 'number',
+          minimum: 1,
+          description: 'Optional task-level LLM batch concurrency for provider-backed semantic enrichment.'
+        },
         files: {
           type: 'array',
           items: {
@@ -641,6 +676,15 @@ export const PAPERNEXUS_TOOLS = [
           },
           description: 'Optional task ids used to filter queue_progress snapshots.'
         },
+        includeSemanticQueue: {
+          type: 'boolean',
+          description: 'When operation=queue_progress, include the background semantic-enrichment queue summary and recent jobs. Defaults to true.'
+        },
+        semanticJobLimit: {
+          type: 'number',
+          description: 'When operation=queue_progress and includeSemanticQueue is true, limit recent semantic-enrichment jobs returned.',
+          default: 5
+        },
         timeout: {
           type: 'number',
           description: 'Maximum seconds to wait for completion when operation is wait. By default this also includes the downstream authoritative graph sync job for completed imports.',
@@ -654,6 +698,19 @@ export const PAPERNEXUS_TOOLS = [
         waitForAuthoritativeSync: {
           type: 'boolean',
           description: 'When operation is wait, keep waiting after the import task completes until its authoritative graph sync job is completed, failed, or superseded. Defaults to true.'
+        },
+        waitUntil: {
+          type: 'string',
+          enum: ['task-completed', 'graph-visible', 'semantic-complete', 'authoritative-sync'],
+          description: 'When operation is wait, choose the readiness target. task-completed preserves the legacy task terminal wait; graph-visible returns after structural graph visibility for fast markdown imports; semantic-complete waits for background 1M long-context semantic enrichment to reach a terminal lifecycle; authoritative-sync waits for downstream graph sync.'
+        },
+        waitForGraphVisibility: {
+          type: 'boolean',
+          description: 'Shortcut for operation=wait with waitUntil=graph-visible. Useful for fast-md-background-semantic bursts where graph queries can start before 1M long-context semantic enrichment finishes.'
+        },
+        waitForSemanticCompletion: {
+          type: 'boolean',
+          description: 'Shortcut for operation=wait with waitUntil=semantic-complete. Useful when the caller needs background default 1M long-context semantic enrichment to finish before using semantic graph evidence.'
         },
         waitTimeoutMs: {
           type: 'number',

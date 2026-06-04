@@ -5,12 +5,44 @@ import { stableHash, unique } from '../lib/utils.js';
 import { getCorpusPaths } from './corpus-store.js';
 
 const AUTHORITATIVE_SYNC_QUEUE_VERSION = 1;
+const DEFAULT_QUEUE_LOCK_TIMEOUT_MS = 30_000;
+const DEFAULT_QUEUE_LOCK_STALE_MS = 15 * 60 * 1000;
+const DEFAULT_RUNNING_JOB_STALE_MS = 2 * 60 * 60 * 1000;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'superseded']);
 
 function createEmptyQueue() {
   return {
     version: AUTHORITATIVE_SYNC_QUEUE_VERSION,
     jobs: []
+  };
+}
+
+function positiveMs(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback;
+  }
+  return numeric;
+}
+
+function createQueueLockOptions(options = {}) {
+  const timeoutMs = Math.max(
+    250,
+    positiveMs(
+      options.queueLockTimeoutMs ?? options.authoritativeSyncQueueLockTimeoutMs,
+      DEFAULT_QUEUE_LOCK_TIMEOUT_MS
+    )
+  );
+  const staleMs = Math.max(
+    timeoutMs,
+    positiveMs(
+      options.queueLockStaleMs ?? options.authoritativeSyncQueueLockStaleMs,
+      DEFAULT_QUEUE_LOCK_STALE_MS
+    )
+  );
+  return {
+    timeoutMs,
+    staleMs
   };
 }
 
@@ -85,7 +117,78 @@ function mergeChangedSourceKeys(left = [], right = []) {
   return normalizeChangedSourceKeys([...left, ...right]);
 }
 
-export async function enqueueAuthoritativeSyncJob(rootPath, payload) {
+function recoverStaleRunningJobs(queue, options = {}) {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const staleMs = Math.max(
+    1000,
+    positiveMs(
+      options.runningJobStaleMs ?? options.authoritativeSyncRunningJobStaleMs,
+      DEFAULT_RUNNING_JOB_STALE_MS
+    )
+  );
+  const recoveredJobs = [];
+
+  for (const job of Array.isArray(queue?.jobs) ? queue.jobs : []) {
+    if (job?.status !== 'running') continue;
+    const heartbeatMs = Date.parse(job.reservedAt || job.updatedAt || 0) || 0;
+    if (!heartbeatMs || nowMs - heartbeatMs < staleMs) continue;
+
+    const previousWorkerId = job.workerId || null;
+    const previousReservedAt = job.reservedAt || null;
+    const previousUpdatedAt = job.updatedAt || null;
+    job.status = 'queued';
+    job.workerId = null;
+    job.reservedAt = null;
+    job.updatedAt = nowIso;
+    job.recoveredAt = nowIso;
+    job.recoveryCount = Number(job.recoveryCount || 0) + 1;
+    job.lastRecovery = {
+      at: nowIso,
+      reason: 'stale-running-job',
+      staleMs,
+      previousWorkerId,
+      previousReservedAt,
+      previousUpdatedAt
+    };
+    recoveredJobs.push({
+      jobId: job.jobId,
+      previousWorkerId,
+      previousReservedAt,
+      previousUpdatedAt,
+      staleMs,
+      recoveredAt: nowIso,
+      job
+    });
+  }
+
+  return recoveredJobs;
+}
+
+export async function recoverStaleAuthoritativeSyncJobs(rootPath, options = {}) {
+  const normalizedRootPath = path.resolve(rootPath);
+  const { authoritativeSyncLockPath } = getCorpusPaths(normalizedRootPath);
+
+  return withFileLock(authoritativeSyncLockPath, async () => {
+    const queue = await loadQueue(normalizedRootPath);
+    const recoveredJobs = recoverStaleRunningJobs(queue, options);
+    if (!recoveredJobs.length) {
+      return {
+        recoveredCount: 0,
+        recoveredJobs: []
+      };
+    }
+
+    await saveQueue(normalizedRootPath, queue);
+    await Promise.all(recoveredJobs.map((entry) => saveJob(normalizedRootPath, entry.job)));
+    return {
+      recoveredCount: recoveredJobs.length,
+      recoveredJobs: recoveredJobs.map(({ job, ...entry }) => entry)
+    };
+  }, createQueueLockOptions(options));
+}
+
+export async function enqueueAuthoritativeSyncJob(rootPath, payload, options = {}) {
   const normalizedRootPath = path.resolve(rootPath);
   const { authoritativeSyncLockPath } = getCorpusPaths(normalizedRootPath);
 
@@ -113,7 +216,7 @@ export async function enqueueAuthoritativeSyncJob(rootPath, payload) {
     await saveQueue(normalizedRootPath, queue);
     await saveJob(normalizedRootPath, job);
     return job;
-  });
+  }, createQueueLockOptions(options));
 }
 
 export async function listAuthoritativeSyncJobs(rootPath) {
@@ -140,10 +243,10 @@ export async function reserveNextAuthoritativeSyncJob(rootPath, options = {}) {
     await saveQueue(normalizedRootPath, queue);
     await saveJob(normalizedRootPath, nextJob);
     return nextJob;
-  });
+  }, createQueueLockOptions(options));
 }
 
-export async function completeAuthoritativeSyncJob(rootPath, jobId, details = {}) {
+export async function completeAuthoritativeSyncJob(rootPath, jobId, details = {}, options = {}) {
   const normalizedRootPath = path.resolve(rootPath);
   const { authoritativeSyncLockPath } = getCorpusPaths(normalizedRootPath);
 
@@ -174,10 +277,10 @@ export async function completeAuthoritativeSyncJob(rootPath, jobId, details = {}
     await saveJob(normalizedRootPath, completed);
     await writeHistory(normalizedRootPath, completed);
     return completed;
-  });
+  }, createQueueLockOptions(options));
 }
 
-export async function failAuthoritativeSyncJob(rootPath, jobId, error) {
+export async function failAuthoritativeSyncJob(rootPath, jobId, error, options = {}) {
   const normalizedRootPath = path.resolve(rootPath);
   const { authoritativeSyncLockPath } = getCorpusPaths(normalizedRootPath);
 
@@ -213,7 +316,7 @@ export async function failAuthoritativeSyncJob(rootPath, jobId, error) {
     await saveJob(normalizedRootPath, failed);
     await writeHistory(normalizedRootPath, failed);
     return failed;
-  });
+  }, createQueueLockOptions(options));
 }
 
 export async function listAuthoritativeSyncHistory(rootPath) {

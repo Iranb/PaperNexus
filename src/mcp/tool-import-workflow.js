@@ -12,6 +12,12 @@ import {
   listImportTasksPayload
 } from '../server/api.js';
 import { getImportWorkerCoverageSnapshot } from '../core/imports/worker.js';
+import { listImportSemanticEnrichmentJobs } from '../storage/import-semantic-store.js';
+import {
+  tailImportTaskDagEvents,
+  tailImportTaskEvents
+} from '../storage/import-store.js';
+import { createImportDagComparisonReport } from '../storage/import-dag-comparison.js';
 import { getDefaultRuntimeConfigRoot } from '../lib/config.js';
 import { ensureDir, readJson, writeJson } from '../lib/fs.js';
 
@@ -33,6 +39,76 @@ function enabledFlag(value, fallback = false) {
   if (value === undefined || value === null) return fallback;
   if (value === true || value === false) return value;
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function compactImportSemanticEnrichmentJob(job = {}) {
+  const changedSourceKeys = Array.isArray(job.changedSourceKeys) ? job.changedSourceKeys : [];
+  const batchTaskIds = Array.isArray(job.batchTaskIds) ? job.batchTaskIds : [];
+  const resultPerformance = job.result?.metrics?.importPerformance || null;
+  const progress = job.progress && typeof job.progress === 'object' && !Array.isArray(job.progress)
+    ? job.progress
+    : null;
+  return {
+    id: String(job.id || '').trim(),
+    taskId: String(job.taskId || '').trim() || null,
+    status: String(job.status || '').trim() || null,
+    stage: String(job.stage || '').trim() || null,
+    processingProfile: job.processingProfile || null,
+    completionPolicy: job.completionPolicy || null,
+    trigger: job.trigger || null,
+    attempts: Number(job.attempts || 0),
+    maxAttempts: Number(job.maxAttempts || 0) || null,
+    workerId: job.workerId || null,
+    changedSourceKeyCount: changedSourceKeys.length,
+    changedSourceKeys,
+    batchId: job.batchId || null,
+    batchTaskIds,
+    enqueuedAt: job.enqueuedAt || null,
+    startedAt: job.startedAt || null,
+    finishedAt: job.finishedAt || null,
+    updatedAt: job.updatedAt || null,
+    progress: progress
+      ? {
+          contractVersion: progress.contractVersion || null,
+          status: progress.status || null,
+          stage: progress.stage || null,
+          currentStep: progress.currentStep || null,
+          message: progress.message || null,
+          stagePercent: Number(progress.stagePercent || 0) || 0,
+          processedUnits: Number(progress.processedUnits || 0) || 0,
+          totalUnits: Number(progress.totalUnits || 0) || 0,
+          updatedAt: progress.updatedAt || null
+        }
+      : null,
+    error: job.error?.message ? { message: String(job.error.message) } : null,
+    result: resultPerformance
+      ? {
+          stageTimingsMs: resultPerformance.stageTimingsMs || null,
+          llmBatches: resultPerformance.llmBatches || null
+        }
+      : null
+  };
+}
+
+async function importSemanticQueueProgressPayload(rootPath, args = {}) {
+  const payload = await listImportSemanticEnrichmentJobs(rootPath);
+  const limit = Math.max(0, Number(args.semanticJobLimit ?? args.semantic_job_limit ?? args.recentSemanticJobLimit ?? args.recent_semantic_job_limit ?? 5) || 0);
+  return {
+    contractVersion: 'papernexus-import-semantic-enrichment-queue-progress-v1',
+    updatedAt: payload.updatedAt || null,
+    summary: payload.summary || {
+      total: 0,
+      pending: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      skipped: 0,
+      remaining: 0
+    },
+    recentJobs: limit > 0
+      ? (payload.jobs || []).slice(0, limit).map((job) => compactImportSemanticEnrichmentJob(job))
+      : []
+  };
 }
 
 function normalizeAsyncExecutionMode(value) {
@@ -253,6 +329,251 @@ function taskMatchesReference(task, args = {}) {
   });
 }
 
+function normalizeProgressToken(value, fallback = 'unknown') {
+  const normalized = String(value || '').trim().toLowerCase().replace(/_/g, '-');
+  return normalized || fallback;
+}
+
+function incrementSummaryCount(target, key) {
+  const normalizedKey = normalizeProgressToken(key);
+  target[normalizedKey] = (Number(target[normalizedKey] || 0) || 0) + 1;
+}
+
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function compactNumericMap(value) {
+  if (!isPlainObject(value)) return null;
+  const compact = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric)) {
+      compact[key] = numeric;
+    }
+  }
+  return Object.keys(compact).length ? compact : null;
+}
+
+function compactCountMap(value) {
+  if (!isPlainObject(value)) return null;
+  const compact = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric !== 0) {
+      compact[key] = numeric;
+    }
+  }
+  return Object.keys(compact).length ? compact : null;
+}
+
+function pickNumericSummary(value) {
+  if (!isPlainObject(value)) return null;
+  const summary = {};
+  for (const key of ['count', 'min', 'max', 'mean', 'p50', 'p90', 'p95', 'total']) {
+    if (value[key] === null) {
+      summary[key] = null;
+      continue;
+    }
+    const numeric = Number(value[key]);
+    if (Number.isFinite(numeric)) {
+      summary[key] = numeric;
+    }
+  }
+  return Object.keys(summary).length ? summary : null;
+}
+
+function compactRateLimitCooldowns(value) {
+  if (!isPlainObject(value)) return null;
+  const cooldowns = Array.isArray(value.cooldowns)
+    ? value.cooldowns.map((entry) => String(entry || '').trim()).filter(Boolean)
+    : [];
+  const count = Number(value.count);
+  if (!Number.isFinite(count) && !cooldowns.length && !value.latest) return null;
+  return {
+    count: Number.isFinite(count) ? count : cooldowns.length,
+    latest: value.latest || (cooldowns.length ? cooldowns[cooldowns.length - 1] : null),
+    cooldowns
+  };
+}
+
+function compactLlmBatchPhaseSummary(value) {
+  if (!isPlainObject(value)) return null;
+  const compact = {};
+  for (const key of [
+    'completedBatchCount',
+    'skippedBatchCount',
+    'cachedBatchCount',
+    'skippedProviderCallCount',
+    'rateLimitSkippedBatchCount',
+    'failedBatchCount',
+    'retryEventCount',
+    'maxConcurrency'
+  ]) {
+    const numeric = Number(value[key]);
+    if (Number.isFinite(numeric)) {
+      compact[key] = numeric;
+    }
+  }
+  for (const key of ['durationMs', 'providerDurationMs', 'promptChars']) {
+    const summary = pickNumericSummary(value[key]);
+    if (summary) compact[key] = summary;
+  }
+  const failureReasons = compactCountMap(value.failureReasons);
+  if (failureReasons) compact.failureReasons = failureReasons;
+  const retryReasons = compactCountMap(value.retryReasons);
+  if (retryReasons) compact.retryReasons = retryReasons;
+  const rateLimitCooldowns = compactRateLimitCooldowns(value.rateLimitCooldowns);
+  if (rateLimitCooldowns) compact.rateLimitCooldowns = rateLimitCooldowns;
+  return Object.keys(compact).length ? compact : null;
+}
+
+function compactLlmBatchSummary(value) {
+  if (!isPlainObject(value)) return null;
+  const compact = compactLlmBatchPhaseSummary(value) || {};
+  if (Array.isArray(value.phases)) {
+    compact.phases = value.phases.map((phase) => String(phase || '').trim()).filter(Boolean);
+  }
+  if (Array.isArray(value.effectiveBatchSizes)) {
+    compact.effectiveBatchSizes = value.effectiveBatchSizes
+      .map((entry) => Number(entry))
+      .filter((entry) => Number.isFinite(entry) && entry > 0);
+  }
+  const byPhase = {};
+  if (isPlainObject(value.byPhase)) {
+    for (const [phase, phaseSummary] of Object.entries(value.byPhase)) {
+      const compactPhase = compactLlmBatchPhaseSummary(phaseSummary);
+      if (compactPhase) byPhase[phase] = compactPhase;
+    }
+  }
+  if (Object.keys(byPhase).length) compact.byPhase = byPhase;
+  return Object.keys(compact).length ? compact : null;
+}
+
+function summarizeTaskImportPerformance(task = {}) {
+  const performance = task?.result?.metrics?.importPerformance;
+  if (!isPlainObject(performance)) return null;
+  const summary = {
+    contractVersion: performance.contractVersion || null,
+    mode: performance.mode || null,
+    batchId: performance.batchId || null,
+    llmConfigKey: performance.llmConfigKey || null,
+    requestedImportExecutionMode: performance.requestedImportExecutionMode || null,
+    importExecutionModeApplied: performance.importExecutionModeApplied || null,
+    llmOptimizeSkipped: Boolean(performance.llmOptimizeSkipped),
+    directDeltaCommit: Boolean(performance.directDeltaCommit)
+  };
+  for (const key of [
+    'batchTaskCount',
+    'changedSourceKeyCount',
+    'batchChangedSourceKeyCount',
+    'llmConfigGroupCount'
+  ]) {
+    const numeric = Number(performance[key]);
+    if (Number.isFinite(numeric)) summary[key] = numeric;
+  }
+  if (isPlainObject(performance.llmConfig)) {
+    summary.llmConfig = {
+      llmContextWindowTokens: Number.isFinite(Number(performance.llmConfig.llmContextWindowTokens))
+        ? Number(performance.llmConfig.llmContextWindowTokens)
+        : null,
+      llmExtractionStrategy: performance.llmConfig.llmExtractionStrategy || null,
+      llmLongContextMaxPapersPerCall: Number.isFinite(Number(performance.llmConfig.llmLongContextMaxPapersPerCall))
+        ? Number(performance.llmConfig.llmLongContextMaxPapersPerCall)
+        : null,
+      llmBatchConcurrency: Number.isFinite(Number(performance.llmConfig.llmBatchConcurrency))
+        ? Number(performance.llmConfig.llmBatchConcurrency)
+        : null
+    };
+  }
+  const stageTimingsMs = compactNumericMap(performance.stageTimingsMs);
+  if (stageTimingsMs) summary.stageTimingsMs = stageTimingsMs;
+  const fastCommitPhasesMs = compactNumericMap(performance.fastCommitPhasesMs);
+  if (fastCommitPhasesMs) summary.fastCommitPhasesMs = fastCommitPhasesMs;
+  const llmBatches = compactLlmBatchSummary(performance.llmBatches);
+  if (llmBatches) summary.llmBatches = llmBatches;
+  return summary;
+}
+
+function taskLifecycleStatus(task = {}, name = '') {
+  const key = normalizeProgressToken(name, '');
+  if (key === 'graph-visibility') {
+    return normalizeProgressToken(task.graphVisibilityStatus || task.result?.graphVisibilityStatus, 'unknown');
+  }
+  if (key === 'semantic') {
+    return normalizeProgressToken(task.semanticStatus || task.result?.semanticStatus, 'unknown');
+  }
+  if (key === 'authoritative-sync') {
+    const sync = getTaskAuthoritativeSync(task);
+    return normalizeProgressToken(task.authoritativeSyncStatus || task.result?.authoritativeSyncStatus || sync?.status, 'unknown');
+  }
+  return 'unknown';
+}
+
+function taskOperatorPhase(task = {}) {
+  const status = normalizeProgressToken(task.status, 'pending');
+  const progress = task.progress && typeof task.progress === 'object' ? task.progress : {};
+  const stage = normalizeProgressToken(task.stage || progress.stage, status === 'running' ? 'materialize' : 'queued');
+  const currentStep = normalizeProgressToken(progress.currentStep, '');
+  const semanticStatus = taskLifecycleStatus(task, 'semantic');
+  const syncStatus = taskLifecycleStatus(task, 'authoritative-sync');
+
+  if (status === 'failed') return 'failed';
+  if (status === 'pending' && currentStep === 'coalescing') return 'coalescing';
+  if (status === 'pending') return stage === 'queued' ? 'queued' : stage;
+  if (status === 'running') return stage;
+  if (status === 'completed') {
+    if (semanticStatus === 'queued' || semanticStatus === 'running') return 'semantic-enrichment';
+    if (syncStatus === 'pending' || syncStatus === 'queued' || syncStatus === 'running') return 'authoritative-sync';
+    return 'completed';
+  }
+  return stage || status || 'unknown';
+}
+
+function isTaskOperatorPhaseActive(task = {}) {
+  const status = normalizeProgressToken(task.status, 'pending');
+  if (status === 'pending' || status === 'running') return true;
+  if (status === 'completed') {
+    const phase = taskOperatorPhase(task);
+    return phase === 'semantic-enrichment' || phase === 'authoritative-sync';
+  }
+  return false;
+}
+
+function taskOperatorPhasePriority(task = {}) {
+  const status = normalizeProgressToken(task.status, 'pending');
+  const phase = taskOperatorPhase(task);
+  if (phase === 'coalescing') return 0;
+  if (status === 'running') return 1;
+  if (status === 'pending') return 2;
+  if (phase === 'semantic-enrichment' || phase === 'authoritative-sync') return 3;
+  if (status === 'failed') return 4;
+  return 5;
+}
+
+function summarizeActiveTask(task = null) {
+  if (!task) return null;
+  const progress = task.progress && typeof task.progress === 'object' ? task.progress : {};
+  return {
+    taskId: task.id || null,
+    status: task.status || null,
+    phase: taskOperatorPhase(task),
+    stage: task.stage || progress.stage || null,
+    currentStep: progress.currentStep || null,
+    message: progress.message || null,
+    percent: Number(progress.percent || 0) || 0,
+    stagePercent: Number(progress.stagePercent || 0) || 0,
+    processedUnits: Number(progress.processedUnits || 0) || 0,
+    totalUnits: Number(progress.totalUnits || 0) || 0,
+    graphVisibilityStatus: taskLifecycleStatus(task, 'graph-visibility'),
+    semanticStatus: taskLifecycleStatus(task, 'semantic'),
+    authoritativeSyncStatus: taskLifecycleStatus(task, 'authoritative-sync'),
+    authoritativeSyncJobId: getTaskAuthoritativeSync(task)?.jobId || null,
+    progressDiagnostics: isPlainObject(progress.diagnostics) ? progress.diagnostics : null,
+    importPerformance: summarizeTaskImportPerformance(task)
+  };
+}
+
 function summarizeProgressTasks(tasks = []) {
   const summary = {
     total: tasks.length,
@@ -261,11 +582,23 @@ function summarizeProgressTasks(tasks = []) {
     completed: 0,
     failed: 0,
     remaining: 0,
-    overallPercent: 0
+    overallPercent: 0,
+    stageCounts: {},
+    phaseCounts: {},
+    lifecycleCounts: {
+      graphVisibility: {},
+      semantic: {},
+      authoritativeSync: {}
+    },
+    activeTaskId: null,
+    activePhase: null,
+    activeTask: null
   };
   if (!tasks.length) return summary;
 
   let totalPercent = 0;
+  let activeTask = null;
+  let activeTaskPriority = Number.POSITIVE_INFINITY;
   for (const task of tasks) {
     const status = String(task?.status || '').trim().toLowerCase();
     if (status === 'completed') summary.completed += 1;
@@ -273,9 +606,22 @@ function summarizeProgressTasks(tasks = []) {
     else if (status === 'running') summary.running += 1;
     else summary.pending += 1;
     totalPercent += Number(task?.progress?.percent || 0) || 0;
+    incrementSummaryCount(summary.stageCounts, task?.stage || task?.progress?.stage || status || 'unknown');
+    incrementSummaryCount(summary.phaseCounts, taskOperatorPhase(task));
+    incrementSummaryCount(summary.lifecycleCounts.graphVisibility, taskLifecycleStatus(task, 'graph-visibility'));
+    incrementSummaryCount(summary.lifecycleCounts.semantic, taskLifecycleStatus(task, 'semantic'));
+    incrementSummaryCount(summary.lifecycleCounts.authoritativeSync, taskLifecycleStatus(task, 'authoritative-sync'));
+    const priority = taskOperatorPhasePriority(task);
+    if (isTaskOperatorPhaseActive(task) && priority < activeTaskPriority) {
+      activeTask = task;
+      activeTaskPriority = priority;
+    }
   }
   summary.remaining = summary.pending + summary.running;
   summary.overallPercent = Math.max(0, Math.min(100, Math.round((totalPercent / tasks.length) * 100) / 100));
+  summary.activeTask = summarizeActiveTask(activeTask);
+  summary.activeTaskId = summary.activeTask?.taskId || null;
+  summary.activePhase = summary.activeTask?.phase || null;
   return summary;
 }
 
@@ -313,6 +659,127 @@ function isAuthoritativeSyncTerminal(job = {}) {
   return status === 'completed' || status === 'failed' || status === 'superseded';
 }
 
+function normalizeImportWaitTarget(args = {}) {
+  const rawTarget = args.waitUntil
+    ?? args.wait_until
+    ?? args.waitTarget
+    ?? args.wait_target
+    ?? '';
+  const target = normalizeProgressToken(rawTarget, '');
+
+  if (target) {
+    if (
+      target === 'task-completed'
+      || target === 'task-complete'
+      || target === 'task-terminal'
+      || target === 'terminal'
+      || target === 'completed'
+    ) {
+      return 'task-completed';
+    }
+    if (
+      target === 'graph-visible'
+      || target === 'graph-visibility'
+      || target === 'graph-ready'
+      || target === 'graph'
+    ) {
+      return 'graph-visible';
+    }
+    if (
+      target === 'semantic-complete'
+      || target === 'semantic-completed'
+      || target === 'semantic-terminal'
+      || target === 'semantic-enrichment-complete'
+      || target === 'semantic'
+    ) {
+      return 'semantic-complete';
+    }
+    if (
+      target === 'authoritative-sync'
+      || target === 'authoritative'
+      || target === 'graph-sync'
+      || target === 'sync'
+    ) {
+      return 'authoritative-sync';
+    }
+    throw new Error(`Unknown import_workflow wait target: ${rawTarget}`);
+  }
+
+  if (enabledFlag(args.waitForSemanticCompletion ?? args.wait_for_semantic_completion, false)) {
+    return 'semantic-complete';
+  }
+  if (enabledFlag(args.waitForGraphVisibility ?? args.wait_for_graph_visibility, false)) {
+    return 'graph-visible';
+  }
+  return 'task-completed';
+}
+
+function shouldWaitForAuthoritativeSyncAfterTarget(args = {}, waitTarget = 'task-completed') {
+  if (waitTarget === 'authoritative-sync') return true;
+  const explicit = args.waitForAuthoritativeSync ?? args.wait_for_authoritative_sync;
+  if (explicit !== undefined && explicit !== null) {
+    return enabledFlag(explicit, true);
+  }
+  return waitTarget === 'task-completed';
+}
+
+function isSuccessfulLifecycleStatus(status) {
+  return status === 'completed' || status === 'not-required' || status === 'skipped';
+}
+
+function importWaitStatus(task = {}, waitTarget = 'task-completed', reason = '') {
+  return {
+    waitTarget,
+    reason,
+    taskStatus: normalizeProgressToken(task.status, 'unknown'),
+    graphVisibilityStatus: taskLifecycleStatus(task, 'graph-visibility'),
+    semanticStatus: taskLifecycleStatus(task, 'semantic'),
+    authoritativeSyncStatus: taskLifecycleStatus(task, 'authoritative-sync')
+  };
+}
+
+function isImportWaitTargetSatisfied(task = {}, waitTarget = 'task-completed') {
+  const status = normalizeProgressToken(task.status, 'unknown');
+  const graphVisibilityStatus = taskLifecycleStatus(task, 'graph-visibility');
+  const semanticStatus = taskLifecycleStatus(task, 'semantic');
+
+  if (status === 'failed') {
+    return importWaitStatus(task, waitTarget, 'task-failed');
+  }
+
+  if (waitTarget === 'graph-visible') {
+    if (graphVisibilityStatus === 'failed') {
+      return importWaitStatus(task, waitTarget, 'graph-visibility-failed');
+    }
+    if (graphVisibilityStatus === 'completed' || status === 'completed') {
+      return importWaitStatus(
+        task,
+        waitTarget,
+        graphVisibilityStatus === 'completed' ? 'graph-visible' : 'task-completed'
+      );
+    }
+    return null;
+  }
+
+  if (waitTarget === 'semantic-complete') {
+    if (semanticStatus === 'failed') {
+      return importWaitStatus(task, waitTarget, 'semantic-failed');
+    }
+    if (isSuccessfulLifecycleStatus(semanticStatus)) {
+      return importWaitStatus(task, waitTarget, `semantic-${semanticStatus}`);
+    }
+    if (status === 'completed' && semanticStatus === 'unknown') {
+      return importWaitStatus(task, waitTarget, 'legacy-task-completed');
+    }
+    return null;
+  }
+
+  if (status === 'completed') {
+    return importWaitStatus(task, waitTarget, 'task-completed');
+  }
+  return null;
+}
+
 async function loadAuthoritativeSyncJobSnapshot(rootPath, jobId) {
   const normalizedJobId = String(jobId || '').trim();
   if (!normalizedJobId) return null;
@@ -323,6 +790,106 @@ async function loadAuthoritativeSyncJobSnapshot(rootPath, jobId) {
 
   const history = await listAuthoritativeSyncHistory(rootPath);
   return history.find((job) => job.jobId === normalizedJobId) || null;
+}
+
+async function loadAuthoritativeSyncJobSnapshotIndex(rootPath) {
+  const [history, activeJobs] = await Promise.all([
+    listAuthoritativeSyncHistory(rootPath),
+    listAuthoritativeSyncJobs(rootPath)
+  ]);
+  const byJobId = new Map();
+  for (const job of history) {
+    if (job?.jobId) byJobId.set(job.jobId, job);
+  }
+  for (const job of activeJobs) {
+    if (job?.jobId) byJobId.set(job.jobId, job);
+  }
+  return byJobId;
+}
+
+function createHydratedAuthoritativeSyncPayload(sync = {}, job = null) {
+  const jobId = String(sync?.jobId || sync?.job_id || job?.jobId || job?.job_id || '').trim();
+  const status = normalizeProgressToken(job?.status || sync?.status, sync?.status || 'unknown');
+  return {
+    ...(sync && typeof sync === 'object' ? sync : {}),
+    jobId: jobId || null,
+    status,
+    updatedAt: job?.updatedAt || sync?.updatedAt || null,
+    queuedAt: job?.createdAt || sync?.queuedAt || null,
+    reservedAt: job?.reservedAt || sync?.reservedAt || null,
+    completedAt: job?.completedAt || sync?.completedAt || null,
+    failedAt: job?.failedAt || sync?.failedAt || null,
+    appliedAt: job?.appliedAt || sync?.appliedAt || null,
+    error: job?.error || sync?.error || null,
+    source: job ? 'authoritative-sync-job' : (sync?.source || 'task-result')
+  };
+}
+
+function applyHydratedAuthoritativeSync(task = {}, job = null) {
+  if (!task || typeof task !== 'object' || !job) return task;
+  const sync = getTaskAuthoritativeSync(task) || {};
+  const hydratedSync = createHydratedAuthoritativeSyncPayload(sync, job);
+  const result = task.result && typeof task.result === 'object' && !Array.isArray(task.result)
+    ? task.result
+    : null;
+  const taskSync = task.authoritativeSync && typeof task.authoritativeSync === 'object' && !Array.isArray(task.authoritativeSync)
+    ? task.authoritativeSync
+    : null;
+
+  return {
+    ...task,
+    authoritativeSyncStatus: hydratedSync.status,
+    authoritativeSync: taskSync
+      ? {
+          ...taskSync,
+          ...hydratedSync
+        }
+      : task.authoritativeSync,
+    result: result
+      ? {
+          ...result,
+          authoritativeSyncStatus: hydratedSync.status,
+          authoritativeSync: {
+            ...(result.authoritativeSync && typeof result.authoritativeSync === 'object' && !Array.isArray(result.authoritativeSync)
+              ? result.authoritativeSync
+              : {}),
+            ...hydratedSync
+          }
+        }
+      : task.result
+  };
+}
+
+async function hydrateTaskAuthoritativeSync(rootPath, task = {}) {
+  const sync = getTaskAuthoritativeSync(task);
+  const jobId = String(sync?.jobId || sync?.job_id || '').trim();
+  if (!jobId) return task;
+  const job = await loadAuthoritativeSyncJobSnapshot(rootPath, jobId);
+  return applyHydratedAuthoritativeSync(task, job);
+}
+
+async function hydrateTasksAuthoritativeSync(rootPath, tasks = []) {
+  if (!Array.isArray(tasks) || !tasks.length) return tasks;
+  const hasSyncJobs = tasks.some((task) => {
+    const sync = getTaskAuthoritativeSync(task);
+    return Boolean(String(sync?.jobId || sync?.job_id || '').trim());
+  });
+  if (!hasSyncJobs) return tasks;
+
+  const jobIndex = await loadAuthoritativeSyncJobSnapshotIndex(rootPath);
+  return tasks.map((task) => {
+    const sync = getTaskAuthoritativeSync(task);
+    const jobId = String(sync?.jobId || sync?.job_id || '').trim();
+    return jobId ? applyHydratedAuthoritativeSync(task, jobIndex.get(jobId) || null) : task;
+  });
+}
+
+async function hydrateImportTaskPayloadAuthoritativeSync(payload = {}) {
+  if (!payload?.task) return payload;
+  return {
+    ...payload,
+    task: await hydrateTaskAuthoritativeSync(payload.rootPath, payload.task)
+  };
 }
 
 async function waitForAuthoritativeSyncJob(rootPath, task, deadline, intervalSeconds) {
@@ -388,7 +955,23 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
         pmcid: args.pmcid,
         isbn: args.isbn,
         issn: args.issn,
-        sourceProvider: args.sourceProvider || args.source_provider
+        sourceProvider: args.sourceProvider || args.source_provider,
+        processingProfile: args.processingProfile || args.processing_profile || args.importProfile || args.import_profile,
+        completionPolicy: args.completionPolicy || args.completion_policy,
+        importExecutionMode: args.importExecutionMode
+          || args.import_execution_mode
+          || args.importsExecutionMode
+          || args.imports_execution_mode,
+        llmContextWindowTokens: args.llmContextWindowTokens
+          || args.llm_context_window_tokens
+          || args.contextWindowTokens
+          || args.context_window_tokens,
+        llmExtractionStrategy: args.llmExtractionStrategy || args.llm_extraction_strategy,
+        llmLongContextMaxPapersPerCall: args.llmLongContextMaxPapersPerCall || args.llm_long_context_max_papers_per_call,
+        llmBatchConcurrency: args.llmBatchConcurrency
+          || args.llm_batch_concurrency
+          || args.batchConcurrency
+          || args.batch_concurrency
       }, options);
     case 'list': {
       const payload = await listImportTasksPayload(candidate, options);
@@ -396,6 +979,7 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       if (Number.isFinite(limit) && limit > 0) {
         payload.tasks = (payload.tasks || []).slice(0, limit);
       }
+      payload.tasks = await hydrateTasksAuthoritativeSync(payload.rootPath, payload.tasks || []);
       return payload;
     }
     case 'progress':
@@ -404,7 +988,7 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       if (!taskId) {
         throw new Error(`taskId is required for import_workflow ${operation}.`);
       }
-      return importTaskPayload(candidate, taskId, options);
+      return hydrateImportTaskPayloadAuthoritativeSync(await importTaskPayload(candidate, taskId, options));
     }
     case 'queue_progress': {
       const payload = await listImportTasksPayload(candidate, options);
@@ -425,12 +1009,34 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       if (Number.isFinite(limit) && limit > 0) {
         tasks = tasks.slice(0, limit);
       }
+      tasks = await hydrateTasksAuthoritativeSync(payload.rootPath, tasks);
+      const summary = summarizeProgressTasks(tasks);
+      const eventTail = Math.max(0, Number(args.eventTail ?? args.event_tail ?? args.recentEventLimit ?? args.recent_event_limit ?? 5) || 0);
+      const dagTail = Math.max(0, Number(args.dagTail ?? args.dag_tail ?? args.recentDagEventLimit ?? args.recent_dag_event_limit ?? eventTail) || 0);
+      const includeDagComparison = enabledFlag(args.includeDagComparison ?? args.include_dag_comparison, true);
+      if (summary.activeTaskId && summary.activeTask && eventTail > 0) {
+        summary.activeTask.eventLedger = await tailImportTaskEvents(payload.rootPath, summary.activeTaskId, {
+          tail: eventTail
+        });
+      }
+      if (summary.activeTaskId && summary.activeTask && dagTail > 0) {
+        summary.activeTask.dagEventLedger = await tailImportTaskDagEvents(payload.rootPath, summary.activeTaskId, {
+          tail: dagTail
+        });
+      }
+      if (summary.activeTaskId && summary.activeTask && includeDagComparison) {
+        summary.activeTask.dagComparison = await createImportDagComparisonReport(payload.rootPath, summary.activeTaskId);
+      }
       const workerCoverage = await configuredWorkerCoveragePayload(payload.rootPath, options);
       const workerSeen = getImportWorkerCoverageSnapshot(payload.rootPath);
+      const includeSemanticQueue = enabledFlag(args.includeSemanticQueue ?? args.include_semantic_queue, true);
       return {
         rootPath: payload.rootPath,
-        summary: summarizeProgressTasks(tasks),
+        summary,
         queueSummary: payload.summary,
+        semanticQueue: includeSemanticQueue
+          ? await importSemanticQueueProgressPayload(payload.rootPath, args)
+          : null,
         workerCoverage: {
           ...workerCoverage,
           lastWorkerSeenAt: workerSeen?.lastWorkerSeenAt || null,
@@ -455,18 +1061,18 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       const timeoutSeconds = Number(args.timeout || 1800);
       const intervalSeconds = Number(args.interval || 2);
       const deadline = Date.now() + (Math.max(1, timeoutSeconds) * 1000);
+      const waitTarget = normalizeImportWaitTarget(args);
+      const waitForAuthoritativeSync = shouldWaitForAuthoritativeSyncAfterTarget(args, waitTarget);
 
       while (true) {
         const [taskPayload, logPayload] = await Promise.all([
           importTaskPayload(candidate, taskId, options),
           importTaskLogPayload(candidate, taskId, options)
         ]);
-        const status = String(taskPayload.task?.status || '').trim().toLowerCase();
-        if (status === 'completed' || status === 'failed') {
-          const authoritativeSync = status === 'completed' && enabledFlag(
-            args.waitForAuthoritativeSync ?? args.wait_for_authoritative_sync,
-            true
-          )
+        const waitStatus = isImportWaitTargetSatisfied(taskPayload.task, waitTarget);
+        const taskStatus = normalizeProgressToken(taskPayload.task?.status, 'unknown');
+        if (waitStatus) {
+          const authoritativeSync = taskStatus === 'completed' && waitForAuthoritativeSync
             ? await waitForAuthoritativeSyncJob(
                 taskPayload.rootPath,
                 taskPayload.task,
@@ -478,13 +1084,17 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
             rootPath: taskPayload.rootPath,
             task: taskPayload.task,
             authoritativeSync,
+            waitTarget,
+            waitForAuthoritativeSync,
+            waitStatus,
             log: logPayload.log || '',
             generatedAt: new Date().toISOString()
           };
         }
         if (Date.now() >= deadline) {
+          const latestWaitStatus = importWaitStatus(taskPayload.task, waitTarget, 'timeout');
           throw new Error(
-            `Timed out waiting for task ${taskId}. Last status=${taskPayload.task?.status || 'unknown'} stage=${taskPayload.task?.stage || 'unknown'}`
+            `Timed out waiting for task ${taskId} target=${waitTarget}. Last status=${latestWaitStatus.taskStatus} graph=${latestWaitStatus.graphVisibilityStatus} semantic=${latestWaitStatus.semanticStatus} stage=${taskPayload.task?.stage || 'unknown'}`
           );
         }
         await sleep(Math.max(0.05, intervalSeconds) * 1000);

@@ -129,6 +129,7 @@ test('import worker grows progressive batch targets while queued work remains', 
     });
     assert.equal(coalesceOptions.coalesceMs, 90);
     assert.equal(coalesceOptions.coalescePollMs, 25);
+    assert.equal(batching.resolveImportBatchCoalesceTargetTasks(coalesceOptions), 8);
     const coalesceSummary = batching.summarizeImportBatchCoalesceTasks([
       { id: 'pending-a', status: 'pending', stage: 'queued' },
       { id: 'pending-b', status: 'pending', stage: 'queued' }
@@ -147,9 +148,314 @@ test('import worker grows progressive batch targets while queued work remains', 
       batching.shouldWaitForImportBatchCoalesce({ pending: 2, running: 1 }, coalesceOptions),
       false
     );
+
+    const explicitCoalesceTargetOptions = batching.resolveImportBatchOptions({
+      batchEnabled: true,
+      batchMaxTasks: 8,
+      batchInitialTasks: 4,
+      batchCoalesceMs: 90,
+      batchCoalesceTargetTasks: 4
+    });
+    assert.equal(batching.resolveImportBatchCoalesceTargetTasks(explicitCoalesceTargetOptions), 4);
+    assert.equal(
+      batching.shouldWaitForImportBatchCoalesce({ pending: 4, running: 0 }, explicitCoalesceTargetOptions),
+      false
+    );
+
+    const fastMdBurstTasks = Array.from({ length: 10 }, (_, index) => ({
+      id: `fast-md-${index}`,
+      status: 'pending',
+      stage: 'queued',
+      processingProfile: 'fast-md-background-semantic',
+      files: [
+        {
+          originalName: `fast-md-${index}.md`,
+          mimeType: 'text/markdown'
+        }
+      ]
+    }));
+    const fastMdBatchOptions = batching.resolveImportBatchOptions({
+      batchEnabled: true,
+      batchMaxTasks: 16,
+      batchInitialTasks: 4,
+      batchCoalesceMs: 15000
+    });
+    const progressiveReserveOptions = {
+      ...fastMdBatchOptions,
+      maxTasks: 4
+    };
+    const fastMdBurstOptions = batching.createFastMdBurstReserveBatchOptions(
+      fastMdBurstTasks,
+      fastMdBatchOptions,
+      progressiveReserveOptions,
+      {}
+    );
+    assert.equal(fastMdBurstOptions.fastMdBurstReady, true);
+    assert.equal(fastMdBurstOptions.maxTasks, 10);
+    assert.equal(fastMdBurstOptions.coalesceTargetTasks, 10);
+    assert.equal(
+      batching.shouldWaitForImportBatchCoalesce({ pending: 10, running: 0 }, fastMdBurstOptions),
+      false
+    );
+
+    const mixedBurstOptions = batching.createFastMdBurstReserveBatchOptions(
+      [
+        ...fastMdBurstTasks.slice(0, 3),
+        {
+          id: 'full-import',
+          status: 'pending',
+          stage: 'queued',
+          processingProfile: 'full',
+          files: [
+            {
+              originalName: 'full-import.md',
+              mimeType: 'text/markdown'
+            }
+          ]
+        }
+      ],
+      fastMdBatchOptions,
+      progressiveReserveOptions,
+      {}
+    );
+    assert.equal(mixedBurstOptions.maxTasks, 4);
+    assert.equal(mixedBurstOptions.fastMdBurstReady, undefined);
   } finally {
     batching?.resetProgressiveImportBatchTarget(rootPath);
     batching?.resetProgressiveImportBatchTarget(cappedRootPath);
+  }
+});
+
+test('import worker summarizes LLM batch latency and rate-limit tuning metrics', async () => {
+  let batching = null;
+  ({ __importWorkerTestables: batching } = await import('../src/core/imports/worker.js'));
+  const collector = batching.createLlmBatchMetricsCollector();
+
+  collector.recordComplete({
+    phase: 'semantic-extraction',
+    batchNumber: 1,
+    totalBatches: 2,
+    completed: 2,
+    total: 4,
+    batchSize: 2,
+    promptChars: 12000,
+    promptMaxChars: 24000,
+    durationMs: 101.4,
+    llmBatchConcurrency: 2
+  });
+  collector.recordComplete({
+    phase: 'semantic-extraction',
+    batchNumber: 2,
+    totalBatches: 2,
+    completed: 4,
+    total: 4,
+    batchSize: 2,
+    promptChars: 8000,
+    promptMaxChars: 24000,
+    durationMs: 0,
+    llmBatchConcurrency: 2,
+    cached: true,
+    skipped: true
+  });
+  collector.recordComplete({
+    phase: 'relation-extraction',
+    batchNumber: 1,
+    totalBatches: 1,
+    completed: 1,
+    total: 1,
+    batchSize: 1,
+    durationMs: 17.2,
+    llmBatchConcurrency: 2,
+    skippedProviderCall: true,
+    rateLimitCooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+    failureCount: 1
+  });
+  collector.recordRetry({
+    phase: 'semantic-extraction',
+    batchNumber: 1,
+    batchSize: 2,
+    error: 'schema failure'
+  });
+
+  const summary = collector.summary();
+  assert.equal(summary.completedBatchCount, 3);
+  assert.equal(summary.cachedBatchCount, 1);
+  assert.equal(summary.skippedBatchCount, 1);
+  assert.equal(summary.skippedProviderCallCount, 1);
+  assert.equal(summary.rateLimitSkippedBatchCount, 1);
+  assert.equal(summary.failedBatchCount, 1);
+  assert.equal(summary.retryEventCount, 1);
+  assert.equal(summary.maxConcurrency, 2);
+  assert.equal(summary.durationMs.count, 3);
+  assert.equal(summary.durationMs.p50, 17.2);
+  assert.equal(summary.durationMs.p90, 101.4);
+  assert.equal(summary.durationMs.p95, 101.4);
+  assert.equal(summary.durationMs.max, 101.4);
+  assert.equal(summary.providerDurationMs.count, 1);
+  assert.equal(summary.providerDurationMs.total, 101.4);
+  assert.equal(summary.rateLimitCooldowns.count, 1);
+  assert.equal(summary.failureReasons['rate-limited'], 1);
+  assert.equal(summary.retryReasons['schema failure'], 1);
+  assert.equal(summary.byPhase['semantic-extraction'].cachedBatchCount, 1);
+  assert.equal(summary.byPhase['semantic-extraction'].durationMs.p50, 0);
+  assert.equal(summary.byPhase['relation-extraction'].rateLimitSkippedBatchCount, 1);
+  assert.equal(summary.byPhase['relation-extraction'].failureReasons['rate-limited'], 1);
+});
+
+test('import worker builds pollable LLM optimize progress diagnostics', async () => {
+  let batching = null;
+  ({ __importWorkerTestables: batching } = await import('../src/core/imports/worker.js'));
+  const collector = batching.createLlmProgressDiagnosticsCollector({
+    mode: 'semantic-enrichment',
+    taskId: 'imp:test',
+    semanticEnrichmentJobId: 'sem:test',
+    changedSourceKeyCount: 2,
+    llmConfig: {
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'long-context-first',
+      llmLongContextMaxPapersPerCall: 2,
+      llmBatchConcurrency: 2
+    }
+  });
+
+  const first = collector.recordComplete({
+    phase: 'semantic-extraction',
+    batchNumber: 1,
+    totalBatches: 3,
+    providerBatchNumber: 1,
+    providerTotalBatches: 1,
+    completed: 2,
+    total: 6,
+    batchSize: 2,
+    promptChars: 12000,
+    promptMaxChars: 24000,
+    durationMs: 101.4,
+    llmBatchConcurrency: 2
+  });
+  const retry = collector.recordRetry({
+    phase: 'semantic-extraction',
+    batchNumber: 2,
+    batchSize: 2,
+    error: 'provider timeout',
+    llmBatchConcurrency: 2
+  });
+  const rateLimited = collector.recordComplete({
+    phase: 'relation-extraction',
+    batchNumber: 1,
+    totalBatches: 1,
+    completed: 1,
+    total: 1,
+    batchSize: 1,
+    skippedProviderCall: true,
+    rateLimitCooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+    llmBatchConcurrency: 2
+  });
+  const completed = collector.snapshot({
+    status: 'completed',
+    completedAt: '2026-06-03T00:00:00.000Z'
+  });
+
+  assert.equal(first.contractVersion, 'llm-optimize-progress-diagnostics-v1');
+  assert.equal(first.mode, 'semantic-enrichment');
+  assert.equal(first.semanticEnrichmentJobId, 'sem:test');
+  assert.equal(first.changedSourceKeyCount, 2);
+  assert.equal(first.llmConfig.llmContextWindowTokens, 1_000_000);
+  assert.equal(first.llmConfig.llmExtractionStrategy, 'long-context-first');
+  assert.equal(first.completedBatchCount, 1);
+  assert.equal(first.completed, 2);
+  assert.equal(first.total, 6);
+  assert.equal(first.maxConcurrency, 2);
+  assert.equal(first.latestEvent.phase, 'semantic-extraction');
+  assert.equal(first.latestEvent.batchNumber, 1);
+  assert.equal(first.phases['semantic-extraction'].completedBatchCount, 1);
+  assert.equal(retry.retryEventCount, 1);
+  assert.equal(retry.retryReasons['provider-retry'], 1);
+  assert.equal(retry.phases['semantic-extraction'].retryReasons['provider-retry'], 1);
+  assert.equal(rateLimited.rateLimitSkippedBatchCount, 1);
+  assert.equal(rateLimited.skippedProviderCallCount, 1);
+  assert.equal(rateLimited.phases['relation-extraction'].rateLimitSkippedBatchCount, 1);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.completedAt, '2026-06-03T00:00:00.000Z');
+});
+
+test('import worker groups batch entries by effective task LLM config', async () => {
+  let batching = null;
+  ({ __importWorkerTestables: batching } = await import('../src/core/imports/worker.js'));
+  const groups = batching.createImportBatchLlmConfigGroups([
+    {
+      task: { id: 'task-a' },
+      changedSourceKeys: ['source-a.md']
+    },
+    {
+      task: {
+        id: 'task-b',
+        llmExtractionStrategy: 'chunk-first'
+      },
+      changedSourceKeys: ['source-b.md']
+    },
+    {
+      task: {
+        id: 'task-c',
+        llmContextWindowTokens: 1_000_000,
+        llmExtractionStrategy: 'long-context-first',
+        llmLongContextMaxPapersPerCall: 2
+      },
+      changedSourceKeys: ['source-c.md']
+    }
+  ], {
+    llmContextWindowTokens: 1_000_000,
+    llmExtractionStrategy: 'long-context-first',
+    llmLongContextMaxPapersPerCall: 2,
+    llmBatchConcurrency: 1
+  });
+
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].taskIds, ['task-a', 'task-c']);
+  assert.deepEqual(groups[0].changedSourceKeys, ['source-a.md', 'source-c.md']);
+  assert.equal(groups[0].llmOptions.llmExtractionStrategy, 'long-context-first');
+  assert.equal(groups[0].llmOptions.llmBatchConcurrency, 1);
+  assert.deepEqual(groups[1].taskIds, ['task-b']);
+  assert.deepEqual(groups[1].changedSourceKeys, ['source-b.md']);
+  assert.equal(groups[1].llmOptions.llmExtractionStrategy, 'chunk-first');
+  assert.equal(groups[1].llmOptions.llmContextWindowTokens, 1_000_000);
+});
+
+test('import worker marks pending tasks as coalescing during batch wait', async () => {
+  let batching = null;
+  ({ __importWorkerTestables: batching } = await import('../src/core/imports/worker.js'));
+  const importStore = await import('../src/storage/import-store.js');
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-coalesce-progress-'));
+
+  try {
+    const task = await importStore.createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'coalesce-progress.md',
+          contentBase64: Buffer.from('# Coalesce Progress\n\n## Abstract\n\nA coalesce progress test.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const result = await batching.waitForImportBatchCoalesce(rootPath, {
+      enabled: true,
+      maxTasks: 4,
+      coalesceMs: 50,
+      coalescePollMs: 25
+    });
+    const loaded = await importStore.loadImportTask(rootPath, task.id);
+
+    assert.equal(result.waited, true);
+    assert.equal(result.reason, 'timeout');
+    assert.equal(loaded.status, 'pending');
+    assert.equal(loaded.stage, 'queued');
+    assert.equal(loaded.progress.currentStep, 'coalescing');
+    assert.equal(loaded.progress.processedUnits, 1);
+    assert.equal(loaded.progress.totalUnits, 4);
+    assert.match(loaded.progress.message, /Coalescing import batch: 1\/4/);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
 
@@ -279,6 +585,10 @@ test('import worker batches queued markdown uploads into one graph commit when e
 
     const firstTask = await importStore.createImportTask(indexRoot, {
       trigger: 'api',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'long-context-first',
+      llmLongContextMaxPapersPerCall: 2,
+      llmBatchConcurrency: 1,
       files: [
         {
           name: 'batch-upload-one.md',
@@ -289,6 +599,10 @@ test('import worker batches queued markdown uploads into one graph commit when e
     });
     const secondTask = await importStore.createImportTask(indexRoot, {
       trigger: 'api',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'chunk-first',
+      llmLongContextMaxPapersPerCall: 2,
+      llmBatchConcurrency: 1,
       files: [
         {
           name: 'batch-upload-two.md',
@@ -325,6 +639,33 @@ test('import worker batches queued markdown uploads into one graph commit when e
     assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.llmOptimize, 'number');
     assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.fastCommit, 'number');
     assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.total, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs.loadLite, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs.buildDelta, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs.writeDelta, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs['write.queueAuthoritativeSync'], 'number');
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.llmConfigGroupCount, 2);
+    assert.equal(loadedSecondTask.result.metrics.importPerformance.llmConfigGroupCount, 2);
+    assert.notEqual(
+      loadedFirstTask.result.metrics.importPerformance.llmConfigKey,
+      loadedSecondTask.result.metrics.importPerformance.llmConfigKey
+    );
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.llmConfig.llmExtractionStrategy, 'long-context-first');
+    assert.equal(loadedSecondTask.result.metrics.importPerformance.llmConfig.llmExtractionStrategy, 'chunk-first');
+    assert.equal(loadedFirstTask.result.optimized.llmConfigGroups.length, 2);
+    assert.equal(
+      loadedFirstTask.result.optimized.llmConfigGroups.some((group) => (
+        group.taskIds.includes(firstTask.id)
+        && group.llmConfig.llmExtractionStrategy === 'long-context-first'
+      )),
+      true
+    );
+    assert.equal(
+      loadedSecondTask.result.optimized.llmConfigGroups.some((group) => (
+        group.taskIds.includes(secondTask.id)
+        && group.llmConfig.llmExtractionStrategy === 'chunk-first'
+      )),
+      true
+    );
     assert.equal(
       loadedFirstTask.result.authoritativeSync.jobId,
       loadedSecondTask.result.authoritativeSync.jobId
@@ -354,6 +695,260 @@ test('import worker batches queued markdown uploads into one graph commit when e
     assert.match(secondLog, new RegExp(result.batchId));
     assert.match(firstLog, /stage llm-optimize batch/i);
     assert.match(secondLog, /stage fast-commit batch/i);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker fast-md batch skips blocking LLM and commits direct lite delta', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-fast-md-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-fast-md-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+
+    const [
+      ingestion,
+      corpusStore,
+      importStore,
+      importWorker,
+      authoritativeSyncStore,
+      importSemanticStore
+    ] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js'),
+      import('../src/storage/authoritative-sync-store.js'),
+      import('../src/storage/import-semantic-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-worker-fast-md-test',
+      force: true
+    });
+
+    const firstTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      processingProfile: 'fast-md-background-semantic',
+      completionPolicy: 'graph-visible',
+      importExecutionMode: 'dag',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'long-context-first',
+      llmLongContextMaxPapersPerCall: 2,
+      llmBatchConcurrency: 1,
+      files: [
+        {
+          name: 'fast-md-upload-one.md',
+          contentBase64: Buffer.from('# Fast MD Upload One\n\n## Abstract\n\nThe first fast-md upload should enter the graph without LLM.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const secondTask = await importStore.createImportTask(indexRoot, {
+      trigger: 'api',
+      processingProfile: 'fast-md-background-semantic',
+      completionPolicy: 'graph-visible',
+      importExecutionMode: 'dag',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'long-context-first',
+      llmLongContextMaxPapersPerCall: 2,
+      llmBatchConcurrency: 1,
+      files: [
+        {
+          name: 'fast-md-upload-two.md',
+          contentBase64: Buffer.from('# Fast MD Upload Two\n\n## Abstract\n\nThe second fast-md upload should enter the graph without LLM.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+
+    const result = await importWorker.runImportQueueOnce(indexRoot, {
+      semanticExtraction: 'llm-primary',
+      batchEnabled: true,
+      batchInitialTasks: 2,
+      batchMaxTasks: 4,
+      batchCoalesceMs: 60000,
+      batchCoalescePollMs: 1000,
+      importExecutionMode: 'dag',
+      fastMdMaterializeConcurrency: 4
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.failed, false);
+    assert.equal(result.batchCoalescing, undefined);
+    assert.deepEqual(result.completedTaskIds, [firstTask.id, secondTask.id]);
+
+    const loadedFirstTask = await importStore.loadImportTask(indexRoot, firstTask.id);
+    const loadedSecondTask = await importStore.loadImportTask(indexRoot, secondTask.id);
+    assert.equal(loadedFirstTask.status, 'completed');
+    assert.equal(loadedSecondTask.status, 'completed');
+    assert.equal(loadedFirstTask.processingProfile, 'fast-md-background-semantic');
+    assert.equal(loadedFirstTask.completionPolicy, 'graph-visible');
+    assert.equal(loadedFirstTask.importExecutionMode, 'dag');
+    assert.equal(loadedFirstTask.llmContextWindowTokens, 1_000_000);
+    assert.equal(loadedFirstTask.llmExtractionStrategy, 'long-context-first');
+    assert.equal(loadedFirstTask.graphVisibilityStatus, 'completed');
+    assert.equal(loadedFirstTask.semanticStatus, 'queued');
+    assert.equal(loadedFirstTask.result.semanticStatus, 'queued');
+    assert.equal(loadedFirstTask.result.semanticEnrichment.status, 'queued');
+    assert.equal(loadedFirstTask.result.semanticEnrichment.jobIds.length, 1);
+    assert.equal(loadedFirstTask.result.optimized.skipped, true);
+    assert.equal(loadedFirstTask.result.optimized.reason, 'fast-md-structural-path');
+    assert.equal(loadedFirstTask.result.materialized.batchMaterialized, true);
+    assert.equal(loadedFirstTask.result.materialized.materializeInputCount, 2);
+    assert.equal(loadedFirstTask.result.materialized.materializeConcurrency, 2);
+    assert.equal(loadedFirstTask.result.materialized.analyzeConcurrency, 2);
+    assert.equal(loadedFirstTask.result.materialized.metadataConcurrency, 2);
+    assert.equal(loadedFirstTask.result.fastCommitted.directDeltaCommit, true);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.llmOptimizeSkipped, true);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.directDeltaCommit, true);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.requestedImportExecutionMode, 'dag');
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.importExecutionModeApplied, 'dag');
+    assert.equal(
+      loadedFirstTask.result.metrics.importPerformance.materialize.contractVersion,
+      'import-materialize-performance-v1'
+    );
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.materialize.mode, 'fast-md-batch');
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.materialize.batchMaterialized, true);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.materialize.inputCount, 2);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.materialize.taskCount, 2);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.materialize.effectiveConcurrency, 2);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.materialize.analyzeConcurrency, 2);
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.materialize.metadataConcurrency, 2);
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.materialize.elapsedMs, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.materialize.meanMsPerInput, 'number');
+    assert.equal(loadedFirstTask.result.metrics.importPerformance.stageTimingsMs.llmOptimize, 0);
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs.loadLite, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs.buildDelta, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs.prepareDirectDelta, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs.writeDelta, 'number');
+    assert.equal(typeof loadedFirstTask.result.metrics.importPerformance.fastCommitPhasesMs['write.applyLiteDelta'], 'number');
+    assert.equal(
+      loadedFirstTask.result.authoritativeSync.jobId,
+      loadedSecondTask.result.authoritativeSync.jobId
+    );
+    const firstDag = await importStore.loadImportTaskDag(indexRoot, firstTask.id);
+    assert.equal(firstDag.executionMode, 'dag');
+    assert.equal(firstDag.importExecutionMode, 'dag');
+    assert.equal(firstDag.nodes['source.materialize'].status, 'completed');
+    assert.equal(firstDag.nodes['chunk.normalize'].status, 'completed');
+    assert.equal(firstDag.nodes['paper.structural_snapshot'].status, 'completed');
+    assert.equal(firstDag.nodes['paper.delta_build'].status, 'completed');
+    assert.equal(firstDag.nodes['corpus.merge'].status, 'completed');
+    assert.equal(firstDag.nodes['lite_state.update'].status, 'completed');
+    assert.equal(firstDag.nodes['authoritative_sync.enqueue'].status, 'completed');
+    const firstDagEvents = await importStore.tailImportTaskDagEvents(indexRoot, firstTask.id);
+    assert.ok(firstDagEvents.events.some((event) => (
+      event.event === 'dag.node.completed'
+      && event.nodeId === 'paper.structural_snapshot'
+      && event.data?.importExecutionModeApplied === 'dag'
+    )));
+    assert.ok(firstDagEvents.events.some((event) => (
+      event.event === 'dag.node.completed'
+      && event.nodeId === 'lite_state.update'
+      && event.data?.requestedImportExecutionMode === 'dag'
+    )));
+
+    const corpus = await corpusStore.loadCorpusLite(indexRoot);
+    assert.equal(corpus.meta.paperCount, 3);
+    assert.equal(corpus.meta.fastDeltaCommit.mode, 'direct-lite-delta');
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Fast MD Upload One'));
+    assert.ok(corpus.graph.nodes.some((node) => node.type === 'Paper' && node.name === 'Fast MD Upload Two'));
+
+    const queuedJobs = await authoritativeSyncStore.listAuthoritativeSyncJobs(indexRoot);
+    assert.equal(queuedJobs.length, 1);
+    assert.equal(queuedJobs[0].jobId, loadedFirstTask.result.authoritativeSync.jobId);
+
+    const semanticJobs = await importSemanticStore.listImportSemanticEnrichmentJobs(indexRoot);
+    assert.equal(semanticJobs.summary.pending, 2);
+    assert.equal(semanticJobs.jobs.every((job) => job.status === 'pending'), true);
+    assert.equal(semanticJobs.jobs.every((job) => job.llmContextWindowTokens === 1_000_000), true);
+    assert.equal(semanticJobs.jobs.every((job) => job.llmExtractionStrategy === 'long-context-first'), true);
+    assert.equal(semanticJobs.jobs.every((job) => job.llmLongContextMaxPapersPerCall === 2), true);
+    assert.equal(semanticJobs.jobs.every((job) => job.llmBatchConcurrency === 1), true);
+    assert.equal(semanticJobs.jobs.every((job) => job.semanticConfigKey.includes('llmContextWindowTokens=1000000')), true);
+    assert.deepEqual(
+      semanticJobs.jobs.map((job) => job.taskId).sort(),
+      [firstTask.id, secondTask.id].sort()
+    );
+
+    const firstLog = await importStore.loadImportTaskLog(indexRoot, firstTask.id);
+    assert.match(firstLog, /stage materialize batch/i);
+    assert.match(firstLog, /stage fast-commit batch/i);
+    assert.doesNotMatch(firstLog, /stage llm-optimize batch/i);
+
+    const semanticResult = await importWorker.runImportSemanticEnrichmentQueueUntilIdle(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      maxPasses: 4
+    });
+    assert.equal(semanticResult.failedCount, 0);
+    assert.equal(semanticResult.completedJobIds.length, 2);
+
+    const firstSemanticJobId = loadedFirstTask.result.semanticEnrichment.jobIds[0];
+    const completedSemanticJobs = await importSemanticStore.listImportSemanticEnrichmentJobs(indexRoot);
+    const completedFirstSemanticJob = completedSemanticJobs.jobs.find((job) => job.id === firstSemanticJobId);
+    assert.equal(completedFirstSemanticJob.progress.contractVersion, 'import-semantic-enrichment-progress-v1');
+    assert.equal(completedFirstSemanticJob.progress.status, 'completed');
+    assert.equal(completedFirstSemanticJob.progress.stage, 'completed');
+    assert.equal(completedFirstSemanticJob.progress.currentStep, 'semantic enrichment complete');
+
+    const enrichedFirstTask = await importStore.loadImportTask(indexRoot, firstTask.id);
+    const enrichedSecondTask = await importStore.loadImportTask(indexRoot, secondTask.id);
+    assert.equal(enrichedFirstTask.semanticStatus, 'completed');
+    assert.equal(enrichedSecondTask.semanticStatus, 'completed');
+    assert.equal(enrichedFirstTask.result.semanticEnrichment.status, 'completed');
+    assert.equal(enrichedFirstTask.result.semanticEnrichment.result.taskId, firstTask.id);
+    assert.equal(enrichedFirstTask.throughputMetrics.semanticEnrichmentJobId, loadedFirstTask.result.semanticEnrichment.jobIds[0]);
+
+    const enrichedFirstDag = await importStore.loadImportTaskDag(indexRoot, firstTask.id);
+    assert.equal(enrichedFirstDag.importExecutionMode, 'dag');
+    assert.equal(enrichedFirstDag.executionMode, 'dag');
+    assert.equal(enrichedFirstDag.nodes['paper.long_context_llm'].status, 'completed');
+    assert.equal(enrichedFirstDag.nodes['paper.long_context_llm'].attempts >= 1, true);
+    const semanticQueuePath = importSemanticStore.getImportSemanticEnrichmentPaths(indexRoot).queuePath;
+    assert.ok(enrichedFirstDag.nodes['paper.long_context_llm'].inputArtifacts.some((artifact) => (
+      artifact.kind === 'import-semantic-enrichment-job'
+      && artifact.id === firstSemanticJobId
+      && artifact.path === semanticQueuePath
+    )));
+    assert.ok(enrichedFirstDag.nodes['paper.long_context_llm'].outputArtifacts.some((artifact) => (
+      artifact.kind === 'import-semantic-enrichment-result'
+      && artifact.id === firstSemanticJobId
+      && artifact.path === semanticQueuePath
+    )));
+    const enrichedFirstDagEvents = await importStore.tailImportTaskDagEvents(indexRoot, firstTask.id);
+    const runningSemanticNodeEvent = enrichedFirstDagEvents.events.find((event) => (
+      event.event === 'dag.node.running'
+      && event.nodeId === 'paper.long_context_llm'
+      && event.data?.semanticEnrichmentJobId === firstSemanticJobId
+    ));
+    const completedSemanticNodeEvent = enrichedFirstDagEvents.events.find((event) => (
+      event.event === 'dag.node.completed'
+      && event.nodeId === 'paper.long_context_llm'
+      && event.data?.semanticEnrichmentJobId === firstSemanticJobId
+    ));
+    assert.ok(runningSemanticNodeEvent);
+    assert.equal(runningSemanticNodeEvent.data.changedSourceKeyCount, 1);
+    assert.equal(runningSemanticNodeEvent.data.semanticJobAttempt >= 1, true);
+    assert.ok(completedSemanticNodeEvent);
+    assert.equal(completedSemanticNodeEvent.data.semanticEnrichmentStageTimingsMs.llmOptimize >= 0, true);
+    assert.ok(completedSemanticNodeEvent.artifactRefs.outputArtifacts.some((artifact) => (
+      artifact.kind === 'import-semantic-enrichment-result'
+      && artifact.id === firstSemanticJobId
+    )));
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

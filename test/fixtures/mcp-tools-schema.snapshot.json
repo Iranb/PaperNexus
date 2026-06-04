@@ -1219,6 +1219,14 @@
             "wait"
           ]
         },
+        "completionPolicy": {
+          "type": "string",
+          "enum": [
+            "full",
+            "graph-visible",
+            "semantic-complete"
+          ]
+        },
         "corpus": {
           "type": "string"
         },
@@ -1243,6 +1251,16 @@
           "type": "object",
           "additionalProperties": true
         },
+        "importExecutionMode": {
+          "type": "string",
+          "enum": [
+            "dag",
+            "serial"
+          ]
+        },
+        "includeSemanticQueue": {
+          "type": "boolean"
+        },
         "interval": {
           "type": "number",
           "default": 2
@@ -1258,6 +1276,26 @@
         },
         "limit": {
           "type": "number"
+        },
+        "llmBatchConcurrency": {
+          "type": "number",
+          "minimum": 1
+        },
+        "llmContextWindowTokens": {
+          "type": "number",
+          "minimum": 1
+        },
+        "llmExtractionStrategy": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "chunk-first",
+            "long-context-first"
+          ]
+        },
+        "llmLongContextMaxPapersPerCall": {
+          "type": "number",
+          "minimum": 1
         },
         "operation": {
           "type": "string",
@@ -1286,6 +1324,19 @@
         "pollIntervalMs": {
           "type": "number",
           "default": 500
+        },
+        "processingProfile": {
+          "type": "string",
+          "enum": [
+            "fast-md-background-semantic",
+            "fast-md-structural",
+            "full",
+            "long-context-full-md"
+          ]
+        },
+        "semanticJobLimit": {
+          "type": "number",
+          "default": 5
         },
         "serverFilePath": {
           "type": "string"
@@ -1319,9 +1370,24 @@
         "waitForAuthoritativeSync": {
           "type": "boolean"
         },
+        "waitForGraphVisibility": {
+          "type": "boolean"
+        },
+        "waitForSemanticCompletion": {
+          "type": "boolean"
+        },
         "waitTimeoutMs": {
           "type": "number",
           "default": 60000
+        },
+        "waitUntil": {
+          "type": "string",
+          "enum": [
+            "authoritative-sync",
+            "graph-visible",
+            "semantic-complete",
+            "task-completed"
+          ]
         }
       }
     }

@@ -201,6 +201,111 @@ function sanitizeEntityRecord(record, fallbackType) {
   };
 }
 
+const SEMANTIC_ENTITY_ARRAY_FIELDS = [
+  'problems',
+  'methods',
+  'claims',
+  'findings',
+  'researchGoals',
+  'limitations',
+  'assumptions',
+  'evidences',
+  'futureDirections',
+  'benchmarks',
+  'datasets',
+  'metrics'
+];
+
+const SEMANTIC_STRUCTURED_ARRAY_FIELDS = [
+  'researchQuestions',
+  'openChallenges',
+  'takeaways',
+  'ideaFragments'
+];
+
+const SEMANTIC_STRING_ARRAY_FIELDS = [
+  'fieldCandidates',
+  'fields',
+  'domainTags',
+  'domains'
+];
+
+const SEMANTIC_MIXED_ARRAY_FIELDS = [
+  'abstractMechanisms',
+  'abstractMechanismObjects',
+  'mechanismHints',
+  'mechanisms'
+];
+
+const RELATION_ARRAY_FIELDS = [
+  'benchmarks',
+  'findings',
+  'researchGoals',
+  'relations'
+];
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function validateOptionalArrayField(raw, key, options = {}) {
+  if (!Object.hasOwn(raw || {}, key) || raw[key] == null) return null;
+  if (!Array.isArray(raw[key])) return `Expected "${key}" to be an array.`;
+  if (options.requireObjectEntries) {
+    const invalidIndex = raw[key].findIndex((entry) => !isPlainObject(entry));
+    if (invalidIndex !== -1) return `Expected "${key}[${invalidIndex}]" to be an object.`;
+  }
+  if (options.requireStringEntries) {
+    const invalidIndex = raw[key].findIndex((entry) => typeof entry !== 'string');
+    if (invalidIndex !== -1) return `Expected "${key}[${invalidIndex}]" to be a string.`;
+  }
+  return null;
+}
+
+function validateSemanticPaperSchema(rawPaper) {
+  if (!isPlainObject(rawPaper)) return 'Expected paper semantic result to be an object.';
+  for (const key of SEMANTIC_ENTITY_ARRAY_FIELDS) {
+    const error = validateOptionalArrayField(rawPaper, key, { requireObjectEntries: true });
+    if (error) return error;
+    if (Array.isArray(rawPaper[key])) {
+      const invalidIndex = rawPaper[key].findIndex((entry) => !cleanText(entry?.name || entry?.text || '', 180));
+      if (invalidIndex !== -1) return `Expected "${key}[${invalidIndex}]" to include a name or text.`;
+    }
+  }
+  for (const key of SEMANTIC_STRUCTURED_ARRAY_FIELDS) {
+    const error = validateOptionalArrayField(rawPaper, key, { requireObjectEntries: true });
+    if (error) return error;
+  }
+  for (const key of SEMANTIC_STRING_ARRAY_FIELDS) {
+    const error = validateOptionalArrayField(rawPaper, key, { requireStringEntries: true });
+    if (error) return error;
+  }
+  for (const key of SEMANTIC_MIXED_ARRAY_FIELDS) {
+    const error = validateOptionalArrayField(rawPaper, key);
+    if (error) return error;
+  }
+  return null;
+}
+
+function validateRelationPaperSchema(rawPaper) {
+  if (!isPlainObject(rawPaper)) return 'Expected paper relation result to be an object.';
+  for (const key of RELATION_ARRAY_FIELDS) {
+    const error = validateOptionalArrayField(rawPaper, key, { requireObjectEntries: true });
+    if (error) return error;
+  }
+  if (Array.isArray(rawPaper.relations)) {
+    const invalidIndex = rawPaper.relations.findIndex((relation) => (
+      !cleanText(relation?.sourceName || '', 180)
+      || !cleanText(relation?.targetName || '', 180)
+      || !normalizeNodeTypeName(relation?.sourceType)
+      || !normalizeNodeTypeName(relation?.targetType)
+      || !normalizeRelationTypeName(relation?.type)
+    ));
+    if (invalidIndex !== -1) return `Expected "relations[${invalidIndex}]" to include source, target, and relation type.`;
+  }
+  return null;
+}
+
 function sanitizeRelationRecord(record) {
   const sourceType = normalizeNodeTypeName(record?.sourceType);
   const targetType = normalizeNodeTypeName(record?.targetType);
@@ -2517,11 +2622,14 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs: 0,
+        cached: true,
         skipped: true
       });
       continue;
     }
 
+    const batchStartedAt = Date.now();
     await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
       status: 'running',
       batchId,
@@ -2537,13 +2645,33 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
       const payload = await requestLlmGenerate(plan.config, prompt);
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || plan.config.provider;
+      const topLevelSchemaError = raw?.papers !== undefined && !Array.isArray(raw.papers)
+        ? 'Expected "papers" to be an array.'
+        : raw?.errors !== undefined && !Array.isArray(raw.errors)
+          ? 'Expected "errors" to be an array.'
+          : null;
+      if (topLevelSchemaError) {
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = createSemanticObjectInferenceResult({
+            provider: resultProvider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'schema-validation-failed',
+            error: topLevelSchemaError
+          });
+        }
+        continue;
+      }
       const paperErrors = new Map(
-        (raw?.errors || [])
+        (Array.isArray(raw?.errors) ? raw.errors : [])
           .filter((entry) => entry?.id)
           .map((entry) => [String(entry.id), String(entry.error || 'request-failed')])
       );
       const paperResults = new Map(
-        (raw?.papers || [])
+        (Array.isArray(raw?.papers) ? raw.papers : [])
           .filter((entry) => entry?.id)
           .map((entry) => [String(entry.id), entry])
       );
@@ -2574,6 +2702,20 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
             participated: false,
             reason: 'request-failed',
             error: `Missing batch semantic result for ${batchEntry.id}`
+          });
+          continue;
+        }
+
+        const schemaError = validateSemanticPaperSchema(rawPaper);
+        if (schemaError) {
+          results[batchEntry.__batchIndex] = createSemanticObjectInferenceResult({
+            provider: resultProvider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'schema-validation-failed',
+            error: schemaError
           });
           continue;
         }
@@ -2704,6 +2846,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         || result?.reason === 'rate-limited'
         || result?.error
       ));
+      const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
@@ -2713,6 +2856,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs,
         entryIds: batch.map((entry) => entry.id),
         results: batchResults
       });
@@ -2725,6 +2869,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           batchSize: batch.length,
           promptChars,
           promptMaxChars,
+          durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
@@ -2738,7 +2883,10 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         total: entries.length,
         batchSize: batch.length,
         promptChars,
-        promptMaxChars
+        promptMaxChars,
+        durationMs,
+        failureCount: failedResults.length,
+        rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }
 
@@ -2944,11 +3092,14 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs: 0,
+        cached: true,
         skipped: true
       });
       continue;
     }
 
+    const batchStartedAt = Date.now();
     await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
       status: 'running',
       batchId,
@@ -3167,6 +3318,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         || result?.reason === 'rate-limited'
         || result?.error
       ));
+      const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
@@ -3176,6 +3328,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs,
         entryIds: batch.map((entry) => entry.id),
         results: batchResults
       });
@@ -3188,6 +3341,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
           batchSize: batch.length,
           promptChars,
           promptMaxChars,
+          durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
@@ -3201,7 +3355,10 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         total: entries.length,
         batchSize: batch.length,
         promptChars,
-        promptMaxChars
+        promptMaxChars,
+        durationMs,
+        failureCount: failedResults.length,
+        rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }
 
@@ -3323,11 +3480,14 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs: 0,
+        cached: true,
         skipped: true
       });
       continue;
     }
 
+    const batchStartedAt = Date.now();
     await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
       status: 'running',
       batchId,
@@ -3524,6 +3684,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         || result?.reason === 'rate-limited'
         || result?.error
       ));
+      const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
@@ -3533,6 +3694,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs,
         entryIds: batch.map((entry) => entry.id),
         results: batchResults
       });
@@ -3545,6 +3707,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
           batchSize: batch.length,
           promptChars,
           promptMaxChars,
+          durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
@@ -3558,7 +3721,10 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         total: entries.length,
         batchSize: batch.length,
         promptChars,
-        promptMaxChars
+        promptMaxChars,
+        durationMs,
+        failureCount: failedResults.length,
+        rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }
 
@@ -3699,11 +3865,14 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs: 0,
+        cached: true,
         skipped: true
       });
       continue;
     }
 
+    const batchStartedAt = Date.now();
     await appendLlmBatchLedger(ledger, 'llm-batches.jsonl', {
       status: 'running',
       batchId,
@@ -3719,13 +3888,33 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
       const payload = await requestLlmGenerate(config, prompt);
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || config.provider;
+      const topLevelSchemaError = raw?.papers !== undefined && !Array.isArray(raw.papers)
+        ? 'Expected "papers" to be an array.'
+        : raw?.errors !== undefined && !Array.isArray(raw.errors)
+          ? 'Expected "errors" to be an array.'
+          : null;
+      if (topLevelSchemaError) {
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = {
+            provider: resultProvider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            reason: 'schema-validation-failed',
+            error: topLevelSchemaError
+          };
+        }
+        continue;
+      }
       const paperErrors = new Map(
-        (raw?.errors || [])
+        (Array.isArray(raw?.errors) ? raw.errors : [])
           .filter((entry) => entry?.id)
           .map((entry) => [String(entry.id), String(entry.error || 'request-failed')])
       );
       const paperResults = new Map(
-        (raw?.papers || [])
+        (Array.isArray(raw?.papers) ? raw.papers : [])
           .filter((entry) => entry?.id)
           .map((entry) => [String(entry.id), entry])
       );
@@ -3754,6 +3943,20 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
             researchGoals: [],
             relations: [],
             error: `Missing batch relation result for ${batchEntry.id}`
+          };
+          continue;
+        }
+
+        const schemaError = validateRelationPaperSchema(rawPaper);
+        if (schemaError) {
+          results[batchEntry.__batchIndex] = {
+            provider: resultProvider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            reason: 'schema-validation-failed',
+            error: schemaError
           };
           continue;
         }
@@ -3862,6 +4065,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         || result?.reason === 'rate-limited'
         || result?.error
       ));
+      const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
@@ -3871,6 +4075,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         batchSize: batch.length,
         promptChars,
         promptMaxChars,
+        durationMs,
         entryIds: batch.map((entry) => entry.id),
         results: batchResults
       });
@@ -3883,6 +4088,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
           batchSize: batch.length,
           promptChars,
           promptMaxChars,
+          durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
@@ -3896,7 +4102,10 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         total: entries.length,
         batchSize: batch.length,
         promptChars,
-        promptMaxChars
+        promptMaxChars,
+        durationMs,
+        failureCount: failedResults.length,
+        rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }
 

@@ -43,6 +43,11 @@ import {
   resolveOllamaConfig
 } from '../llm/ollama.js';
 import {
+  createLlmBatchSlices,
+  mapLlmBatchSlicesWithRateLimitStop,
+  resolveLlmBatchConcurrency
+} from '../llm/batch-worker-pool.js';
+import {
   PROMPT_VERSION as SEMANTIC_OBJECTS_PROMPT_VERSION,
   createConfigSignature as createSemanticPromptConfigSignature,
   createDisabledConfigSignature as createDisabledSemanticPromptConfigSignature
@@ -109,6 +114,10 @@ import {
   writePaperReduceCheckpoint,
   writePaperChunks
 } from '../../storage/chunk-store.js';
+import {
+  createLongContextArtifactKey,
+  saveLongContextArtifact
+} from '../../storage/long-context-artifact-store.js';
 import { enqueuePaperEnhancements, pruneEnhancementsForManifest } from '../../storage/enhancement-store.js';
 import {
   getImportPaths,
@@ -440,6 +449,45 @@ function emitPipelineProgress(options = {}, event = {}) {
     timestamp: new Date().toISOString(),
     ...event
   });
+}
+
+function createPhaseTimingRecorder() {
+  const phaseTimingsMs = {};
+  const addTiming = (phase, elapsedMs) => {
+    const normalizedPhase = String(phase || '').trim();
+    const numeric = Number(elapsedMs);
+    if (!normalizedPhase || !Number.isFinite(numeric) || numeric < 0) return;
+    phaseTimingsMs[normalizedPhase] = Math.round(((Number(phaseTimingsMs[normalizedPhase] || 0) || 0) + numeric) * 100) / 100;
+  };
+  const measure = async (phase, action) => {
+    const startedAt = Date.now();
+    try {
+      return await action();
+    } finally {
+      addTiming(phase, Date.now() - startedAt);
+    }
+  };
+  const measureSync = (phase, action) => {
+    const startedAt = Date.now();
+    try {
+      return action();
+    } finally {
+      addTiming(phase, Date.now() - startedAt);
+    }
+  };
+  const merge = (timings = {}, prefix = '') => {
+    for (const [phase, elapsedMs] of Object.entries(timings || {})) {
+      addTiming(prefix ? `${prefix}.${phase}` : phase, elapsedMs);
+    }
+  };
+  const snapshot = () => ({ ...phaseTimingsMs });
+  return {
+    addTiming,
+    measure,
+    measureSync,
+    merge,
+    snapshot
+  };
 }
 
 function logPipelineEvent(options = {}, message) {
@@ -1826,13 +1874,14 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
   const snapshotChunkPipeline = snapshot.llmSemanticObjects?.chunkPipeline || snapshot.llm?.chunkPipeline || null;
   const snapshotChunkPipelineSignature = snapshotChunkPipeline?.configSignature || null;
   const snapshotChunkPipelineEnabled = Boolean(snapshotChunkPipeline?.enabled);
+  const acceptedLongContextFallback = hasAcceptedLongContextFallback(snapshot, options);
   const semanticConfiguredNow = semanticPlan.shouldAttempt && semanticPlan.requestedMode !== 'heuristic-only';
   const semanticMissingForCurrentConfig = semanticConfiguredNow
     && snapshotSemanticSignature !== currentSemanticSignature;
   const semanticMissingForChunkPipelineConfig = semanticConfiguredNow
     && (chunkPipelineEnabledNow
       ? snapshotChunkPipelineSignature !== currentChunkPipelineSignature
-      : snapshotChunkPipelineEnabled);
+      : (snapshotChunkPipelineEnabled && !acceptedLongContextFallback));
   const semanticMissingCatalystMetadata = semanticConfiguredNow
     && !hasCatalystMetadataContract(snapshot);
   const semanticRetryableFailure = semanticConfiguredNow
@@ -1995,6 +2044,7 @@ function finalizeSemanticPaperLlmMetadata(semanticPaper, semanticObjects, infere
 }
 
 async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources, options = {}) {
+  options = withLongContextLlmDefaults(options);
   options = withStage2LlmBatchLedgerDefaults(rootPath, null, materializedSources, options);
   const records = materializedSources.filter((record) => record.semanticPaper);
   const useChunkPipeline = shouldUseStage2ChunkLlmPipeline(options);
@@ -2152,6 +2202,23 @@ async function enrichMaterializedSourcesWithOllama(rootPath, materializedSources
   }
 
   for (const record of records) {
+    if (record.semanticPaper?.llm) {
+      if (!record.semanticPaper.llm.chunkPipeline) {
+        record.semanticPaper.llm.chunkPipeline = {
+          enabled: false,
+          reason: useChunkPipeline
+            ? 'chunk-pipeline-fallback'
+            : (shouldDefaultToLongContextFirst(options) ? 'long-context-first' : 'disabled'),
+          configSignature: createChunkPipelineConfigSignature(options)
+        };
+      }
+      record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record);
+      record.semanticPaper.llmSemanticObjects = {
+        ...(record.semanticPaper.llmSemanticObjects || {}),
+        chunkPipeline: record.semanticPaper.llm.chunkPipeline,
+        longContext: record.semanticPaper.llm.longContext
+      };
+    }
     applySemanticAdmissionPolicy(record.semanticPaper);
     await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
   }
@@ -2238,6 +2305,381 @@ function withStage2LlmBatchLedgerDefaults(rootPath, manifest = null, records = [
   };
 }
 
+const LONG_CONTEXT_FIRST_MIN_WINDOW_TOKENS = 1_000_000;
+const LONG_CONTEXT_DEFAULT_MAX_PAPERS_PER_CALL = 2;
+const LONG_CONTEXT_PROMPT_INPUT_RATIO = 0.65;
+const LONG_CONTEXT_CHARS_PER_TOKEN = 3;
+const LONG_CONTEXT_PROMPT_OVERHEAD_CHARS = 12_000;
+
+function resolveLlmExtractionStrategy(options = {}) {
+  const raw = firstDefinedValue(
+    options.llmExtractionStrategy,
+    options.extractionStrategy,
+    options.importLlmExtractionStrategy,
+    process.env.PAPERNEXUS_LLM_EXTRACTION_STRATEGY
+  );
+  const normalized = String(raw || 'auto').trim().toLowerCase().replace(/_/g, '-');
+  if (['chunk', 'chunks', 'chunk-first', 'chunk-first-map-reduce'].includes(normalized)) {
+    return 'chunk-first';
+  }
+  if (['paper', 'paper-level', 'whole-paper', 'long-context', 'long-context-first'].includes(normalized)) {
+    return 'long-context-first';
+  }
+  if (['auto', 'default', ''].includes(normalized)
+    && resolveLlmContextWindowTokens(options) >= LONG_CONTEXT_FIRST_MIN_WINDOW_TOKENS) {
+    return 'long-context-first';
+  }
+  return 'auto';
+}
+
+function resolveLlmContextWindowTokens(options = {}) {
+  const raw = firstDefinedValue(
+    options.llmContextWindowTokens,
+    options.contextWindowTokens,
+    options.llmContextTokens,
+    process.env.PAPERNEXUS_LLM_CONTEXT_WINDOW_TOKENS
+  );
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function shouldDefaultToLongContextFirst(options = {}) {
+  const strategy = resolveLlmExtractionStrategy(options);
+  if (strategy === 'chunk-first') return false;
+  return resolveLlmContextWindowTokens(options) >= LONG_CONTEXT_FIRST_MIN_WINDOW_TOKENS;
+}
+
+function resolveLongContextPromptMaxChars(options = {}) {
+  const explicit = Number(firstDefinedValue(
+    options.llmLongContextPromptMaxChars,
+    options.longContextPromptMaxChars
+  ));
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+
+  const explicitTokenBudget = Number(firstDefinedValue(
+    options.llmLongContextInputTokenBudget,
+    options.longContextInputTokenBudget
+  ));
+  if (Number.isFinite(explicitTokenBudget) && explicitTokenBudget > 0) {
+    return Math.max(1, Math.floor(explicitTokenBudget * LONG_CONTEXT_CHARS_PER_TOKEN));
+  }
+
+  const contextWindowTokens = resolveLlmContextWindowTokens(options);
+  if (!contextWindowTokens) return null;
+  return Math.max(
+    1,
+    Math.floor(contextWindowTokens * LONG_CONTEXT_PROMPT_INPUT_RATIO * LONG_CONTEXT_CHARS_PER_TOKEN)
+  );
+}
+
+function resolveLongContextInputBudgetTokens(options = {}) {
+  const explicit = Number(firstDefinedValue(
+    options.llmLongContextInputTokenBudget,
+    options.longContextInputTokenBudget
+  ));
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+
+  const contextWindowTokens = resolveLlmContextWindowTokens(options);
+  if (!contextWindowTokens) return null;
+  return Math.max(1, Math.floor(contextWindowTokens * LONG_CONTEXT_PROMPT_INPUT_RATIO));
+}
+
+function isLongContextFallbackEnabled(options = {}) {
+  const explicit = firstDefinedValue(
+    options.llmLongContextFallbackEnabled,
+    options.longContextFallbackEnabled,
+    process.env.PAPERNEXUS_LLM_LONG_CONTEXT_FALLBACK_ENABLED
+  );
+  return explicit === undefined ? true : !isDisabledFlag(explicit);
+}
+
+function hasExplicitLongContextMaxPapersPerCall(options = {}) {
+  return firstDefinedValue(
+    options.llmLongContextMaxPapersPerCall,
+    options.longContextMaxPapersPerCall
+  ) !== undefined;
+}
+
+function resolveLongContextMaxPapersPerCall(options = {}) {
+  const raw = firstDefinedValue(
+    options.llmLongContextMaxPapersPerCall,
+    options.longContextMaxPapersPerCall,
+    options.llmBatchSize,
+    options.batchSize
+  );
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : LONG_CONTEXT_DEFAULT_MAX_PAPERS_PER_CALL;
+}
+
+function withLongContextLlmDefaults(options = {}) {
+  if (!shouldDefaultToLongContextFirst(options)) return options;
+
+  const hasGenericBatchSize = firstDefinedValue(options.llmBatchSize, options.batchSize) !== undefined;
+  const hasLongContextBatchSize = hasExplicitLongContextMaxPapersPerCall(options);
+  const promptMaxChars = resolveLongContextPromptMaxChars(options);
+  const next = {
+    ...options,
+    llmExtractionStrategy: resolveLlmExtractionStrategy(options)
+  };
+
+  if (hasLongContextBatchSize || !hasGenericBatchSize) {
+    next.llmBatchSize = resolveLongContextMaxPapersPerCall(options);
+  }
+  if (promptMaxChars && firstDefinedValue(options.llmBatchPromptMaxChars, options.batchPromptMaxChars) === undefined) {
+    next.llmBatchPromptMaxChars = promptMaxChars;
+  }
+
+  return next;
+}
+
+function collectLongContextInputText(parsedPaper = {}, semanticPaper = {}) {
+  const chunks = [];
+  const push = (value) => {
+    const text = normalizeText(value || '');
+    if (text) chunks.push(text);
+  };
+
+  push(parsedPaper.title || semanticPaper.paperTitle);
+  push(parsedPaper.abstract || semanticPaper.abstract);
+  for (const author of parsedPaper.authors || semanticPaper.authors || []) {
+    push(typeof author === 'string' ? author : author?.name);
+  }
+  for (const section of parsedPaper.sections || []) {
+    push(section.heading || section.title);
+    push(section.text || section.content);
+  }
+  for (const paragraph of parsedPaper.paragraphs || []) {
+    push(paragraph.text || paragraph.content);
+  }
+
+  return chunks.join('\n\n');
+}
+
+function normalizeLongContextArtifacts(artifacts = null) {
+  if (!artifacts || typeof artifacts !== 'object') return null;
+  const normalized = {};
+  for (const [phase, artifact] of Object.entries(artifacts)) {
+    if (!artifact || typeof artifact !== 'object') continue;
+    normalized[phase] = artifact;
+  }
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function getExistingLongContextArtifacts(record = null) {
+  return normalizeLongContextArtifacts({
+    ...(record?.semanticPaper?.llmSemanticObjects?.longContext?.artifacts || {}),
+    ...(record?.semanticPaper?.llm?.longContext?.artifacts || {})
+  });
+}
+
+function mergeLongContextArtifact(existingArtifacts = null, phase = 'semantic', artifact = null) {
+  const previous = normalizeLongContextArtifacts(existingArtifacts) || {};
+  if (!artifact) return normalizeLongContextArtifacts(previous);
+  return normalizeLongContextArtifacts({
+    ...previous,
+    [phase]: artifact
+  });
+}
+
+function createLongContextLlmMetadata(options = {}, record = null, extra = {}) {
+  const contextWindowTokens = resolveLlmContextWindowTokens(options);
+  const inputText = record?.parsedPaper || record?.semanticPaper
+    ? collectLongContextInputText(record?.parsedPaper || {}, record?.semanticPaper || {})
+    : '';
+  const inputChars = inputText
+    ? inputText.length + LONG_CONTEXT_PROMPT_OVERHEAD_CHARS
+    : null;
+  const inputTokenEstimate = inputChars
+    ? Math.ceil(inputChars / LONG_CONTEXT_CHARS_PER_TOKEN)
+    : null;
+  const inputBudgetTokens = resolveLongContextInputBudgetTokens(options);
+  const inputBudgetChars = resolveLongContextPromptMaxChars(options);
+  return {
+    enabled: shouldDefaultToLongContextFirst(options),
+    strategy: resolveLlmExtractionStrategy(options),
+    contextWindowTokens,
+    maxPapersPerCall: shouldDefaultToLongContextFirst(options)
+      ? resolveLongContextMaxPapersPerCall(options)
+      : null,
+    promptMaxChars: inputBudgetChars,
+    inputBudgetChars,
+    inputChars,
+    inputTokenEstimate,
+    inputBudgetTokens,
+    fallbackEnabled: isLongContextFallbackEnabled(options),
+    fallbackUsed: Boolean(extra.fallbackUsed),
+    fallbackReason: extra.fallbackReason || null,
+    callCount: Number.isFinite(Number(extra.callCount)) ? Number(extra.callCount) : 0,
+    validationStatus: extra.validationStatus || null,
+    validationDetails: extra.validationDetails || null,
+    artifacts: normalizeLongContextArtifacts(extra.artifacts)
+  };
+}
+
+function createLongContextArtifactStatus(inference = null, summary = null, fallbackReason = null) {
+  if (fallbackReason === 'rate-limited' || inference?.rateLimitCooldownUntil || inference?.reason === 'rate-limited') {
+    return 'rate-limited';
+  }
+  if (fallbackReason || summary?.status === 'failed' || inference?.error || summary?.error) {
+    return 'failed';
+  }
+  return 'completed';
+}
+
+function createLongContextArtifactSeed(record, options = {}, phase = 'semantic') {
+  const longContext = createLongContextLlmMetadata(options, record);
+  return {
+    version: 1,
+    phase,
+    sourceKey: record?.sourceState?.sourceKey || record?.semanticPaper?.sourceKey || '',
+    sourceFingerprint: record?.sourceState?.fingerprint
+      || record?.semanticPaper?.sourceFingerprint
+      || record?.semanticPaper?.fingerprint
+      || '',
+    paperId: record?.semanticPaper?.paperId || '',
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: phase === 'relation' ? createRelationConfigSignature(options) : null,
+    promptVersion: phase === 'relation' ? RESEARCH_RELATIONS_PROMPT_VERSION : SEMANTIC_OBJECTS_PROMPT_VERSION,
+    strategy: longContext.strategy,
+    contextWindowTokens: longContext.contextWindowTokens,
+    maxPapersPerCall: longContext.maxPapersPerCall,
+    inputChars: longContext.inputChars,
+    inputTokenEstimate: longContext.inputTokenEstimate,
+    inputBudgetTokens: longContext.inputBudgetTokens
+  };
+}
+
+function createLongContextArtifactPayload(record, options = {}, phase = 'semantic', inference = null, summary = null, metadata = {}) {
+  const fallbackReason = metadata.fallbackReason || null;
+  const longContext = createLongContextLlmMetadata(options, record, metadata.longContextExtra || {});
+  const config = resolveOllamaConfig(options);
+  return {
+    phase,
+    status: metadata.status || createLongContextArtifactStatus(inference, summary, fallbackReason),
+    sourceKey: record?.sourceState?.sourceKey || record?.semanticPaper?.sourceKey || '',
+    sourceFingerprint: record?.sourceState?.fingerprint
+      || record?.semanticPaper?.sourceFingerprint
+      || record?.semanticPaper?.fingerprint
+      || '',
+    sourcePath: record?.sourceState?.inputPath || record?.semanticPaper?.sourcePath || '',
+    paperId: record?.semanticPaper?.paperId || '',
+    paperTitle: record?.semanticPaper?.paperTitle || record?.parsedPaper?.title || '',
+    provider: inference?.provider || config?.provider || null,
+    model: config?.model || null,
+    promptVersion: phase === 'relation' ? RESEARCH_RELATIONS_PROMPT_VERSION : SEMANTIC_OBJECTS_PROMPT_VERSION,
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    relationConfigSignature: phase === 'relation' ? createRelationConfigSignature(options) : null,
+    longContext,
+    batch: metadata.batch || null,
+    fallbackReason,
+    validationStatus: metadata.validationStatus || null,
+    validationDetails: metadata.validationDetails || null,
+    summary: summary || null,
+    result: inference || null
+  };
+}
+
+async function persistLongContextArtifactForRecord(rootPath, record, options = {}, phase = 'semantic', inference = null, summary = null, metadata = {}) {
+  if (!shouldDefaultToLongContextFirst(options)) return null;
+  const artifactKey = createLongContextArtifactKey(createLongContextArtifactSeed(record, options, phase));
+  return saveLongContextArtifact(
+    rootPath,
+    artifactKey,
+    createLongContextArtifactPayload(record, options, phase, inference, summary, metadata)
+  );
+}
+
+function textIncludesAny(value = '', patterns = []) {
+  const text = String(value || '').toLowerCase();
+  return patterns.some((pattern) => text.includes(pattern));
+}
+
+function getLongContextErrorText(result = null, summary = null) {
+  return [
+    result?.reason,
+    result?.error,
+    result?.error?.message,
+    summary?.error,
+    summary?.reason
+  ].filter(Boolean).map((value) => String(value)).join('\n');
+}
+
+function shouldRequireLongContextSemanticObjects(options = {}) {
+  const explicit = firstDefinedValue(
+    options.llmLongContextRequireSemanticObjects,
+    options.longContextRequireSemanticObjects,
+    process.env.PAPERNEXUS_LLM_LONG_CONTEXT_REQUIRE_SEMANTIC_OBJECTS
+  );
+  return explicit === undefined ? true : !isDisabledFlag(explicit);
+}
+
+function getLongContextFallbackReason(result = null, summary = null, options = {}) {
+  if (result?.rateLimitCooldownUntil || result?.reason === 'rate-limited') return 'rate-limited';
+  if (!result) return 'missing-result';
+  const errorText = getLongContextErrorText(result, summary);
+  if (textIncludesAny(errorText, ['missing batch semantic result', 'missing split-retry semantic result'])) {
+    return 'missing-result';
+  }
+  if (textIncludesAny(errorText, ['timed out', 'timeout', 'aborterror', 'aborted', 'etimedout'])) {
+    return 'timeout';
+  }
+  if (textIncludesAny(errorText, ['truncated', 'finish_reason=length', 'finish reason length', 'max_tokens', 'maximum tokens', 'output length'])) {
+    return 'output-truncated';
+  }
+  if (textIncludesAny(errorText, ['not valid json', 'invalid json', 'json parse', 'unexpected token', 'unterminated string'])) {
+    return 'invalid-json';
+  }
+  if (result?.attempted && !result?.participated) {
+    return result?.reason && result.reason !== 'request-failed'
+      ? result.reason
+      : 'schema-validation-failed';
+  }
+  if (
+    result?.participated
+    && shouldRequireLongContextSemanticObjects(options)
+    && Number(summary?.semanticObjectCount || 0) <= 0
+  ) {
+    return 'semantic-quality-guard';
+  }
+  if (result?.error || summary?.error) return 'request-failed';
+  return null;
+}
+
+function createLongContextValidationDetails(result = null, summary = null, reason = null) {
+  if (!reason) return null;
+  return {
+    reason,
+    participated: result?.participated ?? null,
+    attempted: result?.attempted ?? null,
+    semanticObjectCount: Number.isFinite(Number(summary?.semanticObjectCount))
+      ? Number(summary.semanticObjectCount)
+      : null,
+    sourceReason: result?.reason || summary?.reason || null,
+    error: result?.error || summary?.error || null
+  };
+}
+
+function hasAcceptedLongContextFallback(snapshot = null, options = {}) {
+  if (!snapshot || !shouldDefaultToLongContextFirst(options) || !isLongContextFallbackEnabled(options)) {
+    return false;
+  }
+  const longContext = snapshot.llmSemanticObjects?.longContext || snapshot.llm?.longContext || {};
+  return Boolean(longContext.enabled && longContext.fallbackUsed && longContext.fallbackReason);
+}
+
+function recordNeedsLongContextBudgetFallback(record, options = {}) {
+  if (!shouldDefaultToLongContextFirst(options) || !isLongContextFallbackEnabled(options)) return false;
+  const metadata = createLongContextLlmMetadata(options, record);
+  const inputBudgetChars = Number(metadata.inputBudgetChars || metadata.promptMaxChars || 0);
+  return Boolean(inputBudgetChars && Number(metadata.inputChars || 0) > inputBudgetChars);
+}
+
 async function ensureParsedPaperForLlmRecord(record) {
   if (record.parsedPaper) return record.parsedPaper;
   record.parsedPaper = await loadParsedPaperFromMarkdownCache(record.sourceState, record.semanticPaper);
@@ -2280,7 +2722,10 @@ function applySemanticBatchResultToRecord(record, semanticObjects, semanticExtra
   applySemanticAdmissionPolicy(record.semanticPaper);
   return {
     status: semanticFailed ? 'failed' : 'completed',
-    error: semanticObjects.error || null
+    error: semanticObjects.error || null,
+    semanticObjectCount,
+    participated: Boolean(semanticObjects.participated),
+    reason: semanticObjects.reason || null
   };
 }
 
@@ -2323,6 +2768,45 @@ function resolveChunkLlmLimitPerPaper(options = {}) {
   return 12;
 }
 
+function createRateLimitedSemanticInferenceResult(options = {}, semanticExtractionPlan = null, rateLimitCooldownUntil = null, extra = {}) {
+  const config = semanticExtractionPlan?.config || resolveOllamaConfig(options);
+  return {
+    ...createChunkSemanticObjectInferenceResult({
+      provider: config?.provider || 'disabled',
+      requestedMode: semanticExtractionPlan?.requestedMode || 'heuristic-only',
+      effectiveMode: 'heuristic-only',
+      attempted: true,
+      participated: false,
+      reason: 'rate-limited',
+      error: null,
+      chunkId: extra.chunkId || null,
+      paperId: extra.paperId || null,
+      sourceKey: extra.sourceKey || null,
+      sectionHeading: extra.sectionHeading || null,
+      sectionRole: extra.sectionRole || null,
+      chunkOrder: extra.chunkOrder ?? null,
+      textHash: extra.textHash || null,
+      rateLimitCooldownUntil
+    }),
+    skippedProviderCall: Boolean(extra.skippedProviderCall)
+  };
+}
+
+function createRateLimitedRelationInferenceResult(options = {}, rateLimitCooldownUntil = null, extra = {}) {
+  const config = resolveOllamaConfig(options);
+  return {
+    provider: config?.provider || 'disabled',
+    benchmarks: [],
+    findings: [],
+    researchGoals: [],
+    relations: [],
+    reason: 'rate-limited',
+    rateLimitCooldownUntil,
+    error: null,
+    skippedProviderCall: Boolean(extra.skippedProviderCall)
+  };
+}
+
 function shouldUseStage2ChunkLlmPipeline(options = {}) {
   const explicit = firstDefinedValue(
     options.llmChunkPipeline,
@@ -2330,7 +2814,10 @@ function shouldUseStage2ChunkLlmPipeline(options = {}) {
     options.useChunkLlmPipeline,
     process.env.PAPERNEXUS_LLM_CHUNK_PIPELINE
   );
-  if (explicit === undefined) return true;
+  if (explicit === undefined) {
+    if (resolveLlmExtractionStrategy(options) === 'chunk-first') return true;
+    return !shouldDefaultToLongContextFirst(options);
+  }
   const normalized = String(explicit).trim().toLowerCase();
   if (['paper', 'paper-level', 'legacy', 'off', 'false', '0', 'no'].includes(normalized)) {
     return false;
@@ -2348,8 +2835,10 @@ function hasExplicitChunkPipelineOption(options = {}) {
 
 function createChunkPipelineConfigSignature(options = {}) {
   return stableHash(JSON.stringify({
-    version: 1,
+    version: 2,
     enabled: shouldUseStage2ChunkLlmPipeline(options),
+    extractionStrategy: resolveLlmExtractionStrategy(options),
+    contextWindowTokens: resolveLlmContextWindowTokens(options),
     selectionVersion: 1,
     chunkLimitPerPaper: resolveChunkLlmLimitPerPaper(options),
     promptVersions: {
@@ -2570,6 +3059,9 @@ function buildChunkSemanticReducerResult(record, chunkResults = [], options = {}
     ideaFragments: primarySemantic?.ideaFragments || [],
     rateLimitCooldownUntil: rateLimited[0]?.rateLimitCooldownUntil || null
   });
+  if (!completed.length && rateLimited.some((item) => item?.result?.skippedProviderCall || item?.skippedProviderCall)) {
+    semanticResult.skippedProviderCall = true;
+  }
 
   return {
     semanticResult,
@@ -2663,6 +3155,19 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
   let completedRelationTasks = 0;
   const semanticWorkRecords = chunkReadyRecords.filter((record) => record.sourceState.llmRefreshState?.semanticRequired);
   const semanticChunkCount = semanticWorkRecords.reduce((sum, record) => sum + (record.selectedChunks?.length || 0), 0);
+  const batchConcurrency = resolveLlmBatchConcurrency(options);
+  let jobStateWriteChain = Promise.resolve();
+  const updateJobStateSequentially = async (updater) => {
+    if (!jobState) {
+      updater(false);
+      return;
+    }
+    jobStateWriteChain = jobStateWriteChain.then(async () => {
+      updater(true);
+      await saveStage2JobState(rootPath, jobState);
+    });
+    await jobStateWriteChain;
+  };
   const reportChunkLlmBatchComplete = (phase, event = {}) => {
     options.onLlmBatchComplete?.({
       ...event,
@@ -2706,10 +3211,13 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
       await saveStage2JobState(rootPath, jobState);
     }
 
-    for (let start = 0; start < semanticTasks.length; start += batchSize) {
-      const batch = semanticTasks.slice(start, start + batchSize);
+    const semanticBatchSlices = createLlmBatchSlices(semanticTasks, batchSize);
+    const semanticTaskRunsByIndex = new Array(semanticTasks.length);
+    let completedSemanticBatches = 0;
+    await mapLlmBatchSlicesWithRateLimitStop(semanticBatchSlices, batchConcurrency, async (slice) => {
+      const { start, batch, batchNumber, totalBatches } = slice;
       const pending = batch.filter((item) => item.status !== 'completed');
-      const batchResults = pending.length
+      const inferredBatchResults = pending.length
         ? await inferChunkSemanticObjectsBatch(pending.map((item) => ({
             id: item.chunk.chunkId,
             chunk: item.chunk,
@@ -2722,30 +3230,50 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
             ...options,
             llmBatchSize: batchSize,
             onBatchComplete(event = {}) {
-              options.onBatchComplete?.(event);
-              reportChunkLlmBatchComplete('chunk-semantic-extraction', event);
+              const stageEvent = {
+                ...event,
+                providerBatchNumber: event.batchNumber,
+                providerTotalBatches: event.totalBatches,
+                batchNumber,
+                totalBatches,
+                completed: Math.min(start + Number(event.completed || pending.length || 0), semanticTasks.length),
+                total: semanticTasks.length,
+                batchSize: batch.length,
+                llmBatchConcurrency: batchConcurrency
+              };
+              options.onBatchComplete?.(stageEvent);
+              reportChunkLlmBatchComplete('chunk-semantic-extraction', stageEvent);
               if (!quiet) {
                 emitPipelineProgress(options, {
                   stage: 'llm-optimize',
                   currentStep: 'chunk semantic extraction',
-                  processedUnits: Math.min(semanticTaskRuns.length + Number(event.completed || 0), semanticTasks.length),
+                  processedUnits: stageEvent.completed,
                   totalUnits: semanticTasks.length,
-                  stagePercent: semanticTasks.length ? (((semanticTaskRuns.length + Number(event.completed || 0)) / semanticTasks.length) * 100) : 100,
-                  message: `chunk semantic batch ${event.batchNumber}/${Math.max(1, event.totalBatches || 1)}`
+                  stagePercent: semanticTasks.length ? ((stageEvent.completed / semanticTasks.length) * 100) : 100,
+                  message: `chunk semantic batch ${batchNumber}/${totalBatches}`
                 });
               }
             },
             onBatchRetry(event = {}) {
-              options.onBatchRetry?.(event);
-              reportChunkLlmBatchRetry('chunk-semantic-extraction', event);
+              const stageEvent = {
+                ...event,
+                providerBatchNumber: event.batchNumber,
+                providerTotalBatches: event.totalBatches,
+                batchNumber,
+                totalBatches,
+                llmBatchConcurrency: batchConcurrency
+              };
+              options.onBatchRetry?.(stageEvent);
+              reportChunkLlmBatchRetry('chunk-semantic-extraction', stageEvent);
             }
           })
         : [];
+      const batchResults = [...inferredBatchResults];
 
       for (let index = 0; index < batch.length; index += 1) {
         const task = batch[index];
         if (task.status === 'completed') {
-          semanticTaskRuns.push(task);
+          semanticTaskRunsByIndex[start + index] = task;
           continue;
         }
         const result = batchResults.shift();
@@ -2761,21 +3289,81 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           rateLimitCooldownUntil: result?.rateLimitCooldownUntil || null
         };
         await saveChunkExtractionResult(rootPath, task.taskKey, payload);
-        semanticTaskRuns.push({
+        semanticTaskRunsByIndex[start + index] = {
           ...task,
           ...payload
-        });
+        };
       }
 
-      completedChunkTasks = Math.min(start + batch.length, semanticTasks.length);
-      if (jobState) {
+      await updateJobStateSequentially((hasJobState) => {
+        completedChunkTasks = Math.min(completedChunkTasks + batch.length, semanticTasks.length);
+        completedSemanticBatches += 1;
+        if (!hasJobState) return;
         jobState.phases.chunk.completed = completedChunkTasks;
         jobState.phases.llmMap.completed = completedChunkTasks;
-        jobState.phases.chunk.lastBatchNumber = Math.floor(start / batchSize) + 1;
-        jobState.phases.llmMap.lastBatchNumber = Math.floor(start / batchSize) + 1;
-        await saveStage2JobState(rootPath, jobState);
+        jobState.phases.chunk.lastBatchNumber = completedSemanticBatches;
+        jobState.phases.llmMap.lastBatchNumber = completedSemanticBatches;
+      });
+      return {
+        ...slice,
+        semanticBatchResults: inferredBatchResults
+      };
+    }, async (slice, rateLimitCooldownUntil) => {
+      const { start, batch } = slice;
+      for (let index = 0; index < batch.length; index += 1) {
+        const task = batch[index];
+        if (task.status === 'completed') {
+          semanticTaskRunsByIndex[start + index] = task;
+          continue;
+        }
+        const result = createRateLimitedSemanticInferenceResult(
+          options,
+          semanticExtractionPlan,
+          rateLimitCooldownUntil,
+          {
+            skippedProviderCall: true,
+            chunkId: task.chunk.chunkId,
+            paperId: task.record.semanticPaper.paperId,
+            sourceKey: task.record.sourceState.sourceKey,
+            sectionHeading: task.chunk.sectionHeading,
+            sectionRole: task.chunk.sectionRole,
+            chunkOrder: task.chunk.chunkOrder,
+            textHash: task.chunk.textHash
+          }
+        );
+        const payload = {
+          status: 'rate-limited',
+          chunk: task.chunk,
+          result,
+          sourceKey: task.record.sourceState.sourceKey,
+          paperId: task.record.semanticPaper.paperId,
+          completedAt: null,
+          error: null,
+          rateLimitCooldownUntil
+        };
+        await saveChunkExtractionResult(rootPath, task.taskKey, payload);
+        semanticTaskRunsByIndex[start + index] = {
+          ...task,
+          ...payload
+        };
       }
-    }
+
+      await updateJobStateSequentially((hasJobState) => {
+        completedChunkTasks = Math.min(completedChunkTasks + batch.length, semanticTasks.length);
+        completedSemanticBatches += 1;
+        if (!hasJobState) return;
+        jobState.phases.chunk.completed = completedChunkTasks;
+        jobState.phases.llmMap.completed = completedChunkTasks;
+        jobState.phases.chunk.lastBatchNumber = completedSemanticBatches;
+        jobState.phases.llmMap.lastBatchNumber = completedSemanticBatches;
+      });
+      return {
+        ...slice,
+        rateLimitSkipped: true,
+        rateLimitCooldownUntil
+      };
+    });
+    semanticTaskRuns.push(...semanticTaskRunsByIndex.filter(Boolean));
   } else if (semanticChunkCount) {
     for (const record of semanticWorkRecords) {
       for (const chunk of record.selectedChunks || []) {
@@ -2867,12 +3455,15 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
       selectedChunkCount: record.selectedChunks?.length || 0,
       processedChunkCount: perPaperChunkRuns.filter((task) => task.status === 'completed').length,
       failedChunkCount: perPaperChunkRuns.filter((task) => task.status === 'failed').length,
-      rateLimitedChunkCount: perPaperChunkRuns.filter((task) => task.status === 'rate-limited').length
+      rateLimitedChunkCount: perPaperChunkRuns.filter((task) => task.status === 'rate-limited').length,
+      skippedProviderCallCount: perPaperChunkRuns.filter((task) => task.result?.skippedProviderCall).length
     };
+    record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record);
     record.semanticPaper.llmSemanticObjects = {
       ...(record.semanticPaper.llmSemanticObjects || {}),
       ...semanticResult,
-      chunkPipeline: record.semanticPaper.llm.chunkPipeline
+      chunkPipeline: record.semanticPaper.llm.chunkPipeline,
+      longContext: record.semanticPaper.llm.longContext
     };
     await writePaperReduceCheckpoint(rootPath, record.sourceState.sourceKey, {
       status: semanticPhaseStatus,
@@ -2950,10 +3541,13 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
         await saveStage2JobState(rootPath, jobState);
       }
 
-      for (let start = 0; start < relationTasks.length; start += batchSize) {
-        const batch = relationTasks.slice(start, start + batchSize);
+      const relationBatchSlices = createLlmBatchSlices(relationTasks, batchSize);
+      const relationTaskRunsByIndex = new Array(relationTasks.length);
+      let completedRelationBatches = 0;
+      await mapLlmBatchSlicesWithRateLimitStop(relationBatchSlices, batchConcurrency, async (slice) => {
+        const { start, batch, batchNumber, totalBatches } = slice;
         const pending = batch.filter((item) => item.status !== 'completed');
-        const batchResults = pending.length
+        const inferredBatchResults = pending.length
           ? await inferChunkResearchSemanticsBatch(pending.map((item) => ({
               id: item.chunk.chunkId,
               chunk: item.chunk,
@@ -2966,30 +3560,50 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
               ...options,
               llmBatchSize: batchSize,
               onBatchComplete(event = {}) {
-                options.onBatchComplete?.(event);
-                reportChunkLlmBatchComplete('chunk-relation-extraction', event);
+                const stageEvent = {
+                  ...event,
+                  providerBatchNumber: event.batchNumber,
+                  providerTotalBatches: event.totalBatches,
+                  batchNumber,
+                  totalBatches,
+                  completed: Math.min(start + Number(event.completed || pending.length || 0), relationTasks.length),
+                  total: relationTasks.length,
+                  batchSize: batch.length,
+                  llmBatchConcurrency: batchConcurrency
+                };
+                options.onBatchComplete?.(stageEvent);
+                reportChunkLlmBatchComplete('chunk-relation-extraction', stageEvent);
                 if (!quiet) {
                   emitPipelineProgress(options, {
                     stage: 'llm-optimize',
                     currentStep: 'chunk relation extraction',
-                    processedUnits: Math.min(relationTaskRuns.length + Number(event.completed || 0), relationTasks.length),
+                    processedUnits: stageEvent.completed,
                     totalUnits: relationTasks.length,
-                    stagePercent: relationTasks.length ? (((relationTaskRuns.length + Number(event.completed || 0)) / relationTasks.length) * 100) : 100,
-                    message: `chunk relation batch ${event.batchNumber}/${Math.max(1, event.totalBatches || 1)}`
+                    stagePercent: relationTasks.length ? ((stageEvent.completed / relationTasks.length) * 100) : 100,
+                    message: `chunk relation batch ${batchNumber}/${totalBatches}`
                   });
                 }
               },
               onBatchRetry(event = {}) {
-                options.onBatchRetry?.(event);
-                reportChunkLlmBatchRetry('chunk-relation-extraction', event);
+                const stageEvent = {
+                  ...event,
+                  providerBatchNumber: event.batchNumber,
+                  providerTotalBatches: event.totalBatches,
+                  batchNumber,
+                  totalBatches,
+                  llmBatchConcurrency: batchConcurrency
+                };
+                options.onBatchRetry?.(stageEvent);
+                reportChunkLlmBatchRetry('chunk-relation-extraction', stageEvent);
               }
             })
           : [];
+        const batchResults = [...inferredBatchResults];
 
         for (let index = 0; index < batch.length; index += 1) {
           const task = batch[index];
           if (task.status === 'completed') {
-            relationTaskRuns.push(task);
+            relationTaskRunsByIndex[start + index] = task;
             continue;
           }
           const result = batchResults.shift();
@@ -3004,20 +3618,69 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
             error: result?.error || null,
             rateLimitCooldownUntil: result?.rateLimitCooldownUntil || null
           });
-          relationTaskRuns.push({
+          relationTaskRunsByIndex[start + index] = {
             ...task,
             result,
             status
-          });
+          };
         }
 
-        completedRelationTasks = Math.min(start + batch.length, relationTasks.length);
-        if (jobState) {
+        await updateJobStateSequentially((hasJobState) => {
+          completedRelationTasks = Math.min(completedRelationTasks + batch.length, relationTasks.length);
+          completedRelationBatches += 1;
+          if (!hasJobState) return;
           jobState.phases.relation.completed = completedRelationTasks;
-          jobState.phases.relation.lastBatchNumber = Math.floor(start / batchSize) + 1;
-          await saveStage2JobState(rootPath, jobState);
+          jobState.phases.relation.lastBatchNumber = completedRelationBatches;
+        });
+        return {
+          ...slice,
+          relationBatchResults: inferredBatchResults
+        };
+      }, async (slice, rateLimitCooldownUntil) => {
+        const { start, batch } = slice;
+        for (let index = 0; index < batch.length; index += 1) {
+          const task = batch[index];
+          if (task.status === 'completed') {
+            relationTaskRunsByIndex[start + index] = task;
+            continue;
+          }
+          const result = createRateLimitedRelationInferenceResult(
+            options,
+            rateLimitCooldownUntil,
+            { skippedProviderCall: true }
+          );
+          await saveChunkExtractionResult(rootPath, task.taskKey, {
+            status: 'rate-limited',
+            chunk: task.chunk,
+            result,
+            sourceKey: task.record.sourceState.sourceKey,
+            paperId: task.record.semanticPaper.paperId,
+            completedAt: null,
+            error: null,
+            rateLimitCooldownUntil
+          });
+          relationTaskRunsByIndex[start + index] = {
+            ...task,
+            result,
+            status: 'rate-limited',
+            rateLimitCooldownUntil
+          };
         }
-      }
+
+        await updateJobStateSequentially((hasJobState) => {
+          completedRelationTasks = Math.min(completedRelationTasks + batch.length, relationTasks.length);
+          completedRelationBatches += 1;
+          if (!hasJobState) return;
+          jobState.phases.relation.completed = completedRelationTasks;
+          jobState.phases.relation.lastBatchNumber = completedRelationBatches;
+        });
+        return {
+          ...slice,
+          rateLimitSkipped: true,
+          rateLimitCooldownUntil
+        };
+      });
+      relationTaskRuns.push(...relationTaskRunsByIndex.filter(Boolean));
 
       for (const record of relationPending) {
         const perPaperRelationRuns = relationTaskRuns.filter((task) => task.record.sourceState.sourceKey === record.sourceState.sourceKey);
@@ -3073,11 +3736,15 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           relationChunkCount: record.selectedChunks?.length || 0,
           relationProcessedChunkCount: relationCompletedCount,
           relationFailedChunkCount: relationFailedCount,
-          relationRateLimitedChunkCount: relationRateLimitedCount
+          relationRateLimitedChunkCount: relationRateLimitedCount,
+          relationSkippedProviderCallCount: perPaperRelationRuns
+            .filter((task) => task.result?.skippedProviderCall).length
         };
+        record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record);
         record.semanticPaper.llmSemanticObjects = {
           ...(record.semanticPaper.llmSemanticObjects || {}),
-          chunkPipeline: record.semanticPaper.llm.chunkPipeline
+          chunkPipeline: record.semanticPaper.llm.chunkPipeline,
+          longContext: record.semanticPaper.llm.longContext
         };
         await writePaperReduceCheckpoint(rootPath, record.sourceState.sourceKey, {
           status: relationPhaseStatus,
@@ -3181,6 +3848,7 @@ function createStage2ManifestFromRecords(rootPath, manifest, records, options = 
 }
 
 async function runStage2LlmOptimization(rootPath, manifest, records, options = {}, existingJobState = null) {
+  options = withLongContextLlmDefaults(options);
   options = withStage2LlmBatchLedgerDefaults(rootPath, manifest, records, options);
   const quiet = Boolean(options.quiet);
   const scopedToChangedSources = normalizeChangedSourceKeySet(options.changedSourceKeys).size > 0;
@@ -3196,6 +3864,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   await saveStage2JobState(rootPath, jobState);
 
   const batchSize = Math.max(1, Number(firstDefinedValue(options.llmBatchSize, options.batchSize, 8)));
+  const batchConcurrency = resolveLlmBatchConcurrency(options);
   let llmCompletedUnits = 0;
   announceStage(
     options,
@@ -3209,10 +3878,37 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
     `batch ${batchNumber}/${Math.max(1, totalBatches)}, ${Math.min(completed, total)}/${total} papers completed`;
 
   const useChunkPipeline = shouldUseStage2ChunkLlmPipeline(options);
+  const useLongContextFirst = !useChunkPipeline && shouldDefaultToLongContextFirst(options);
+  const longContextFallbackRecords = new Map();
+  const markLongContextFallback = (record, reason, details = {}) => {
+    if (!record?.sourceState?.sourceKey || !useLongContextFirst || !isLongContextFallbackEnabled(options)) return;
+    record.sourceState.longContextFallbackRequired = true;
+    record.sourceState.longContextFallbackReason = reason || 'request-failed';
+    record.sourceState.longContextFallbackDetails = {
+      ...(record.sourceState.longContextFallbackDetails || {}),
+      ...details
+    };
+    longContextFallbackRecords.set(record.sourceState.sourceKey, record);
+  };
   const chunkWorkRecords = records.filter((record) => (
     !record.sourceState.llmRefreshState?.scopedOut
     && record.sourceState.llmRefreshState?.anyRequired
   ));
+  if (useLongContextFirst && isLongContextFallbackEnabled(options)) {
+    for (const record of chunkWorkRecords) {
+      await ensureParsedPaperForLlmRecord(record);
+      const longContext = createLongContextLlmMetadata(options, record);
+      record.sourceState.longContextMetrics = longContext;
+      if (recordNeedsLongContextBudgetFallback(record, options)) {
+        markLongContextFallback(record, 'over-budget', {
+          inputChars: longContext.inputChars,
+          inputTokenEstimate: longContext.inputTokenEstimate,
+          inputBudgetChars: longContext.inputBudgetChars,
+          inputBudgetTokens: longContext.inputBudgetTokens
+        });
+      }
+    }
+  }
   if (useChunkPipeline && chunkWorkRecords.length) {
     emitPipelineProgress(options, {
       stage: 'llm-optimize',
@@ -3229,9 +3925,10 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
   }
 
   const shouldUsePaperLevelFallback = (record) => (
-    !useChunkPipeline
+    !record.sourceState.longContextFallbackRequired
+    && (!useChunkPipeline
     || !record.sourceState.chunkPipelineProcessed
-    || record.sourceState.chunkPipelineFallbackRequired
+    || record.sourceState.chunkPipelineFallbackRequired)
   );
 
   const initialSemanticPending = records.filter((record) => (
@@ -3285,9 +3982,13 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
     };
     await saveStage2JobState(rootPath, jobState);
 
-    const totalBatches = Math.max(1, Math.ceil(semanticPending.length / batchSize));
-    for (let start = 0; start < semanticPending.length; start += batchSize) {
-      const batchRecords = semanticPending.slice(start, start + batchSize);
+    const semanticBatchSlices = createLlmBatchSlices(semanticPending, batchSize);
+    const totalBatches = Math.max(1, semanticBatchSlices.length);
+    let semanticProviderCompletedUnits = 0;
+    let semanticProgressChain = Promise.resolve();
+    const semanticBatchResultsBySlice = await mapLlmBatchSlicesWithRateLimitStop(semanticBatchSlices, batchConcurrency, async (slice) => {
+      const { batch: batchRecords, batchNumber, totalBatches: sliceTotalBatches } = slice;
+      let completedWithinSlice = 0;
       const semanticBatchResults = await inferPaperSemanticObjectsBatch(
         batchRecords.map((record) => ({
           id: record.sourceState.sourceKey,
@@ -3298,33 +3999,146 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
           ...options,
           llmBatchSize: batchSize,
           onBatchComplete(event = {}) {
-            options.onBatchComplete?.(event);
-            reportLlmBatchComplete('semantic-extraction', event);
+            semanticProgressChain = semanticProgressChain.then(() => {
+              const providerCompleted = Math.min(
+                batchRecords.length,
+                Number(event.completed || completedWithinSlice + Number(event.batchSize || 0) || batchRecords.length)
+              );
+              const completedIncrement = Math.max(0, providerCompleted - completedWithinSlice);
+              completedWithinSlice = Math.max(completedWithinSlice, providerCompleted);
+              semanticProviderCompletedUnits = Math.min(
+                semanticPending.length,
+                semanticProviderCompletedUnits + completedIncrement
+              );
+              const stageEvent = {
+                ...event,
+                providerBatchNumber: event.batchNumber,
+                providerTotalBatches: event.totalBatches,
+                batchNumber,
+                totalBatches: sliceTotalBatches,
+                completed: semanticProviderCompletedUnits,
+                total: semanticPending.length,
+                batchSize: batchRecords.length,
+                llmBatchConcurrency: batchConcurrency
+              };
+              options.onBatchComplete?.(stageEvent);
+              reportLlmBatchComplete('semantic-extraction', stageEvent);
+            });
           },
           onBatchRetry(event = {}) {
-            options.onBatchRetry?.(event);
-            reportLlmBatchRetry('semantic-extraction', event);
+            const stageEvent = {
+              ...event,
+              providerBatchNumber: event.batchNumber,
+              providerTotalBatches: event.totalBatches,
+              batchNumber,
+              totalBatches: sliceTotalBatches,
+              batchSize: batchRecords.length,
+              llmBatchConcurrency: batchConcurrency
+            };
+            options.onBatchRetry?.(stageEvent);
+            reportLlmBatchRetry('semantic-extraction', stageEvent);
           }
         }
       );
+      return {
+        ...slice,
+        semanticBatchResults
+      };
+    }, (slice, rateLimitCooldownUntil) => {
+      const { batch: batchRecords } = slice;
+      return {
+        ...slice,
+        rateLimitSkipped: true,
+        rateLimitCooldownUntil,
+        semanticBatchResults: batchRecords.map((record) => createRateLimitedSemanticInferenceResult(
+          options,
+          semanticExtractionPlan,
+          rateLimitCooldownUntil,
+          {
+            skippedProviderCall: true,
+            paperId: record.semanticPaper?.paperId || null,
+            sourceKey: record.sourceState?.sourceKey || null
+          }
+        ))
+      };
+    });
+    await semanticProgressChain;
 
+    for (const slice of semanticBatchResultsBySlice) {
+      const {
+        start,
+        batch: batchRecords,
+        batchNumber,
+        semanticBatchResults
+      } = slice;
       for (let index = 0; index < batchRecords.length; index += 1) {
         const record = batchRecords[index];
-        const summary = applySemanticBatchResultToRecord(record, semanticBatchResults[index], semanticExtractionPlan, options);
+        const semanticResult = semanticBatchResults[index];
+        const summary = applySemanticBatchResultToRecord(record, semanticResult, semanticExtractionPlan, options);
+        const longContextFallbackReason = useLongContextFirst
+          ? getLongContextFallbackReason(semanticResult, summary, options)
+          : null;
+        const longContextValidationDetails = useLongContextFirst
+          ? createLongContextValidationDetails(semanticResult, summary, longContextFallbackReason)
+          : null;
         record.semanticPaper.llm.chunkPipeline = {
           enabled: false,
-          reason: useChunkPipeline ? 'chunk-pipeline-fallback' : 'disabled',
+          reason: useChunkPipeline
+            ? 'chunk-pipeline-fallback'
+            : (shouldDefaultToLongContextFirst(options) ? 'long-context-first' : 'disabled'),
           configSignature: createChunkPipelineConfigSignature(options)
         };
+        const longContextSemanticCallCount = useLongContextFirst && !semanticResult?.skippedProviderCall ? 1 : 0;
+        const longContextExtra = {
+          callCount: longContextSemanticCallCount,
+          validationStatus: longContextFallbackReason ? 'failed' : (useLongContextFirst ? 'passed' : null),
+          fallbackReason: longContextFallbackReason,
+          validationDetails: longContextValidationDetails
+        };
+        const semanticArtifact = await persistLongContextArtifactForRecord(
+          rootPath,
+          record,
+          options,
+          'semantic',
+          semanticResult,
+          summary,
+          {
+            ...longContextExtra,
+            longContextExtra,
+            batch: {
+              batchNumber,
+              totalBatches,
+              batchSize: batchRecords.length,
+              batchStart: start
+            }
+          }
+        );
+        record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record, {
+          ...longContextExtra,
+          artifacts: mergeLongContextArtifact(
+            getExistingLongContextArtifacts(record),
+            'semantic',
+            semanticArtifact
+          )
+        });
         record.semanticPaper.llmSemanticObjects = {
           ...(record.semanticPaper.llmSemanticObjects || {}),
-          chunkPipeline: record.semanticPaper.llm.chunkPipeline
+          chunkPipeline: record.semanticPaper.llm.chunkPipeline,
+          longContext: record.semanticPaper.llm.longContext
         };
         await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
         updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'semantic', summary.status, summary.error);
+        if (longContextFallbackReason) {
+          markLongContextFallback(record, longContextFallbackReason, {
+            semanticError: summary.error || null,
+            semanticCallCount: longContextSemanticCallCount,
+            semanticObjectCount: summary.semanticObjectCount,
+            validationDetails: longContextValidationDetails
+          });
+        }
       }
 
-      jobState.phases.semantic.lastBatchNumber = Math.floor(start / batchSize) + 1;
+      jobState.phases.semantic.lastBatchNumber = batchNumber;
       refreshStage2PhaseStatus(jobState, semanticPending, 'semantic');
       await saveStage2JobState(rootPath, jobState);
       llmCompletedUnits = Math.min(start + batchRecords.length, semanticPending.length);
@@ -3342,6 +4156,45 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       );
     }
     semanticProgress.done();
+  }
+
+  if (longContextFallbackRecords.size) {
+    const fallbackRecords = [...longContextFallbackRecords.values()]
+      .filter((record) => !record.sourceState.llmRefreshState?.scopedOut);
+    if (fallbackRecords.length) {
+      emitPipelineProgress(options, {
+        stage: 'llm-optimize',
+        currentStep: 'chunk fallback',
+        processedUnits: 0,
+        totalUnits: fallbackRecords.length,
+        stagePercent: totalLlmUnits ? ((llmCompletedUnits / totalLlmUnits) * 100) : 0,
+        message: `Running chunk fallback for ${fallbackRecords.length} long-context papers`
+      });
+      const chunkFallbackOptions = {
+        ...options,
+        llmExtractionStrategy: 'chunk-first',
+        llmChunkPipeline: true,
+        longContextFallbackActive: true
+      };
+      await runChunkLlmPipelineForRecords(rootPath, fallbackRecords, chunkFallbackOptions, jobState);
+      for (const record of fallbackRecords) {
+        const fallbackReason = record.sourceState.longContextFallbackReason || 'request-failed';
+        record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record, {
+          callCount: Number(record.sourceState.longContextFallbackDetails?.semanticCallCount || 0),
+          validationStatus: 'fallback',
+          fallbackUsed: true,
+          fallbackReason,
+          validationDetails: record.sourceState.longContextFallbackDetails?.validationDetails || null,
+          artifacts: getExistingLongContextArtifacts(record)
+        });
+        record.semanticPaper.llmSemanticObjects = {
+          ...(record.semanticPaper.llmSemanticObjects || {}),
+          longContext: record.semanticPaper.llm.longContext
+        };
+        await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+        record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
+      }
+    }
   }
 
   const relationPending = [];
@@ -3369,9 +4222,13 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
     };
     await saveStage2JobState(rootPath, jobState);
 
-    const totalBatches = Math.max(1, Math.ceil(relationPending.length / batchSize));
-    for (let start = 0; start < relationPending.length; start += batchSize) {
-      const batchRecords = relationPending.slice(start, start + batchSize);
+    const relationBatchSlices = createLlmBatchSlices(relationPending, batchSize);
+    const totalBatches = Math.max(1, relationBatchSlices.length);
+    let relationProviderCompletedUnits = 0;
+    let relationProgressChain = Promise.resolve();
+    const relationBatchResultsBySlice = await mapLlmBatchSlicesWithRateLimitStop(relationBatchSlices, batchConcurrency, async (slice) => {
+      const { batch: batchRecords, batchNumber, totalBatches: sliceTotalBatches } = slice;
+      let completedWithinSlice = 0;
       const relationBatchResults = await inferPaperResearchSemanticsBatch(
         batchRecords.map((record) => ({
           id: record.sourceState.sourceKey,
@@ -3382,34 +4239,127 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
           ...options,
           llmBatchSize: batchSize,
           onBatchComplete(event = {}) {
-            options.onBatchComplete?.(event);
-            reportLlmBatchComplete('relation-extraction', event);
+            relationProgressChain = relationProgressChain.then(() => {
+              const providerCompleted = Math.min(
+                batchRecords.length,
+                Number(event.completed || completedWithinSlice + Number(event.batchSize || 0) || batchRecords.length)
+              );
+              const completedIncrement = Math.max(0, providerCompleted - completedWithinSlice);
+              completedWithinSlice = Math.max(completedWithinSlice, providerCompleted);
+              relationProviderCompletedUnits = Math.min(
+                relationPending.length,
+                relationProviderCompletedUnits + completedIncrement
+              );
+              const stageEvent = {
+                ...event,
+                providerBatchNumber: event.batchNumber,
+                providerTotalBatches: event.totalBatches,
+                batchNumber,
+                totalBatches: sliceTotalBatches,
+                completed: relationProviderCompletedUnits,
+                total: relationPending.length,
+                batchSize: batchRecords.length,
+                llmBatchConcurrency: batchConcurrency
+              };
+              options.onBatchComplete?.(stageEvent);
+              reportLlmBatchComplete('relation-extraction', stageEvent);
+            });
           },
           onBatchRetry(event = {}) {
-            options.onBatchRetry?.(event);
-            reportLlmBatchRetry('relation-extraction', event);
+            const stageEvent = {
+              ...event,
+              providerBatchNumber: event.batchNumber,
+              providerTotalBatches: event.totalBatches,
+              batchNumber,
+              totalBatches: sliceTotalBatches,
+              batchSize: batchRecords.length,
+              llmBatchConcurrency: batchConcurrency
+            };
+            options.onBatchRetry?.(stageEvent);
+            reportLlmBatchRetry('relation-extraction', stageEvent);
           }
         }
       );
+      return {
+        ...slice,
+        relationBatchResults
+      };
+    }, (slice, rateLimitCooldownUntil) => {
+      const { batch: batchRecords } = slice;
+      return {
+        ...slice,
+        rateLimitSkipped: true,
+        rateLimitCooldownUntil,
+        relationBatchResults: batchRecords.map(() => createRateLimitedRelationInferenceResult(
+          options,
+          rateLimitCooldownUntil,
+          { skippedProviderCall: true }
+        ))
+      };
+    });
+    await relationProgressChain;
 
+    for (const slice of relationBatchResultsBySlice) {
+      const {
+        start,
+        batch: batchRecords,
+        batchNumber,
+        relationBatchResults
+      } = slice;
       for (let index = 0; index < batchRecords.length; index += 1) {
         const record = batchRecords[index];
-        const summary = applyRelationBatchResultToRecord(record, relationBatchResults[index], options);
+        const relationResult = relationBatchResults[index];
+        const previousLongContext = record.semanticPaper?.llm?.longContext
+          || record.semanticPaper?.llmSemanticObjects?.longContext
+          || {};
+        const summary = applyRelationBatchResultToRecord(record, relationResult, options);
         record.semanticPaper.llm.chunkPipeline = {
           ...(record.semanticPaper.llm.chunkPipeline || {}),
           enabled: false,
-          reason: useChunkPipeline ? 'chunk-pipeline-fallback' : 'disabled',
+          reason: useChunkPipeline
+            ? 'chunk-pipeline-fallback'
+            : (shouldDefaultToLongContextFirst(options) ? 'long-context-first' : 'disabled'),
           configSignature: createChunkPipelineConfigSignature(options)
         };
+        const relationArtifact = await persistLongContextArtifactForRecord(
+          rootPath,
+          record,
+          options,
+          'relation',
+          relationResult,
+          summary,
+          {
+            longContextExtra: previousLongContext,
+            batch: {
+              batchNumber,
+              totalBatches,
+              batchSize: batchRecords.length,
+              batchStart: start
+            }
+          }
+        );
+        record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record, {
+          callCount: previousLongContext.callCount,
+          validationStatus: previousLongContext.validationStatus,
+          fallbackUsed: previousLongContext.fallbackUsed,
+          fallbackReason: previousLongContext.fallbackReason,
+          validationDetails: previousLongContext.validationDetails,
+          artifacts: mergeLongContextArtifact(
+            getExistingLongContextArtifacts(record),
+            'relation',
+            relationArtifact
+          )
+        });
         record.semanticPaper.llmSemanticObjects = {
           ...(record.semanticPaper.llmSemanticObjects || {}),
-          chunkPipeline: record.semanticPaper.llm.chunkPipeline
+          chunkPipeline: record.semanticPaper.llm.chunkPipeline,
+          longContext: record.semanticPaper.llm.longContext
         };
         await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
         updateStage2PaperPhase(jobState, record.sourceState.sourceKey, 'relation', summary.status, summary.error);
       }
 
-      jobState.phases.relation.lastBatchNumber = Math.floor(start / batchSize) + 1;
+      jobState.phases.relation.lastBatchNumber = batchNumber;
       refreshStage2PhaseStatus(jobState, relationPending, 'relation');
       await saveStage2JobState(rootPath, jobState);
       llmCompletedUnits = semanticPending.length + Math.min(start + batchRecords.length, relationPending.length);
@@ -3913,6 +4863,211 @@ function annotateGraphLayers(graph) {
   }
 }
 
+function annotateDeltaPayloadRelationshipLayers(deltaPayload = {}, baseGraph = null) {
+  const nodesById = new Map();
+  for (const node of baseGraph?.nodes || []) {
+    if (node?.id) nodesById.set(node.id, node);
+  }
+  for (const node of deltaPayload.upsertNodes || []) {
+    if (node?.id) nodesById.set(node.id, node);
+  }
+
+  return {
+    ...deltaPayload,
+    upsertRelationships: (deltaPayload.upsertRelationships || []).map((relationship) => {
+      const sourceNode = nodesById.get(relationship.sourceId);
+      const targetNode = nodesById.get(relationship.targetId);
+      if (!sourceNode || !targetNode) return relationship;
+      const sourceLayer = sourceNode.properties?.layer || getNodeLayer(sourceNode.type);
+      const targetLayer = targetNode.properties?.layer || getNodeLayer(targetNode.type);
+      return {
+        ...relationship,
+        properties: {
+          ...(relationship.properties || {}),
+          sourceLayer,
+          targetLayer,
+          layerScope: sourceLayer === targetLayer ? 'intra-layer' : 'cross-layer',
+          layerPath: `${sourceLayer}->${targetLayer}`
+        }
+      };
+    })
+  };
+}
+
+const DIRECT_DELTA_SIMILARITY_RULES = [
+  { nodeType: NODE_TYPES.PROBLEM, edgeType: EDGE_TYPES.RELATED_TO, threshold: 0.35 },
+  { nodeType: NODE_TYPES.METHOD, edgeType: EDGE_TYPES.SIMILAR_TO, threshold: 0.4 },
+  { nodeType: NODE_TYPES.LIMITATION, edgeType: EDGE_TYPES.RELATED_TO, threshold: 0.38 },
+  { nodeType: NODE_TYPES.FUTURE_DIRECTION, edgeType: EDGE_TYPES.RELATED_TO, threshold: 0.35 },
+  { nodeType: NODE_TYPES.BENCHMARK, edgeType: EDGE_TYPES.SIMILAR_TO, threshold: 0.45 }
+];
+
+function augmentDirectDeltaPostprocessRelationships(deltaPayload = {}, baseGraph = null) {
+  const deletedNodeIds = new Set(deltaPayload.deleteNodeIds || []);
+  const deletedRelationshipIds = new Set(deltaPayload.deleteRelationshipIds || []);
+  const nodesById = new Map();
+  for (const node of baseGraph?.nodes || []) {
+    if (node?.id && !deletedNodeIds.has(node.id)) {
+      nodesById.set(node.id, node);
+    }
+  }
+  for (const node of deltaPayload.upsertNodes || []) {
+    if (node?.id && !deletedNodeIds.has(node.id)) {
+      nodesById.set(node.id, node);
+    }
+  }
+
+  const relationshipsById = new Map();
+  for (const relationship of baseGraph?.relationships || []) {
+    if (!relationship?.id || deletedRelationshipIds.has(relationship.id)) continue;
+    if (deletedNodeIds.has(relationship.sourceId) || deletedNodeIds.has(relationship.targetId)) continue;
+    relationshipsById.set(relationship.id, relationship);
+  }
+  for (const relationship of deltaPayload.upsertRelationships || []) {
+    if (relationship?.id) relationshipsById.set(relationship.id, relationship);
+  }
+
+  const sourceEntries = (deltaPayload.sourceEntries || []).map((entry) => ({
+    ...entry,
+    nodeIds: [...new Set(entry.nodeIds || [])].sort(),
+    relationshipIds: [...new Set(entry.relationshipIds || [])].sort()
+  }));
+  const sourceEntryMembership = sourceEntries.map((entry) => ({
+    entry,
+    nodeIds: new Set(entry.nodeIds || []),
+    relationshipIds: new Set(entry.relationshipIds || [])
+  }));
+  const impactedNodeIds = new Set([
+    ...(deltaPayload.upsertNodes || []).map((node) => node?.id).filter(Boolean),
+    ...sourceEntries.flatMap((entry) => entry.nodeIds || [])
+  ]);
+  const generatedRelationships = [];
+
+  const appendGeneratedRelationship = (relationship) => {
+    if (!relationship?.id || relationshipsById.has(relationship.id)) return;
+    relationshipsById.set(relationship.id, relationship);
+    generatedRelationships.push(relationship);
+
+    let attached = false;
+    for (const membership of sourceEntryMembership) {
+      if (!membership.nodeIds.has(relationship.sourceId) && !membership.nodeIds.has(relationship.targetId)) continue;
+      membership.relationshipIds.add(relationship.id);
+      attached = true;
+    }
+
+    if (!attached && sourceEntryMembership.length > 0) {
+      sourceEntryMembership[0].relationshipIds.add(relationship.id);
+    }
+  };
+
+  const allNodes = [...nodesById.values()];
+  for (const rule of DIRECT_DELTA_SIMILARITY_RULES) {
+    const nodes = allNodes.filter((node) => node.type === rule.nodeType);
+    if (!nodes.some((node) => impactedNodeIds.has(node.id))) continue;
+
+    for (const [left, right] of buildCandidatePairs(nodes)) {
+      if (!impactedNodeIds.has(left.id) && !impactedNodeIds.has(right.id)) continue;
+      const similarity = jaccardSimilarity(left.name, right.name);
+      if (similarity < rule.threshold) continue;
+      const properties = { score: Number(similarity.toFixed(3)) };
+      appendGeneratedRelationship(createRelationship(left.id, right.id, rule.edgeType, properties));
+      appendGeneratedRelationship(createRelationship(right.id, left.id, rule.edgeType, properties));
+    }
+  }
+
+  const claimNodes = allNodes.filter((node) => node.type === NODE_TYPES.CLAIM);
+  if (claimNodes.some((node) => impactedNodeIds.has(node.id))) {
+    for (const [left, right] of buildCandidatePairs(claimNodes)) {
+      if (!impactedNodeIds.has(left.id) && !impactedNodeIds.has(right.id)) continue;
+      if ((left.properties?.paperId || null) === (right.properties?.paperId || null)) continue;
+
+      const similarity = jaccardSimilarity(left.properties?.text || left.name, right.properties?.text || right.name);
+      if (similarity < 0.32) continue;
+
+      const leftPolarity = claimPolarity(left.properties?.text || left.name);
+      const rightPolarity = claimPolarity(right.properties?.text || right.name);
+      if (leftPolarity === 'mixed' || rightPolarity === 'mixed' || leftPolarity === rightPolarity) continue;
+
+      const properties = { score: Number(similarity.toFixed(3)) };
+      appendGeneratedRelationship(createRelationship(left.id, right.id, EDGE_TYPES.CONTRADICTS, properties));
+      appendGeneratedRelationship(createRelationship(right.id, left.id, EDGE_TYPES.CONTRADICTS, properties));
+    }
+  }
+
+  const methods = allNodes.filter((node) => node.type === NODE_TYPES.METHOD);
+  const problems = allNodes.filter((node) => node.type === NODE_TYPES.PROBLEM);
+  if (methods.some((node) => impactedNodeIds.has(node.id)) || problems.some((node) => impactedNodeIds.has(node.id))) {
+    const appliesPairs = new Set(
+      [...relationshipsById.values()]
+        .filter((relationship) => relationship.type === EDGE_TYPES.APPLIES_TO)
+        .map((relationship) => `${relationship.sourceId}:${relationship.targetId}`)
+    );
+    for (const method of methods) {
+      const methodThemes = detectThemes(method.name, METHOD_THEMES);
+      for (const problem of problems) {
+        if (!impactedNodeIds.has(method.id) && !impactedNodeIds.has(problem.id)) continue;
+        if (appliesPairs.has(`${method.id}:${problem.id}`)) continue;
+
+        const similarity = jaccardSimilarity(method.name, problem.name);
+        const problemTokens = tokenizeWithoutStopwords(problem.name);
+        const themeBoost = methodThemes.some((theme) => problemTokens.includes(theme.split('-')[0])) ? 0.14 : 0;
+        const score = similarity + themeBoost;
+        if (score < 0.22) continue;
+
+        appendGeneratedRelationship(createRelationship(method.id, problem.id, EDGE_TYPES.TRANSFERABLE_TO, {
+          relationSource: 'heuristic',
+          score: Number(score.toFixed(3))
+        }));
+      }
+    }
+  }
+
+  const limitations = allNodes.filter((node) => node.type === NODE_TYPES.LIMITATION);
+  if (limitations.some((node) => impactedNodeIds.has(node.id)) || methods.some((node) => impactedNodeIds.has(node.id))) {
+    for (const limitation of limitations) {
+      const limitationThemes = detectThemes(limitation.name, LIMITATION_THEMES);
+      if (!limitationThemes.length) continue;
+
+      for (const method of methods) {
+        if (!impactedNodeIds.has(limitation.id) && !impactedNodeIds.has(method.id)) continue;
+        const methodThemes = detectThemes(method.name, METHOD_THEMES);
+        const overlappingThemes = limitationThemes.filter((theme) => methodThemes.includes(theme));
+        if (!overlappingThemes.length) continue;
+
+        appendGeneratedRelationship(createRelationship(limitation.id, method.id, EDGE_TYPES.MAY_BE_ADDRESSED_BY, {
+          themes: overlappingThemes,
+          score: Number((0.55 + overlappingThemes.length * 0.15).toFixed(2))
+        }));
+      }
+    }
+  }
+
+  if (!generatedRelationships.length) {
+    return deltaPayload;
+  }
+
+  return {
+    ...deltaPayload,
+    upsertRelationships: [
+      ...(deltaPayload.upsertRelationships || []),
+      ...generatedRelationships
+    ].sort((left, right) => left.id.localeCompare(right.id)),
+    sourceEntries: sourceEntryMembership.map(({ entry, relationshipIds }) => ({
+      ...entry,
+      relationshipIds: [...relationshipIds].sort()
+    })),
+    directDeltaPostprocess: {
+      generatedRelationshipCount: generatedRelationships.length,
+      generatedRelationshipTypes: Object.fromEntries(
+        [...generatedRelationships.reduce((counts, relationship) => {
+          counts.set(relationship.type, (counts.get(relationship.type) || 0) + 1);
+          return counts;
+        }, new Map()).entries()].sort((left, right) => left[0].localeCompare(right[0]))
+      )
+    }
+  };
+}
+
 function findRelationship(graph, sourceId, targetId, type) {
   return graph.getOutgoing(sourceId).find((relationship) => {
     return relationship.targetId === targetId && relationship.type === type;
@@ -4385,6 +5540,28 @@ function refreshMetaFromGraph(previousMeta, graph, mergeSummary = null, nodeLlmC
       mergedRelationshipCount: 0,
       groups: []
     }
+  };
+}
+
+function estimateDirectDeltaGraphCounts(meta = {}, graph = null, deltaPayload = {}) {
+  const baseNodeCount = Number.isFinite(Number(meta.nodeCount))
+    ? Number(meta.nodeCount)
+    : Number(graph?.nodeCount || 0);
+  const baseRelationshipCount = Number.isFinite(Number(meta.relationshipCount))
+    ? Number(meta.relationshipCount)
+    : Number(graph?.relationshipCount || 0);
+  const existingNodeDeletes = (deltaPayload.deleteNodeIds || [])
+    .filter((nodeId) => graph?.getNode?.(nodeId)).length;
+  const existingRelationshipDeletes = (deltaPayload.deleteRelationshipIds || [])
+    .filter((relationshipId) => graph?.getRelationship?.(relationshipId)).length;
+  const newNodeUpserts = (deltaPayload.upsertNodes || [])
+    .filter((node) => node?.id && !graph?.getNode?.(node.id)).length;
+  const newRelationshipUpserts = (deltaPayload.upsertRelationships || [])
+    .filter((relationship) => relationship?.id && !graph?.getRelationship?.(relationship.id)).length;
+
+  return {
+    nodeCount: Math.max(0, baseNodeCount - existingNodeDeletes + newNodeUpserts),
+    relationshipCount: Math.max(0, baseRelationshipCount - existingRelationshipDeletes + newRelationshipUpserts)
   };
 }
 
@@ -5759,6 +6936,12 @@ function createEmptyMaterializeTimings() {
     markdownReadMs: 0,
     markdownParseMs: 0,
     semanticSnapshotMs: 0,
+    mergeRecanonicalizeMs: 0,
+    mergeSnapshotReloadMs: 0,
+    mergePreviousSourceCount: 0,
+    mergeMaterializedSourceCount: 0,
+    mergeAffectedSourceCount: 0,
+    mergeUntouchedSourceCount: 0,
     parser: {
       probeHttpMs: 0,
       pdfReadMs: 0,
@@ -5769,7 +6952,19 @@ function createEmptyMaterializeTimings() {
 }
 
 function mergeMaterializeTimings(target = createEmptyMaterializeTimings(), source = {}) {
-  for (const key of ['totalMs', 'pdfToMarkdownMs', 'markdownReadMs', 'markdownParseMs', 'semanticSnapshotMs']) {
+  for (const key of [
+    'totalMs',
+    'pdfToMarkdownMs',
+    'markdownReadMs',
+    'markdownParseMs',
+    'semanticSnapshotMs',
+    'mergeRecanonicalizeMs',
+    'mergeSnapshotReloadMs',
+    'mergePreviousSourceCount',
+    'mergeMaterializedSourceCount',
+    'mergeAffectedSourceCount',
+    'mergeUntouchedSourceCount'
+  ]) {
     const value = Number(source?.[key] || 0);
     if (Number.isFinite(value) && value > 0) {
       target[key] = Number(target[key] || 0) + value;
@@ -6615,6 +7810,145 @@ async function recanonicalizeManifestEntries(rootPath, manifestEntries = [], man
       })
       .sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
     removedEntries
+  };
+}
+
+function shouldUseIncrementalMergeRecanonicalization(options = {}) {
+  return booleanOption(firstDefinedValue(
+    options.incrementalMergeRecanonicalization,
+    options.importIncrementalMergeRecanonicalization,
+    options.fastMdIncrementalMergeRecanonicalization
+  ), false);
+}
+
+function createManifestSourceGroupIndex(sources = []) {
+  const byGroupKey = new Map();
+  const bySourceKey = new Map();
+  for (const source of sources || []) {
+    const normalized = upgradeManifestEntryIdentityRecord(source);
+    const sourceKey = String(normalized.sourceKey || '').trim();
+    if (!sourceKey) continue;
+    const groupKey = getManifestEntryPaperGroupKey(normalized) || sourceKey;
+    if (!byGroupKey.has(groupKey)) byGroupKey.set(groupKey, []);
+    byGroupKey.get(groupKey).push(normalized);
+    bySourceKey.set(sourceKey, normalized);
+  }
+  return {
+    byGroupKey,
+    bySourceKey
+  };
+}
+
+function selectIncrementalMergeRecanonicalizationEntries(previousSources = [], materializedSources = []) {
+  const previousIndex = createManifestSourceGroupIndex(previousSources);
+  const affectedPreviousSourceKeys = new Set();
+  const materializedSourceKeys = new Set(
+    (materializedSources || []).map((entry) => String(entry?.sourceKey || '').trim()).filter(Boolean)
+  );
+
+  for (const materializedSource of materializedSources || []) {
+    const normalizedMaterialized = upgradeManifestEntryIdentityRecord(materializedSource);
+    const directPrevious = previousIndex.bySourceKey.get(normalizedMaterialized.sourceKey);
+    if (directPrevious) {
+      const groupKey = getManifestEntryPaperGroupKey(directPrevious) || directPrevious.sourceKey;
+      for (const entry of previousIndex.byGroupKey.get(groupKey) || []) {
+        affectedPreviousSourceKeys.add(entry.sourceKey);
+      }
+    }
+
+    for (const previousSource of previousSources || []) {
+      const previousSourceKey = String(previousSource?.sourceKey || '').trim();
+      if (!previousSourceKey || materializedSourceKeys.has(previousSourceKey)) continue;
+      if (!papersAreDuplicate(normalizedMaterialized, previousSource)) continue;
+      const groupKey = getManifestEntryPaperGroupKey(previousSource) || previousSourceKey;
+      for (const entry of previousIndex.byGroupKey.get(groupKey) || []) {
+        affectedPreviousSourceKeys.add(entry.sourceKey);
+      }
+    }
+  }
+
+  const affectedPreviousSources = [];
+  const untouchedSources = [];
+  for (const source of previousSources || []) {
+    const sourceKey = String(source?.sourceKey || '').trim();
+    if (sourceKey && affectedPreviousSourceKeys.has(sourceKey)) {
+      affectedPreviousSources.push(source);
+    } else if (!materializedSourceKeys.has(sourceKey)) {
+      untouchedSources.push(source);
+    }
+  }
+
+  return {
+    affectedEntries: [
+      ...affectedPreviousSources,
+      ...materializedSources
+    ],
+    untouchedSources,
+    affectedPreviousSourceCount: affectedPreviousSources.length,
+    materializedSourceCount: materializedSources.length,
+    affectedSourceCount: affectedPreviousSources.length + materializedSources.length,
+    untouchedSourceCount: untouchedSources.length
+  };
+}
+
+function createActiveSemanticPaperSummariesFromManifestSources(manifestSources = []) {
+  return (manifestSources || [])
+    .filter((entry) => entry?.activeInGraph !== false)
+    .map((entry) => upgradeSemanticPaperIdentityRecord({
+      paperId: entry.paperId || `paper:${stableHash(entry.sourceKey || entry.paperTitle || '')}`,
+      paperTitle: entry.paperTitle || path.basename(entry.inputPath || entry.sourcePath || entry.sourceKey || 'paper'),
+      sourceKey: entry.sourceKey,
+      sourcePath: entry.sourcePath || entry.inputPath || null,
+      sourceMarkdownPath: entry.sourceMarkdownPath || entry.markdownCachePath || null,
+      sourcePdfPath: entry.sourcePdfPath || null,
+      sourceKind: entry.sourceKind || entry.kind || 'markdown',
+      sourceProvider: entry.sourceProvider || 'filesystem',
+      sourceFingerprint: entry.sourceFingerprint || entry.fingerprint || '',
+      contentSha256: entry.contentSha256 || '',
+      normalizedTextSha256: entry.normalizedTextSha256 || '',
+      identifiers: entry.identifiers || {},
+      canonicalSourceKey: entry.canonicalSourceKey || entry.sourceKey,
+      duplicateOfSourceKey: entry.duplicateOfSourceKey || null,
+      duplicateSourceCount: Number(entry.duplicateSourceCount || 1),
+      activeInGraph: entry.activeInGraph !== false,
+      canonicalId: entry.canonicalId || '',
+      canonicalIdSource: entry.canonicalIdSource || '',
+      normalizedTitle: entry.normalizedTitle || '',
+      titleSignature: entry.titleSignature || '',
+      identityConfidence: entry.identityConfidence || 'provisional',
+      identityAliases: entry.identityAliases || []
+    }));
+}
+
+async function mergeManifestSourcesWithIncrementalRecanonicalization(
+  rootPath,
+  previousManifest,
+  materializedManifestSources = [],
+  options = {}
+) {
+  const previousSources = previousManifest?.sources || [];
+  const selection = selectIncrementalMergeRecanonicalizationEntries(previousSources, materializedManifestSources);
+  if (!selection.affectedEntries.length) {
+    return {
+      sources: [...selection.untouchedSources],
+      removedEntries: [],
+      selection
+    };
+  }
+
+  const recanonicalized = await recanonicalizeManifestEntries(
+    rootPath,
+    selection.affectedEntries,
+    previousManifest || {},
+    options
+  );
+  return {
+    sources: [
+      ...selection.untouchedSources,
+      ...recanonicalized.sources
+    ].sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
+    removedEntries: recanonicalized.removedEntries,
+    selection
   };
 }
 
@@ -7620,17 +8954,37 @@ export async function analyzeCorpus(inputPath, options = {}) {
     } = materialized;
     let manifestSources = materializedManifestSources;
     if (mergeWithExistingManifestSources) {
-      const materializedSourceKeys = new Set(materializedManifestSources.map((entry) => entry.sourceKey));
-      const mergedManifestSources = [
-        ...(previousManifest?.sources || []).filter((entry) => !materializedSourceKeys.has(entry.sourceKey)),
-        ...materializedManifestSources
-      ];
-      const recanonicalized = await recanonicalizeManifestEntries(
-        rootPath,
-        mergedManifestSources,
-        previousManifest || {},
-        analysisOptions
-      );
+      const mergeStartedAt = Date.now();
+      const incrementalMerge = shouldUseIncrementalMergeRecanonicalization(analysisOptions);
+      const recanonicalized = incrementalMerge
+        ? await mergeManifestSourcesWithIncrementalRecanonicalization(
+            rootPath,
+            previousManifest || {},
+            materializedManifestSources,
+            analysisOptions
+          )
+        : await (async () => {
+            const materializedSourceKeys = new Set(materializedManifestSources.map((entry) => entry.sourceKey));
+            const mergedManifestSources = [
+              ...(previousManifest?.sources || []).filter((entry) => !materializedSourceKeys.has(entry.sourceKey)),
+              ...materializedManifestSources
+            ];
+            return recanonicalizeManifestEntries(
+              rootPath,
+              mergedManifestSources,
+              previousManifest || {},
+              analysisOptions
+            );
+          })();
+      materializeTimings.mergeRecanonicalizeMs = Date.now() - mergeStartedAt;
+      materializeTimings.mergePreviousSourceCount = Number(previousManifest?.sources?.length || 0);
+      materializeTimings.mergeMaterializedSourceCount = materializedManifestSources.length;
+      materializeTimings.mergeAffectedSourceCount = incrementalMerge
+        ? Number(recanonicalized.selection?.affectedSourceCount || 0)
+        : Number((previousManifest?.sources?.length || 0) + materializedManifestSources.length);
+      materializeTimings.mergeUntouchedSourceCount = incrementalMerge
+        ? Number(recanonicalized.selection?.untouchedSourceCount || 0)
+        : 0;
       manifestSources = recanonicalized.sources;
       if (recanonicalized.removedEntries.length) {
         failedSources = [
@@ -7642,15 +8996,21 @@ export async function analyzeCorpus(inputPath, options = {}) {
           }))
         ];
       }
-      const reloaded = await loadSemanticPapersFromManifest(rootPath, {
-        ...previousManifest,
-        sources: manifestSources
-      }, metadataConcurrency);
-      semanticPapers = reloaded.semanticPapers;
-      failedSources = [
-        ...failedSources,
-        ...reloaded.failedSources.filter((entry) => !failedSources.some((existing) => existing.sourceKey === entry.sourceKey))
-      ];
+      if (incrementalMerge && materializeOnly && !runIngestionOrchestrator) {
+        semanticPapers = createActiveSemanticPaperSummariesFromManifestSources(manifestSources);
+      } else {
+        const reloadStartedAt = Date.now();
+        const reloaded = await loadSemanticPapersFromManifest(rootPath, {
+          ...previousManifest,
+          sources: manifestSources
+        }, metadataConcurrency);
+        materializeTimings.mergeSnapshotReloadMs = Date.now() - reloadStartedAt;
+        semanticPapers = reloaded.semanticPapers;
+        failedSources = [
+          ...failedSources,
+          ...reloaded.failedSources.filter((entry) => !failedSources.some((existing) => existing.sourceKey === entry.sourceKey))
+        ];
+      }
     }
 
     await mapWithConcurrency(removedSources, metadataConcurrency, async (removedSource) => {
@@ -8301,6 +9661,325 @@ export async function mergeGraphCorpus(inputPath, options = {}) {
   };
 }
 
+const FAST_COMMIT_PROGRESS_DIAGNOSTICS_CONTRACT_VERSION = 'fast-commit-progress-diagnostics-v1';
+
+function resolveFastCommitMode(options = {}) {
+  return options.directDeltaCommit === true || options.fastMdDirectDeltaCommit === true
+    ? 'direct-lite-delta'
+    : 'delta';
+}
+
+function createFastCommitProgressDiagnostics(mode, changedSourceKeys = [], phaseTimings = null) {
+  return {
+    contractVersion: FAST_COMMIT_PROGRESS_DIAGNOSTICS_CONTRACT_VERSION,
+    fastCommitMode: mode,
+    changedSourceKeyCount: Array.isArray(changedSourceKeys) ? changedSourceKeys.length : 0,
+    fastCommitPhasesMs: typeof phaseTimings?.snapshot === 'function' ? phaseTimings.snapshot() : {}
+  };
+}
+
+function emitFastCommitProgress(options = {}, context = {}) {
+  const totalUnits = Number.isFinite(Number(context.totalUnits)) ? Number(context.totalUnits) : 6;
+  emitPipelineProgress(options, {
+    stage: 'fast-commit',
+    currentStep: context.currentStep || 'fast commit progress',
+    processedUnits: Number.isFinite(Number(context.processedUnits)) ? Number(context.processedUnits) : 0,
+    totalUnits,
+    stagePercent: Number.isFinite(Number(context.stagePercent)) ? Number(context.stagePercent) : 0,
+    message: context.message || 'Fast commit progress',
+    diagnostics: createFastCommitProgressDiagnostics(
+      context.mode || resolveFastCommitMode(options),
+      context.changedSourceKeys || [],
+      context.phaseTimings
+    )
+  });
+}
+
+function resolveFastCommitWriteProgress(phase) {
+  if (phase === 'lite-delta') return { processedUnits: 4, stagePercent: 66.67 };
+  if (phase === 'manifest') return { processedUnits: 5, stagePercent: 83.33 };
+  if (phase === 'meta') return { processedUnits: 5.5, stagePercent: 95 };
+  return { processedUnits: 3, stagePercent: 50 };
+}
+
+function createFastCommitWriteProgressHandler(options = {}, context = {}) {
+  return (event = {}) => {
+    const phase = String(event.phase || '').trim();
+    const phaseProgress = resolveFastCommitWriteProgress(phase);
+    emitFastCommitProgress(options, {
+      mode: context.mode,
+      changedSourceKeys: context.changedSourceKeys,
+      phaseTimings: context.phaseTimings,
+      currentStep: phase || context.currentStep || 'writing fast local delta',
+      processedUnits: phaseProgress.processedUnits,
+      totalUnits: 6,
+      stagePercent: phaseProgress.stagePercent,
+      message: event.label || context.message || 'Writing fast local delta files'
+    });
+  };
+}
+
+async function collectChangedSemanticPapersForFastCommit(rootPath, manifest, changedSourceKeys) {
+  const manifestEntriesByKey = new Map((manifest.sources || []).map((entry) => [entry.sourceKey, entry]));
+  const changedSemanticPapers = [];
+  for (const sourceKey of changedSourceKeys) {
+    const manifestEntry = manifestEntriesByKey.get(sourceKey);
+    if (!manifestEntry || manifestEntry.activeInGraph === false) continue;
+    const snapshot = await loadSemanticPaperSnapshot(rootPath, sourceKey);
+    if (!snapshot) {
+      throw new Error(`No semantic snapshot was available for ${sourceKey}. Run Stage 1 before fast-committing.`);
+    }
+    if (snapshot.activeInGraph !== false) {
+      changedSemanticPapers.push(snapshot);
+    }
+  }
+  return changedSemanticPapers;
+}
+
+function prepareDirectLiteDeltaFastCommit({
+  currentCorpus,
+  manifest,
+  rootPath,
+  options,
+  changedSourceKeys,
+  activeManifestSources,
+  paperDeltaPayload,
+  phaseTimings
+}) {
+  let directDeltaPayload = phaseTimings.measureSync('directDeltaPostprocess', () => (
+    augmentDirectDeltaPostprocessRelationships(paperDeltaPayload, currentCorpus.graph)
+  ));
+  directDeltaPayload = phaseTimings.measureSync('annotateDirectDeltaLayers', () => (
+    annotateDeltaPayloadRelationshipLayers(directDeltaPayload, currentCorpus.graph)
+  ));
+  const { nextMeta, nextManifest } = phaseTimings.measureSync('prepareDirectDelta', () => {
+    const directCounts = estimateDirectDeltaGraphCounts(currentCorpus.meta, currentCorpus.graph, directDeltaPayload);
+    const directIndexedAt = new Date().toISOString();
+    const preparedMeta = {
+      ...currentCorpus.meta,
+      ...directCounts,
+      name: currentCorpus.meta.name || manifest.corpusName || options.name || path.basename(rootPath),
+      indexedAt: directIndexedAt,
+      paperCount: activeManifestSources.length,
+      sourceCount: manifest.sources?.length || 0,
+      sourceMode: manifest.sourceMode || currentCorpus.meta.sourceMode || 'markdown',
+      pdfParser: manifest.pdfParser || currentCorpus.meta.pdfParser || null,
+      semanticExtractionMode: manifest.semanticExtractionMode || currentCorpus.meta.semanticExtractionMode || 'heuristic-only',
+      lastChangeSummary: manifest.lastChangeSummary || currentCorpus.meta.lastChangeSummary || null,
+      fastDeltaCommit: {
+        mode: 'direct-lite-delta',
+        skippedFullGraphRefinement: true,
+        changedSourceKeyCount: changedSourceKeys.length,
+        upsertNodeCount: directDeltaPayload.upsertNodes?.length || 0,
+        upsertRelationshipCount: directDeltaPayload.upsertRelationships?.length || 0,
+        deleteNodeCount: directDeltaPayload.deleteNodeIds?.length || 0,
+        deleteRelationshipCount: directDeltaPayload.deleteRelationshipIds?.length || 0,
+        committedAt: directIndexedAt
+      }
+    };
+    return {
+      nextMeta: preparedMeta,
+      nextManifest: {
+        ...manifest,
+        indexedAt: preparedMeta.indexedAt
+      }
+    };
+  });
+  return {
+    paperDeltaPayload: directDeltaPayload,
+    nextMeta,
+    nextManifest
+  };
+}
+
+function cloneFastCommitLiteSourceEntry(entry) {
+  if (!entry || typeof entry !== 'object' || !entry.sourceKey) return null;
+  return {
+    ...entry,
+    nodeIds: unique(Array.isArray(entry.nodeIds) ? entry.nodeIds.filter(Boolean) : []).sort(),
+    relationshipIds: unique(Array.isArray(entry.relationshipIds) ? entry.relationshipIds.filter(Boolean) : []).sort()
+  };
+}
+
+function collectFastCommitPreviousRefs(liteState, sourceKeys = []) {
+  const nodeIds = new Set();
+  const relationshipIds = new Set();
+  for (const sourceKey of sourceKeys) {
+    const sourceEntry = liteState?.sources?.[sourceKey];
+    for (const nodeId of sourceEntry?.nodeIds || []) nodeIds.add(nodeId);
+    for (const relationshipId of sourceEntry?.relationshipIds || []) relationshipIds.add(relationshipId);
+  }
+  return { nodeIds, relationshipIds };
+}
+
+function buildDeltaBasedAffectedLiteSourcePlan({
+  liteState,
+  changedSourceKeys,
+  graphDiffPayload
+}) {
+  const changedKeys = unique((changedSourceKeys || []).filter(Boolean)).sort();
+  const sourceEntries = (graphDiffPayload?.sourceEntries || [])
+    .map((entry) => cloneFastCommitLiteSourceEntry(entry))
+    .filter(Boolean);
+  if (!changedKeys.length) {
+    return { accepted: false, reason: 'no-changed-sources' };
+  }
+  if (!sourceEntries.length) {
+    return { accepted: false, reason: 'missing-source-entries' };
+  }
+
+  const sourceEntryByKey = new Map(sourceEntries.map((entry) => [entry.sourceKey, entry]));
+  for (const sourceKey of changedKeys) {
+    if (!sourceEntryByKey.has(sourceKey)) {
+      return { accepted: false, reason: `missing-source-entry:${sourceKey}` };
+    }
+  }
+
+  const previousRefs = collectFastCommitPreviousRefs(liteState, changedKeys);
+  for (const nodeId of graphDiffPayload?.deleteNodeIds || []) {
+    if (!previousRefs.nodeIds.has(nodeId)) {
+      return { accepted: false, reason: `unowned-delete-node:${nodeId}` };
+    }
+  }
+  for (const relationshipId of graphDiffPayload?.deleteRelationshipIds || []) {
+    if (!previousRefs.relationshipIds.has(relationshipId)) {
+      return { accepted: false, reason: `unowned-delete-relationship:${relationshipId}` };
+    }
+  }
+
+  const sourceEntriesByNodeId = new Map();
+  const sourceEntriesByRelationshipId = new Map();
+  for (const sourceEntry of sourceEntries) {
+    for (const nodeId of sourceEntry.nodeIds || []) {
+      if (!sourceEntriesByNodeId.has(nodeId)) sourceEntriesByNodeId.set(nodeId, []);
+      sourceEntriesByNodeId.get(nodeId).push(sourceEntry);
+    }
+    for (const relationshipId of sourceEntry.relationshipIds || []) {
+      if (!sourceEntriesByRelationshipId.has(relationshipId)) sourceEntriesByRelationshipId.set(relationshipId, []);
+      sourceEntriesByRelationshipId.get(relationshipId).push(sourceEntry);
+    }
+  }
+
+  for (const node of graphDiffPayload?.upsertNodes || []) {
+    if (node?.type === NODE_TYPES.CORPUS) continue;
+    if (!sourceEntriesByNodeId.has(node?.id)) {
+      return { accepted: false, reason: `unowned-upsert-node:${node?.id || 'unknown'}` };
+    }
+  }
+
+  for (const relationship of graphDiffPayload?.upsertRelationships || []) {
+    if (!relationship?.id) continue;
+    if (sourceEntriesByRelationshipId.has(relationship.id)) continue;
+    const relationshipSourceId = relationship.sourceId || relationship.source;
+    const relationshipTargetId = relationship.targetId || relationship.target;
+    const ownerEntries = unique([
+      ...(sourceEntriesByNodeId.get(relationshipSourceId) || []),
+      ...(sourceEntriesByNodeId.get(relationshipTargetId) || [])
+    ]);
+    if (!ownerEntries.length) {
+      return { accepted: false, reason: `unowned-upsert-relationship:${relationship.id}` };
+    }
+    for (const sourceEntry of ownerEntries) {
+      sourceEntry.relationshipIds = unique([...(sourceEntry.relationshipIds || []), relationship.id]).sort();
+      if (!sourceEntriesByRelationshipId.has(relationship.id)) sourceEntriesByRelationshipId.set(relationship.id, []);
+      sourceEntriesByRelationshipId.get(relationship.id).push(sourceEntry);
+    }
+  }
+
+  return {
+    accepted: true,
+    reason: null,
+    liteChangedSourceKeys: changedKeys,
+    sourceEntries
+  };
+}
+
+function buildRefinedFastCommitArtifacts({
+  currentCorpus,
+  manifest,
+  rootPath,
+  options,
+  changedSourceKeys,
+  activeManifestSources,
+  liteState,
+  paperDeltaPayload,
+  phaseTimings
+}) {
+  const nextGraph = phaseTimings.measureSync('applyGraphDelta', () => applyGraphDeltaPayload(currentCorpus.graph, paperDeltaPayload));
+  phaseTimings.measureSync('postIngestionRefinement', () => postIngestionRefinement(nextGraph));
+  const deltaPayload = phaseTimings.measureSync('buildGraphDiff', () => buildGraphDiffPayload(currentCorpus.graph, nextGraph, {
+    changedSourceKeys,
+    liteChangedSourceKeys: paperDeltaPayload.liteChangedSourceKeys || changedSourceKeys,
+    sourceEntries: paperDeltaPayload.sourceEntries || [],
+    removalState: paperDeltaPayload.removalState
+  }));
+  const deltaBasedAffectedPlan = phaseTimings.measureSync('deltaAffectedKeyPlan', () => (
+    buildDeltaBasedAffectedLiteSourcePlan({
+      liteState,
+      changedSourceKeys,
+      graphDiffPayload: deltaPayload
+    })
+  ));
+  let affectedLiteSourceKeys = deltaBasedAffectedPlan.accepted
+    ? deltaBasedAffectedPlan.liteChangedSourceKeys
+    : [];
+  let affectedLiteSourceStrategy = 'delta-source-entries';
+  let affectedLiteSourceFallbackReason = null;
+  let finalDeltaPayload = deltaPayload;
+  if (deltaBasedAffectedPlan.accepted) {
+    finalDeltaPayload = {
+      ...deltaPayload,
+      liteChangedSourceKeys: deltaBasedAffectedPlan.liteChangedSourceKeys,
+      sourceEntries: deltaBasedAffectedPlan.sourceEntries
+    };
+  } else {
+    affectedLiteSourceStrategy = 'full-lite-state-diff';
+    affectedLiteSourceFallbackReason = deltaBasedAffectedPlan.reason || 'delta-plan-rejected';
+    const nextLiteState = phaseTimings.measureSync('buildLiteState', () => buildLiteStateSnapshot(nextGraph, activeManifestSources));
+    affectedLiteSourceKeys = phaseTimings.measureSync('diffLiteState', () => {
+      const liteSourceKeys = unique([
+        ...Object.keys(liteState?.sources || {}),
+        ...Object.keys(nextLiteState?.sources || {})
+      ]);
+      return liteSourceKeys.filter((sourceKey) => (
+        JSON.stringify(liteState?.sources?.[sourceKey] || null) !== JSON.stringify(nextLiteState?.sources?.[sourceKey] || null)
+      ));
+    });
+    const liteChangedSourceKeys = affectedLiteSourceKeys.length ? affectedLiteSourceKeys : [GLOBAL_SOURCE_KEY];
+    finalDeltaPayload = {
+      ...deltaPayload,
+      liteChangedSourceKeys,
+      sourceEntries: liteChangedSourceKeys
+        .map((sourceKey) => nextLiteState.sources?.[sourceKey])
+        .filter(Boolean)
+    };
+  }
+  const nextMeta = phaseTimings.measureSync('refreshMeta', () => ({
+    ...refreshMetaFromGraph(currentCorpus.meta, nextGraph, currentCorpus.meta.similarNodeMerge, currentCorpus.meta.nodeLlmCheck),
+    name: currentCorpus.meta.name || manifest.corpusName || options.name || path.basename(rootPath),
+    paperCount: activeManifestSources.length,
+    sourceCount: manifest.sources?.length || 0,
+    sourceMode: manifest.sourceMode || currentCorpus.meta.sourceMode || 'markdown',
+    pdfParser: manifest.pdfParser || currentCorpus.meta.pdfParser || null,
+    semanticExtractionMode: manifest.semanticExtractionMode || currentCorpus.meta.semanticExtractionMode || 'heuristic-only',
+    lastChangeSummary: manifest.lastChangeSummary || currentCorpus.meta.lastChangeSummary || null
+  }));
+  const nextManifest = {
+    ...manifest,
+    indexedAt: nextMeta.indexedAt
+  };
+  return {
+    nextGraph,
+    affectedLiteSourceKeys,
+    deltaPayload: finalDeltaPayload,
+    affectedLiteSourceStrategy,
+    skippedFullLiteStateDiff: deltaBasedAffectedPlan.accepted,
+    affectedLiteSourceFallbackReason,
+    nextMeta,
+    nextManifest
+  };
+}
+
 export async function fastCommitCorpus(inputPath, options = {}) {
   const discovery = await discoverCorpusSources(inputPath, {
     rootPath: options.rootPath
@@ -8321,7 +10000,11 @@ export async function fastCommitCorpus(inputPath, options = {}) {
   }
 
   const changedSourceKeys = unique((Array.isArray(options.changedSourceKeys) ? options.changedSourceKeys : []).filter(Boolean)).sort();
+  const phaseTimings = createPhaseTimingRecorder();
+  const fastCommitMode = resolveFastCommitMode(options);
+  const fastCommitStartedAt = Date.now();
   if (!changedSourceKeys.length) {
+    phaseTimings.addTiming('total', Date.now() - fastCommitStartedAt);
     return {
       graph: null,
       meta: await loadCorpusMeta(rootPath),
@@ -8330,7 +10013,13 @@ export async function fastCommitCorpus(inputPath, options = {}) {
       changes: manifest.lastChangeSummary || null,
       reused: true,
       stage: 'fast-committed',
-      syncJob: null
+      syncJob: null,
+      fastCommitMetrics: {
+        contractVersion: 'fast-commit-phases-v1',
+        mode: 'noop',
+        changedSourceKeyCount: 0,
+        phaseTimingsMs: phaseTimings.snapshot()
+      }
     };
   }
 
@@ -8341,43 +10030,34 @@ export async function fastCommitCorpus(inputPath, options = {}) {
     'Fast local graph update',
     'applying changed papers to the lite graph and queueing authoritative sync'
   );
-  emitPipelineProgress(options, {
-    stage: 'fast-commit',
+  emitFastCommitProgress(options, {
     currentStep: 'loading lite graph',
     processedUnits: 0,
-    totalUnits: 6,
     stagePercent: 0,
-    message: 'Preparing fast local graph update'
+    message: 'Preparing fast local graph update',
+    mode: fastCommitMode,
+    changedSourceKeys,
+    phaseTimings
   });
 
-  const [currentCorpus, liteState] = await Promise.all([
-    loadCorpusLite(rootPath),
-    readJson(paths.liteStatePath, null)
-  ]);
-  const manifestEntriesByKey = new Map((manifest.sources || []).map((entry) => [entry.sourceKey, entry]));
-  const changedSemanticPapers = [];
-
-  for (const sourceKey of changedSourceKeys) {
-    const manifestEntry = manifestEntriesByKey.get(sourceKey);
-    if (!manifestEntry || manifestEntry.activeInGraph === false) continue;
-    const snapshot = await loadSemanticPaperSnapshot(rootPath, sourceKey);
-    if (!snapshot) {
-      throw new Error(`No semantic snapshot was available for ${sourceKey}. Run Stage 1 before fast-committing.`);
-    }
-    if (snapshot.activeInGraph !== false) {
-      changedSemanticPapers.push(snapshot);
-    }
-  }
-  emitPipelineProgress(options, {
-    stage: 'fast-commit',
+  const [currentCorpus, liteState] = await phaseTimings.measure('loadLite', () => Promise.all([
+      loadCorpusLite(rootPath),
+      readJson(paths.liteStatePath, null)
+    ]));
+  const changedSemanticPapers = await phaseTimings.measure('collectSnapshots', () => (
+    collectChangedSemanticPapersForFastCommit(rootPath, manifest, changedSourceKeys)
+  ));
+  emitFastCommitProgress(options, {
     currentStep: 'collecting changed snapshots',
     processedUnits: 1,
-    totalUnits: 6,
     stagePercent: 16.67,
-    message: 'Collected changed semantic snapshots'
+    message: 'Collected changed semantic snapshots',
+    mode: fastCommitMode,
+    changedSourceKeys,
+    phaseTimings
   });
 
-  const paperDeltaPayload = await buildGraphDeltaPayload({
+  let paperDeltaPayload = await phaseTimings.measure('buildDelta', () => buildGraphDeltaPayload({
     corpusName: manifest.corpusName || options.name || currentCorpus.meta.name || path.basename(rootPath),
     rootPath,
     committedGraph: currentCorpus.graph,
@@ -8385,87 +10065,126 @@ export async function fastCommitCorpus(inputPath, options = {}) {
     liteState,
     changedSourceKeys,
     options
-  });
-  emitPipelineProgress(options, {
-    stage: 'fast-commit',
+  }));
+  emitFastCommitProgress(options, {
     currentStep: 'building graph delta',
     processedUnits: 2,
-    totalUnits: 6,
     stagePercent: 33.33,
-    message: 'Built graph delta payload'
-  });
-  const nextGraph = applyGraphDeltaPayload(currentCorpus.graph, paperDeltaPayload);
-  postIngestionRefinement(nextGraph);
-  const activeManifestSources = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false);
-  const nextLiteState = buildLiteStateSnapshot(nextGraph, activeManifestSources);
-  const liteSourceKeys = unique([
-    ...Object.keys(liteState?.sources || {}),
-    ...Object.keys(nextLiteState?.sources || {})
-  ]);
-  const affectedLiteSourceKeys = liteSourceKeys.filter((sourceKey) => (
-    JSON.stringify(liteState?.sources?.[sourceKey] || null) !== JSON.stringify(nextLiteState?.sources?.[sourceKey] || null)
-  ));
-  const deltaPayload = buildGraphDiffPayload(currentCorpus.graph, nextGraph, {
+    message: 'Built graph delta payload',
+    mode: fastCommitMode,
     changedSourceKeys,
-    liteChangedSourceKeys: affectedLiteSourceKeys.length ? affectedLiteSourceKeys : [GLOBAL_SOURCE_KEY],
-    sourceEntries: (affectedLiteSourceKeys.length ? affectedLiteSourceKeys : [GLOBAL_SOURCE_KEY])
-      .map((sourceKey) => nextLiteState.sources?.[sourceKey])
-      .filter(Boolean),
-    removalState: paperDeltaPayload.removalState
+    phaseTimings
   });
-  emitPipelineProgress(options, {
-    stage: 'fast-commit',
+  const activeManifestSources = (manifest.sources || []).filter((entry) => entry.activeInGraph !== false);
+  if (fastCommitMode === 'direct-lite-delta') {
+    const directArtifacts = prepareDirectLiteDeltaFastCommit({
+      currentCorpus,
+      manifest,
+      rootPath,
+      options,
+      changedSourceKeys,
+      activeManifestSources,
+      paperDeltaPayload,
+      phaseTimings
+    });
+    paperDeltaPayload = directArtifacts.paperDeltaPayload;
+    const { nextMeta, nextManifest } = directArtifacts;
+    const targetManifestToken = createManifestCommitToken(nextManifest);
+    const fastCommitted = await phaseTimings.measure('writeDelta', () => saveCorpusFastLocalDelta(rootPath, paperDeltaPayload, nextMeta, nextManifest, {
+      baseManifestToken: options.baseManifestToken || null,
+      targetManifestToken,
+      mode: options.mode || 'direct-lite-delta',
+      onProgress: createFastCommitWriteProgressHandler(options, {
+        mode: fastCommitMode,
+        changedSourceKeys,
+        phaseTimings,
+        currentStep: 'writing direct lite delta',
+        message: 'Writing direct lite delta files'
+      })
+    }));
+    phaseTimings.merge(fastCommitted.fastCommitWriteTimingsMs, 'write');
+    phaseTimings.addTiming('total', Date.now() - fastCommitStartedAt);
+    emitFastCommitProgress(options, {
+      currentStep: 'direct lite delta complete',
+      processedUnits: 6,
+      stagePercent: 100,
+      message: 'Applied direct lite graph update and queued authoritative sync',
+      mode: fastCommitMode,
+      changedSourceKeys,
+      phaseTimings
+    });
+
+    return {
+      graph: null,
+      meta: fastCommitted.meta,
+      manifest: nextManifest,
+      rootPath,
+      changes: nextManifest.lastChangeSummary || null,
+      reused: Boolean(fastCommitted.reused),
+      stage: 'fast-committed',
+      syncJob: fastCommitted.syncJob,
+      deltaPayload: paperDeltaPayload,
+      directDeltaCommit: true,
+      fastCommitMetrics: {
+        contractVersion: 'fast-commit-phases-v1',
+        mode: 'direct-lite-delta',
+        changedSourceKeyCount: changedSourceKeys.length,
+        phaseTimingsMs: phaseTimings.snapshot()
+      }
+    };
+  }
+  const {
+    nextGraph,
+    affectedLiteSourceKeys,
+    deltaPayload,
+    affectedLiteSourceStrategy,
+    skippedFullLiteStateDiff,
+    affectedLiteSourceFallbackReason,
+    nextMeta,
+    nextManifest
+  } = buildRefinedFastCommitArtifacts({
+    currentCorpus,
+    manifest,
+    rootPath,
+    options,
+    changedSourceKeys,
+    activeManifestSources,
+    liteState,
+    paperDeltaPayload,
+    phaseTimings
+  });
+  emitFastCommitProgress(options, {
     currentStep: 'applying refinement',
     processedUnits: 3,
-    totalUnits: 6,
     stagePercent: 50,
-    message: 'Applied graph refinement and computed lite diff'
+    message: 'Applied graph refinement and computed lite diff',
+    mode: fastCommitMode,
+    changedSourceKeys,
+    phaseTimings
   });
-  const nextMeta = {
-    ...refreshMetaFromGraph(currentCorpus.meta, nextGraph, currentCorpus.meta.similarNodeMerge, currentCorpus.meta.nodeLlmCheck),
-    name: currentCorpus.meta.name || manifest.corpusName || options.name || path.basename(rootPath),
-    paperCount: activeManifestSources.length,
-    sourceCount: manifest.sources?.length || 0,
-    sourceMode: manifest.sourceMode || currentCorpus.meta.sourceMode || 'markdown',
-    pdfParser: manifest.pdfParser || currentCorpus.meta.pdfParser || null,
-    semanticExtractionMode: manifest.semanticExtractionMode || currentCorpus.meta.semanticExtractionMode || 'heuristic-only',
-    lastChangeSummary: manifest.lastChangeSummary || currentCorpus.meta.lastChangeSummary || null
-  };
-  const nextManifest = {
-    ...manifest,
-    indexedAt: nextMeta.indexedAt
-  };
   const targetManifestToken = createManifestCommitToken(nextManifest);
-  const fastCommitted = await saveCorpusFastLocalDelta(rootPath, deltaPayload, nextMeta, nextManifest, {
+  const fastCommitted = await phaseTimings.measure('writeDelta', () => saveCorpusFastLocalDelta(rootPath, deltaPayload, nextMeta, nextManifest, {
     baseManifestToken: options.baseManifestToken || null,
     targetManifestToken,
     mode: options.mode || 'delta',
-    onProgress(event = {}) {
-      const phase = String(event.phase || '').trim();
-      const phaseProgress = phase === 'lite-delta'
-        ? { processedUnits: 4, stagePercent: 66.67 }
-        : phase === 'manifest'
-          ? { processedUnits: 5, stagePercent: 83.33 }
-          : phase === 'meta'
-            ? { processedUnits: 5.5, stagePercent: 95 }
-            : { processedUnits: 3, stagePercent: 50 };
-      emitPipelineProgress(options, {
-        stage: 'fast-commit',
-        currentStep: phase || 'writing fast local delta',
-        processedUnits: phaseProgress.processedUnits,
-        totalUnits: 6,
-        stagePercent: phaseProgress.stagePercent,
-        message: event.label || 'Writing fast local delta files'
-      });
-    }
-  });
-  emitPipelineProgress(options, {
-    stage: 'fast-commit',
+    onProgress: createFastCommitWriteProgressHandler(options, {
+      mode: fastCommitMode,
+      changedSourceKeys,
+      phaseTimings,
+      currentStep: 'writing fast local delta',
+      message: 'Writing fast local delta files'
+    })
+  }));
+  phaseTimings.merge(fastCommitted.fastCommitWriteTimingsMs, 'write');
+  phaseTimings.addTiming('total', Date.now() - fastCommitStartedAt);
+  emitFastCommitProgress(options, {
     currentStep: 'fast commit complete',
     processedUnits: 6,
-    totalUnits: 6,
     stagePercent: 100,
-    message: 'Applied graph update and queued authoritative sync'
+    message: 'Applied graph update and queued authoritative sync',
+    mode: fastCommitMode,
+    changedSourceKeys,
+    phaseTimings
   });
 
   return {
@@ -8477,7 +10196,17 @@ export async function fastCommitCorpus(inputPath, options = {}) {
     reused: Boolean(fastCommitted.reused),
     stage: 'fast-committed',
     syncJob: fastCommitted.syncJob,
-    deltaPayload
+    deltaPayload,
+    fastCommitMetrics: {
+      contractVersion: 'fast-commit-phases-v1',
+      mode: 'delta',
+      changedSourceKeyCount: changedSourceKeys.length,
+      affectedLiteSourceKeyCount: affectedLiteSourceKeys.length,
+      affectedLiteSourceStrategy,
+      skippedFullLiteStateDiff,
+      affectedLiteSourceFallbackReason,
+      phaseTimingsMs: phaseTimings.snapshot()
+    }
   };
 }
 

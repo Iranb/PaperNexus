@@ -6,6 +6,10 @@ import path from 'node:path';
 
 const originalFetch = globalThis.fetch;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function extractPromptPapers(prompt) {
   const marker = 'Papers:\n';
   const markerIndex = String(prompt || '').lastIndexOf(marker);
@@ -202,6 +206,108 @@ We use a batched llm optimizer.
   }
 });
 
+test('materializeCorpus incrementally recanonicalizes only merge-affected manifest groups', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-incremental-merge-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-incremental-merge-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'base-papers');
+  const importRoot = path.join(workspaceRoot, 'import-papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.mkdir(importRoot, { recursive: true });
+    await fs.writeFile(path.join(inputRoot, 'shared-original.md'), `# Shared Duplicate Paper
+
+Alice Example
+
+## Abstract
+
+This paper is already present in the corpus and should remain the canonical active source.
+
+## Method
+
+The method studies deterministic graph-visible imports.
+`, 'utf8');
+    await fs.writeFile(path.join(inputRoot, 'untouched.md'), `# Untouched Corpus Paper
+
+Bob Example
+
+## Abstract
+
+This paper should not enter the recanonicalization group for an unrelated duplicate upload.
+`, 'utf8');
+    await fs.writeFile(path.join(importRoot, 'shared-upload.md'), `# Shared Duplicate Paper
+
+Alice Example
+
+## Abstract
+
+This upload is a duplicate of the existing paper and should become an inactive source variant.
+
+## Method
+
+The method studies deterministic graph-visible imports.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'incremental-merge-test',
+      force: true,
+      identifierResolutionEnabled: false,
+      semanticExtraction: 'heuristic-only'
+    });
+
+    const materialized = await ingestion.materializeCorpus(importRoot, {
+      rootPath: indexRoot,
+      name: 'incremental-merge-test',
+      mergeWithExistingManifestSources: true,
+      incrementalMergeRecanonicalization: true,
+      identifierResolutionEnabled: false,
+      semanticExtraction: 'heuristic-only',
+      analyzeConcurrency: 2,
+      metadataConcurrency: 2
+    });
+    const manifest = await corpusStore.loadSourceManifest(indexRoot);
+
+    assert.equal(materialized.stage, 'materialized');
+    assert.equal(materialized.meta.paperCount, 2);
+    assert.equal(manifest.sources.length, 3);
+    assert.equal(materialized.timings.mergePreviousSourceCount, 2);
+    assert.equal(materialized.timings.mergeMaterializedSourceCount, 1);
+    assert.equal(materialized.timings.mergeAffectedSourceCount, 2);
+    assert.equal(materialized.timings.mergeUntouchedSourceCount, 1);
+    assert.equal(materialized.timings.mergeSnapshotReloadMs, 0);
+    assert.equal(typeof materialized.timings.mergeRecanonicalizeMs, 'number');
+
+    const duplicateEntries = manifest.sources.filter((entry) => entry.paperTitle === 'Shared Duplicate Paper');
+    const untouchedEntry = manifest.sources.find((entry) => entry.paperTitle === 'Untouched Corpus Paper');
+    assert.equal(duplicateEntries.length, 2);
+    assert.equal(duplicateEntries.filter((entry) => entry.activeInGraph !== false).length, 1);
+    assert.equal(duplicateEntries.every((entry) => Number(entry.duplicateSourceCount) === 2), true);
+    assert.ok(duplicateEntries.some((entry) => entry.duplicateOfSourceKey));
+    assert.equal(untouchedEntry.activeInGraph, true);
+    assert.equal(Number(untouchedEntry.duplicateSourceCount || 1), 1);
+
+    const duplicateSnapshots = await Promise.all(
+      duplicateEntries.map((entry) => corpusStore.loadSemanticPaperSnapshot(indexRoot, entry.sourceKey))
+    );
+    assert.equal(duplicateSnapshots.filter((snapshot) => snapshot.activeInGraph !== false).length, 1);
+    assert.equal(duplicateSnapshots.every((snapshot) => Number(snapshot.duplicateSourceCount) === 2), true);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus can scope Stage 2 work to changed source keys for import-sized updates', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scoped-stage2-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-scoped-stage2-corpus-'));
@@ -297,6 +403,1559 @@ Paper B is the only changed import source that should call the LLM.
 
     const nextManifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
     assert.equal(nextManifest.llmOptimization, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus defaults to long-context paper-level extraction for 1M context models', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'long-a.md'), `# Long Context Paper A
+
+## Abstract
+
+Paper A studies graph-grounded markdown ingestion with long context semantic extraction.
+
+## Method
+
+We process the whole markdown paper in one provider call.
+`, 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, 'long-b.md'), `# Long Context Paper B
+
+## Abstract
+
+Paper B studies safe semantic enrichment after structural graph visibility.
+
+## Method
+
+We preserve graph quality with schema-bound extraction.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [{
+                        name: `Long-context extraction for ${paper.title}`,
+                        type: 'Problem',
+                        evidenceText: 'The paper studies long context semantic extraction.',
+                        sectionHeading: 'Abstract',
+                        sectionRole: 'abstract',
+                        confidence: 0.9
+                      }]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore, artifactStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/long-context-artifact-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-stage2-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      identifierResolutionEnabled: false
+    });
+
+    assert.equal(prompts.length, 1);
+    assert.ok(prompts.every((prompt) => !prompt.includes('paper chunks')));
+    assert.equal(extractPromptPapers(prompts[0]).length, 2);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    for (let index = 0; index < snapshots.length; index += 1) {
+      const snapshot = snapshots[index];
+      assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+      assert.equal(snapshot.llm.chunkPipeline.enabled, false);
+      assert.equal(snapshot.llm.chunkPipeline.reason, 'long-context-first');
+      assert.equal(snapshot.llm.longContext.enabled, true);
+      assert.equal(snapshot.llm.longContext.strategy, 'long-context-first');
+      assert.equal(snapshot.llm.longContext.contextWindowTokens, 1_000_000);
+      assert.equal(snapshot.llm.longContext.maxPapersPerCall, 2);
+      assert.equal(snapshot.llmSemanticObjects.longContext.enabled, true);
+      const semanticArtifact = snapshot.llm.longContext.artifacts?.semantic;
+      assert.equal(semanticArtifact?.contractVersion, 'papernexus-long-context-llm-artifact-v1');
+      assert.equal(semanticArtifact.phase, 'semantic');
+      assert.equal(semanticArtifact.status, 'completed');
+      assert.ok(semanticArtifact.artifactPath.includes('.papernexus/llm-jobs/long-context-artifacts/records/'));
+
+      const storedArtifact = await artifactStore.loadLongContextArtifact(tempCorpusRoot, semanticArtifact.artifactKey);
+      assert.equal(storedArtifact.contractVersion, 'papernexus-long-context-llm-artifact-v1');
+      assert.equal(storedArtifact.phase, 'semantic');
+      assert.equal(storedArtifact.status, 'completed');
+      assert.equal(storedArtifact.sourceKey, manifest.sources[index].sourceKey);
+      assert.equal(storedArtifact.longContext.contextWindowTokens, 1_000_000);
+      assert.equal(storedArtifact.result.participated, true);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus records long-context relation artifacts without losing semantic artifacts', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-artifact-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-artifact-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'long-artifact.md'), `# Long Context Artifact Paper
+
+## Abstract
+
+This paper studies auditable long-context extraction artifacts for markdown semantic enrichment.
+
+## Method
+
+The method preserves semantic artifact references while relation extraction appends relation artifacts.
+`, 'utf8');
+
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
+
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const papers = extractPromptPapers(prompt);
+      const relationPrompt = prompt.includes('Key relations to capture');
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => relationPrompt
+                      ? {
+                          id: paper.id,
+                          findings: [{
+                            name: `Artifact preservation finding for ${paper.title}`,
+                            type: 'Finding',
+                            evidenceText: 'Relation extraction appends relation artifacts.',
+                            sectionHeading: 'Method',
+                            confidence: 0.9
+                          }],
+                          relations: []
+                        }
+                      : {
+                          id: paper.id,
+                          problems: [{
+                            name: `Auditable long-context artifacts for ${paper.title}`,
+                            type: 'Problem',
+                            evidenceText: 'The paper studies auditable long-context extraction artifacts.',
+                            sectionHeading: 'Abstract',
+                            sectionRole: 'abstract',
+                            confidence: 0.9
+                          }]
+                        })
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore, artifactStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/long-context-artifact-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-artifact-stage2-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-artifact-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      identifierResolutionEnabled: false
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    const artifacts = snapshot.llm.longContext.artifacts;
+    assert.equal(artifacts.semantic?.phase, 'semantic');
+    assert.equal(artifacts.relation?.phase, 'relation');
+    assert.equal(snapshot.llmSemanticObjects.longContext.artifacts.semantic.artifactKey, artifacts.semantic.artifactKey);
+    assert.equal(snapshot.llmSemanticObjects.longContext.artifacts.relation.artifactKey, artifacts.relation.artifactKey);
+
+    const semanticArtifact = await artifactStore.loadLongContextArtifact(tempCorpusRoot, artifacts.semantic.artifactKey);
+    const relationArtifact = await artifactStore.loadLongContextArtifact(tempCorpusRoot, artifacts.relation.artifactKey);
+    assert.equal(semanticArtifact.sourceKey, manifest.sources[0].sourceKey);
+    assert.equal(relationArtifact.sourceKey, manifest.sources[0].sourceKey);
+    assert.equal(relationArtifact.status, 'completed');
+    assert.equal(relationArtifact.result.findings.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus runs long-context paper batches with bounded concurrency', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-concurrency-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-concurrency-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let fetchCount = 0;
+  let activeFetches = 0;
+  let maxActiveFetches = 0;
+  const llmBatchEvents = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    for (let index = 1; index <= 4; index += 1) {
+      await fs.writeFile(path.join(tempCorpusRoot, `long-concurrent-${index}.md`), `# Long Context Concurrency Paper ${index}
+
+## Abstract
+
+Paper ${index} studies bounded concurrent long-context semantic extraction for markdown import throughput.
+
+## Method
+
+The optimizer should submit this paper-level request concurrently without switching to chunk fallback.
+`, 'utf8');
+    }
+
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
+
+      fetchCount += 1;
+      activeFetches += 1;
+      maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+
+      try {
+        await sleep(40);
+        const request = JSON.parse(options.body);
+        const papers = extractPromptPapers(request.messages?.[0]?.content || '');
+
+        return {
+          ok: true,
+          async json() {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      papers: papers.map((paper) => ({
+                        id: paper.id,
+                        problems: [{
+                          name: `Concurrent long-context extraction for ${paper.title}`,
+                          type: 'Problem',
+                          evidenceText: 'The optimizer should submit this paper-level request concurrently.',
+                          sectionHeading: 'Method',
+                          sectionRole: 'method',
+                          confidence: 0.9
+                        }]
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+        };
+      } finally {
+        activeFetches -= 1;
+      }
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-concurrency-stage2-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-concurrency-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      llmBatchConcurrency: 2,
+      identifierResolutionEnabled: false,
+      onLlmBatchComplete(event) {
+        llmBatchEvents.push(event);
+      }
+    });
+
+    assert.equal(fetchCount, 4);
+    assert.equal(maxActiveFetches, 2);
+    assert.equal(activeFetches, 0);
+    assert.equal(llmBatchEvents.at(-1)?.llmBatchConcurrency, 2);
+    assert.equal(llmBatchEvents.at(-1)?.total, 4);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    for (const snapshot of snapshots) {
+      assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+      assert.equal(snapshot.llm.chunkPipeline.enabled, false);
+      assert.equal(snapshot.llm.chunkPipeline.reason, 'long-context-first');
+      assert.equal(snapshot.llm.longContext.strategy, 'long-context-first');
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus stops scheduling later long-context semantic slices after provider rate limit', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-rate-stop-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-rate-stop-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let fetchCount = 0;
+  const fetchedTitles = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    for (let index = 1; index <= 4; index += 1) {
+      await fs.writeFile(path.join(tempCorpusRoot, `rate-stop-${index}.md`), `# Rate Aware Scheduler Paper ${index}
+
+## Abstract
+
+Paper ${index} checks that the long-context scheduler stops launching fresh provider calls after rate limit.
+
+## Method
+
+The test uses one paper per provider prompt so later slice launches are observable.
+`, 'utf8');
+    }
+
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
+
+      fetchCount += 1;
+      const request = JSON.parse(options.body);
+      const papers = extractPromptPapers(request.messages?.[0]?.content || '');
+      const title = papers[0]?.title || '';
+      fetchedTitles.push(title);
+
+      if (title.includes('Paper 1')) {
+        await sleep(20);
+        return createRateLimitResponse('quota exhausted');
+      }
+
+      if (title.includes('Paper 2')) {
+        await sleep(60);
+        return {
+          ok: true,
+          async json() {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      papers: papers.map((paper) => ({
+                        id: paper.id,
+                        problems: [{
+                          name: `Completed already-in-flight extraction for ${paper.title}`,
+                          type: 'Problem',
+                          evidenceText: 'Already-started concurrent calls may finish after a sibling slice hits rate limit.',
+                          sectionHeading: 'Method',
+                          sectionRole: 'method',
+                          confidence: 0.9
+                        }]
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+        };
+      }
+
+      throw new Error(`rate-aware scheduler should not fetch ${title}`);
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-rate-stop-stage2-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-rate-stop-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      llmBatchConcurrency: 2,
+      llmLongContextFallbackEnabled: false,
+      llmRateLimitRetryCount: 0,
+      llmRateLimitRetryDelayMs: 0,
+      llmRateLimitRetryMaxDelayMs: 0,
+      identifierResolutionEnabled: false
+    });
+
+    assert.equal(fetchCount, 2);
+    assert.deepEqual([...fetchedTitles].sort(), [
+      'Rate Aware Scheduler Paper 1',
+      'Rate Aware Scheduler Paper 2'
+    ]);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.match(manifest.llmOptimization?.rateLimitCooldownUntil || '', /^\d{4}-\d{2}-\d{2}T/);
+
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    const byTitle = new Map(snapshots.map((snapshot) => [snapshot.paperTitle, snapshot]));
+    const paper1 = byTitle.get('Rate Aware Scheduler Paper 1');
+    const paper2 = byTitle.get('Rate Aware Scheduler Paper 2');
+    const paper3 = byTitle.get('Rate Aware Scheduler Paper 3');
+    const paper4 = byTitle.get('Rate Aware Scheduler Paper 4');
+
+    assert.equal(paper1.llm.semanticExtractionParticipationReason, 'rate-limited');
+    assert.equal(paper1.llm.longContext.callCount, 1);
+    assert.equal(paper1.llm.longContext.fallbackReason, 'rate-limited');
+    assert.equal(paper1.llm.longContext.validationDetails.reason, 'rate-limited');
+
+    assert.equal(paper2.llm.semanticExtractionParticipated, true);
+    assert.equal(paper2.llm.longContext.callCount, 1);
+    assert.equal(paper2.llm.longContext.fallbackReason, null);
+
+    for (const snapshot of [paper3, paper4]) {
+      assert.equal(snapshot.llm.semanticExtractionParticipationReason, 'rate-limited');
+      assert.equal(snapshot.llm.longContext.callCount, 0);
+      assert.equal(snapshot.llm.longContext.fallbackReason, 'rate-limited');
+      assert.equal(snapshot.llm.longContext.validationDetails.reason, 'rate-limited');
+      assert.equal(snapshot.llmSemanticObjects.skippedProviderCall, true);
+      assert.equal(snapshot.llm.rateLimitCooldownUntil, manifest.llmOptimization.rateLimitCooldownUntil);
+    }
+  } finally {
+    const { clearLlmRateLimitCooldowns } = await import('../src/core/llm/ollama.js');
+    await clearLlmRateLimitCooldowns({ persisted: false });
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus keeps chunk-first extraction when explicitly requested for a 1M context model', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-chunk-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-chunk-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'chunk-first.md'), `# Explicit Chunk First Paper
+
+## Abstract
+
+This paper has enough markdown structure to create chunk-level semantic candidates.
+
+## Method
+
+The explicit strategy should keep chunk map reduce enabled even with a one million token context window.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(isChunkPrompt
+                    ? {
+                        chunks: papers.map((paper) => ({
+                          id: paper.id,
+                          problems: [{
+                            name: 'explicit chunk-first extraction',
+                            type: 'Problem',
+                            evidenceText: 'The explicit strategy should keep chunk map reduce enabled.',
+                            sectionHeading: paper.sectionHeading || 'Method',
+                            sectionRole: paper.sectionRole || 'method',
+                            confidence: 0.91
+                          }]
+                        }))
+                      }
+                    : {
+                        papers: papers.map((paper) => ({
+                          id: paper.id,
+                          problems: [{
+                            name: 'unexpected paper-level fallback',
+                            type: 'Problem',
+                            evidenceText: 'Fallback should not be required in this test.',
+                            sectionHeading: 'Abstract',
+                            sectionRole: 'abstract',
+                            confidence: 0.5
+                          }]
+                        }))
+                      })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'chunk-first-stage2-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'chunk-first-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'chunk-first',
+      identifierResolutionEnabled: false
+    });
+
+    assert.ok(prompts.some((prompt) => prompt.includes('paper chunks')));
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.equal(snapshot.llm.longContext.enabled, false);
+    assert.equal(snapshot.llm.longContext.strategy, 'chunk-first');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus stops scheduling later chunk semantic slices after provider rate limit', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-rate-stop-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-rate-stop-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let fetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    for (let index = 1; index <= 4; index += 1) {
+      await fs.writeFile(path.join(tempCorpusRoot, `chunk-rate-stop-${index}.md`), `# Chunk Rate Aware Scheduler Paper ${index}
+
+## Abstract
+
+Paper ${index} checks that chunk fallback semantic extraction stops launching fresh provider calls after rate limit.
+
+## Method
+
+The explicit chunk-first path uses one selected chunk per paper in this fixture.
+`, 'utf8');
+    }
+
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
+
+      fetchCount += 1;
+      const request = JSON.parse(options.body);
+      const papers = extractPromptPapers(request.messages?.[0]?.content || '');
+
+      if (fetchCount === 1) {
+        await sleep(20);
+        return createRateLimitResponse('chunk quota exhausted');
+      }
+
+      if (fetchCount === 2) {
+        await sleep(60);
+        return {
+          ok: true,
+          async json() {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      chunks: papers.map((paper) => ({
+                        id: paper.id,
+                        problems: [{
+                          name: `Completed already-in-flight chunk extraction for ${paper.title || paper.id}`,
+                          type: 'Problem',
+                          evidenceText: 'Already-started chunk calls may finish after a sibling slice hits rate limit.',
+                          sectionHeading: paper.sectionHeading || 'Method',
+                          sectionRole: paper.sectionRole || 'method',
+                          confidence: 0.9
+                        }]
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+        };
+      }
+
+      throw new Error('rate-aware chunk scheduler should not fetch later slices');
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'chunk-rate-stop-stage2-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'chunk-rate-stop-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'chunk-first',
+      llmBatchSize: 1,
+      llmBatchConcurrency: 2,
+      llmRateLimitRetryCount: 0,
+      llmRateLimitRetryDelayMs: 0,
+      llmRateLimitRetryMaxDelayMs: 0,
+      identifierResolutionEnabled: false
+    });
+
+    assert.equal(fetchCount, 2);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.match(manifest.llmOptimization?.rateLimitCooldownUntil || '', /^\d{4}-\d{2}-\d{2}T/);
+
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    const completed = snapshots.filter((snapshot) => snapshot.llm.semanticExtractionParticipated);
+    const rateLimited = snapshots.filter((snapshot) => snapshot.llm.semanticExtractionParticipationReason === 'rate-limited');
+    const skipped = snapshots.filter((snapshot) => snapshot.llmSemanticObjects.skippedProviderCall);
+
+    assert.equal(completed.length, 1);
+    assert.equal(rateLimited.length, 3);
+    assert.ok(skipped.length >= 2);
+    assert.ok(skipped.length <= rateLimited.length);
+
+    for (const snapshot of snapshots) {
+      assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    }
+    for (const snapshot of rateLimited) {
+      assert.equal(snapshot.llm.semanticExtractionParticipationReason, 'rate-limited');
+      assert.ok(snapshot.llm.chunkPipeline.rateLimitedChunkCount >= 1);
+      assert.equal(snapshot.llm.rateLimitCooldownUntil, manifest.llmOptimization.rateLimitCooldownUntil);
+    }
+    for (const snapshot of skipped) {
+      assert.equal(snapshot.llmSemanticObjects.skippedProviderCall, true);
+      assert.ok(snapshot.llm.chunkPipeline.skippedProviderCallCount >= 1);
+    }
+  } finally {
+    const { clearLlmRateLimitCooldowns } = await import('../src/core/llm/ollama.js');
+    await clearLlmRateLimitCooldowns({ persisted: false });
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus stops scheduling later chunk relation slices after provider rate limit', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-relation-rate-stop-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-relation-rate-stop-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let semanticFetchCount = 0;
+  let relationFetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    for (let index = 1; index <= 4; index += 1) {
+      await fs.writeFile(path.join(tempCorpusRoot, `chunk-relation-rate-stop-${index}.md`), `# Chunk Relation Rate Aware Scheduler Paper ${index}
+
+## Abstract
+
+Paper ${index} first completes chunk semantic extraction, then checks relation extraction rate-limit scheduling.
+
+## Method
+
+The explicit chunk-first path should not launch later relation provider calls after a cooldown starts.
+`, 'utf8');
+    }
+
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
+
+      const request = JSON.parse(options.body);
+      const prompt = String(request.messages?.[0]?.content || '');
+      const papers = extractPromptPapers(prompt);
+      const isRelationPrompt = prompt.includes('Allowed relation types:');
+
+      if (isRelationPrompt) {
+        relationFetchCount += 1;
+        if (relationFetchCount === 1) {
+          await sleep(20);
+          return createRateLimitResponse('relation quota exhausted');
+        }
+        if (relationFetchCount === 2) {
+          await sleep(60);
+          return {
+            ok: true,
+            async json() {
+              return {
+                choices: [
+                  {
+                    message: {
+                      content: JSON.stringify({
+                        chunks: papers.map((paper) => ({
+                          id: paper.id,
+                          benchmarks: [],
+                          findings: [],
+                          researchGoals: [],
+                          relations: []
+                        }))
+                      })
+                    }
+                  }
+                ]
+              };
+            }
+          };
+        }
+        throw new Error('rate-aware chunk relation scheduler should not fetch later slices');
+      }
+
+      semanticFetchCount += 1;
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    chunks: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [{
+                        name: `Semantic prerequisite for ${paper.title || paper.id}`,
+                        type: 'Problem',
+                        evidenceText: 'Semantic extraction must complete before relation extraction starts.',
+                        sectionHeading: paper.sectionHeading || 'Method',
+                        sectionRole: paper.sectionRole || 'method',
+                        confidence: 0.9
+                      }]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'chunk-relation-rate-stop-stage2-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'chunk-relation-rate-stop-stage2-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'chunk-first',
+      llmBatchSize: 1,
+      llmBatchConcurrency: 2,
+      llmRateLimitRetryCount: 0,
+      llmRateLimitRetryDelayMs: 0,
+      llmRateLimitRetryMaxDelayMs: 0,
+      identifierResolutionEnabled: false
+    });
+
+    assert.ok(semanticFetchCount >= 1);
+    assert.equal(relationFetchCount, 2);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.match(manifest.llmOptimization?.rateLimitCooldownUntil || '', /^\d{4}-\d{2}-\d{2}T/);
+
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    assert.equal(snapshots.filter((snapshot) => snapshot.llm.semanticExtractionParticipated).length, 4);
+    const relationRateLimited = snapshots
+      .filter((snapshot) => snapshot.llm.relationParticipationReason === 'rate-limited');
+    const relationSkipped = snapshots
+      .filter((snapshot) => Number(snapshot.llm.chunkPipeline.relationSkippedProviderCallCount || 0) > 0);
+
+    assert.ok(relationRateLimited.length >= 2);
+    assert.ok(relationSkipped.length >= 2);
+    assert.ok(relationSkipped.length <= relationRateLimited.length);
+    for (const snapshot of relationRateLimited) {
+      assert.ok(snapshot.llm.chunkPipeline.relationRateLimitedChunkCount >= 1);
+      assert.equal(snapshot.llm.rateLimitCooldownUntil, manifest.llmOptimization.rateLimitCooldownUntil);
+    }
+  } finally {
+    const { clearLlmRateLimitCooldowns } = await import('../src/core/llm/ollama.js');
+    await clearLlmRateLimitCooldowns({ persisted: false });
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus falls back to chunk extraction when long-context paper output is invalid', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-invalid-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-invalid-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'invalid-fallback.md'), `# Invalid Long Context Fallback
+
+## Abstract
+
+This paper should fall back to chunk extraction when the paper-level result is missing.
+
+## Method
+
+The chunk extractor can still recover a grounded problem from this method section.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(isChunkPrompt
+                    ? {
+                        chunks: papers.map((paper) => ({
+                          id: paper.id,
+                          problems: [{
+                            name: 'chunk fallback recovered semantic object',
+                            type: 'Problem',
+                            evidenceText: 'The chunk extractor can still recover a grounded problem.',
+                            sectionHeading: paper.sectionHeading || 'Method',
+                            sectionRole: paper.sectionRole || 'method',
+                            confidence: 0.92
+                          }]
+                        }))
+                      }
+                    : {
+                        papers: []
+                      })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-invalid-fallback-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-invalid-fallback-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      identifierResolutionEnabled: false
+    });
+
+    assert.ok(prompts.some((prompt) => !prompt.includes('paper chunks')));
+    assert.ok(prompts.some((prompt) => prompt.includes('paper chunks')));
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.equal(snapshot.llm.longContext.enabled, true);
+    assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'missing-result');
+    assert.equal(snapshot.llm.longContext.callCount, 1);
+    assert.equal(snapshot.llm.longContext.validationStatus, 'fallback');
+    assert.equal(snapshot.llm.longContext.validationDetails.reason, 'missing-result');
+    assert.equal(snapshot.llm.longContext.validationDetails.attempted, true);
+    assert.equal(snapshot.llm.longContext.validationDetails.participated, false);
+    assert.equal(snapshot.llm.longContext.validationDetails.semanticObjectCount, 0);
+    assert.equal(snapshot.llmSemanticObjects.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llmSemanticObjects.longContext.validationDetails.reason, 'missing-result');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus records schema-validation fallback for malformed long-context paper fields', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'schema-fallback.md'), `# Long Context Schema Fallback
+
+## Abstract
+
+This paper should fall back when the long-context response has malformed schema fields.
+
+## Method
+
+The chunk fallback should recover a schema validation problem object.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(isChunkPrompt
+                    ? {
+                        chunks: papers.map((paper) => ({
+                          id: paper.id,
+                          problems: [{
+                            name: 'schema validation chunk fallback',
+                            type: 'Problem',
+                            evidenceText: 'The chunk fallback should recover a schema validation problem object.',
+                            sectionHeading: paper.sectionHeading || 'Method',
+                            sectionRole: paper.sectionRole || 'method',
+                            confidence: 0.9
+                          }]
+                        }))
+                      }
+                    : {
+                        papers: papers.map((paper) => ({
+                          id: paper.id,
+                          problems: 'malformed-problems-field'
+                        }))
+                      })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-schema-fallback-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-schema-fallback-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      identifierResolutionEnabled: false
+    });
+
+    assert.ok(prompts.some((prompt) => !prompt.includes('paper chunks')));
+    assert.ok(prompts.some((prompt) => prompt.includes('paper chunks')));
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'schema-validation-failed');
+    assert.equal(snapshot.llm.longContext.validationStatus, 'fallback');
+    assert.equal(snapshot.llm.longContext.validationDetails.reason, 'schema-validation-failed');
+    assert.equal(snapshot.llm.longContext.validationDetails.attempted, true);
+    assert.equal(snapshot.llm.longContext.validationDetails.participated, false);
+    assert.match(snapshot.llm.longContext.validationDetails.error, /problems/i);
+    assert.equal(snapshot.llmSemanticObjects.longContext.validationDetails.reason, 'schema-validation-failed');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus falls back to chunk extraction when long-context output has no semantic objects', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-quality-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-quality-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'quality-guard.md'), `# Long Context Quality Guard
+
+## Abstract
+
+This paper-level response participates but returns no semantic objects.
+
+## Method
+
+The chunk fallback should recover the concrete quality guard problem.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(isChunkPrompt
+                    ? {
+                        chunks: papers.map((paper) => ({
+                          id: paper.id,
+                          problems: [{
+                            name: 'quality guard chunk fallback',
+                            type: 'Problem',
+                            evidenceText: 'The chunk fallback should recover the concrete quality guard problem.',
+                            sectionHeading: paper.sectionHeading || 'Method',
+                            sectionRole: paper.sectionRole || 'method',
+                            confidence: 0.91
+                          }]
+                        }))
+                      }
+                    : {
+                        papers: papers.map((paper) => ({
+                          id: paper.id,
+                          problems: [],
+                          methods: [],
+                          claims: []
+                        }))
+                      })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-quality-guard-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-quality-guard-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      identifierResolutionEnabled: false
+    });
+
+    assert.ok(prompts.some((prompt) => !prompt.includes('paper chunks')));
+    assert.ok(prompts.some((prompt) => prompt.includes('paper chunks')));
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.equal(snapshot.llm.longContext.enabled, true);
+    assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'semantic-quality-guard');
+    assert.equal(snapshot.llm.longContext.callCount, 1);
+    assert.equal(snapshot.llm.longContext.validationStatus, 'fallback');
+    assert.equal(snapshot.llm.longContext.validationDetails.reason, 'semantic-quality-guard');
+    assert.equal(snapshot.llm.longContext.validationDetails.attempted, true);
+    assert.equal(snapshot.llm.longContext.validationDetails.participated, true);
+    assert.equal(snapshot.llm.longContext.validationDetails.semanticObjectCount, 0);
+    assert.equal(snapshot.llmSemanticObjects.longContext.validationDetails.reason, 'semantic-quality-guard');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus records specific long-context fallback reasons for provider failures', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-reasons-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-reasons-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'timeout.md'), `# Timeout Classification
+
+## Abstract
+
+This paper simulates a provider timeout during long-context extraction.
+`, 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, 'truncated.md'), `# Truncation Classification
+
+## Abstract
+
+This paper simulates a truncated provider output during long-context extraction.
+`, 'utf8');
+    await fs.writeFile(path.join(tempCorpusRoot, 'invalid-json.md'), `# Invalid Json Classification
+
+## Abstract
+
+This paper simulates an invalid JSON provider output during long-context extraction.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+
+      if (isChunkPrompt) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      chunks: papers.map((paper) => ({
+                        id: paper.id,
+                        problems: [{
+                          name: `fallback object for ${paper.title}`,
+                          type: 'Problem',
+                          evidenceText: 'The chunk fallback recovers a semantic object.',
+                          sectionHeading: paper.sectionHeading || 'Abstract',
+                          sectionRole: paper.sectionRole || 'abstract',
+                          confidence: 0.88
+                        }]
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+        };
+      }
+
+      const promptText = String(prompt || '').toLowerCase();
+      if (promptText.includes('timeout classification')) {
+        throw new Error('Request timed out after 30000ms');
+      }
+      if (promptText.includes('truncation classification')) {
+        return {
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          async text() {
+            return JSON.stringify({
+              error: {
+                message: 'finish_reason=length: output truncated because max_tokens was too small'
+              }
+            });
+          }
+        };
+      }
+
+      return {
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        async text() {
+          return JSON.stringify({
+            error: {
+              message: 'invalid json parse error in provider response'
+            }
+          });
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-fallback-reason-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-fallback-reason-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      identifierResolutionEnabled: false
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    const snapshotsByFile = new Map(snapshots.map((snapshot) => [path.basename(snapshot.sourcePath), snapshot]));
+    const expectations = new Map([
+      ['timeout.md', 'timeout'],
+      ['truncated.md', 'output-truncated'],
+      ['invalid-json.md', 'invalid-json']
+    ]);
+
+    for (const [fileName, reason] of expectations) {
+      const snapshot = snapshotsByFile.get(fileName);
+      assert.ok(snapshot, `missing snapshot for ${fileName}`);
+      assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+      assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+      assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+      assert.equal(snapshot.llm.longContext.fallbackReason, reason);
+      assert.equal(snapshot.llm.longContext.validationStatus, 'fallback');
+      assert.equal(snapshot.llm.longContext.validationDetails.reason, reason);
+      assert.equal(snapshot.llm.longContext.callCount, 1);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus falls back to chunks before provider calls when long-context input is over budget', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-budget-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-budget-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'budget-fallback.md'), `# Over Budget Long Context Fallback
+
+## Abstract
+
+This markdown paper is deliberately forced over the configured long-context budget.
+
+## Method
+
+The chunk fallback should run without first submitting the whole paper to the provider.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+      assert.equal(prompt.includes('paper chunks'), true);
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    chunks: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [{
+                        name: 'over-budget chunk fallback',
+                        type: 'Problem',
+                        evidenceText: 'The chunk fallback should run without first submitting the whole paper.',
+                        sectionHeading: paper.sectionHeading || 'Method',
+                        sectionRole: paper.sectionRole || 'method',
+                        confidence: 0.9
+                      }]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-budget-fallback-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-budget-fallback-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmLongContextPromptMaxChars: 100,
+      llmBatchPromptMaxChars: 1_000_000,
+      identifierResolutionEnabled: false
+    });
+
+    assert.ok(prompts.length >= 1);
+    assert.equal(prompts.every((prompt) => prompt.includes('paper chunks')), true);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.equal(snapshot.llm.longContext.enabled, true);
+    assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'over-budget');
+    assert.equal(snapshot.llm.longContext.callCount, 0);
+    assert.ok(snapshot.llm.longContext.inputChars > snapshot.llm.longContext.inputBudgetChars);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
@@ -756,6 +2415,9 @@ We study cache-first stage reuse for paper B.
       assert.ok(event.total >= 2);
       assert.equal(typeof event.promptChars, 'number');
       assert.ok(event.promptChars > 0);
+      assert.equal(typeof event.durationMs, 'number');
+      assert.ok(event.durationMs >= 0);
+      assert.equal(typeof event.failureCount, 'number');
     }
     assert.deepEqual(legacyBatchEvents.map((event) => event.phase), [
       'chunk-semantic-extraction',

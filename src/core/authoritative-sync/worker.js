@@ -1,9 +1,11 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { readJson, withFileLock, writeJson } from '../../lib/fs.js';
 import {
   completeAuthoritativeSyncJob,
   failAuthoritativeSyncJob,
   listAuthoritativeSyncJobs,
+  recoverStaleAuthoritativeSyncJobs,
   reserveNextAuthoritativeSyncJob
 } from '../../storage/authoritative-sync-store.js';
 import {
@@ -12,11 +14,16 @@ import {
   loadSourceManifest,
   saveCorpus
 } from '../../storage/corpus-store.js';
+import { updateImportTasksAuthoritativeSyncLifecycle } from '../../storage/import-store.js';
 import { saveGraphDeltaToKuzu } from '../../storage/kuzu-store.js';
 import { writeKuzuCommitReceipt } from '../../storage/kuzu-commit-receipt-store.js';
 import { loadRegistry } from '../../storage/registry.js';
 import { applyGraphDeltaPayload } from '../graph/delta-commit.js';
 import { summarizeCorpusGraph } from '../graph/summary.js';
+
+const DEFAULT_AUTHORITATIVE_SYNC_WORKER_LOCK_TIMEOUT_MS = 350;
+const DEFAULT_AUTHORITATIVE_SYNC_WORKER_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
+const DEFAULT_AUTHORITATIVE_SYNC_QUEUE_LOCK_TIMEOUT_MS = 5000;
 
 function isLockTimeout(error) {
   return String(error?.message || '').includes('Timed out waiting for file lock');
@@ -35,6 +42,38 @@ function shouldRunGraphV2ShadowSync(meta = {}, options = {}) {
   }
   const status = String(meta?.graphV2Status || '').trim().toLowerCase();
   return status === 'shadow' || status === 'shadow-sync';
+}
+
+async function inspectPotentiallyStaleLock(lockPath, staleMs) {
+  try {
+    const stats = await fs.stat(lockPath);
+    const ageMs = Date.now() - stats.mtimeMs;
+    if (ageMs <= staleMs) {
+      return null;
+    }
+    let owner = null;
+    try {
+      owner = await readJson(path.join(lockPath, 'owner.json'), null);
+    } catch (error) {
+      owner = {
+        unreadable: true,
+        error: error.message
+      };
+    }
+    return {
+      lockPath,
+      reason: 'stale-worker-lock',
+      staleMs,
+      observedAgeMs: Math.round(ageMs),
+      observedMtimeAt: new Date(stats.mtimeMs).toISOString(),
+      owner
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
@@ -178,11 +217,15 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
   };
   await writeJson(metaPath, syncedMeta);
 
-  await completeAuthoritativeSyncJob(rootPath, job.jobId, {
+  const completedJob = await completeAuthoritativeSyncJob(rootPath, job.jobId, {
     summary: {
       synchronizedNodeCount: nextGraph.nodeCount,
       synchronizedRelationshipCount: nextGraph.relationshipCount
     }
+  });
+  const taskBackfill = await updateImportTasksAuthoritativeSyncLifecycle(rootPath, job.jobId, 'completed', {
+    job: completedJob,
+    message: `authoritative sync job ${job.jobId} completed`
   });
 
   return {
@@ -190,16 +233,45 @@ async function processAuthoritativeSyncJob(rootPath, job, options = {}) {
     jobId: job.jobId,
     meta: syncedMeta,
     kuzuCommitReceipt,
-    kuzuCommitReceiptPath
+    kuzuCommitReceiptPath,
+    taskBackfill
   };
 }
 
 export async function runAuthoritativeSyncQueueOnce(rootPath, options = {}) {
   const { authoritativeSyncWorkerLockPath, metaPath } = getCorpusPaths(rootPath);
+  const lockTimeoutMs = Math.max(
+    250,
+    Number(options.lockTimeoutMs || DEFAULT_AUTHORITATIVE_SYNC_WORKER_LOCK_TIMEOUT_MS)
+  );
+  const lockStaleMs = Math.max(
+    lockTimeoutMs,
+    Number(
+      options.workerLockStaleMs
+      || options.authoritativeSyncWorkerLockStaleMs
+      || options.lockStaleMs
+      || DEFAULT_AUTHORITATIVE_SYNC_WORKER_LOCK_STALE_MS
+    )
+  );
+  const queueLockTimeoutMs = Math.max(
+    250,
+    Number(
+      options.queueLockTimeoutMs
+      || options.authoritativeSyncQueueLockTimeoutMs
+      || DEFAULT_AUTHORITATIVE_SYNC_QUEUE_LOCK_TIMEOUT_MS
+    )
+  );
+  const workerLockRecovery = await inspectPotentiallyStaleLock(authoritativeSyncWorkerLockPath, lockStaleMs);
 
   try {
     return await withFileLock(authoritativeSyncWorkerLockPath, async () => {
+      const staleRecovery = await recoverStaleAuthoritativeSyncJobs(rootPath, {
+        ...options,
+        queueLockTimeoutMs
+      });
       const reserved = await reserveNextAuthoritativeSyncJob(rootPath, {
+        ...options,
+        queueLockTimeoutMs,
         workerId: options.workerId || 'authoritative-sync-worker'
       });
 
@@ -207,7 +279,11 @@ export async function runAuthoritativeSyncQueueOnce(rootPath, options = {}) {
         return {
           processed: false,
           reason: 'idle',
-          queuedJobs: await listAuthoritativeSyncJobs(rootPath)
+          queuedJobs: await listAuthoritativeSyncJobs(rootPath),
+          ...(workerLockRecovery ? { workerLockRecovery } : {}),
+          ...(staleRecovery?.recoveredCount
+            ? { recoveredStaleSyncJobs: staleRecovery.recoveredJobs }
+            : {})
         };
       }
 
@@ -217,10 +293,22 @@ export async function runAuthoritativeSyncQueueOnce(rootPath, options = {}) {
           processed: true,
           failed: false,
           jobId: reserved.jobId,
-          result
+          result,
+          ...(workerLockRecovery ? { workerLockRecovery } : {}),
+          ...(staleRecovery?.recoveredCount
+            ? { recoveredStaleSyncJobs: staleRecovery.recoveredJobs }
+            : {})
         };
       } catch (error) {
-        await failAuthoritativeSyncJob(rootPath, reserved.jobId, error);
+        const failedJob = await failAuthoritativeSyncJob(rootPath, reserved.jobId, error, {
+          ...options,
+          queueLockTimeoutMs
+        });
+        const taskBackfill = await updateImportTasksAuthoritativeSyncLifecycle(rootPath, reserved.jobId, 'failed', {
+          job: failedJob,
+          error,
+          message: `authoritative sync job ${reserved.jobId} failed: ${error.message}`
+        });
         try {
           const failedMeta = {
             ...(await readJson(metaPath, {})),
@@ -237,11 +325,17 @@ export async function runAuthoritativeSyncQueueOnce(rootPath, options = {}) {
           processed: true,
           failed: true,
           jobId: reserved.jobId,
-          error: error.message
+          error: error.message,
+          taskBackfill,
+          ...(workerLockRecovery ? { workerLockRecovery } : {}),
+          ...(staleRecovery?.recoveredCount
+            ? { recoveredStaleSyncJobs: staleRecovery.recoveredJobs }
+            : {})
         };
       }
     }, {
-      timeoutMs: Number(options.lockTimeoutMs || 350)
+      timeoutMs: lockTimeoutMs,
+      staleMs: lockStaleMs
     });
   } catch (error) {
     if (isLockTimeout(error)) {

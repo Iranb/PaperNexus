@@ -22,11 +22,129 @@ const IMPORT_CONTENT_INDEX_SCHEMA_VERSION = 1;
 const IMPORT_QUARANTINE_SCHEMA_VERSION = 1;
 const IMPORT_PROGRESS_CONTRACT_VERSION = 'import-progress-v1';
 const IMPORT_QUEUE_PROGRESS_CONTRACT_VERSION = 'import-queue-progress-v1';
+const IMPORT_EVENT_CONTRACT_VERSION = 'import-event-v1';
+const IMPORT_DAG_CONTRACT_VERSION = 'import-dag-v1';
+const IMPORT_DAG_EVENT_CONTRACT_VERSION = 'import-dag-event-v1';
 const IMPORT_STAGE_TOTAL = 4;
 const DEFAULT_FAILED_IMPORT_RETRY_DELAY_MS = 5 * 60 * 1000;
 const DEFAULT_FAILED_IMPORT_RETRY_MAX = 3;
 const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
 const HARD_IMPORT_BATCH_MAX_TASKS = 16;
+const IMPORT_PROCESSING_PROFILES = new Set([
+  'full',
+  'fast-md-structural',
+  'fast-md-background-semantic',
+  'long-context-full-md'
+]);
+const IMPORT_COMPLETION_POLICIES = new Set([
+  'full',
+  'graph-visible',
+  'semantic-complete'
+]);
+const IMPORT_EXECUTION_MODES = new Set([
+  'serial',
+  'dag'
+]);
+const IMPORT_LIFECYCLE_STATUSES = new Set([
+  'pending',
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'not-started',
+  'not-required',
+  'skipped'
+]);
+const IMPORT_DAG_NODE_DEFINITIONS = [
+  { id: 'task.queued', dependsOn: [] },
+  { id: 'source.materialize', dependsOn: ['task.queued'] },
+  { id: 'chunk.normalize', dependsOn: ['source.materialize'] },
+  { id: 'paper.structural_snapshot', dependsOn: ['chunk.normalize'] },
+  { id: 'paper.long_context_llm', dependsOn: ['paper.structural_snapshot'] },
+  { id: 'chunk.semantic_llm', dependsOn: ['paper.structural_snapshot'] },
+  { id: 'chunk.relation_llm', dependsOn: ['chunk.semantic_llm'] },
+  { id: 'paper.delta_build', dependsOn: ['paper.structural_snapshot'] },
+  { id: 'corpus.merge', dependsOn: ['paper.delta_build'] },
+  { id: 'lite_state.update', dependsOn: ['corpus.merge'] },
+  { id: 'authoritative_sync.enqueue', dependsOn: ['lite_state.update'] },
+  { id: 'authoritative_sync.apply', dependsOn: ['authoritative_sync.enqueue'] },
+  { id: 'task.completed', dependsOn: ['lite_state.update'] }
+];
+const IMPORT_DAG_NODE_IDS = new Set(IMPORT_DAG_NODE_DEFINITIONS.map((definition) => definition.id));
+const IMPORT_DAG_RETRY_OWNERS = new Map([
+  ['task.queued', 'import-queue'],
+  ['source.materialize', 'import-worker'],
+  ['chunk.normalize', 'import-worker'],
+  ['paper.structural_snapshot', 'import-worker'],
+  ['paper.long_context_llm', 'llm-worker-pool'],
+  ['chunk.semantic_llm', 'llm-worker-pool'],
+  ['chunk.relation_llm', 'llm-worker-pool'],
+  ['paper.delta_build', 'graph-commit'],
+  ['corpus.merge', 'graph-commit'],
+  ['lite_state.update', 'graph-commit'],
+  ['authoritative_sync.enqueue', 'authoritative-sync-worker'],
+  ['authoritative_sync.apply', 'authoritative-sync-worker'],
+  ['task.completed', 'import-worker']
+]);
+const IMPORT_DAG_NODE_ALIASES = new Map([
+  ['queued', 'task.queued'],
+  ['pending', 'task.queued'],
+  ['created', 'task.queued'],
+  ['materialize', 'source.materialize'],
+  ['source-materialize', 'source.materialize'],
+  ['source.materialize', 'source.materialize'],
+  ['normalize', 'chunk.normalize'],
+  ['chunk-normalize', 'chunk.normalize'],
+  ['chunk.normalize', 'chunk.normalize'],
+  ['structural-snapshot', 'paper.structural_snapshot'],
+  ['paper-structural-snapshot', 'paper.structural_snapshot'],
+  ['paper.structural-snapshot', 'paper.structural_snapshot'],
+  ['paper.structural_snapshot', 'paper.structural_snapshot'],
+  ['llm', 'paper.long_context_llm'],
+  ['llm-optimize', 'paper.long_context_llm'],
+  ['llm-optimization', 'paper.long_context_llm'],
+  ['long-context', 'paper.long_context_llm'],
+  ['long-context-llm', 'paper.long_context_llm'],
+  ['paper-long-context-llm', 'paper.long_context_llm'],
+  ['paper.long-context-llm', 'paper.long_context_llm'],
+  ['paper.long_context_llm', 'paper.long_context_llm'],
+  ['semantic', 'paper.long_context_llm'],
+  ['semantic-enrichment', 'paper.long_context_llm'],
+  ['semantic-complete', 'paper.long_context_llm'],
+  ['chunk-semantic', 'chunk.semantic_llm'],
+  ['chunk-semantic-llm', 'chunk.semantic_llm'],
+  ['chunk.semantic-llm', 'chunk.semantic_llm'],
+  ['chunk.semantic_llm', 'chunk.semantic_llm'],
+  ['chunk-relation', 'chunk.relation_llm'],
+  ['chunk-relation-llm', 'chunk.relation_llm'],
+  ['chunk.relation-llm', 'chunk.relation_llm'],
+  ['chunk.relation_llm', 'chunk.relation_llm'],
+  ['fast-commit', 'paper.delta_build'],
+  ['delta', 'paper.delta_build'],
+  ['delta-build', 'paper.delta_build'],
+  ['paper-delta-build', 'paper.delta_build'],
+  ['paper.delta-build', 'paper.delta_build'],
+  ['paper.delta_build', 'paper.delta_build'],
+  ['commit', 'corpus.merge'],
+  ['corpus-merge', 'corpus.merge'],
+  ['corpus.merge', 'corpus.merge'],
+  ['lite-state', 'lite_state.update'],
+  ['lite-state-update', 'lite_state.update'],
+  ['lite-state.update', 'lite_state.update'],
+  ['lite_state.update', 'lite_state.update'],
+  ['graph-visible', 'lite_state.update'],
+  ['authoritative-sync', 'authoritative_sync.apply'],
+  ['authoritative-sync-apply', 'authoritative_sync.apply'],
+  ['authoritative-sync.apply', 'authoritative_sync.apply'],
+  ['authoritative_sync.apply', 'authoritative_sync.apply'],
+  ['authoritative-sync-enqueue', 'authoritative_sync.enqueue'],
+  ['authoritative-sync.enqueue', 'authoritative_sync.enqueue'],
+  ['authoritative_sync.enqueue', 'authoritative_sync.enqueue'],
+  ['completed', 'task.completed'],
+  ['complete', 'task.completed'],
+  ['task-completed', 'task.completed'],
+  ['task.completed', 'task.completed']
+]);
 const IMPORT_STAGE_WEIGHTS = {
   queued: { index: 0, startPercent: 0, weight: 0 },
   materialize: { index: 1, startPercent: 0, weight: 50 },
@@ -116,6 +234,11 @@ function createImportProgress(task = {}, overrides = {}) {
       : (existing.message || defaultProgressMessage(stage, status))
   ).trim() || defaultProgressMessage(stage, status);
   const stageMeta = IMPORT_STAGE_WEIGHTS[stage] || IMPORT_STAGE_WEIGHTS.queued;
+  const diagnostics = overrides.diagnostics && typeof overrides.diagnostics === 'object' && !Array.isArray(overrides.diagnostics)
+    ? overrides.diagnostics
+    : (existing.diagnostics && typeof existing.diagnostics === 'object' && !Array.isArray(existing.diagnostics)
+      ? existing.diagnostics
+      : null);
 
   return {
     contractVersion: IMPORT_PROGRESS_CONTRACT_VERSION,
@@ -132,7 +255,8 @@ function createImportProgress(task = {}, overrides = {}) {
     queuedAhead: overrides.queuedAhead !== undefined ? overrides.queuedAhead : (existing.queuedAhead ?? null),
     stageStartedAt: overrides.stageStartedAt || (stageChanged ? now : (existing.stageStartedAt || task.startedAt || now)),
     lastEventAt: overrides.lastEventAt || now,
-    message
+    message,
+    ...(diagnostics ? { diagnostics } : {})
   };
 }
 
@@ -144,9 +268,10 @@ function buildQueueOrderedTasks(queue, tasks = []) {
 function decorateTaskWithQueueProgress(task, queueOrderedTasks = []) {
   const activeTasks = queueOrderedTasks.filter((entry) => !['completed', 'failed'].includes(String(entry?.status || '').trim().toLowerCase()));
   const queuePosition = activeTasks.findIndex((entry) => entry.id === task.id);
+  const decoratedTask = decorateImportTaskLifecycle(task);
   return {
-    ...task,
-    progress: createImportProgress(task, {
+    ...decoratedTask,
+    progress: createImportProgress(decoratedTask, {
       queuePosition: queuePosition === -1 ? null : queuePosition + 1,
       queuedAhead: queuePosition === -1 ? 0 : queuePosition
     })
@@ -192,6 +317,338 @@ function createImportValidationError(message) {
   const error = new Error(message);
   error.statusCode = 400;
   return error;
+}
+
+function normalizeDashedToken(value) {
+  return String(value || '').trim().toLowerCase().replace(/_/g, '-');
+}
+
+function normalizeImportProcessingProfile(value, fallback = 'full') {
+  const normalized = normalizeDashedToken(value);
+  if (IMPORT_PROCESSING_PROFILES.has(normalized)) return normalized;
+  if (normalized === 'fast-md' || normalized === 'fast-markdown') {
+    return 'fast-md-background-semantic';
+  }
+  if (normalized === 'long-context' || normalized === 'long-context-md') {
+    return 'long-context-full-md';
+  }
+  return IMPORT_PROCESSING_PROFILES.has(fallback) ? fallback : 'full';
+}
+
+function defaultCompletionPolicyForProfile(processingProfile = 'full') {
+  switch (normalizeImportProcessingProfile(processingProfile)) {
+    case 'fast-md-structural':
+    case 'fast-md-background-semantic':
+      return 'graph-visible';
+    case 'long-context-full-md':
+    case 'full':
+    default:
+      return 'full';
+  }
+}
+
+function normalizeImportCompletionPolicy(value, processingProfile = 'full') {
+  const normalized = normalizeDashedToken(value);
+  if (IMPORT_COMPLETION_POLICIES.has(normalized)) return normalized;
+  if (normalized === 'graph') return 'graph-visible';
+  if (normalized === 'semantic') return 'semantic-complete';
+  return defaultCompletionPolicyForProfile(processingProfile);
+}
+
+function normalizeImportExecutionMode(value, fallback = 'serial') {
+  const normalized = normalizeDashedToken(value);
+  if (IMPORT_EXECUTION_MODES.has(normalized)) return normalized;
+  if (normalized === 'serial-sidecar' || normalized === 'sidecar') return 'serial';
+  if (normalized === 'dag-sidecar' || normalized === 'async-dag') return 'dag';
+  return IMPORT_EXECUTION_MODES.has(fallback) ? fallback : 'serial';
+}
+
+function normalizeImportLifecycleStatus(value, fallback = 'pending') {
+  const normalized = normalizeDashedToken(value);
+  if (IMPORT_LIFECYCLE_STATUSES.has(normalized)) return normalized;
+  return IMPORT_LIFECYCLE_STATUSES.has(fallback) ? fallback : 'pending';
+}
+
+function taskResultObject(result) {
+  return result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+}
+
+function objectOrNull(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function firstLifecycleValue(...values) {
+  for (const value of values) {
+    const normalized = String(value || '').trim();
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function normalizePositiveIntegerOrNull(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.floor(numeric);
+}
+
+function normalizeLlmExtractionStrategyOrNull(value) {
+  const normalized = normalizeDashedToken(value);
+  if (['long-context-first', 'chunk-first', 'auto'].includes(normalized)) return normalized;
+  return null;
+}
+
+function createImportTaskLlmConfigFields(input = {}, options = {}) {
+  const result = taskResultObject(input.result);
+  const resultLlmConfig = objectOrNull(result.llmConfig || result.llm_config) || {};
+  const inputLlmConfig = objectOrNull(input.llmConfig || input.llm_config) || {};
+  const optionsLlmConfig = objectOrNull(options.llmConfig || options.llm_config) || {};
+  const llmContextWindowTokens = normalizePositiveIntegerOrNull(firstLifecycleValue(
+    options.llmContextWindowTokens,
+    options.llm_context_window_tokens,
+    optionsLlmConfig.contextWindowTokens,
+    optionsLlmConfig.llmContextWindowTokens,
+    input.llmContextWindowTokens,
+    input.llm_context_window_tokens,
+    inputLlmConfig.contextWindowTokens,
+    inputLlmConfig.llmContextWindowTokens,
+    result.llmContextWindowTokens,
+    result.llm_context_window_tokens,
+    resultLlmConfig.contextWindowTokens,
+    resultLlmConfig.llmContextWindowTokens
+  ));
+  const llmExtractionStrategy = normalizeLlmExtractionStrategyOrNull(firstLifecycleValue(
+    options.llmExtractionStrategy,
+    options.llm_extraction_strategy,
+    optionsLlmConfig.extractionStrategy,
+    optionsLlmConfig.llmExtractionStrategy,
+    input.llmExtractionStrategy,
+    input.llm_extraction_strategy,
+    inputLlmConfig.extractionStrategy,
+    inputLlmConfig.llmExtractionStrategy,
+    result.llmExtractionStrategy,
+    result.llm_extraction_strategy,
+    resultLlmConfig.extractionStrategy,
+    resultLlmConfig.llmExtractionStrategy
+  ));
+  const llmLongContextMaxPapersPerCall = normalizePositiveIntegerOrNull(firstLifecycleValue(
+    options.llmLongContextMaxPapersPerCall,
+    options.llm_long_context_max_papers_per_call,
+    optionsLlmConfig.longContextMaxPapersPerCall,
+    optionsLlmConfig.llmLongContextMaxPapersPerCall,
+    input.llmLongContextMaxPapersPerCall,
+    input.llm_long_context_max_papers_per_call,
+    inputLlmConfig.longContextMaxPapersPerCall,
+    inputLlmConfig.llmLongContextMaxPapersPerCall,
+    result.llmLongContextMaxPapersPerCall,
+    result.llm_long_context_max_papers_per_call,
+    resultLlmConfig.longContextMaxPapersPerCall,
+    resultLlmConfig.llmLongContextMaxPapersPerCall
+  ));
+  const llmBatchConcurrency = normalizePositiveIntegerOrNull(firstLifecycleValue(
+    options.llmBatchConcurrency,
+    options.llm_batch_concurrency,
+    optionsLlmConfig.batchConcurrency,
+    optionsLlmConfig.llmBatchConcurrency,
+    input.llmBatchConcurrency,
+    input.llm_batch_concurrency,
+    inputLlmConfig.batchConcurrency,
+    inputLlmConfig.llmBatchConcurrency,
+    result.llmBatchConcurrency,
+    result.llm_batch_concurrency,
+    resultLlmConfig.batchConcurrency,
+    resultLlmConfig.llmBatchConcurrency
+  ));
+  const hasLlmConfig = llmContextWindowTokens !== null
+    || llmExtractionStrategy !== null
+    || llmLongContextMaxPapersPerCall !== null
+    || llmBatchConcurrency !== null;
+  const llmConfigSource = firstLifecycleValue(
+    options.llmConfigSource,
+    options.llm_config_source,
+    input.llmConfigSource,
+    input.llm_config_source,
+    result.llmConfigSource,
+    result.llm_config_source
+  ) || (hasLlmConfig ? 'request' : null);
+  return {
+    ...(llmContextWindowTokens !== null ? { llmContextWindowTokens } : {}),
+    ...(llmExtractionStrategy !== null ? { llmExtractionStrategy } : {}),
+    ...(llmLongContextMaxPapersPerCall !== null ? { llmLongContextMaxPapersPerCall } : {}),
+    ...(llmBatchConcurrency !== null ? { llmBatchConcurrency } : {}),
+    ...(hasLlmConfig
+      ? {
+          llmConfig: {
+            ...(llmContextWindowTokens !== null ? { contextWindowTokens: llmContextWindowTokens } : {}),
+            ...(llmExtractionStrategy !== null ? { extractionStrategy: llmExtractionStrategy } : {}),
+            ...(llmLongContextMaxPapersPerCall !== null ? { longContextMaxPapersPerCall: llmLongContextMaxPapersPerCall } : {}),
+            ...(llmBatchConcurrency !== null ? { batchConcurrency: llmBatchConcurrency } : {})
+          },
+          llmConfigSource
+        }
+      : {})
+  };
+}
+
+function defaultSemanticStatusForProfile(processingProfile = 'full') {
+  return normalizeImportProcessingProfile(processingProfile) === 'fast-md-structural'
+    ? 'not-required'
+    : 'pending';
+}
+
+function createImportLifecycleFields(input = {}, options = {}) {
+  const result = taskResultObject(input.result);
+  const processingProfile = normalizeImportProcessingProfile(firstLifecycleValue(
+    options.processingProfile,
+    options.processing_profile,
+    options.importProfile,
+    options.import_profile,
+    input.processingProfile,
+    input.processing_profile,
+    input.importProfile,
+    input.import_profile
+  ));
+  const completionPolicy = normalizeImportCompletionPolicy(firstLifecycleValue(
+    options.completionPolicy,
+    options.completion_policy,
+    input.completionPolicy,
+    input.completion_policy
+  ), processingProfile);
+  const importExecutionModeRaw = firstLifecycleValue(
+    options.importExecutionMode,
+    options.import_execution_mode,
+    options.importsExecutionMode,
+    options.imports_execution_mode,
+    input.importExecutionMode,
+    input.import_execution_mode,
+    input.importsExecutionMode,
+    input.imports_execution_mode,
+    result.importExecutionMode,
+    result.import_execution_mode
+  );
+  const importExecutionMode = normalizeImportExecutionMode(importExecutionModeRaw, 'serial');
+  const importExecutionModeSource = firstLifecycleValue(
+    options.importExecutionModeSource,
+    options.import_execution_mode_source,
+    input.importExecutionModeSource,
+    input.import_execution_mode_source,
+    result.importExecutionModeSource,
+    result.import_execution_mode_source
+  ) || (importExecutionModeRaw ? 'request' : 'default');
+  const taskStatus = normalizeDashedToken(input.status);
+  const completed = taskStatus === 'completed';
+  const failed = taskStatus === 'failed';
+  const graphFallback = completed ? 'completed' : failed ? 'failed' : 'pending';
+  const semanticFallback = completed
+    ? 'completed'
+    : failed
+      ? 'failed'
+      : defaultSemanticStatusForProfile(processingProfile);
+
+  return {
+    processingProfile,
+    completionPolicy,
+    importExecutionMode,
+    importExecutionModeSource,
+    ...createImportTaskLlmConfigFields(input, options),
+    graphVisibilityStatus: normalizeImportLifecycleStatus(firstLifecycleValue(
+      options.graphVisibilityStatus,
+      options.graph_visibility_status,
+      result.graphVisibilityStatus,
+      result.graph_visibility_status,
+      input.graphVisibilityStatus,
+      input.graph_visibility_status
+    ), graphFallback),
+    semanticStatus: normalizeImportLifecycleStatus(firstLifecycleValue(
+      options.semanticStatus,
+      options.semantic_status,
+      result.semanticStatus,
+      result.semantic_status,
+      input.semanticStatus,
+      input.semantic_status
+    ), semanticFallback),
+    authoritativeSyncStatus: normalizeImportLifecycleStatus(firstLifecycleValue(
+      options.authoritativeSyncStatus,
+      options.authoritative_sync_status,
+      result.authoritativeSync?.status,
+      result.authoritative_sync?.status,
+      input.authoritativeSyncStatus,
+      input.authoritative_sync_status
+    ), 'not-started'),
+    structuralCompletedAt: firstLifecycleValue(
+      options.structuralCompletedAt,
+      options.structural_completed_at,
+      result.structuralCompletedAt,
+      result.structural_completed_at,
+      input.structuralCompletedAt,
+      input.structural_completed_at
+    ) || null,
+    semanticCompletedAt: firstLifecycleValue(
+      options.semanticCompletedAt,
+      options.semantic_completed_at,
+      result.semanticCompletedAt,
+      result.semantic_completed_at,
+      input.semanticCompletedAt,
+      input.semantic_completed_at
+    ) || null,
+    throughputMetrics: options.throughputMetrics !== undefined
+      ? options.throughputMetrics
+      : result.throughputMetrics || result.throughput_metrics || input.throughputMetrics || input.throughput_metrics || null
+  };
+}
+
+function decorateImportTaskLifecycle(task = {}) {
+  if (!task || typeof task !== 'object') return task;
+  return {
+    ...task,
+    ...createImportLifecycleFields(task)
+  };
+}
+
+function createCompletedImportLifecycleFields(task = {}, result = null, finishedAt = new Date().toISOString()) {
+  const resultObject = taskResultObject(result);
+  const base = createImportLifecycleFields({
+    ...task,
+    result: resultObject
+  });
+  const completionPolicy = normalizeImportCompletionPolicy(base.completionPolicy, base.processingProfile);
+  const explicitSemanticStatus = firstLifecycleValue(
+    resultObject.semanticStatus,
+    resultObject.semantic_status
+  );
+  const semanticFallback = base.processingProfile === 'fast-md-structural'
+    ? 'not-required'
+    : completionPolicy === 'graph-visible'
+      ? base.semanticStatus || 'queued'
+      : 'completed';
+  const graphVisibilityStatus = normalizeImportLifecycleStatus(firstLifecycleValue(
+    resultObject.graphVisibilityStatus,
+    resultObject.graph_visibility_status
+  ), 'completed');
+  const semanticStatus = normalizeImportLifecycleStatus(explicitSemanticStatus, semanticFallback);
+
+  return {
+    ...base,
+    graphVisibilityStatus,
+    semanticStatus,
+    authoritativeSyncStatus: normalizeImportLifecycleStatus(firstLifecycleValue(
+      resultObject.authoritativeSync?.status,
+      resultObject.authoritative_sync?.status,
+      base.authoritativeSyncStatus
+    ), 'not-started'),
+    structuralCompletedAt: firstLifecycleValue(
+      resultObject.structuralCompletedAt,
+      resultObject.structural_completed_at,
+      base.structuralCompletedAt
+    ) || (graphVisibilityStatus === 'completed' ? finishedAt : null),
+    semanticCompletedAt: firstLifecycleValue(
+      resultObject.semanticCompletedAt,
+      resultObject.semantic_completed_at,
+      base.semanticCompletedAt
+    ) || (semanticStatus === 'completed' ? finishedAt : null),
+    throughputMetrics: resultObject.throughputMetrics || resultObject.throughput_metrics || base.throughputMetrics
+  };
 }
 
 function createEmptyQueue() {
@@ -686,6 +1143,15 @@ export async function appendImportTaskLog(rootPath, taskId, entry = {}) {
   const message = String(entry.message || '').trim() || 'event';
   await ensureDir(taskDir);
   await fs.appendFile(logPath, `[${timestamp}] [${level}] ${message}\n`, 'utf8');
+  if (entry.eventLedger !== false) {
+    await appendImportTaskEvent(rootPath, taskId, {
+      ...entry,
+      timestamp,
+      level,
+      message,
+      event: entry.event || 'task.log'
+    });
+  }
 }
 
 export async function loadImportTaskLog(rootPath, taskId) {
@@ -697,6 +1163,689 @@ export async function loadImportTaskLog(rootPath, taskId) {
   if (!quarantinedTaskDir) return '';
   const quarantinedLogPath = path.join(quarantinedTaskDir, 'events.log');
   return (await fileExists(quarantinedLogPath)) ? readText(quarantinedLogPath) : '';
+}
+
+function getImportTaskEventLedgerPath(rootPath, taskId) {
+  const { taskDir } = getImportTaskPaths(rootPath, taskId);
+  return path.join(taskDir, 'events.ndjson');
+}
+
+async function findImportTaskEventLedgerPath(rootPath, taskId) {
+  const activePath = getImportTaskEventLedgerPath(rootPath, taskId);
+  if (await fileExists(activePath)) {
+    return activePath;
+  }
+  const quarantinedTaskDir = await findQuarantinedImportTaskDir(rootPath, taskId);
+  if (!quarantinedTaskDir) return activePath;
+  return path.join(quarantinedTaskDir, 'events.ndjson');
+}
+
+function jsonSafeImportEventValue(value) {
+  if (value === undefined) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return { stringValue: String(value) };
+  }
+}
+
+async function readLastImportTaskEventSeq(eventsPath) {
+  if (!await fileExists(eventsPath)) return 0;
+  const raw = await readText(eventsPath);
+  const lines = raw.trimEnd().split('\n').filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(lines[index]);
+      const seq = Number(parsed?.seq || 0);
+      if (Number.isInteger(seq) && seq > 0) return seq;
+    } catch {
+      // Keep scanning older lines; a partially written line must not hide history.
+    }
+  }
+  return 0;
+}
+
+function normalizeImportTaskEvent(task = null, event = {}, seq = 1) {
+  const progress = task?.progress && typeof task.progress === 'object' ? task.progress : {};
+  const timestamp = event.timestamp || event.time || new Date().toISOString();
+  const error = event.error || null;
+  return {
+    contractVersion: IMPORT_EVENT_CONTRACT_VERSION,
+    seq,
+    timestamp,
+    event: String(event.event || 'task.event').trim() || 'task.event',
+    level: String(event.level || 'info').trim().toLowerCase() || 'info',
+    taskId: String(event.taskId || task?.id || '').trim(),
+    status: event.status || task?.status || progress.status || null,
+    stage: event.stage || task?.stage || progress.stage || null,
+    currentStep: event.currentStep || progress.currentStep || null,
+    message: String(event.message || progress.message || '').trim() || null,
+    percent: event.percent === undefined ? (progress.percent ?? null) : clampPercent(event.percent),
+    stagePercent: event.stagePercent === undefined ? (progress.stagePercent ?? null) : clampPercent(event.stagePercent),
+    processedUnits: event.processedUnits === undefined ? (progress.processedUnits ?? null) : event.processedUnits,
+    totalUnits: event.totalUnits === undefined ? (progress.totalUnits ?? null) : event.totalUnits,
+    batchId: event.batchId || task?.batchId || progress.batchId || null,
+    sourceKey: event.sourceKey || null,
+    paperId: event.paperId || null,
+    data: jsonSafeImportEventValue(event.data === undefined ? null : event.data),
+    error: error
+      ? jsonSafeImportEventValue({
+          message: String(error?.message || error),
+          ...(error?.name ? { name: String(error.name) } : {}),
+          ...(error?.code ? { code: String(error.code) } : {})
+        })
+      : null
+  };
+}
+
+export async function appendImportTaskEvent(rootPath, taskId, event = {}) {
+  const { taskDir } = getImportTaskPaths(rootPath, taskId);
+  const eventsPath = getImportTaskEventLedgerPath(rootPath, taskId);
+  const task = await loadImportTask(rootPath, taskId);
+  const seq = await readLastImportTaskEventSeq(eventsPath) + 1;
+  const normalized = normalizeImportTaskEvent(task, { ...event, taskId }, seq);
+  await ensureDir(taskDir);
+  await fs.appendFile(eventsPath, `${JSON.stringify(normalized)}\n`, 'utf8');
+  if (event.dagLedger !== false) {
+    await appendImportDagEvent(rootPath, taskId, normalized, { task });
+  }
+  return normalized;
+}
+
+export async function tailImportTaskEvents(rootPath, taskId, options = {}) {
+  const eventsPath = await findImportTaskEventLedgerPath(rootPath, taskId);
+  const raw = (await fileExists(eventsPath)) ? await readText(eventsPath) : '';
+  const lines = raw.trimEnd().split('\n').filter(Boolean);
+  const tail = Math.max(0, Number(options.tail || options.limit || 0) || 0);
+  const selected = tail > 0 ? lines.slice(-tail) : lines;
+  return {
+    contractVersion: IMPORT_EVENT_CONTRACT_VERSION,
+    taskId,
+    eventsPath,
+    events: selected.map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { raw: line };
+      }
+    })
+  };
+}
+
+function getImportTaskDagPath(rootPath, taskId) {
+  const { taskDir } = getImportTaskPaths(rootPath, taskId);
+  return path.join(taskDir, 'dag.json');
+}
+
+function getImportTaskDagEventLedgerPath(rootPath, taskId) {
+  const { taskDir } = getImportTaskPaths(rootPath, taskId);
+  return path.join(taskDir, 'dag-events.ndjson');
+}
+
+async function findImportTaskDagPath(rootPath, taskId) {
+  const activePath = getImportTaskDagPath(rootPath, taskId);
+  if (await fileExists(activePath)) {
+    return activePath;
+  }
+  const quarantinedTaskDir = await findQuarantinedImportTaskDir(rootPath, taskId);
+  if (!quarantinedTaskDir) return activePath;
+  return path.join(quarantinedTaskDir, 'dag.json');
+}
+
+async function findImportTaskDagEventLedgerPath(rootPath, taskId) {
+  const activePath = getImportTaskDagEventLedgerPath(rootPath, taskId);
+  if (await fileExists(activePath)) {
+    return activePath;
+  }
+  const quarantinedTaskDir = await findQuarantinedImportTaskDir(rootPath, taskId);
+  if (!quarantinedTaskDir) return activePath;
+  return path.join(quarantinedTaskDir, 'dag-events.ndjson');
+}
+
+function createImportDagTaskContentFingerprint(task = {}) {
+  const files = Array.isArray(task.files) ? task.files : [];
+  return files
+    .map((file) => String(file?.contentSha256 || file?.contentFingerprint || '').trim())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
+function createImportDagIdempotencyParts(task = {}, nodeId = 'task.queued') {
+  return {
+    nodeId,
+    taskId: String(task?.id || '').trim(),
+    importFingerprint: String(task?.importFingerprint || '').trim(),
+    contentFingerprint: createImportDagTaskContentFingerprint(task),
+    processingProfile: normalizeImportProcessingProfile(task?.processingProfile, 'full'),
+    completionPolicy: normalizeImportCompletionPolicy(task?.completionPolicy, task?.processingProfile || 'full')
+  };
+}
+
+function createImportDagIdempotencyKey(task = {}, nodeId = 'task.queued') {
+  return `import-dag-node:${stableHash(JSON.stringify(createImportDagIdempotencyParts(task, nodeId)), 24)}`;
+}
+
+function getImportDagRetryOwner(nodeId = 'task.queued') {
+  return IMPORT_DAG_RETRY_OWNERS.get(nodeId) || 'import-worker';
+}
+
+function createImportDagRetryPolicy(nodeId = 'task.queued') {
+  const owner = getImportDagRetryOwner(nodeId);
+  return {
+    owner,
+    retryable: !['task.queued', 'task.completed'].includes(nodeId),
+    idempotent: true,
+    maxAttempts: owner === 'llm-worker-pool' ? null : 3
+  };
+}
+
+function normalizeImportDagArtifactRef(value = null) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized ? { kind: 'path', path: normalized } : null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = String(value.kind || value.type || '').trim() || 'artifact';
+  const pathValue = String(value.path || value.filePath || value.file || '').trim();
+  const id = String(value.id || value.key || value.sourceKey || value.paperId || pathValue || '').trim();
+  if (!id && !pathValue) return null;
+  return {
+    kind,
+    ...(id ? { id } : {}),
+    ...(pathValue ? { path: pathValue } : {}),
+    ...(value.role ? { role: String(value.role) } : {}),
+    ...(value.contentSha256 ? { contentSha256: String(value.contentSha256) } : {}),
+    ...(value.contentFingerprint ? { contentFingerprint: String(value.contentFingerprint) } : {}),
+    ...(value.sourceKey ? { sourceKey: String(value.sourceKey) } : {}),
+    ...(value.paperId ? { paperId: String(value.paperId) } : {})
+  };
+}
+
+function normalizeImportDagArtifactRefs(values = []) {
+  const list = Array.isArray(values) ? values : [values];
+  return list.map((value) => normalizeImportDagArtifactRef(value)).filter(Boolean);
+}
+
+function mergeImportDagArtifactRefs(...artifactLists) {
+  const merged = [];
+  const seen = new Set();
+  for (const artifact of artifactLists.flatMap((list) => normalizeImportDagArtifactRefs(list))) {
+    const key = JSON.stringify(artifact);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(artifact);
+  }
+  return merged;
+}
+
+function createStoredSourceArtifactRefs(task = {}) {
+  return (Array.isArray(task.files) ? task.files : [])
+    .map((file) => normalizeImportDagArtifactRef({
+      kind: 'stored-source',
+      id: file?.storedName || file?.originalName || file?.storedPath,
+      path: file?.storedPath,
+      contentSha256: file?.contentSha256,
+      contentFingerprint: file?.contentFingerprint
+    }))
+    .filter(Boolean);
+}
+
+function createImportDagNodeArtifactRefs(task = {}, nodeId = 'task.queued') {
+  const taskArtifacts = [
+    normalizeImportDagArtifactRef({
+      kind: 'import-task',
+      id: task?.id || '',
+      path: task?.id ? 'task.json' : ''
+    })
+  ].filter(Boolean);
+  const storedSources = createStoredSourceArtifactRefs(task);
+  const sourceDirArtifact = task?.sourcesDir
+    ? [normalizeImportDagArtifactRef({ kind: 'sources-dir', path: task.sourcesDir })].filter(Boolean)
+    : [];
+
+  switch (nodeId) {
+    case 'task.queued':
+      return {
+        inputArtifacts: storedSources,
+        outputArtifacts: taskArtifacts
+      };
+    case 'source.materialize':
+      return {
+        inputArtifacts: storedSources,
+        outputArtifacts: sourceDirArtifact
+      };
+    case 'chunk.normalize':
+    case 'paper.structural_snapshot':
+      return {
+        inputArtifacts: sourceDirArtifact,
+        outputArtifacts: []
+      };
+    case 'paper.long_context_llm':
+    case 'chunk.semantic_llm':
+    case 'chunk.relation_llm':
+      return {
+        inputArtifacts: sourceDirArtifact,
+        outputArtifacts: []
+      };
+    case 'task.completed':
+      return {
+        inputArtifacts: taskArtifacts,
+        outputArtifacts: taskArtifacts
+      };
+    default:
+      return {
+        inputArtifacts: taskArtifacts,
+        outputArtifacts: []
+      };
+  }
+}
+
+function createImportDagNode(definition, now = new Date().toISOString(), task = {}) {
+  const artifactRefs = createImportDagNodeArtifactRefs(task, definition.id);
+  const retryPolicy = createImportDagRetryPolicy(definition.id);
+  return {
+    id: definition.id,
+    dependsOn: [...definition.dependsOn],
+    idempotencyKey: createImportDagIdempotencyKey(task, definition.id),
+    idempotencyParts: createImportDagIdempotencyParts(task, definition.id),
+    retryOwner: retryPolicy.owner,
+    retryPolicy,
+    status: 'not-started',
+    attempts: 0,
+    createdAt: now,
+    updatedAt: now,
+    startedAt: null,
+    completedAt: null,
+    failedAt: null,
+    lastEventAt: null,
+    progress: null,
+    error: null,
+    inputArtifacts: artifactRefs.inputArtifacts,
+    outputArtifacts: artifactRefs.outputArtifacts,
+    artifacts: mergeImportDagArtifactRefs(artifactRefs.inputArtifacts, artifactRefs.outputArtifacts)
+  };
+}
+
+function normalizeImportDagNodeId(value, fallback = 'task.queued') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (IMPORT_DAG_NODE_IDS.has(raw)) return raw;
+  const normalized = normalizeDashedToken(raw);
+  if (IMPORT_DAG_NODE_IDS.has(normalized)) return normalized;
+  if (IMPORT_DAG_NODE_ALIASES.has(raw)) return IMPORT_DAG_NODE_ALIASES.get(raw);
+  if (IMPORT_DAG_NODE_ALIASES.has(normalized)) return IMPORT_DAG_NODE_ALIASES.get(normalized);
+  const normalizedFallback = normalizeDashedToken(fallback);
+  if (IMPORT_DAG_NODE_IDS.has(fallback)) return fallback;
+  if (IMPORT_DAG_NODE_IDS.has(normalizedFallback)) return normalizedFallback;
+  if (IMPORT_DAG_NODE_ALIASES.has(normalizedFallback)) return IMPORT_DAG_NODE_ALIASES.get(normalizedFallback);
+  return 'task.queued';
+}
+
+function normalizeImportDagStatus(value, fallback = 'pending') {
+  const normalized = normalizeImportLifecycleStatus(value, fallback);
+  return normalized === 'queued' ? 'pending' : normalized;
+}
+
+function normalizeImportTaskDag(task = {}, dag = null) {
+  const now = new Date().toISOString();
+  const existing = objectOrNull(dag) || {};
+  const existingNodes = objectOrNull(existing.nodes) || {};
+  const importExecutionMode = normalizeImportExecutionMode(task?.importExecutionMode || task?.import_execution_mode || existing.importExecutionMode || existing.executionMode, 'serial');
+  const nodes = {};
+  for (const definition of IMPORT_DAG_NODE_DEFINITIONS) {
+    const existingNode = objectOrNull(existingNodes[definition.id]) || {};
+    const baseNode = createImportDagNode(definition, existingNode.createdAt || existing.createdAt || task?.createdAt || now, task);
+    nodes[definition.id] = {
+      ...baseNode,
+      ...existingNode,
+      id: definition.id,
+      dependsOn: [...definition.dependsOn],
+      idempotencyKey: existingNode.idempotencyKey || baseNode.idempotencyKey,
+      idempotencyParts: {
+        ...baseNode.idempotencyParts,
+        ...(objectOrNull(existingNode.idempotencyParts) || {})
+      },
+      retryOwner: existingNode.retryOwner || baseNode.retryOwner,
+      retryPolicy: {
+        ...baseNode.retryPolicy,
+        ...(objectOrNull(existingNode.retryPolicy) || {})
+      },
+      status: normalizeImportDagStatus(existingNode.status || 'not-started', 'not-started'),
+      inputArtifacts: mergeImportDagArtifactRefs(baseNode.inputArtifacts, existingNode.inputArtifacts),
+      outputArtifacts: mergeImportDagArtifactRefs(baseNode.outputArtifacts, existingNode.outputArtifacts),
+      artifacts: mergeImportDagArtifactRefs(baseNode.artifacts, existingNode.artifacts, existingNode.inputArtifacts, existingNode.outputArtifacts)
+    };
+  }
+
+  return {
+    contractVersion: IMPORT_DAG_CONTRACT_VERSION,
+    taskId: String(existing.taskId || task?.id || '').trim(),
+    status: normalizeImportDagStatus(existing.status || task?.status || 'pending', 'pending'),
+    executionMode: importExecutionMode === 'dag' ? 'dag' : 'serial-sidecar',
+    importExecutionMode,
+    createdAt: existing.createdAt || task?.createdAt || now,
+    updatedAt: existing.updatedAt || task?.updatedAt || now,
+    processingProfile: task?.processingProfile || existing.processingProfile || null,
+    completionPolicy: task?.completionPolicy || existing.completionPolicy || null,
+    nodeOrder: IMPORT_DAG_NODE_DEFINITIONS.map((definition) => definition.id),
+    nodes
+  };
+}
+
+function inferImportDagNodeId(task = null, event = {}) {
+  const eventName = String(event.event || '').trim().toLowerCase();
+  if (eventName === 'task.completed') return 'task.completed';
+  if (eventName.startsWith('task.authoritative_sync.')) {
+    const syncStatus = normalizeImportLifecycleStatus(
+      event.data?.authoritativeSyncStatus || event.data?.authoritative_sync_status || event.status,
+      'pending'
+    );
+    return ['pending', 'queued', 'running'].includes(syncStatus)
+      ? 'authoritative_sync.enqueue'
+      : 'authoritative_sync.apply';
+  }
+  if (eventName.startsWith('task.semantic.')) return 'paper.long_context_llm';
+
+  return normalizeImportDagNodeId(
+    event.nodeId
+      || event.node
+      || event.stage
+      || task?.stage
+      || task?.progress?.stage,
+    eventName === 'task.failed' ? 'source.materialize' : 'task.queued'
+  );
+}
+
+function inferImportDagStatus(task = null, event = {}, nodeId = 'task.queued') {
+  const eventName = String(event.event || '').trim().toLowerCase();
+  if (eventName === 'task.completed') return 'completed';
+  if (eventName === 'task.failed') return 'failed';
+  if (eventName === 'task.created') return 'pending';
+  if (eventName === 'task.stage') return 'running';
+  if (eventName.startsWith('task.semantic.')) {
+    return normalizeImportDagStatus(eventName.split('.').pop(), event.status || 'pending');
+  }
+  if (eventName.startsWith('task.authoritative_sync.')) {
+    const syncStatus = normalizeImportLifecycleStatus(
+      event.data?.authoritativeSyncStatus || event.data?.authoritative_sync_status || eventName.split('.').pop(),
+      'pending'
+    );
+    return nodeId === 'authoritative_sync.enqueue' ? 'completed' : normalizeImportDagStatus(syncStatus, 'pending');
+  }
+  return normalizeImportDagStatus(event.status || task?.status || task?.progress?.status || 'pending', 'pending');
+}
+
+function normalizeImportDagEvent(task = null, event = {}, seq = 1) {
+  const timestamp = event.timestamp || event.time || new Date().toISOString();
+  const nodeId = inferImportDagNodeId(task, event);
+  const status = inferImportDagStatus(task, event, nodeId);
+  const progress = task?.progress && typeof task.progress === 'object' ? task.progress : {};
+  const error = event.error || null;
+  const eventData = event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  const eventArtifactRefs = event.artifactRefs && typeof event.artifactRefs === 'object' && !Array.isArray(event.artifactRefs)
+    ? event.artifactRefs
+    : {};
+  const inputArtifacts = mergeImportDagArtifactRefs(
+    event.inputArtifacts,
+    eventArtifactRefs.inputArtifacts,
+    eventArtifactRefs.inputs,
+    eventData.inputArtifacts,
+    eventData.artifactRefs?.inputArtifacts,
+    eventData.artifactRefs?.inputs
+  );
+  const outputArtifacts = mergeImportDagArtifactRefs(
+    event.outputArtifacts,
+    eventArtifactRefs.outputArtifacts,
+    eventArtifactRefs.outputs,
+    eventData.outputArtifacts,
+    eventData.artifactRefs?.outputArtifacts,
+    eventData.artifactRefs?.outputs
+  );
+  return {
+    contractVersion: IMPORT_DAG_EVENT_CONTRACT_VERSION,
+    seq,
+    timestamp,
+    event: String(event.event || 'task.event').trim() || 'task.event',
+    level: String(event.level || 'info').trim().toLowerCase() || 'info',
+    taskId: String(event.taskId || task?.id || '').trim(),
+    nodeId,
+    status,
+    stage: event.stage || task?.stage || progress.stage || null,
+    currentStep: event.currentStep || progress.currentStep || null,
+    message: String(event.message || progress.message || '').trim() || null,
+    percent: event.percent === undefined ? (progress.percent ?? null) : clampPercent(event.percent),
+    stagePercent: event.stagePercent === undefined ? (progress.stagePercent ?? null) : clampPercent(event.stagePercent),
+    processedUnits: event.processedUnits === undefined ? (progress.processedUnits ?? null) : event.processedUnits,
+    totalUnits: event.totalUnits === undefined ? (progress.totalUnits ?? null) : event.totalUnits,
+    batchId: event.batchId || task?.batchId || progress.batchId || null,
+    sourceKey: event.sourceKey || null,
+    paperId: event.paperId || null,
+    idempotencyKey: event.idempotencyKey || null,
+    inputArtifacts,
+    outputArtifacts,
+    artifactRefs: {
+      inputArtifacts,
+      outputArtifacts
+    },
+    data: jsonSafeImportEventValue(event.data === undefined ? null : event.data),
+    error: error
+      ? jsonSafeImportEventValue({
+          message: String(error?.message || error),
+          ...(error?.name ? { name: String(error.name) } : {}),
+          ...(error?.code ? { code: String(error.code) } : {})
+        })
+      : null
+  };
+}
+
+function shouldKeepImportDagNodeStatus(previousStatus, nextStatus) {
+  return previousStatus === 'completed' && ['not-started', 'pending', 'running'].includes(nextStatus);
+}
+
+function setImportDagNodeStatus(dag, nodeId, status, timestamp, event = {}) {
+  const node = dag.nodes?.[nodeId];
+  if (!node) return;
+  const nextStatus = normalizeImportDagStatus(status, node.status || 'pending');
+  const previousStatus = normalizeImportDagStatus(node.status || 'not-started', 'not-started');
+  if (!shouldKeepImportDagNodeStatus(previousStatus, nextStatus)) {
+    node.status = nextStatus;
+  }
+  node.updatedAt = timestamp;
+  node.lastEventAt = timestamp;
+  if (nextStatus === 'running') {
+    if (previousStatus !== 'running') {
+      node.attempts = Math.max(1, Number(node.attempts || 0) + 1);
+    } else {
+      node.attempts = Math.max(1, Number(node.attempts || 0));
+    }
+    node.startedAt = node.startedAt || timestamp;
+  }
+  if (nextStatus === 'pending') {
+    node.attempts = Math.max(0, Number(node.attempts || 0));
+  }
+  if (nextStatus === 'completed') {
+    node.startedAt = node.startedAt || timestamp;
+    node.completedAt = node.completedAt || timestamp;
+    node.error = null;
+    node.attempts = Math.max(1, Number(node.attempts || 0));
+  }
+  if (nextStatus === 'failed') {
+    node.startedAt = node.startedAt || timestamp;
+    node.failedAt = timestamp;
+    node.error = event.error || { message: event.message || 'Import DAG node failed' };
+    node.attempts = Math.max(1, Number(node.attempts || 0));
+  }
+  if (nextStatus === 'skipped' || nextStatus === 'not-required') {
+    node.completedAt = node.completedAt || timestamp;
+  }
+  if (event.idempotencyKey && !node.idempotencyKey) {
+    node.idempotencyKey = String(event.idempotencyKey);
+  }
+  node.inputArtifacts = mergeImportDagArtifactRefs(node.inputArtifacts, event.inputArtifacts, event.artifactRefs?.inputArtifacts, event.artifactRefs?.inputs);
+  node.outputArtifacts = mergeImportDagArtifactRefs(node.outputArtifacts, event.outputArtifacts, event.artifactRefs?.outputArtifacts, event.artifactRefs?.outputs);
+  node.artifacts = mergeImportDagArtifactRefs(node.artifacts, node.inputArtifacts, node.outputArtifacts);
+  const progressFields = {
+    percent: event.percent,
+    stagePercent: event.stagePercent,
+    processedUnits: event.processedUnits,
+    totalUnits: event.totalUnits,
+    currentStep: event.currentStep || null,
+    message: event.message || null
+  };
+  if (Object.values(progressFields).some((value) => value !== undefined && value !== null && value !== '')) {
+    node.progress = progressFields;
+  }
+}
+
+function completeImportDagDependencies(dag, nodeId, timestamp, seen = new Set()) {
+  if (seen.has(nodeId)) return;
+  seen.add(nodeId);
+  const node = dag.nodes?.[nodeId];
+  if (!node) return;
+  for (const dependencyId of node.dependsOn || []) {
+    completeImportDagDependencies(dag, dependencyId, timestamp, seen);
+    const dependency = dag.nodes?.[dependencyId];
+    if (!dependency) continue;
+    const dependencyStatus = normalizeImportDagStatus(dependency.status || 'not-started', 'not-started');
+    if (['not-started', 'pending', 'running'].includes(dependencyStatus)) {
+      setImportDagNodeStatus(dag, dependencyId, 'completed', timestamp, {
+        event: 'dag.dependency.completed',
+        message: `Dependency completed before ${nodeId}`
+      });
+    }
+  }
+}
+
+function setGraphVisibleImportDagCompleted(dag, timestamp) {
+  for (const nodeId of [
+    'task.queued',
+    'source.materialize',
+    'chunk.normalize',
+    'paper.structural_snapshot',
+    'paper.delta_build',
+    'corpus.merge',
+    'lite_state.update',
+    'task.completed'
+  ]) {
+    completeImportDagDependencies(dag, nodeId, timestamp);
+    setImportDagNodeStatus(dag, nodeId, 'completed', timestamp, {
+      event: 'task.completed',
+      message: 'Graph-visible import path completed'
+    });
+  }
+}
+
+function applyImportDagLifecycleProjection(dag, task = {}, timestamp) {
+  const semanticStatus = normalizeImportLifecycleStatus(task.semanticStatus || task.result?.semanticStatus, 'pending');
+  if (semanticStatus === 'not-required') {
+    for (const nodeId of ['paper.long_context_llm', 'chunk.semantic_llm', 'chunk.relation_llm']) {
+      setImportDagNodeStatus(dag, nodeId, 'not-required', timestamp, {
+        event: 'task.semantic.not_required',
+        message: 'Semantic enrichment is not required for this import profile'
+      });
+    }
+  } else if (semanticStatus && semanticStatus !== 'pending') {
+    setImportDagNodeStatus(dag, 'paper.long_context_llm', semanticStatus, timestamp, {
+      event: `task.semantic.${semanticStatus}`,
+      message: `Semantic enrichment ${semanticStatus}`
+    });
+  }
+
+  const authoritativeSyncStatus = normalizeImportLifecycleStatus(
+    task.authoritativeSyncStatus || task.result?.authoritativeSyncStatus || task.result?.authoritativeSync?.status,
+    'not-started'
+  );
+  if (authoritativeSyncStatus !== 'not-started') {
+    setImportDagNodeStatus(dag, 'authoritative_sync.enqueue', 'completed', timestamp, {
+      event: 'task.authoritative_sync.enqueued',
+      message: 'Authoritative sync job enqueued'
+    });
+    setImportDagNodeStatus(dag, 'authoritative_sync.apply', authoritativeSyncStatus, timestamp, {
+      event: `task.authoritative_sync.${authoritativeSyncStatus}`,
+      message: `Authoritative sync ${authoritativeSyncStatus}`
+    });
+  }
+}
+
+function applyImportDagEvent(dag, task = {}, event = {}) {
+  const timestamp = event.timestamp || new Date().toISOString();
+  const eventImportExecutionMode = event.data?.importExecutionMode
+    || event.data?.import_execution_mode
+    || event.importExecutionMode
+    || event.import_execution_mode
+    || task?.importExecutionMode
+    || task?.import_execution_mode
+    || dag.importExecutionMode;
+  const importExecutionMode = normalizeImportExecutionMode(eventImportExecutionMode, dag.importExecutionMode || 'serial');
+  dag.importExecutionMode = importExecutionMode;
+  if (!dag.executionMode || dag.executionMode === 'serial-sidecar' || dag.executionMode === 'dag') {
+    dag.executionMode = importExecutionMode === 'dag' ? 'dag' : 'serial-sidecar';
+  }
+  const nodeId = normalizeImportDagNodeId(event.nodeId, 'task.queued');
+  if (['running', 'completed'].includes(event.status) || nodeId === 'task.completed') {
+    completeImportDagDependencies(dag, nodeId, timestamp);
+  }
+  if (event.event === 'task.completed') {
+    setGraphVisibleImportDagCompleted(dag, timestamp);
+  }
+  setImportDagNodeStatus(dag, nodeId, event.status, timestamp, event);
+  if (event.event === 'task.completed' || String(event.event || '').startsWith('task.semantic.') || String(event.event || '').startsWith('task.authoritative_sync.')) {
+    applyImportDagLifecycleProjection(dag, task, timestamp);
+  }
+  dag.status = event.event === 'task.failed' || event.status === 'failed'
+    ? 'failed'
+    : event.event === 'task.completed'
+      ? 'completed'
+      : normalizeImportDagStatus(task?.status || dag.status || event.status || 'pending', 'pending');
+  dag.updatedAt = timestamp;
+  dag.processingProfile = task?.processingProfile || dag.processingProfile || null;
+  dag.completionPolicy = task?.completionPolicy || dag.completionPolicy || null;
+}
+
+export async function loadImportTaskDag(rootPath, taskId) {
+  const dagPath = await findImportTaskDagPath(rootPath, taskId);
+  const [task, dag] = await Promise.all([
+    loadImportTask(rootPath, taskId),
+    readJson(dagPath, null)
+  ]);
+  return normalizeImportTaskDag(task || { id: taskId }, dag);
+}
+
+export async function appendImportDagEvent(rootPath, taskId, event = {}, options = {}) {
+  const task = options.task || await loadImportTask(rootPath, taskId);
+  const { taskDir } = getImportTaskPaths(rootPath, taskId);
+  const dagPath = getImportTaskDagPath(rootPath, taskId);
+  const eventsPath = getImportTaskDagEventLedgerPath(rootPath, taskId);
+  const existingDag = await readJson(dagPath, null);
+  const dag = normalizeImportTaskDag(task || { id: taskId }, existingDag);
+  const seq = await readLastImportTaskEventSeq(eventsPath) + 1;
+  const normalized = normalizeImportDagEvent(task, { ...event, taskId }, seq);
+  applyImportDagEvent(dag, task || { id: taskId }, normalized);
+  await ensureDir(taskDir);
+  await writeJson(dagPath, dag);
+  await fs.appendFile(eventsPath, `${JSON.stringify(normalized)}\n`, 'utf8');
+  return normalized;
+}
+
+export async function tailImportTaskDagEvents(rootPath, taskId, options = {}) {
+  const eventsPath = await findImportTaskDagEventLedgerPath(rootPath, taskId);
+  const raw = (await fileExists(eventsPath)) ? await readText(eventsPath) : '';
+  const lines = raw.trimEnd().split('\n').filter(Boolean);
+  const tail = Math.max(0, Number(options.tail || options.limit || 0) || 0);
+  const selected = tail > 0 ? lines.slice(-tail) : lines;
+  return {
+    contractVersion: IMPORT_DAG_EVENT_CONTRACT_VERSION,
+    taskId,
+    eventsPath,
+    events: selected.map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { raw: line };
+      }
+    })
+  };
 }
 
 async function clearImportFingerprintEntry(rootPath, importFingerprint, taskId = null) {
@@ -964,7 +2113,7 @@ export async function createImportTask(rootPath, options = {}) {
         const mergedMetadata = mergeTaskFileMetadata(existingTask, normalizedFiles);
         if (mergedMetadata.changed) {
           const nextTask = {
-            ...existingTask,
+            ...decorateImportTaskLifecycle(existingTask),
             files: mergedMetadata.files,
             updatedAt: new Date().toISOString()
           };
@@ -979,7 +2128,7 @@ export async function createImportTask(rootPath, options = {}) {
           };
         }
         return {
-          ...existingTask,
+          ...decorateImportTaskLifecycle(existingTask),
           deduped: true
         };
       }
@@ -1032,6 +2181,7 @@ export async function createImportTask(rootPath, options = {}) {
       stage: 'queued',
       includeInGraph: false,
       trigger: String(options.trigger || 'api'),
+      ...createImportLifecycleFields(options),
       createdAt: now,
       updatedAt: now,
       finishedAt: null,
@@ -1318,21 +2468,247 @@ export async function markImportTaskStage(rootPath, taskId, stage, message = '')
       message
     });
   }
+  await appendImportTaskEvent(rootPath, taskId, {
+    event: 'task.stage',
+    level: 'info',
+    stage,
+    status: 'running',
+    message: message || defaultProgressMessage(stage, 'running')
+  });
   return task;
 }
 
 export async function updateImportTaskProgress(rootPath, taskId, progress = {}) {
-  return updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
+  const task = await updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
     nextTask.progress = createImportProgress(nextTask, progress);
+    const diagnostics = progress.diagnostics && typeof progress.diagnostics === 'object' && !Array.isArray(progress.diagnostics)
+      ? progress.diagnostics
+      : null;
+    if (diagnostics) {
+      nextTask.progress.diagnostics = {
+        ...(nextTask.progress.diagnostics && typeof nextTask.progress.diagnostics === 'object' && !Array.isArray(nextTask.progress.diagnostics)
+          ? nextTask.progress.diagnostics
+          : {}),
+        ...diagnostics
+      };
+    }
   });
+  if (!task) return null;
+  await appendImportTaskEvent(rootPath, taskId, {
+    event: 'task.progress',
+    level: 'debug',
+    stage: task.progress?.stage || task.stage || progress.stage || null,
+    status: task.progress?.status || task.status || progress.status || null,
+    currentStep: task.progress?.currentStep || progress.currentStep || null,
+    message: task.progress?.message || progress.message || null,
+    percent: task.progress?.percent,
+    stagePercent: task.progress?.stagePercent,
+    processedUnits: task.progress?.processedUnits,
+    totalUnits: task.progress?.totalUnits,
+    data: {
+      progress: task.progress || null,
+      diagnostics: task.progress?.diagnostics || null
+    }
+  });
+  return task;
+}
+
+export async function updateImportTaskSemanticLifecycle(rootPath, taskId, status, options = {}) {
+  const normalizedStatus = normalizeImportLifecycleStatus(status, 'pending');
+  const updatedAt = new Date().toISOString();
+  const task = await updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
+    const result = taskResultObject(nextTask.result);
+    const existingEnrichment = result.semanticEnrichment && typeof result.semanticEnrichment === 'object'
+      ? result.semanticEnrichment
+      : {};
+    nextTask.semanticStatus = normalizedStatus;
+    if (normalizedStatus === 'running') {
+      nextTask.semanticStartedAt = nextTask.semanticStartedAt || updatedAt;
+    }
+    if (normalizedStatus === 'completed') {
+      nextTask.semanticCompletedAt = options.semanticCompletedAt || updatedAt;
+    }
+    if (normalizedStatus === 'failed') {
+      nextTask.semanticFailedAt = options.semanticFailedAt || updatedAt;
+    }
+    if (options.throughputMetrics && typeof options.throughputMetrics === 'object') {
+      nextTask.throughputMetrics = {
+        ...(nextTask.throughputMetrics || {}),
+        ...options.throughputMetrics
+      };
+    }
+    nextTask.result = {
+      ...result,
+      semanticStatus: normalizedStatus,
+      semanticEnrichment: {
+        ...existingEnrichment,
+        status: normalizedStatus,
+        jobId: options.jobId || existingEnrichment.jobId || null,
+        jobIds: Array.isArray(options.jobIds) ? options.jobIds : (existingEnrichment.jobIds || []),
+        updatedAt,
+        ...(options.result !== undefined ? { result: options.result } : {}),
+        ...(options.error ? { error: { message: String(options.error?.message || options.error) } } : {})
+      },
+      throughputMetrics: options.throughputMetrics
+        ? {
+            ...(result.throughputMetrics || nextTask.throughputMetrics || {}),
+            ...options.throughputMetrics
+          }
+        : (result.throughputMetrics || nextTask.throughputMetrics || null)
+    };
+  });
+  if (!task) return null;
+  if (options.message) {
+    await appendImportTaskLog(rootPath, taskId, {
+      level: options.logLevel || (normalizedStatus === 'failed' ? 'error' : 'info'),
+      message: options.message
+    });
+  }
+  await appendImportTaskEvent(rootPath, taskId, {
+    event: `task.semantic.${normalizedStatus}`,
+    level: normalizedStatus === 'failed' ? 'error' : 'info',
+    status: task.status,
+    stage: task.stage,
+    message: options.message || `semantic lifecycle ${normalizedStatus}`,
+    data: {
+      semanticStatus: normalizedStatus,
+      jobId: options.jobId || null,
+      jobIds: Array.isArray(options.jobIds) ? options.jobIds : []
+    },
+    error: options.error || null
+  });
+  return task;
+}
+
+function getImportTaskAuthoritativeSyncJobId(task = {}) {
+  const result = taskResultObject(task.result);
+  const syncCandidates = [
+    objectOrNull(result.authoritativeSync),
+    objectOrNull(result.authoritative_sync),
+    objectOrNull(task.authoritativeSync),
+    objectOrNull(task.authoritative_sync)
+  ].filter(Boolean);
+  for (const sync of syncCandidates) {
+    const jobId = String(sync.jobId || sync.job_id || '').trim();
+    if (jobId) return jobId;
+  }
+  return '';
+}
+
+function createAuthoritativeSyncTaskPayload(jobId, status, options = {}) {
+  const job = objectOrNull(options.job) || {};
+  const updatedAt = options.updatedAt || job.updatedAt || new Date().toISOString();
+  const payload = {
+    jobId,
+    status,
+    updatedAt
+  };
+  const completedAt = options.completedAt || job.completedAt || null;
+  if (completedAt || status === 'completed') {
+    payload.completedAt = completedAt || updatedAt;
+  }
+  const failedAt = options.failedAt || job.failedAt || null;
+  if (failedAt || status === 'failed') {
+    payload.failedAt = failedAt || updatedAt;
+  }
+  const appliedAt = options.appliedAt || job.appliedAt || null;
+  if (appliedAt) {
+    payload.appliedAt = appliedAt;
+  }
+  const error = options.error || job.error || null;
+  if (error) {
+    payload.error = error && typeof error === 'object'
+      ? {
+          message: String(error.message || error),
+          ...(error.name ? { name: String(error.name) } : {})
+        }
+      : { message: String(error) };
+  } else if (status === 'completed') {
+    payload.error = null;
+  }
+  return payload;
+}
+
+export async function updateImportTasksAuthoritativeSyncLifecycle(rootPath, jobId, status, options = {}) {
+  const normalizedJobId = String(jobId || '').trim();
+  if (!normalizedJobId) {
+    return {
+      jobId: '',
+      status: normalizeImportLifecycleStatus(status, 'pending'),
+      updatedTaskIds: [],
+      updatedCount: 0
+    };
+  }
+  const normalizedStatus = normalizeImportLifecycleStatus(status, 'pending');
+  const { tasks } = await listImportTasks(rootPath);
+  const matchingTaskIds = (tasks || [])
+    .filter((task) => getImportTaskAuthoritativeSyncJobId(task) === normalizedJobId)
+    .map((task) => task.id)
+    .filter(Boolean);
+  const updatedTaskIds = [];
+
+  for (const taskId of matchingTaskIds) {
+    const updatedTask = await updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
+      if (getImportTaskAuthoritativeSyncJobId(nextTask) !== normalizedJobId) return;
+      const result = taskResultObject(nextTask.result);
+      const existingSync = objectOrNull(result.authoritativeSync) || {};
+      const syncPayload = createAuthoritativeSyncTaskPayload(normalizedJobId, normalizedStatus, options);
+      nextTask.authoritativeSyncStatus = normalizedStatus;
+      if (normalizedStatus === 'completed') {
+        nextTask.authoritativeSyncCompletedAt = syncPayload.completedAt || syncPayload.updatedAt;
+        nextTask.authoritativeSyncFailedAt = null;
+      }
+      if (normalizedStatus === 'failed') {
+        nextTask.authoritativeSyncFailedAt = syncPayload.failedAt || syncPayload.updatedAt;
+      }
+      nextTask.result = {
+        ...result,
+        authoritativeSyncStatus: normalizedStatus,
+        authoritativeSync: {
+          ...existingSync,
+          ...syncPayload
+        }
+      };
+    });
+    if (!updatedTask) continue;
+    updatedTaskIds.push(updatedTask.id);
+    if (options.message !== false) {
+      await appendImportTaskLog(rootPath, updatedTask.id, {
+        level: normalizedStatus === 'failed' ? 'error' : 'info',
+        message: options.message || `authoritative sync job ${normalizedJobId} ${normalizedStatus}`
+      });
+    }
+    await appendImportTaskEvent(rootPath, updatedTask.id, {
+      event: `task.authoritative_sync.${normalizedStatus}`,
+      level: normalizedStatus === 'failed' ? 'error' : 'info',
+      status: updatedTask.status,
+      stage: updatedTask.stage,
+      message: options.message || `authoritative sync job ${normalizedJobId} ${normalizedStatus}`,
+      data: {
+        jobId: normalizedJobId,
+        authoritativeSyncStatus: normalizedStatus
+      },
+      error: options.error || null
+    });
+  }
+
+  return {
+    jobId: normalizedJobId,
+    status: normalizedStatus,
+    updatedTaskIds,
+    updatedCount: updatedTaskIds.length
+  };
 }
 
 export async function completeImportTask(rootPath, taskId, result = null) {
   const task = await updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
+    const finishedAt = new Date().toISOString();
+    const lifecycleFields = createCompletedImportLifecycleFields(nextTask, result, finishedAt);
     nextTask.status = 'completed';
     nextTask.stage = 'completed';
     nextTask.includeInGraph = true;
-    nextTask.finishedAt = new Date().toISOString();
+    nextTask.finishedAt = finishedAt;
+    Object.assign(nextTask, lifecycleFields);
     nextTask.result = result;
     nextTask.error = null;
     nextTask.progress = createImportProgress(nextTask, {
@@ -1348,6 +2724,13 @@ export async function completeImportTask(rootPath, taskId, result = null) {
     level: 'info',
     message: 'completed import task'
   });
+  await appendImportTaskEvent(rootPath, taskId, {
+    event: 'task.completed',
+    level: 'info',
+    status: 'completed',
+    stage: 'completed',
+    message: 'Import task completed'
+  });
   return task;
 }
 
@@ -1356,6 +2739,8 @@ export async function failImportTask(rootPath, taskId, error) {
     nextTask.status = 'failed';
     nextTask.includeInGraph = false;
     nextTask.finishedAt = new Date().toISOString();
+    nextTask.graphVisibilityStatus = 'failed';
+    nextTask.semanticStatus = 'failed';
     nextTask.error = {
       message: String(error?.message || error || 'Import task failed')
     };
@@ -1368,6 +2753,13 @@ export async function failImportTask(rootPath, taskId, error) {
   await appendImportTaskLog(rootPath, taskId, {
     level: 'error',
     message: String(error?.message || error || 'Import task failed')
+  });
+  await appendImportTaskEvent(rootPath, taskId, {
+    event: 'task.failed',
+    level: 'error',
+    status: 'failed',
+    message: String(error?.message || error || 'Import task failed'),
+    error
   });
   await clearImportFingerprintEntry(rootPath, task.importFingerprint, task.id);
   return task;

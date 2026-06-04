@@ -1090,6 +1090,107 @@ test('batch LLM inference reports batch progress callbacks', async () => {
   assert.equal(batchEvents[1].completed, 3);
 });
 
+test('batch LLM inference fails closed on malformed per-paper schema', async () => {
+  const entries = [
+    { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} }
+  ];
+
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                papers: papers.map((paper, index) => index === 0
+                  ? { id: paper.id, problems: 'not-an-array' }
+                  : {
+                      id: paper.id,
+                      problems: [{
+                        name: 'valid semantic object',
+                        type: 'Problem',
+                        evidenceText: 'The valid paper keeps its semantic object.'
+                      }]
+                    })
+              })
+            }
+          }]
+        };
+      }
+    };
+  };
+
+  const semanticResults = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmBatchSize: 2
+  });
+
+  assert.equal(semanticResults[0].participated, false);
+  assert.equal(semanticResults[0].reason, 'schema-validation-failed');
+  assert.match(semanticResults[0].error, /problems/i);
+  assert.equal(semanticResults[1].participated, true);
+  assert.equal(semanticResults[1].problems.length, 1);
+
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                papers: papers.map((paper, index) => index === 0
+                  ? {
+                      id: paper.id,
+                      relations: [{
+                        sourceType: 'Problem',
+                        targetType: 'Method',
+                        type: 'USES',
+                        targetName: 'valid target without source'
+                      }]
+                    }
+                  : { id: paper.id, relations: [] })
+              })
+            }
+          }]
+        };
+      }
+    };
+  };
+
+  const relationResults = await inferPaperResearchSemanticsBatch(entries, {
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmRelations: true,
+    llmBatchSize: 2
+  });
+
+  assert.equal(relationResults[0].reason, 'schema-validation-failed');
+  assert.match(relationResults[0].error, /relations/i);
+  assert.equal(relationResults[0].relations.length, 0);
+  assert.equal(relationResults[1].error, null);
+});
+
 test('inferPaperSemanticObjectsBatch forces DeepSeek requests to single-item batches', async () => {
   const batchEvents = [];
   const requestPaperCounts = [];

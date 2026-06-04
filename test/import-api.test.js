@@ -51,6 +51,13 @@ test('import API payload helpers create, list, inspect, and show logs for upload
 
     const notifiedTasks = [];
     const created = await api.createImportTaskPayload(indexRoot, {
+      processingProfile: 'fast-md-background-semantic',
+      completionPolicy: 'graph-visible',
+      importExecutionMode: 'dag',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'long-context-first',
+      llmLongContextMaxPapersPerCall: 2,
+      llmBatchConcurrency: 1,
       files: [
         createMarkdownUpload('api-upload.md', '# API Upload\n\n## Abstract\n\nCreated through the API helper.\n')
       ]
@@ -61,6 +68,23 @@ test('import API payload helpers create, list, inspect, and show logs for upload
     });
     assert.equal(created.task.status, 'pending');
     assert.equal(created.deduped, false);
+    assert.equal(created.task.processingProfile, 'fast-md-background-semantic');
+    assert.equal(created.task.completionPolicy, 'graph-visible');
+    assert.equal(created.task.importExecutionMode, 'dag');
+    assert.equal(created.task.importExecutionModeSource, 'request');
+    assert.equal(created.task.llmContextWindowTokens, 1_000_000);
+    assert.equal(created.task.llmExtractionStrategy, 'long-context-first');
+    assert.equal(created.task.llmLongContextMaxPapersPerCall, 2);
+    assert.equal(created.task.llmBatchConcurrency, 1);
+    assert.deepEqual(created.task.llmConfig, {
+      contextWindowTokens: 1_000_000,
+      extractionStrategy: 'long-context-first',
+      longContextMaxPapersPerCall: 2,
+      batchConcurrency: 1
+    });
+    assert.equal(created.task.llmConfigSource, 'request');
+    assert.equal(created.task.graphVisibilityStatus, 'pending');
+    assert.equal(created.task.semanticStatus, 'pending');
     assert.deepEqual(notifiedTasks, [created.task.id]);
 
     const deduped = await api.createImportTaskPayload(indexRoot, {
@@ -74,6 +98,11 @@ test('import API payload helpers create, list, inspect, and show logs for upload
     });
     assert.equal(deduped.task.id, created.task.id);
     assert.equal(deduped.deduped, true);
+    assert.equal(deduped.task.processingProfile, 'fast-md-background-semantic');
+    assert.equal(deduped.task.completionPolicy, 'graph-visible');
+    assert.equal(deduped.task.importExecutionMode, 'dag');
+    assert.equal(deduped.task.llmContextWindowTokens, 1_000_000);
+    assert.equal(deduped.task.llmExtractionStrategy, 'long-context-first');
     assert.deepEqual(notifiedTasks, [created.task.id]);
 
     const listed = await api.listImportTasksPayload(indexRoot);
@@ -94,6 +123,8 @@ test('import API payload helpers create, list, inspect, and show logs for upload
 
     const log = await api.importTaskLogPayload(indexRoot, created.task.id);
     assert.match(log.log, /created import task/i);
+    assert.equal(log.eventLedger.contractVersion, 'import-event-v1');
+    assert.ok(log.eventLedger.events.some((event) => event.event === 'task.log' && /created import task/i.test(event.message)));
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

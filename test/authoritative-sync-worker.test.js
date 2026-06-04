@@ -18,6 +18,11 @@ import { listAuthoritativeSyncJobs } from '../src/storage/authoritative-sync-sto
 import { runAuthoritativeSyncQueueOnce } from '../src/core/authoritative-sync/worker.js';
 import { corpusMetaPayload } from '../src/server/api.js';
 import {
+  completeImportTask,
+  createImportTask,
+  loadImportTask
+} from '../src/storage/import-store.js';
+import {
   buildGraphV2Shadow,
   cutoverGraphV2,
   rollbackGraphV2,
@@ -162,7 +167,7 @@ test('authoritative sync worker applies a queued delta to the committed graph an
       semanticPapers: [createSemanticPaper()]
     });
 
-    await saveCorpusFastLocalDelta(tempRoot, delta, {
+    const fastDelta = await saveCorpusFastLocalDelta(tempRoot, delta, {
       name: corpusName,
       indexedAt: new Date().toISOString(),
       paperCount: 2,
@@ -196,19 +201,103 @@ test('authoritative sync worker applies a queued delta to the committed graph an
     assert.equal(pendingMetaPayload.authoritativeSync.status, 'pending');
     assert.equal(pendingMetaPayload.authoritativeSync.pendingJobCount, 1);
 
+    const importTask = await createImportTask(tempRoot, {
+      files: [
+        {
+          name: 'sync-backfill-paper.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from([
+            '# Sync Backfill Paper',
+            '',
+            '## Abstract',
+            '',
+            'This task should be backfilled after the authoritative sync worker completes.'
+          ].join('\n'), 'utf8').toString('base64')
+        }
+      ]
+    });
+    await completeImportTask(tempRoot, importTask.id, {
+      graphVisibilityStatus: 'completed',
+      semanticStatus: 'completed',
+      authoritativeSync: {
+        status: 'pending',
+        jobId: fastDelta.syncJob.jobId
+      }
+    });
+
     const result = await runAuthoritativeSyncQueueOnce(tempRoot);
     const corpus = await loadCorpus(tempRoot);
     const meta = JSON.parse(await fs.readFile(getCorpusPaths(tempRoot).metaPath, 'utf8'));
     const queuedJobs = await listAuthoritativeSyncJobs(tempRoot);
+    const syncedImportTask = await loadImportTask(tempRoot, importTask.id);
 
     assert.equal(result.processed, true);
     assert.equal(result.failed, false);
+    assert.equal(result.result.taskBackfill.updatedCount, 1);
+    assert.deepEqual(result.result.taskBackfill.updatedTaskIds, [importTask.id]);
     assert.ok(corpus.graph.getNode('paper:new'));
     assert.equal(meta.authoritativeSyncStatus, 'synced');
     assert.deepEqual(queuedJobs, []);
+    assert.equal(syncedImportTask.authoritativeSyncStatus, 'completed');
+    assert.equal(syncedImportTask.result.authoritativeSyncStatus, 'completed');
+    assert.equal(syncedImportTask.result.authoritativeSync.status, 'completed');
+    assert.equal(syncedImportTask.result.authoritativeSync.jobId, fastDelta.syncJob.jobId);
+    assert.ok(syncedImportTask.authoritativeSyncCompletedAt);
   } finally {
     if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
     else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('authoritative sync worker clears a stale worker lock before polling the queue', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-authoritative-worker-stale-lock-'));
+
+  try {
+    const { authoritativeSyncWorkerLockPath } = getCorpusPaths(tempRoot);
+    await fs.mkdir(authoritativeSyncWorkerLockPath, { recursive: true });
+    await fs.writeFile(path.join(authoritativeSyncWorkerLockPath, 'owner.json'), JSON.stringify({
+      pid: 12345,
+      acquiredAt: new Date(Date.now() - 5000).toISOString()
+    }, null, 2));
+    const staleTime = new Date(Date.now() - 5000);
+    await fs.utimes(authoritativeSyncWorkerLockPath, staleTime, staleTime);
+
+    const result = await runAuthoritativeSyncQueueOnce(tempRoot, {
+      lockTimeoutMs: 250,
+      workerLockStaleMs: 1000
+    });
+
+    assert.equal(result.processed, false);
+    assert.equal(result.reason, 'idle');
+    assert.equal(result.workerLockRecovery.reason, 'stale-worker-lock');
+    assert.equal(result.workerLockRecovery.owner.pid, 12345);
+    await assert.rejects(fs.access(authoritativeSyncWorkerLockPath), (error) => error?.code === 'ENOENT');
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('authoritative sync worker leaves a non-stale busy worker lock in place after timeout', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-authoritative-worker-busy-lock-'));
+
+  try {
+    const { authoritativeSyncWorkerLockPath } = getCorpusPaths(tempRoot);
+    await fs.mkdir(authoritativeSyncWorkerLockPath, { recursive: true });
+    await fs.writeFile(path.join(authoritativeSyncWorkerLockPath, 'owner.json'), JSON.stringify({
+      pid: 12345,
+      acquiredAt: new Date().toISOString()
+    }, null, 2));
+
+    const result = await runAuthoritativeSyncQueueOnce(tempRoot, {
+      lockTimeoutMs: 250,
+      workerLockStaleMs: 60_000
+    });
+
+    assert.equal(result.processed, false);
+    assert.equal(result.reason, 'busy');
+    await assert.doesNotReject(fs.access(authoritativeSyncWorkerLockPath));
+  } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });

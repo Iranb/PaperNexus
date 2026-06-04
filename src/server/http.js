@@ -376,6 +376,18 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       importsConfig.batchCoalescePollMs,
       importConfig.batchCoalescePollMs
     ),
+    importExecutionMode: firstDefined(
+      options.importExecutionMode,
+      options.import_execution_mode,
+      options.importsExecutionMode,
+      options.imports_execution_mode,
+      importsConfig.importExecutionMode,
+      importsConfig.import_execution_mode,
+      importsConfig.executionMode,
+      importConfig.importExecutionMode,
+      importConfig.import_execution_mode,
+      importConfig.executionMode
+    ),
     batchMaxFiles: firstNumber(
       options.importBatchMaxFiles,
       options.batchMaxFiles,
@@ -708,6 +720,30 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       12,
       llmConfig.batchSize,
       ollamaConfig.batchSize
+    ),
+    llmBatchConcurrency: firstNumber(
+      options.importLlmBatchConcurrency,
+      importsConfig.llmBatchConcurrency,
+      importsConfig.batchConcurrency,
+      importsConfig.llmConcurrency,
+      importConfig.llmBatchConcurrency,
+      importConfig.batchConcurrency,
+      importConfig.llmConcurrency,
+      options.llmBatchConcurrency,
+      options.batchConcurrency,
+      llmConfig.batchConcurrency,
+      llmConfig.llmBatchConcurrency
+    ),
+    llmContextWindowTokens: firstNumber(
+      options.importLlmContextWindowTokens,
+      importsConfig.llmContextWindowTokens,
+      importsConfig.contextWindowTokens,
+      importConfig.llmContextWindowTokens,
+      importConfig.contextWindowTokens,
+      options.llmContextWindowTokens,
+      options.contextWindowTokens,
+      llmConfig.contextWindowTokens,
+      llmConfig.llmContextWindowTokens
     ),
     llmMaxTokens: firstNumber(options.llmMaxTokens, llmConfig.maxTokens),
     ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),

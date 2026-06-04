@@ -9,12 +9,16 @@ test('llmConfigPayload resolves effective provider and model from config', () =>
   const payload = llmConfigPayload({
     llm: {
       provider: 'claudecode',
-      model: 'claude-3-5-sonnet-latest'
+      model: 'claude-3-5-sonnet-latest',
+      batchConcurrency: 3,
+      contextWindowTokens: 1_000_000
     }
   });
 
   assert.equal(payload.llm.provider, 'anthropic');
   assert.equal(payload.llm.model, 'claude-3-5-sonnet-latest');
+  assert.equal(payload.llm.batchConcurrency, 3);
+  assert.equal(payload.llm.contextWindowTokens, 1_000_000);
 });
 
 test('updateLlmConfigPayload persists llm provider and model to config.json', async () => {
@@ -24,7 +28,9 @@ test('updateLlmConfigPayload persists llm provider and model to config.json', as
   try {
     const payload = await updateLlmConfigPayload({
       provider: 'openai',
-      model: 'gpt-4o-mini'
+      model: 'gpt-4o-mini',
+      batchConcurrency: 2,
+      contextWindowTokens: 1_000_000
     }, {
       config: {
         sources: {
@@ -37,10 +43,14 @@ test('updateLlmConfigPayload persists llm provider and model to config.json', as
 
     assert.equal(payload.llm.provider, 'openai');
     assert.equal(payload.llm.model, 'gpt-4o-mini');
+    assert.equal(payload.llm.batchConcurrency, 2);
+    assert.equal(payload.llm.contextWindowTokens, 1_000_000);
 
     const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
     assert.equal(saved.llm.provider, 'openai');
     assert.equal(saved.llm.model, 'gpt-4o-mini');
+    assert.equal(saved.llm.batchConcurrency, 2);
+    assert.equal(saved.llm.contextWindowTokens, 1_000_000);
     assert.equal(saved.sources.inputs[0], './papers');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });

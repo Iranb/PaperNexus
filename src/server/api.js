@@ -34,7 +34,8 @@ import {
   createImportTask,
   listImportTasks,
   loadImportTask,
-  loadImportTaskLog
+  loadImportTaskLog,
+  tailImportTaskEvents
 } from '../storage/import-store.js';
 import { listAuthoritativeSyncJobs } from '../storage/authoritative-sync-store.js';
 import { fileExists } from '../lib/fs.js';
@@ -2419,6 +2420,67 @@ async function notifyImportTaskCreated(rootPath, task, payload, options = {}) {
   }
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    const normalized = String(value || '').trim();
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function pickConfiguredImportExecutionMode(options = {}) {
+  const importsConfig = options.config?.imports && typeof options.config.imports === 'object'
+    ? options.config.imports
+    : {};
+  const importConfig = options.config?.import && typeof options.config.import === 'object'
+    ? options.config.import
+    : {};
+  return firstNonEmptyString(
+    options.importExecutionMode,
+    options.import_execution_mode,
+    options.importsExecutionMode,
+    options.imports_execution_mode,
+    importsConfig.importExecutionMode,
+    importsConfig.import_execution_mode,
+    importsConfig.executionMode,
+    importConfig.importExecutionMode,
+    importConfig.import_execution_mode,
+    importConfig.executionMode
+  );
+}
+
+function pickImportTaskExecutionOptions(body = {}, options = {}) {
+  const requestImportExecutionMode = firstNonEmptyString(
+    body.importExecutionMode,
+    body.import_execution_mode,
+    body.importsExecutionMode,
+    body.imports_execution_mode
+  );
+  const configuredImportExecutionMode = requestImportExecutionMode
+    ? ''
+    : pickConfiguredImportExecutionMode(options);
+  return {
+    processingProfile: body.processingProfile || body.processing_profile || body.importProfile || body.import_profile,
+    completionPolicy: body.completionPolicy || body.completion_policy,
+    importExecutionMode: requestImportExecutionMode || configuredImportExecutionMode || undefined,
+    importExecutionModeSource: requestImportExecutionMode
+      ? 'request'
+      : configuredImportExecutionMode
+        ? 'config'
+        : undefined,
+    llmContextWindowTokens: body.llmContextWindowTokens || body.llm_context_window_tokens || body.contextWindowTokens || body.context_window_tokens,
+    llmExtractionStrategy: body.llmExtractionStrategy || body.llm_extraction_strategy,
+    llmLongContextMaxPapersPerCall: body.llmLongContextMaxPapersPerCall || body.llm_long_context_max_papers_per_call,
+    llmBatchConcurrency: body.llmBatchConcurrency || body.llm_batch_concurrency || body.batchConcurrency || body.batch_concurrency,
+    llmConfigSource: body.llmContextWindowTokens || body.llm_context_window_tokens || body.contextWindowTokens || body.context_window_tokens
+      || body.llmExtractionStrategy || body.llm_extraction_strategy
+      || body.llmLongContextMaxPapersPerCall || body.llm_long_context_max_papers_per_call
+      || body.llmBatchConcurrency || body.llm_batch_concurrency || body.batchConcurrency || body.batch_concurrency
+      ? 'request'
+      : undefined
+  };
+}
+
 export async function createImportTaskPayload(candidate, body = {}, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
   const files = await normalizeImportRequest(body);
@@ -2430,7 +2492,8 @@ export async function createImportTaskPayload(candidate, body = {}, options = {}
   const task = await createImportTask(rootPath, {
     trigger: body.trigger || 'api',
     inputPaths,
-    files
+    files,
+    ...pickImportTaskExecutionOptions(body, options)
   });
 
   let identifierSync = null;
@@ -2503,6 +2566,9 @@ export async function importTaskLogPayload(candidate, taskId, options = {}) {
     rootPath,
     taskId,
     log: await loadImportTaskLog(rootPath, taskId),
+    eventLedger: await tailImportTaskEvents(rootPath, taskId, {
+      tail: options.eventTail ?? options.event_tail ?? options.tailEvents ?? options.tail_events ?? 50
+    }),
     generatedAt: new Date().toISOString()
   }, options);
 }
@@ -2604,6 +2670,8 @@ export function llmConfigPayload(config = {}) {
       relations: effective.enabled,
       timeoutMs: effective.timeoutMs,
       batchSize: effective.batchSize,
+      batchConcurrency: config?.llm?.batchConcurrency ?? config?.llm?.llmBatchConcurrency,
+      contextWindowTokens: config?.llm?.contextWindowTokens ?? config?.llm?.llmContextWindowTokens,
       maxTokens: effective.maxTokens,
       sshHost: effective.sshHost || '',
       apiKeyService: config?.llm?.apiKeyService || effective.apiKeyService || '',
@@ -2645,6 +2713,8 @@ export async function updateLlmConfigPayload(nextLlmConfig, options = {}) {
       relations: currentConfig?.llm?.relations ?? currentConfig?.ollama?.relations ?? true,
       timeoutMs: currentConfig?.llm?.timeoutMs ?? currentConfig?.ollama?.timeoutMs,
       batchSize: provider === 'deepseek' ? 1 : currentConfig?.llm?.batchSize ?? currentConfig?.ollama?.batchSize,
+      batchConcurrency: nextLlmConfig?.batchConcurrency ?? nextLlmConfig?.llmBatchConcurrency ?? currentConfig?.llm?.batchConcurrency,
+      contextWindowTokens: nextLlmConfig?.contextWindowTokens ?? nextLlmConfig?.llmContextWindowTokens ?? currentConfig?.llm?.contextWindowTokens,
       maxTokens: currentConfig?.llm?.maxTokens,
       apiKeyEnv: shouldRotateApiKeyEnv
         ? getDefaultLlmApiKeyEnv(provider)

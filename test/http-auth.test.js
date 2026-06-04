@@ -393,7 +393,9 @@ test('serveCommand forwards analyze parser config into the import worker', async
         },
         llm: {
           relations: true,
-          batchSize: 8
+          batchSize: 8,
+          batchConcurrency: 2,
+          contextWindowTokens: 1_000_000
         },
         imports: {
           batchEnabled: true,
@@ -430,6 +432,8 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].semanticExtraction, 'llm-primary');
       assert.equal(calls[0].llmRelations, false);
       assert.equal(calls[0].llmBatchSize, 12);
+      assert.equal(calls[0].llmBatchConcurrency, 2);
+      assert.equal(calls[0].llmContextWindowTokens, 1_000_000);
       assert.equal(calls[0].batchEnabled, true);
       assert.equal(calls[0].batchMaxTasks, 4);
       assert.equal(calls[0].batchInitialTasks, 2);

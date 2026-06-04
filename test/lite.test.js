@@ -395,6 +395,10 @@ test('saveCorpusFastLocalDelta makes a new paper query-visible in lite state and
     assert.equal(manifest.sources.length, 2);
     assert.equal(queuedJobs.length, 1);
     assert.equal(queuedJobs[0].targetManifestToken, 'manifest:target');
+    assert.equal(typeof result.fastCommitWriteTimingsMs.loadCheckpoint, 'number');
+    assert.equal(typeof result.fastCommitWriteTimingsMs.applyLiteDelta, 'number');
+    assert.equal(typeof result.fastCommitWriteTimingsMs.writeManifest, 'number');
+    assert.equal(typeof result.fastCommitWriteTimingsMs.queueAuthoritativeSync, 'number');
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
