@@ -111,3 +111,78 @@ test('import_workflow schema exposes fast markdown submit controls', () => {
   assert.equal(properties.waitForGraphVisibility?.type, 'boolean');
   assert.equal(properties.waitForSemanticCompletion?.type, 'boolean');
 });
+
+test('import_workflow schema exposes handler aliases and queue diagnostics', () => {
+  const tool = PAPERNEXUS_TOOLS.find((entry) => entry.name === 'import_workflow');
+  assert.ok(tool);
+  const properties = tool.inputSchema?.properties || {};
+
+  assert.deepEqual(properties.executionMode?.enum, [
+    'sync',
+    'async',
+    'asynchronous',
+    'background',
+    'queued',
+    'queue'
+  ]);
+  assert.deepEqual(properties.runMode?.enum, properties.executionMode.enum);
+  assert.deepEqual(properties.execution_mode?.enum, properties.executionMode.enum);
+  assert.equal(properties.asynchronous?.type, 'boolean');
+
+  for (const name of [
+    'async_operation',
+    'targetOperation',
+    'target_operation',
+    'job_id',
+    'task_id',
+    'paper_id',
+    'server_file_path',
+    'arxiv_id',
+    'source_provider',
+    'processing_profile',
+    'importProfile',
+    'import_profile',
+    'completion_policy',
+    'import_execution_mode',
+    'importsExecutionMode',
+    'imports_execution_mode',
+    'llm_context_window_tokens',
+    'contextWindowTokens',
+    'context_window_tokens',
+    'llm_extraction_strategy',
+    'llm_long_context_max_papers_per_call',
+    'llm_batch_concurrency',
+    'batchConcurrency',
+    'batch_concurrency',
+    'include_semantic_queue',
+    'semantic_job_limit',
+    'recentSemanticJobLimit',
+    'recent_semantic_job_limit',
+    'eventTail',
+    'event_tail',
+    'recentEventLimit',
+    'recent_event_limit',
+    'dagTail',
+    'dag_tail',
+    'recentDagEventLimit',
+    'recent_dag_event_limit',
+    'includeDagComparison',
+    'include_dag_comparison',
+    'wait_for_authoritative_sync',
+    'wait_until',
+    'waitTarget',
+    'wait_target',
+    'wait_for_graph_visibility',
+    'wait_for_semantic_completion',
+    'wait_timeout_ms',
+    'timeout_ms',
+    'poll_interval_ms'
+  ]) {
+    assert.ok(Object.hasOwn(properties, name), `missing import_workflow schema property ${name}`);
+  }
+
+  assert.deepEqual(properties.waitTarget?.enum, properties.waitUntil.enum);
+  assert.equal(properties.eventTail?.default, 5);
+  assert.equal(properties.dagTail?.default, 5);
+  assert.equal(properties.includeDagComparison?.type, 'boolean');
+});

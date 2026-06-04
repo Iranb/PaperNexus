@@ -554,18 +554,56 @@ export const PAPERNEXUS_TOOLS = [
           enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait'],
           description: 'Normal import_workflow operation to run in the background when operation=submit_async.'
         },
+        async_operation: {
+          type: 'string',
+          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait'],
+          description: 'Snake_case alias for asyncOperation.'
+        },
+        targetOperation: {
+          type: 'string',
+          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait'],
+          description: 'Alias for asyncOperation when operation=submit_async.'
+        },
+        target_operation: {
+          type: 'string',
+          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait'],
+          description: 'Snake_case alias for targetOperation.'
+        },
         jobId: {
           type: 'string',
           description: 'Background import_workflow job id returned by submit_async or by a normal operation with async=true; required for async_status or async_wait.'
         },
+        job_id: {
+          type: 'string',
+          description: 'Snake_case alias for jobId.'
+        },
         executionMode: {
           type: 'string',
-          enum: ['sync', 'async'],
-          description: 'When set to async on a normal import_workflow operation, submit it as a background job instead of blocking.'
+          enum: ['sync', 'async', 'asynchronous', 'background', 'queued', 'queue'],
+          description: 'When set to an async/background mode on a normal import_workflow operation, submit it as a background job instead of blocking.'
+        },
+        execution_mode: {
+          type: 'string',
+          enum: ['sync', 'async', 'asynchronous', 'background', 'queued', 'queue'],
+          description: 'Snake_case alias for executionMode.'
+        },
+        runMode: {
+          type: 'string',
+          enum: ['sync', 'async', 'asynchronous', 'background', 'queued', 'queue'],
+          description: 'Alias for executionMode.'
+        },
+        run_mode: {
+          type: 'string',
+          enum: ['sync', 'async', 'asynchronous', 'background', 'queued', 'queue'],
+          description: 'Snake_case alias for runMode.'
         },
         async: {
           type: 'boolean',
           description: 'Alias for executionMode=async on a normal import_workflow operation.'
+        },
+        asynchronous: {
+          type: 'boolean',
+          description: 'Boolean alias for async.'
         },
         corpus: {
           type: 'string',
@@ -575,9 +613,17 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Import task id for status, log, or wait.'
         },
+        task_id: {
+          type: 'string',
+          description: 'Snake_case alias for taskId.'
+        },
         paperId: {
           type: 'string',
           description: 'Optional paper id used to resolve a task when taskId is omitted.'
+        },
+        paper_id: {
+          type: 'string',
+          description: 'Snake_case alias for paperId.'
         },
         source: {
           type: 'string',
@@ -586,6 +632,10 @@ export const PAPERNEXUS_TOOLS = [
         serverFilePath: {
           type: 'string',
           description: 'Absolute file path on the PaperNexus server for submit.'
+        },
+        server_file_path: {
+          type: 'string',
+          description: 'Snake_case alias for serverFilePath.'
         },
         identifiers: {
           type: 'object',
@@ -599,6 +649,10 @@ export const PAPERNEXUS_TOOLS = [
         arxivId: {
           type: 'string',
           description: 'arXiv ID for a single-paper submit request.'
+        },
+        arxiv_id: {
+          type: 'string',
+          description: 'Snake_case alias for arxivId.'
         },
         pmid: {
           type: 'string',
@@ -620,40 +674,119 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Optional source provider/origin label used to build sourceId.'
         },
+        source_provider: {
+          type: 'string',
+          description: 'Snake_case alias for sourceProvider.'
+        },
         processingProfile: {
           type: 'string',
           enum: ['full', 'fast-md-structural', 'fast-md-background-semantic', 'long-context-full-md'],
           description: 'Optional import processing profile for submit. Use fast-md-background-semantic for markdown graph-visible ingest with background semantic enrichment.'
+        },
+        processing_profile: {
+          type: 'string',
+          enum: ['full', 'fast-md-structural', 'fast-md-background-semantic', 'long-context-full-md'],
+          description: 'Snake_case alias for processingProfile.'
+        },
+        importProfile: {
+          type: 'string',
+          enum: ['full', 'fast-md-structural', 'fast-md-background-semantic', 'long-context-full-md'],
+          description: 'Alias for processingProfile.'
+        },
+        import_profile: {
+          type: 'string',
+          enum: ['full', 'fast-md-structural', 'fast-md-background-semantic', 'long-context-full-md'],
+          description: 'Snake_case alias for importProfile.'
         },
         completionPolicy: {
           type: 'string',
           enum: ['full', 'graph-visible', 'semantic-complete'],
           description: 'Optional completion policy for submit. graph-visible lets fast markdown imports complete when local structural graph visibility is ready.'
         },
+        completion_policy: {
+          type: 'string',
+          enum: ['full', 'graph-visible', 'semantic-complete'],
+          description: 'Snake_case alias for completionPolicy.'
+        },
         importExecutionMode: {
           type: 'string',
           enum: ['serial', 'dag'],
           description: 'Optional internal import execution mode for submit. This is distinct from executionMode=sync|async, which only controls whether the MCP tool call waits.'
+        },
+        import_execution_mode: {
+          type: 'string',
+          enum: ['serial', 'dag'],
+          description: 'Snake_case alias for importExecutionMode.'
+        },
+        importsExecutionMode: {
+          type: 'string',
+          enum: ['serial', 'dag'],
+          description: 'Alias for importExecutionMode.'
+        },
+        imports_execution_mode: {
+          type: 'string',
+          enum: ['serial', 'dag'],
+          description: 'Snake_case alias for importsExecutionMode.'
         },
         llmContextWindowTokens: {
           type: 'number',
           minimum: 1,
           description: 'Optional task-level LLM context window declaration for submit. Use 1000000 for the default long-context markdown optimization path.'
         },
+        llm_context_window_tokens: {
+          type: 'number',
+          minimum: 1,
+          description: 'Snake_case alias for llmContextWindowTokens.'
+        },
+        contextWindowTokens: {
+          type: 'number',
+          minimum: 1,
+          description: 'Alias for llmContextWindowTokens.'
+        },
+        context_window_tokens: {
+          type: 'number',
+          minimum: 1,
+          description: 'Snake_case alias for contextWindowTokens.'
+        },
         llmExtractionStrategy: {
           type: 'string',
           enum: ['long-context-first', 'chunk-first', 'auto'],
           description: 'Optional task-level markdown LLM extraction strategy. long-context-first is the default optimized path for 1M-context models.'
+        },
+        llm_extraction_strategy: {
+          type: 'string',
+          enum: ['long-context-first', 'chunk-first', 'auto'],
+          description: 'Snake_case alias for llmExtractionStrategy.'
         },
         llmLongContextMaxPapersPerCall: {
           type: 'number',
           minimum: 1,
           description: 'Optional task-level cap for how many markdown papers are packed into one long-context LLM call.'
         },
+        llm_long_context_max_papers_per_call: {
+          type: 'number',
+          minimum: 1,
+          description: 'Snake_case alias for llmLongContextMaxPapersPerCall.'
+        },
         llmBatchConcurrency: {
           type: 'number',
           minimum: 1,
           description: 'Optional task-level LLM batch concurrency for provider-backed semantic enrichment.'
+        },
+        llm_batch_concurrency: {
+          type: 'number',
+          minimum: 1,
+          description: 'Snake_case alias for llmBatchConcurrency.'
+        },
+        batchConcurrency: {
+          type: 'number',
+          minimum: 1,
+          description: 'Alias for llmBatchConcurrency.'
+        },
+        batch_concurrency: {
+          type: 'number',
+          minimum: 1,
+          description: 'Snake_case alias for batchConcurrency.'
         },
         files: {
           type: 'array',
@@ -680,10 +813,77 @@ export const PAPERNEXUS_TOOLS = [
           type: 'boolean',
           description: 'When operation=queue_progress, include the background semantic-enrichment queue summary and recent jobs. Defaults to true.'
         },
+        include_semantic_queue: {
+          type: 'boolean',
+          description: 'Snake_case alias for includeSemanticQueue.'
+        },
         semanticJobLimit: {
           type: 'number',
           description: 'When operation=queue_progress and includeSemanticQueue is true, limit recent semantic-enrichment jobs returned.',
           default: 5
+        },
+        semantic_job_limit: {
+          type: 'number',
+          description: 'Snake_case alias for semanticJobLimit.',
+          default: 5
+        },
+        recentSemanticJobLimit: {
+          type: 'number',
+          description: 'Alias for semanticJobLimit.',
+          default: 5
+        },
+        recent_semantic_job_limit: {
+          type: 'number',
+          description: 'Snake_case alias for recentSemanticJobLimit.',
+          default: 5
+        },
+        eventTail: {
+          type: 'number',
+          description: 'When operation=queue_progress, include this many recent import task event ledger entries for the active task.',
+          default: 5
+        },
+        event_tail: {
+          type: 'number',
+          description: 'Snake_case alias for eventTail.',
+          default: 5
+        },
+        recentEventLimit: {
+          type: 'number',
+          description: 'Alias for eventTail.',
+          default: 5
+        },
+        recent_event_limit: {
+          type: 'number',
+          description: 'Snake_case alias for recentEventLimit.',
+          default: 5
+        },
+        dagTail: {
+          type: 'number',
+          description: 'When operation=queue_progress, include this many recent import DAG event ledger entries for the active task. Defaults to eventTail.',
+          default: 5
+        },
+        dag_tail: {
+          type: 'number',
+          description: 'Snake_case alias for dagTail.',
+          default: 5
+        },
+        recentDagEventLimit: {
+          type: 'number',
+          description: 'Alias for dagTail.',
+          default: 5
+        },
+        recent_dag_event_limit: {
+          type: 'number',
+          description: 'Snake_case alias for recentDagEventLimit.',
+          default: 5
+        },
+        includeDagComparison: {
+          type: 'boolean',
+          description: 'When operation=queue_progress, include the active task DAG comparison report. Defaults to true.'
+        },
+        include_dag_comparison: {
+          type: 'boolean',
+          description: 'Snake_case alias for includeDagComparison.'
         },
         timeout: {
           type: 'number',
@@ -699,31 +899,72 @@ export const PAPERNEXUS_TOOLS = [
           type: 'boolean',
           description: 'When operation is wait, keep waiting after the import task completes until its authoritative graph sync job is completed, failed, or superseded. Defaults to true.'
         },
+        wait_for_authoritative_sync: {
+          type: 'boolean',
+          description: 'Snake_case alias for waitForAuthoritativeSync.'
+        },
         waitUntil: {
           type: 'string',
           enum: ['task-completed', 'graph-visible', 'semantic-complete', 'authoritative-sync'],
           description: 'When operation is wait, choose the readiness target. task-completed preserves the legacy task terminal wait; graph-visible returns after structural graph visibility for fast markdown imports; semantic-complete waits for background 1M long-context semantic enrichment to reach a terminal lifecycle; authoritative-sync waits for downstream graph sync.'
         },
+        wait_until: {
+          type: 'string',
+          enum: ['task-completed', 'graph-visible', 'semantic-complete', 'authoritative-sync'],
+          description: 'Snake_case alias for waitUntil.'
+        },
+        waitTarget: {
+          type: 'string',
+          enum: ['task-completed', 'graph-visible', 'semantic-complete', 'authoritative-sync'],
+          description: 'Alias for waitUntil.'
+        },
+        wait_target: {
+          type: 'string',
+          enum: ['task-completed', 'graph-visible', 'semantic-complete', 'authoritative-sync'],
+          description: 'Snake_case alias for waitTarget.'
+        },
         waitForGraphVisibility: {
           type: 'boolean',
           description: 'Shortcut for operation=wait with waitUntil=graph-visible. Useful for fast-md-background-semantic bursts where graph queries can start before 1M long-context semantic enrichment finishes.'
         },
+        wait_for_graph_visibility: {
+          type: 'boolean',
+          description: 'Snake_case alias for waitForGraphVisibility.'
+        },
         waitForSemanticCompletion: {
           type: 'boolean',
           description: 'Shortcut for operation=wait with waitUntil=semantic-complete. Useful when the caller needs background default 1M long-context semantic enrichment to finish before using semantic graph evidence.'
+        },
+        wait_for_semantic_completion: {
+          type: 'boolean',
+          description: 'Snake_case alias for waitForSemanticCompletion.'
         },
         waitTimeoutMs: {
           type: 'number',
           description: 'Maximum milliseconds for operation=async_wait to poll before returning the latest job state.',
           default: 60000
         },
+        wait_timeout_ms: {
+          type: 'number',
+          description: 'Snake_case alias for waitTimeoutMs when operation=async_wait.',
+          default: 60000
+        },
         timeoutMs: {
           type: 'number',
           description: 'Alias for waitTimeoutMs when operation=async_wait.'
         },
+        timeout_ms: {
+          type: 'number',
+          description: 'Snake_case alias for timeoutMs.'
+        },
         pollIntervalMs: {
           type: 'number',
           description: 'Polling interval in milliseconds when operation=async_wait.',
+          default: 500
+        },
+        poll_interval_ms: {
+          type: 'number',
+          description: 'Snake_case alias for pollIntervalMs.',
           default: 500
         }
       },

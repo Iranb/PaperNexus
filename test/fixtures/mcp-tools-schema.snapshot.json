@@ -1201,10 +1201,28 @@
         "operation"
       ],
       "properties": {
+        "arxiv_id": {
+          "type": "string"
+        },
         "arxivId": {
           "type": "string"
         },
         "async": {
+          "type": "boolean"
+        },
+        "async_operation": {
+          "type": "string",
+          "enum": [
+            "list",
+            "log",
+            "progress",
+            "queue_progress",
+            "status",
+            "submit",
+            "wait"
+          ]
+        },
+        "asynchronous": {
           "type": "boolean"
         },
         "asyncOperation": {
@@ -1219,6 +1237,22 @@
             "wait"
           ]
         },
+        "batch_concurrency": {
+          "type": "number",
+          "minimum": 1
+        },
+        "batchConcurrency": {
+          "type": "number",
+          "minimum": 1
+        },
+        "completion_policy": {
+          "type": "string",
+          "enum": [
+            "full",
+            "graph-visible",
+            "semantic-complete"
+          ]
+        },
         "completionPolicy": {
           "type": "string",
           "enum": [
@@ -1227,16 +1261,55 @@
             "semantic-complete"
           ]
         },
+        "context_window_tokens": {
+          "type": "number",
+          "minimum": 1
+        },
+        "contextWindowTokens": {
+          "type": "number",
+          "minimum": 1
+        },
         "corpus": {
           "type": "string"
         },
+        "dag_tail": {
+          "type": "number",
+          "default": 5
+        },
+        "dagTail": {
+          "type": "number",
+          "default": 5
+        },
         "doi": {
           "type": "string"
+        },
+        "event_tail": {
+          "type": "number",
+          "default": 5
+        },
+        "eventTail": {
+          "type": "number",
+          "default": 5
+        },
+        "execution_mode": {
+          "type": "string",
+          "enum": [
+            "async",
+            "asynchronous",
+            "background",
+            "queue",
+            "queued",
+            "sync"
+          ]
         },
         "executionMode": {
           "type": "string",
           "enum": [
             "async",
+            "asynchronous",
+            "background",
+            "queue",
+            "queued",
             "sync"
           ]
         },
@@ -1251,12 +1324,60 @@
           "type": "object",
           "additionalProperties": true
         },
+        "import_execution_mode": {
+          "type": "string",
+          "enum": [
+            "dag",
+            "serial"
+          ]
+        },
+        "import_profile": {
+          "type": "string",
+          "enum": [
+            "fast-md-background-semantic",
+            "fast-md-structural",
+            "full",
+            "long-context-full-md"
+          ]
+        },
         "importExecutionMode": {
           "type": "string",
           "enum": [
             "dag",
             "serial"
           ]
+        },
+        "importProfile": {
+          "type": "string",
+          "enum": [
+            "fast-md-background-semantic",
+            "fast-md-structural",
+            "full",
+            "long-context-full-md"
+          ]
+        },
+        "imports_execution_mode": {
+          "type": "string",
+          "enum": [
+            "dag",
+            "serial"
+          ]
+        },
+        "importsExecutionMode": {
+          "type": "string",
+          "enum": [
+            "dag",
+            "serial"
+          ]
+        },
+        "include_dag_comparison": {
+          "type": "boolean"
+        },
+        "include_semantic_queue": {
+          "type": "boolean"
+        },
+        "includeDagComparison": {
+          "type": "boolean"
         },
         "includeSemanticQueue": {
           "type": "boolean"
@@ -1271,11 +1392,34 @@
         "issn": {
           "type": "string"
         },
+        "job_id": {
+          "type": "string"
+        },
         "jobId": {
           "type": "string"
         },
         "limit": {
           "type": "number"
+        },
+        "llm_batch_concurrency": {
+          "type": "number",
+          "minimum": 1
+        },
+        "llm_context_window_tokens": {
+          "type": "number",
+          "minimum": 1
+        },
+        "llm_extraction_strategy": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "chunk-first",
+            "long-context-first"
+          ]
+        },
+        "llm_long_context_max_papers_per_call": {
+          "type": "number",
+          "minimum": 1
         },
         "llmBatchConcurrency": {
           "type": "number",
@@ -1312,6 +1456,9 @@
             "wait"
           ]
         },
+        "paper_id": {
+          "type": "string"
+        },
         "paperId": {
           "type": "string"
         },
@@ -1321,9 +1468,22 @@
         "pmid": {
           "type": "string"
         },
+        "poll_interval_ms": {
+          "type": "number",
+          "default": 500
+        },
         "pollIntervalMs": {
           "type": "number",
           "default": 500
+        },
+        "processing_profile": {
+          "type": "string",
+          "enum": [
+            "fast-md-background-semantic",
+            "fast-md-structural",
+            "full",
+            "long-context-full-md"
+          ]
         },
         "processingProfile": {
           "type": "string",
@@ -1334,9 +1494,62 @@
             "long-context-full-md"
           ]
         },
+        "recent_dag_event_limit": {
+          "type": "number",
+          "default": 5
+        },
+        "recent_event_limit": {
+          "type": "number",
+          "default": 5
+        },
+        "recent_semantic_job_limit": {
+          "type": "number",
+          "default": 5
+        },
+        "recentDagEventLimit": {
+          "type": "number",
+          "default": 5
+        },
+        "recentEventLimit": {
+          "type": "number",
+          "default": 5
+        },
+        "recentSemanticJobLimit": {
+          "type": "number",
+          "default": 5
+        },
+        "run_mode": {
+          "type": "string",
+          "enum": [
+            "async",
+            "asynchronous",
+            "background",
+            "queue",
+            "queued",
+            "sync"
+          ]
+        },
+        "runMode": {
+          "type": "string",
+          "enum": [
+            "async",
+            "asynchronous",
+            "background",
+            "queue",
+            "queued",
+            "sync"
+          ]
+        },
+        "semantic_job_limit": {
+          "type": "number",
+          "default": 5
+        },
         "semanticJobLimit": {
           "type": "number",
           "default": 5
+        },
+        "server_file_path": {
+          "type": "string"
         },
         "serverFilePath": {
           "type": "string"
@@ -1344,7 +1557,37 @@
         "source": {
           "type": "string"
         },
+        "source_provider": {
+          "type": "string"
+        },
         "sourceProvider": {
+          "type": "string"
+        },
+        "target_operation": {
+          "type": "string",
+          "enum": [
+            "list",
+            "log",
+            "progress",
+            "queue_progress",
+            "status",
+            "submit",
+            "wait"
+          ]
+        },
+        "targetOperation": {
+          "type": "string",
+          "enum": [
+            "list",
+            "log",
+            "progress",
+            "queue_progress",
+            "status",
+            "submit",
+            "wait"
+          ]
+        },
+        "task_id": {
           "type": "string"
         },
         "taskId": {
@@ -1360,12 +1603,46 @@
           "type": "number",
           "default": 1800
         },
+        "timeout_ms": {
+          "type": "number"
+        },
         "timeoutMs": {
           "type": "number"
         },
         "trigger": {
           "type": "string",
           "default": "mcp"
+        },
+        "wait_for_authoritative_sync": {
+          "type": "boolean"
+        },
+        "wait_for_graph_visibility": {
+          "type": "boolean"
+        },
+        "wait_for_semantic_completion": {
+          "type": "boolean"
+        },
+        "wait_target": {
+          "type": "string",
+          "enum": [
+            "authoritative-sync",
+            "graph-visible",
+            "semantic-complete",
+            "task-completed"
+          ]
+        },
+        "wait_timeout_ms": {
+          "type": "number",
+          "default": 60000
+        },
+        "wait_until": {
+          "type": "string",
+          "enum": [
+            "authoritative-sync",
+            "graph-visible",
+            "semantic-complete",
+            "task-completed"
+          ]
         },
         "waitForAuthoritativeSync": {
           "type": "boolean"
@@ -1375,6 +1652,15 @@
         },
         "waitForSemanticCompletion": {
           "type": "boolean"
+        },
+        "waitTarget": {
+          "type": "string",
+          "enum": [
+            "authoritative-sync",
+            "graph-visible",
+            "semantic-complete",
+            "task-completed"
+          ]
         },
         "waitTimeoutMs": {
           "type": "number",

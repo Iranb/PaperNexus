@@ -558,34 +558,97 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (submit, list, status, progress, queue_progress, log, wait, submit_async, async_status, async_wait) | Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until terminal state or timeout. submit_async starts a background import_workflow operation and returns a jobId; use async_status/async_wait to read the result. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`, `submit_async`, `async_status`, `async_wait`. |
+| `operation` | required | string (submit, list, status, progress, queue_progress, log, wait, submit_async, async_status, async_wait) | Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until task completion by default, can target graph-visible or semantic-complete readiness, and submit_async starts a background import_workflow operation returning a jobId for async_status/async_wait. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`, `submit_async`, `async_status`, `async_wait`. |
 | `asyncOperation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Normal import_workflow operation to run in the background when operation=submit_async. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
+| `async_operation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Snake_case alias for asyncOperation. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
+| `targetOperation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Alias for asyncOperation when operation=submit_async. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
+| `target_operation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Snake_case alias for targetOperation. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
 | `jobId` | optional | string | Background import_workflow job id returned by submit_async or by a normal operation with async=true; required for async_status or async_wait. |
-| `executionMode` | optional | string (sync, async) | When set to async on a normal import_workflow operation, submit it as a background job instead of blocking. Allowed values: `sync`, `async`. |
+| `job_id` | optional | string | Snake_case alias for jobId. |
+| `executionMode` | optional | string (sync, async, asynchronous, background, queued, queue) | When set to an async/background mode on a normal import_workflow operation, submit it as a background job instead of blocking. Allowed values: `sync`, `async`, `asynchronous`, `background`, `queued`, `queue`. |
+| `execution_mode` | optional | string (sync, async, asynchronous, background, queued, queue) | Snake_case alias for executionMode. Allowed values: `sync`, `async`, `asynchronous`, `background`, `queued`, `queue`. |
+| `runMode` | optional | string (sync, async, asynchronous, background, queued, queue) | Alias for executionMode. Allowed values: `sync`, `async`, `asynchronous`, `background`, `queued`, `queue`. |
+| `run_mode` | optional | string (sync, async, asynchronous, background, queued, queue) | Snake_case alias for runMode. Allowed values: `sync`, `async`, `asynchronous`, `background`, `queued`, `queue`. |
 | `async` | optional | boolean | Alias for executionMode=async on a normal import_workflow operation. |
+| `asynchronous` | optional | boolean | Boolean alias for async. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `taskId` | optional | string | Import task id for status, log, or wait. |
+| `task_id` | optional | string | Snake_case alias for taskId. |
 | `paperId` | optional | string | Optional paper id used to resolve a task when taskId is omitted. |
+| `paper_id` | optional | string | Snake_case alias for paperId. |
 | `source` | optional | string | Optional source path used to resolve a task when taskId is omitted. |
 | `serverFilePath` | optional | string | Absolute file path on the PaperNexus server for submit. |
+| `server_file_path` | optional | string | Snake_case alias for serverFilePath. |
 | `identifiers` | optional | object | Per-paper identifier block for submit, containing one or more of DOI, arXiv ID, PMID, PMCID, ISBN, or ISSN. |
 | `doi` | optional | string | DOI for a single-paper submit request. |
 | `arxivId` | optional | string | arXiv ID for a single-paper submit request. |
+| `arxiv_id` | optional | string | Snake_case alias for arxivId. |
 | `pmid` | optional | string | PMID for a single-paper submit request. |
 | `pmcid` | optional | string | PMCID for a single-paper submit request. |
 | `isbn` | optional | string | ISBN for a single-paper submit request. |
 | `issn` | optional | string | ISSN for a single-paper submit request. |
 | `sourceProvider` | optional | string | Optional source provider/origin label used to build sourceId. |
+| `source_provider` | optional | string | Snake_case alias for sourceProvider. |
+| `processingProfile` | optional | string (full, fast-md-structural, fast-md-background-semantic, long-context-full-md) | Optional import processing profile for submit. Use fast-md-background-semantic for markdown graph-visible ingest with background semantic enrichment. Allowed values: `full`, `fast-md-structural`, `fast-md-background-semantic`, `long-context-full-md`. |
+| `processing_profile` | optional | string (full, fast-md-structural, fast-md-background-semantic, long-context-full-md) | Snake_case alias for processingProfile. Allowed values: `full`, `fast-md-structural`, `fast-md-background-semantic`, `long-context-full-md`. |
+| `importProfile` | optional | string (full, fast-md-structural, fast-md-background-semantic, long-context-full-md) | Alias for processingProfile. Allowed values: `full`, `fast-md-structural`, `fast-md-background-semantic`, `long-context-full-md`. |
+| `import_profile` | optional | string (full, fast-md-structural, fast-md-background-semantic, long-context-full-md) | Snake_case alias for importProfile. Allowed values: `full`, `fast-md-structural`, `fast-md-background-semantic`, `long-context-full-md`. |
+| `completionPolicy` | optional | string (full, graph-visible, semantic-complete) | Optional completion policy for submit. graph-visible lets fast markdown imports complete when local structural graph visibility is ready. Allowed values: `full`, `graph-visible`, `semantic-complete`. |
+| `completion_policy` | optional | string (full, graph-visible, semantic-complete) | Snake_case alias for completionPolicy. Allowed values: `full`, `graph-visible`, `semantic-complete`. |
+| `importExecutionMode` | optional | string (serial, dag) | Optional internal import execution mode for submit. This is distinct from executionMode=sync\|async, which only controls whether the MCP tool call waits. Allowed values: `serial`, `dag`. |
+| `import_execution_mode` | optional | string (serial, dag) | Snake_case alias for importExecutionMode. Allowed values: `serial`, `dag`. |
+| `importsExecutionMode` | optional | string (serial, dag) | Alias for importExecutionMode. Allowed values: `serial`, `dag`. |
+| `imports_execution_mode` | optional | string (serial, dag) | Snake_case alias for importsExecutionMode. Allowed values: `serial`, `dag`. |
+| `llmContextWindowTokens` | optional | number | Optional task-level LLM context window declaration for submit. Use 1000000 for the default long-context markdown optimization path. |
+| `llm_context_window_tokens` | optional | number | Snake_case alias for llmContextWindowTokens. |
+| `contextWindowTokens` | optional | number | Alias for llmContextWindowTokens. |
+| `context_window_tokens` | optional | number | Snake_case alias for contextWindowTokens. |
+| `llmExtractionStrategy` | optional | string (long-context-first, chunk-first, auto) | Optional task-level markdown LLM extraction strategy. long-context-first is the default optimized path for 1M-context models. Allowed values: `long-context-first`, `chunk-first`, `auto`. |
+| `llm_extraction_strategy` | optional | string (long-context-first, chunk-first, auto) | Snake_case alias for llmExtractionStrategy. Allowed values: `long-context-first`, `chunk-first`, `auto`. |
+| `llmLongContextMaxPapersPerCall` | optional | number | Optional task-level cap for how many markdown papers are packed into one long-context LLM call. |
+| `llm_long_context_max_papers_per_call` | optional | number | Snake_case alias for llmLongContextMaxPapersPerCall. |
+| `llmBatchConcurrency` | optional | number | Optional task-level LLM batch concurrency for provider-backed semantic enrichment. |
+| `llm_batch_concurrency` | optional | number | Snake_case alias for llmBatchConcurrency. |
+| `batchConcurrency` | optional | number | Alias for llmBatchConcurrency. |
+| `batch_concurrency` | optional | number | Snake_case alias for batchConcurrency. |
 | `files` | optional | array&lt;object&gt; |  |
 | `trigger` | optional | string | Default: `"mcp"`. |
 | `limit` | optional | number |  |
 | `taskIds` | optional | array&lt;string&gt; | Optional task ids used to filter queue_progress snapshots. |
+| `includeSemanticQueue` | optional | boolean | When operation=queue_progress, include the background semantic-enrichment queue summary and recent jobs. Defaults to true. |
+| `include_semantic_queue` | optional | boolean | Snake_case alias for includeSemanticQueue. |
+| `semanticJobLimit` | optional | number | When operation=queue_progress and includeSemanticQueue is true, limit recent semantic-enrichment jobs returned. Default: `5`. |
+| `semantic_job_limit` | optional | number | Snake_case alias for semanticJobLimit. Default: `5`. |
+| `recentSemanticJobLimit` | optional | number | Alias for semanticJobLimit. Default: `5`. |
+| `recent_semantic_job_limit` | optional | number | Snake_case alias for recentSemanticJobLimit. Default: `5`. |
+| `eventTail` | optional | number | When operation=queue_progress, include this many recent import task event ledger entries for the active task. Default: `5`. |
+| `event_tail` | optional | number | Snake_case alias for eventTail. Default: `5`. |
+| `recentEventLimit` | optional | number | Alias for eventTail. Default: `5`. |
+| `recent_event_limit` | optional | number | Snake_case alias for recentEventLimit. Default: `5`. |
+| `dagTail` | optional | number | When operation=queue_progress, include this many recent import DAG event ledger entries for the active task. Defaults to eventTail. Default: `5`. |
+| `dag_tail` | optional | number | Snake_case alias for dagTail. Default: `5`. |
+| `recentDagEventLimit` | optional | number | Alias for dagTail. Default: `5`. |
+| `recent_dag_event_limit` | optional | number | Snake_case alias for recentDagEventLimit. Default: `5`. |
+| `includeDagComparison` | optional | boolean | When operation=queue_progress, include the active task DAG comparison report. Defaults to true. |
+| `include_dag_comparison` | optional | boolean | Snake_case alias for includeDagComparison. |
 | `timeout` | optional | number | Maximum seconds to wait for completion when operation is wait. By default this also includes the downstream authoritative graph sync job for completed imports. Default: `1800`. |
 | `interval` | optional | number | Polling interval in seconds when operation is wait. Default: `2`. |
 | `waitForAuthoritativeSync` | optional | boolean | When operation is wait, keep waiting after the import task completes until its authoritative graph sync job is completed, failed, or superseded. Defaults to true. |
+| `wait_for_authoritative_sync` | optional | boolean | Snake_case alias for waitForAuthoritativeSync. |
+| `waitUntil` | optional | string (task-completed, graph-visible, semantic-complete, authoritative-sync) | When operation is wait, choose the readiness target. task-completed preserves the legacy task terminal wait; graph-visible returns after structural graph visibility for fast markdown imports; semantic-complete waits for background 1M long-context semantic enrichment to reach a terminal lifecycle; authoritative-sync waits for downstream graph sync. Allowed values: `task-completed`, `graph-visible`, `semantic-complete`, `authoritative-sync`. |
+| `wait_until` | optional | string (task-completed, graph-visible, semantic-complete, authoritative-sync) | Snake_case alias for waitUntil. Allowed values: `task-completed`, `graph-visible`, `semantic-complete`, `authoritative-sync`. |
+| `waitTarget` | optional | string (task-completed, graph-visible, semantic-complete, authoritative-sync) | Alias for waitUntil. Allowed values: `task-completed`, `graph-visible`, `semantic-complete`, `authoritative-sync`. |
+| `wait_target` | optional | string (task-completed, graph-visible, semantic-complete, authoritative-sync) | Snake_case alias for waitTarget. Allowed values: `task-completed`, `graph-visible`, `semantic-complete`, `authoritative-sync`. |
+| `waitForGraphVisibility` | optional | boolean | Shortcut for operation=wait with waitUntil=graph-visible. Useful for fast-md-background-semantic bursts where graph queries can start before 1M long-context semantic enrichment finishes. |
+| `wait_for_graph_visibility` | optional | boolean | Snake_case alias for waitForGraphVisibility. |
+| `waitForSemanticCompletion` | optional | boolean | Shortcut for operation=wait with waitUntil=semantic-complete. Useful when the caller needs background default 1M long-context semantic enrichment to finish before using semantic graph evidence. |
+| `wait_for_semantic_completion` | optional | boolean | Snake_case alias for waitForSemanticCompletion. |
 | `waitTimeoutMs` | optional | number | Maximum milliseconds for operation=async_wait to poll before returning the latest job state. Default: `60000`. |
+| `wait_timeout_ms` | optional | number | Snake_case alias for waitTimeoutMs when operation=async_wait. Default: `60000`. |
 | `timeoutMs` | optional | number | Alias for waitTimeoutMs when operation=async_wait. |
+| `timeout_ms` | optional | number | Snake_case alias for timeoutMs. |
 | `pollIntervalMs` | optional | number | Polling interval in milliseconds when operation=async_wait. Default: `500`. |
+| `poll_interval_ms` | optional | number | Snake_case alias for pollIntervalMs. Default: `500`. |
 
 ### Examples
 
