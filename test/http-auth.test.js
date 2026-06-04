@@ -404,6 +404,7 @@ test('serveCommand forwards analyze parser config into the import worker', async
           batchProgressive: false,
           batchCoalesceMs: 75000,
           batchCoalescePollMs: 1000,
+          fastMdBurstTargetTasks: 10,
           batchMaxFiles: 12,
           batchMaxBytes: 1048576
         },
@@ -440,6 +441,7 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].batchProgressive, false);
       assert.equal(calls[0].batchCoalesceMs, 75000);
       assert.equal(calls[0].batchCoalescePollMs, 1000);
+      assert.equal(calls[0].fastMdBurstTargetTasks, 10);
       assert.equal(calls[0].batchMaxFiles, 12);
       assert.equal(calls[0].batchMaxBytes, 1048576);
     } finally {
@@ -491,6 +493,7 @@ test('serveCommand enables import batching by default for MCP serve workers', as
       assert.equal(calls[0].batchEnabled, true);
       assert.equal(calls[0].batchMaxTasks, 16);
       assert.equal(calls[0].batchInitialTasks, 4);
+      assert.equal(calls[0].fastMdBurstTargetTasks, undefined);
       assert.equal(calls[0].batchProgressive, true);
     } finally {
       await serverHandle.stop();

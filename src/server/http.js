@@ -376,6 +376,12 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       importsConfig.batchCoalescePollMs,
       importConfig.batchCoalescePollMs
     ),
+    fastMdBurstTargetTasks: firstNumber(
+      options.importFastMdBurstTargetTasks,
+      options.fastMdBurstTargetTasks,
+      importsConfig.fastMdBurstTargetTasks,
+      importConfig.fastMdBurstTargetTasks
+    ),
     importExecutionMode: firstDefined(
       options.importExecutionMode,
       options.import_execution_mode,

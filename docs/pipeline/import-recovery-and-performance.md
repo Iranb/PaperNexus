@@ -239,7 +239,7 @@ This is the important fix that prevents:
 
 from happening again.
 
-When worker-side batching is enabled, several pending imports can share the same scoped Stage 2 call and fast commit. The batch is still logical: task ids, directories, logs, status, and recovery state remain per task. `imports.batchCoalesceMs` can optionally hold an underfilled batch for a short bounded window so bursty submissions are grouped before Stage 2 starts. Leave it at the default `0` when first-paper latency matters more than throughput.
+When worker-side batching is enabled, several pending imports can share the same scoped Stage 2 call and fast commit. The batch is still logical: task ids, directories, logs, status, and recovery state remain per task. `imports.batchCoalesceMs` can optionally hold an underfilled batch for a short bounded window so bursty submissions are grouped before Stage 2 starts. Leave it at the default `0` when first-paper latency matters more than throughput. For fast markdown graph-visible imports, `imports.fastMdBurstTargetTasks` defaults to `10`; if coalescing is enabled, the worker tries to fill that target before reserving the batch so the one-minute ten-paper path is not split into multiple commits.
 
 Every completed import now records `result.metrics.importPerformance`. Operators should use this object before guessing where the time went. The fields include:
 

@@ -122,6 +122,7 @@ For MCP/serve workloads, import batching is enabled by default. Configure it und
     "batchProgressive": true,
     "batchInitialTasks": 4,
     "batchMaxTasks": 16,
+    "fastMdBurstTargetTasks": 10,
     "batchCoalesceMs": 0,
     "batchCoalescePollMs": 250,
     "batchMaxFiles": 16,
@@ -131,9 +132,9 @@ For MCP/serve workloads, import batching is enabled by default. Configure it und
 ```
 
 Set `"batchEnabled": false` if a deployment needs strictly one import task per graph commit.
-With the default progressive policy, an active queue starts later pending work at 4 tasks per logical batch, then grows to 8 and 16 while pending work remains. If fewer tasks are pending than the current target, the worker reserves all pending tasks immediately as one logical batch instead of waiting to fill the target. When the queue drains, the next burst starts from 4 again.
+With the default progressive policy, an active queue starts later pending work at 4 tasks per logical batch, then grows to 8 and 16 while pending work remains. If fewer tasks are pending than the current target, the worker normally reserves all pending tasks immediately as one logical batch instead of waiting to fill the target. The exception is an all-fast-markdown graph-visible burst with positive coalescing: that path can wait for `fastMdBurstTargetTasks` before reserve. When the queue drains, the next burst starts from 4 again.
 
-`batchCoalesceMs` is an optional throughput knob for bursty uploads. The default is `0`, which preserves lowest-latency behavior. When set to a positive value, the worker briefly polls for more `pending / queued` tasks before reserving an underfilled logical batch. This can reduce repeated Stage 2 LLM calls when agents submit many papers over a few seconds, at the cost of adding up to that configured delay before the first task starts. `batchCoalescePollMs` controls the queue polling interval during that bounded wait.
+`batchCoalesceMs` is an optional throughput knob for bursty uploads. The default is `0`, which preserves lowest-latency behavior. When set to a positive value, the worker briefly polls for more `pending / queued` tasks before reserving an underfilled logical batch. This can reduce repeated Stage 2 LLM calls when agents submit many papers over a few seconds, at the cost of adding up to that configured delay before the first task starts. `batchCoalescePollMs` controls the queue polling interval during that bounded wait. `fastMdBurstTargetTasks` defaults to `10`; when all queued tasks are fast markdown graph-visible imports, the worker uses that target during the coalesce window so a ten-paper burst is not split into early underfilled batches.
 
 Completed tasks now include `result.metrics.importPerformance` with `contractVersion`, per-task/batch counts, `stageTimingsMs`, and `llmBatches`. For a worker batch, each task keeps its own status and logs while sharing the same batch id and shared Stage 2 / fast-commit timing summary.
 

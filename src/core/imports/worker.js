@@ -42,6 +42,7 @@ const DEFAULT_IMPORT_BATCH_INITIAL_TASKS = 4;
 const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
 const DEFAULT_IMPORT_BATCH_COALESCE_MS = 0;
 const DEFAULT_IMPORT_BATCH_COALESCE_POLL_MS = 250;
+const DEFAULT_FAST_MD_BURST_TARGET_TASKS = 10;
 const HARD_IMPORT_BATCH_COALESCE_MS = 5 * 60 * 1000;
 const HARD_IMPORT_BATCH_COALESCE_POLL_MS = 10_000;
 const IMPORT_PERFORMANCE_CONTRACT_VERSION = 'import-performance-v1';
@@ -133,6 +134,9 @@ function resolveImportBatchOptions(options = {}) {
   const configuredCoalesceTargetTasks = resolveOptionalPositiveIntegerOption(
     options.importBatchCoalesceTargetTasks ?? options.batchCoalesceTargetTasks
   );
+  const configuredFastMdBurstTargetTasks = (
+    options.importFastMdBurstTargetTasks ?? options.fastMdBurstTargetTasks
+  );
   return {
     enabled: resolveBooleanOption(options.importBatchEnabled ?? options.batchEnabled, false),
     maxTasks,
@@ -140,6 +144,14 @@ function resolveImportBatchOptions(options = {}) {
     coalesceTargetTasks: configuredCoalesceTargetTasks
       ? Math.min(maxTasks, configuredCoalesceTargetTasks)
       : null,
+    fastMdBurstTargetTasks: Math.min(
+      maxTasks,
+      resolvePositiveIntegerOption(
+        configuredFastMdBurstTargetTasks,
+        DEFAULT_FAST_MD_BURST_TARGET_TASKS
+      )
+    ),
+    fastMdBurstTargetTasksExplicit: configuredFastMdBurstTargetTasks !== undefined && configuredFastMdBurstTargetTasks !== null,
     progressive: resolveBooleanOption(options.importBatchProgressive ?? options.batchProgressive, true),
     maxFiles: resolveOptionalPositiveIntegerOption(options.importBatchMaxFiles ?? options.batchMaxFiles),
     maxBytes: resolveOptionalPositiveIntegerOption(options.importBatchMaxBytes ?? options.batchMaxBytes),
@@ -241,6 +253,29 @@ function resolveImportBatchCoalesceTargetTasks(batchOptions = {}) {
   return maxTasks;
 }
 
+function resolveFastMdBurstTargetTasks(batchOptions = {}, reserveBatchOptions = {}) {
+  const maxTasks = Math.max(
+    1,
+    Number(batchOptions.maxTasks || reserveBatchOptions.maxTasks || DEFAULT_IMPORT_BATCH_MAX_TASKS) || DEFAULT_IMPORT_BATCH_MAX_TASKS
+  );
+  const reserveTarget = Math.max(1, Math.min(maxTasks, Number(reserveBatchOptions.maxTasks || maxTasks) || maxTasks));
+  const configuredCoalesceTarget = Number(batchOptions.coalesceTargetTasks || 0);
+  if (Number.isFinite(configuredCoalesceTarget) && configuredCoalesceTarget > 0) {
+    return Math.max(1, Math.min(maxTasks, Math.floor(configuredCoalesceTarget)));
+  }
+  const configuredFastMdTarget = Number(batchOptions.fastMdBurstTargetTasks || DEFAULT_FAST_MD_BURST_TARGET_TASKS);
+  if (batchOptions.fastMdBurstTargetTasksExplicit && Number.isFinite(configuredFastMdTarget) && configuredFastMdTarget > 0) {
+    return Math.max(1, Math.min(maxTasks, Math.floor(configuredFastMdTarget)));
+  }
+  if (maxTasks < DEFAULT_FAST_MD_BURST_TARGET_TASKS) {
+    return reserveTarget;
+  }
+  if (Number.isFinite(configuredFastMdTarget) && configuredFastMdTarget > 0) {
+    return Math.max(1, Math.min(maxTasks, Math.floor(configuredFastMdTarget)));
+  }
+  return Math.max(1, Math.min(maxTasks, DEFAULT_FAST_MD_BURST_TARGET_TASKS));
+}
+
 async function reportImportBatchCoalescingProgress(rootPath, tasks = [], summary = {}, batchOptions = {}) {
   const pendingTasks = pendingQueuedImportTasks(tasks);
   if (!pendingTasks.length) return;
@@ -335,13 +370,27 @@ function createFastMdBurstReserveBatchOptions(tasks = [], batchOptions = {}, res
   }
 
   const maxTasks = Math.max(1, Number(batchOptions.maxTasks || reserveBatchOptions.maxTasks || 1) || 1);
+  const burstTargetTasks = resolveFastMdBurstTargetTasks(batchOptions, reserveBatchOptions);
+  if (Number(batchOptions.coalesceMs || 0) > 0 && fastMdPendingTasks.length < burstTargetTasks) {
+    return {
+      ...reserveBatchOptions,
+      maxTasks: burstTargetTasks,
+      coalesceTargetTasks: burstTargetTasks,
+      fastMdBurstReady: false,
+      fastMdBurstFilling: true,
+      fastMdBurstTaskCount: fastMdPendingTasks.length,
+      fastMdBurstTargetTasks: burstTargetTasks
+    };
+  }
+
   const burstTaskCount = Math.min(maxTasks, fastMdPendingTasks.length);
   return {
     ...reserveBatchOptions,
     maxTasks: burstTaskCount,
     coalesceTargetTasks: burstTaskCount,
     fastMdBurstReady: true,
-    fastMdBurstTaskCount: fastMdPendingTasks.length
+    fastMdBurstTaskCount: fastMdPendingTasks.length,
+    fastMdBurstTargetTasks: burstTargetTasks
   };
 }
 
@@ -3194,6 +3243,7 @@ export const __importWorkerTestables = {
   waitForImportBatchCoalesce,
   shouldWaitForImportBatchCoalesce,
   resolveImportBatchCoalesceTargetTasks,
+  resolveFastMdBurstTargetTasks,
   createFastMdBurstReserveBatchOptions,
   createImportBatchLlmConfigGroups,
   createLlmBatchMetricsCollector,

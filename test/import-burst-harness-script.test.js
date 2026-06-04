@@ -578,6 +578,48 @@ test('live import burst harness submits and waits through MCP import_workflow', 
   }
 });
 
+test('live import burst harness can check MCP schema without sources or task submission', async () => {
+  const fakeServer = await createFakeMcpImportServer();
+  try {
+    const result = await runScript([
+      '--schema-check-only',
+      '--transport', 'mcp',
+      '--mcp-url', fakeServer.mcpUrl,
+      '--token', 'fake-token',
+      '--request-timeout-ms', '1000'
+    ]);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /schema is ready/);
+    assert.match(result.stdout, /no import tasks submitted/);
+    assert.equal(fakeServer.toolCalls.length, 0);
+    assert.ok(fakeServer.requests.some((entry) => entry.body?.method === 'tools/list'));
+  } finally {
+    await fakeServer.close();
+  }
+});
+
+test('live import burst harness schema-check-only refuses stale MCP schema without submitting', async () => {
+  const fakeServer = await createFakeMcpImportServer({ legacySchema: true });
+  try {
+    const result = await runScript([
+      '--schema-check-only',
+      '--transport', 'mcp',
+      '--mcp-url', fakeServer.mcpUrl,
+      '--token', 'fake-token',
+      '--request-timeout-ms', '1000'
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /MCP import_workflow schema is not ready/);
+    assert.match(result.stderr, /processingProfile=fast-md-background-semantic/);
+    assert.match(result.stderr, /waitUntil=graph-visible/);
+    assert.equal(fakeServer.toolCalls.length, 0);
+  } finally {
+    await fakeServer.close();
+  }
+});
+
 test('live import burst harness refuses MCP execute when import_workflow schema is stale', async () => {
   const workspace = await tempWorkspace('papernexus-burst-mcp-stale-');
   const reportPath = path.join(workspace, 'mcp-stale-report.json');

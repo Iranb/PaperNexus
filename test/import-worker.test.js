@@ -32,6 +32,7 @@ test('import worker grows progressive batch targets while queued work remains', 
     assert.equal(options.enabled, true);
     assert.equal(options.maxTasks, 16);
     assert.equal(options.initialTasks, 4);
+    assert.equal(options.fastMdBurstTargetTasks, 10);
     assert.equal(options.progressive, true);
     assert.equal(options.coalesceMs, 0);
 
@@ -195,6 +196,44 @@ test('import worker grows progressive batch targets while queued work remains', 
     assert.equal(fastMdBurstOptions.coalesceTargetTasks, 10);
     assert.equal(
       batching.shouldWaitForImportBatchCoalesce({ pending: 10, running: 0 }, fastMdBurstOptions),
+      false
+    );
+
+    const underfilledFastMdBurstOptions = batching.createFastMdBurstReserveBatchOptions(
+      fastMdBurstTasks.slice(0, 8),
+      fastMdBatchOptions,
+      progressiveReserveOptions,
+      {}
+    );
+    assert.equal(underfilledFastMdBurstOptions.fastMdBurstFilling, true);
+    assert.equal(underfilledFastMdBurstOptions.fastMdBurstReady, false);
+    assert.equal(underfilledFastMdBurstOptions.maxTasks, 10);
+    assert.equal(underfilledFastMdBurstOptions.coalesceTargetTasks, 10);
+    assert.equal(underfilledFastMdBurstOptions.fastMdBurstTargetTasks, 10);
+    assert.equal(
+      batching.shouldWaitForImportBatchCoalesce({ pending: 8, running: 0 }, underfilledFastMdBurstOptions),
+      true
+    );
+
+    const smallFastMdBatchOptions = batching.resolveImportBatchOptions({
+      batchEnabled: true,
+      batchMaxTasks: 4,
+      batchInitialTasks: 2,
+      batchCoalesceMs: 60000
+    });
+    const smallFastMdBurstOptions = batching.createFastMdBurstReserveBatchOptions(
+      fastMdBurstTasks.slice(0, 2),
+      smallFastMdBatchOptions,
+      {
+        ...smallFastMdBatchOptions,
+        maxTasks: 2
+      },
+      {}
+    );
+    assert.equal(smallFastMdBurstOptions.fastMdBurstReady, true);
+    assert.equal(smallFastMdBurstOptions.maxTasks, 2);
+    assert.equal(
+      batching.shouldWaitForImportBatchCoalesce({ pending: 2, running: 0 }, smallFastMdBurstOptions),
       false
     );
 

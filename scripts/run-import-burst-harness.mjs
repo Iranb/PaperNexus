@@ -78,6 +78,7 @@ Options:
   --execute                    Submit real import tasks. Without this flag the script only writes a dry-run report.
   --reuse-content              Do not append a hidden run marker. May hit import dedupe on repeated runs.
   --wait-semantic              Also wait for semanticStatus=completed/not-required after graph-visible.
+  --schema-check-only          Check MCP import_workflow fast-md/default 1M schema readiness without submitting tasks.
   --help                       Show this help.
 `);
 }
@@ -106,6 +107,10 @@ function parseArgs(argv = process.argv.slice(2)) {
     }
     if (arg === '--wait-semantic') {
       options.waitSemantic = true;
+      continue;
+    }
+    if (arg === '--schema-check-only') {
+      options.schemaCheckOnly = true;
       continue;
     }
     if (!arg.startsWith('--')) {
@@ -1025,8 +1030,23 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   const options = normalizeOptions(parsed);
-  const sources = await collectSourceFiles(options);
   const { token, tokenSource } = await readToken(options);
+
+  if (options.schemaCheckOnly) {
+    if (options.transport !== 'mcp') {
+      throw new Error('--schema-check-only requires --transport mcp.');
+    }
+    if (!token) {
+      throw new Error('A PaperNexus API token is required for MCP schema checks. Use PAPERNEXUS_API_TOKEN, --token, or --token-file.');
+    }
+    const mcp = await createMcpClient({ options, token });
+    await assertMcpImportWorkflowContract(mcp, options);
+    console.log(`MCP import_workflow schema is ready for fast-md/default 1M burst validation at ${options.mcpUrl}.`);
+    console.log(`Token source: ${tokenSource}; no import tasks submitted.`);
+    return 0;
+  }
+
+  const sources = await collectSourceFiles(options);
 
   if (!options.execute) {
     const report = await buildDryRunReport({

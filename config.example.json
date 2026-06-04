@@ -50,6 +50,7 @@
     "batchProgressive": true,
     "batchInitialTasks": 4,
     "batchMaxTasks": 16,
+    "fastMdBurstTargetTasks": 10,
     "batchCoalesceMs": 0,
     "batchCoalescePollMs": 250,
     "batchMaxFiles": 16,
