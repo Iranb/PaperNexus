@@ -82,13 +82,13 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     }
   },
   "llm": {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "baseUrl": "https://api.openai.com/v1",
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "baseUrl": "https://api.deepseek.com",
     "relations": true,
     "batchPromptMaxChars": 24000,
     "batchFailureSplitRetryCount": 3,
-    "apiKeyEnv": "OPENAI_API_KEY"
+    "apiKeyEnv": "DEEPSEEK_API_KEY"
   },
   "literatureDiscovery": {
     "providers": [
@@ -191,13 +191,13 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `serve.mcp.requestTimeoutMs` | number | `600000` |
 | `serve.mcp.allowSseFallback` | boolean | `false` |
 | `llm` | object | section |
-| `llm.provider` | string | `openai` |
-| `llm.model` | string | `gpt-4o-mini` |
-| `llm.baseUrl` | string | `https://api.openai.com/v1` |
+| `llm.provider` | string | `deepseek` |
+| `llm.model` | string | `deepseek-v4-flash` |
+| `llm.baseUrl` | string | `https://api.deepseek.com` |
 | `llm.relations` | boolean | `true` |
 | `llm.batchPromptMaxChars` | number | `24000` |
 | `llm.batchFailureSplitRetryCount` | number | `3` |
-| `llm.apiKeyEnv` | string | `OPENAI_API_KEY` |
+| `llm.apiKeyEnv` | string | `DEEPSEEK_API_KEY` |
 | `literatureDiscovery` | object | section |
 | `literatureDiscovery.providers` | array | `["openalex","semantic_scholar","crossref","arxiv"]` |
 | `literatureDiscovery.mailto` | string | `` |

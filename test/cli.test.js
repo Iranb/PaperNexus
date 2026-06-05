@@ -965,7 +965,7 @@ test('CLI logs watch prints the tmp watch log path and contents', async () => {
   }
 });
 
-test('CLI auth llm set stores an API key binding in config.json and macOS Keychain', async () => {
+test('CLI auth llm set can switch an existing Qwen config to a DeepSeek key binding', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-auth-'));
   const binDir = path.join(workspaceRoot, 'bin');
   const storePath = path.join(workspaceRoot, 'fake-keychain.json');
@@ -1043,7 +1043,7 @@ process.exit(0);
 `);
     await fs.chmod(path.join(binDir, 'security'), 0o755);
 
-    const authRun = await spawnCli(['auth', 'llm', 'set', '--stdin'], {
+    const authRun = await spawnCli(['auth', 'llm', 'set', '--provider', 'deepseek', '--stdin'], {
       cwd: workspaceRoot,
 	      env: {
 	        ...process.env,
@@ -1051,23 +1051,25 @@ process.exit(0);
 	        FAKE_SECURITY_STORE: storePath,
 	        PAPERNEXUS_HOME: workspaceRoot
 	      },
-      stdin: 'dashscope-test-key\n'
+      stdin: 'deepseek-test-key\n'
     });
 
     assert.equal(authRun.code, 0, authRun.stderr);
-    assert.match(authRun.stdout, /Stored API key securely for openai/);
+    assert.match(authRun.stdout, /Stored API key securely for deepseek/);
 
     const savedConfig = JSON.parse(await fs.readFile(path.join(workspaceRoot, 'config.json'), 'utf8'));
-    assert.equal(savedConfig.llm.provider, 'openai');
-    assert.equal(savedConfig.llm.baseUrl, 'https://coding.dashscope.aliyuncs.com/v1');
+    assert.equal(savedConfig.llm.provider, 'deepseek');
+    assert.equal(savedConfig.llm.model, 'deepseek-v4-flash');
+    assert.equal(savedConfig.llm.baseUrl, 'https://api.deepseek.com');
+    assert.equal(savedConfig.llm.apiKeyEnv, 'DEEPSEEK_API_KEY');
     assert.equal(savedConfig.llm.apiKeySource, 'keychain');
     assert.equal(savedConfig.llm.apiKeyService, 'papernexus.llm');
-    assert.equal(savedConfig.llm.apiKeyAccount, 'openai:https://coding.dashscope.aliyuncs.com/v1');
+    assert.equal(savedConfig.llm.apiKeyAccount, 'deepseek:https://api.deepseek.com');
 
     const fakeKeychain = JSON.parse(await fs.readFile(storePath, 'utf8'));
     assert.equal(
-      fakeKeychain['papernexus.llm|openai:https://coding.dashscope.aliyuncs.com/v1'],
-      'dashscope-test-key'
+      fakeKeychain['papernexus.llm|deepseek:https://api.deepseek.com'],
+      'deepseek-test-key'
     );
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });

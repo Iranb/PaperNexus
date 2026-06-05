@@ -593,12 +593,12 @@ const MCP_TOOL_EXAMPLES = {
         serveHost: '127.0.0.1',
         servePort: 4821,
         llm: {
-          provider: 'openai',
-          model: 'qwen-plus',
-          baseUrl: 'https://api.example.com/v1',
+          provider: 'deepseek',
+          model: 'deepseek-v4-flash',
+          baseUrl: 'https://api.deepseek.com',
           relations: true,
-          apiKeyEnv: 'PAPERNEXUS_LLM_API_KEY',
-          batchSize: 16
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          batchSize: 1
         }
       }
     }

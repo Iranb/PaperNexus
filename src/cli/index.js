@@ -473,25 +473,39 @@ function getDefaultInitLlmModel(provider) {
   return 'qwen2.5:0.5b';
 }
 
+function normalizeCliLlmProvider(value) {
+  const provider = String(value || '').trim().toLowerCase();
+  if (provider === 'claude' || provider === 'claudecode' || provider === 'anthropic') return 'anthropic';
+  if (provider === 'openai') return 'openai';
+  if (provider === 'deepseek') return 'deepseek';
+  if (provider === 'ollama') return 'ollama';
+  return provider;
+}
+
 function buildLlmOptions(flags, config) {
   const llmConfig = getSection(config, 'llm');
   const ollamaConfig = getSection(config, 'ollama');
   const fallbackConfig = normalizeObject(llmConfig.fallback);
   const fallbackOllamaConfig = normalizeObject(fallbackConfig.ollamaBootstrap || fallbackConfig.ollama);
+  const explicitProvider = normalizeCliLlmProvider(flags.provider);
+  const configuredProvider = normalizeCliLlmProvider(llmConfig.provider);
+  const providerChanged = Boolean(explicitProvider && configuredProvider && explicitProvider !== configuredProvider);
+  const providerScopedLlmConfig = providerChanged ? {} : llmConfig;
+  const providerScopedOllamaConfig = explicitProvider && explicitProvider !== 'ollama' ? {} : ollamaConfig;
 
   return {
     llmProvider: firstDefined(flags.provider, llmConfig.provider),
-    llmModel: firstDefined(flags.model, flags['ollama-model'], llmConfig.model, ollamaConfig.model),
-    llmBaseUrl: firstDefined(flags['base-url'], flags.url, flags['ollama-url'], llmConfig.baseUrl, llmConfig.url, ollamaConfig.url),
-    llmApiKey: firstDefined(flags['api-key'], llmConfig.apiKey),
-    llmApiKeyEnv: firstDefined(flags['api-key-env'], llmConfig.apiKeyEnv),
-    llmApiKeySource: firstDefined(flags['api-key-source'], llmConfig.apiKeySource),
-    llmApiKeyService: firstDefined(flags.service, llmConfig.apiKeyService),
-    llmApiKeyAccount: firstDefined(flags.account, llmConfig.apiKeyAccount),
-    llmSshHost: firstDefined(flags['ssh-host'], flags['ollama-ssh-host'], llmConfig.sshHost, ollamaConfig.sshHost),
-    llmRelations: firstDefined(flags.relations, flags['ollama-relations'], llmConfig.relations, ollamaConfig.relations),
-    llmTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], flags['ollama-timeout-ms'], llmConfig.timeoutMs, ollamaConfig.timeoutMs), undefined),
-    llmBatchSize: toNumber(firstDefined(flags['batch-size'], flags['ollama-batch-size'], llmConfig.batchSize, ollamaConfig.batchSize), undefined),
+    llmModel: firstDefined(flags.model, flags['ollama-model'], providerScopedLlmConfig.model, providerScopedOllamaConfig.model),
+    llmBaseUrl: firstDefined(flags['base-url'], flags.url, flags['ollama-url'], providerScopedLlmConfig.baseUrl, providerScopedLlmConfig.url, providerScopedOllamaConfig.url),
+    llmApiKey: firstDefined(flags['api-key'], providerScopedLlmConfig.apiKey),
+    llmApiKeyEnv: firstDefined(flags['api-key-env'], providerScopedLlmConfig.apiKeyEnv),
+    llmApiKeySource: firstDefined(flags['api-key-source'], providerScopedLlmConfig.apiKeySource),
+    llmApiKeyService: firstDefined(flags.service, providerScopedLlmConfig.apiKeyService),
+    llmApiKeyAccount: firstDefined(flags.account, providerScopedLlmConfig.apiKeyAccount),
+    llmSshHost: firstDefined(flags['ssh-host'], flags['ollama-ssh-host'], providerScopedLlmConfig.sshHost, providerScopedOllamaConfig.sshHost),
+    llmRelations: firstDefined(flags.relations, flags['ollama-relations'], llmConfig.relations, providerScopedOllamaConfig.relations),
+    llmTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], flags['ollama-timeout-ms'], llmConfig.timeoutMs, providerScopedOllamaConfig.timeoutMs), undefined),
+    llmBatchSize: toNumber(firstDefined(flags['batch-size'], flags['ollama-batch-size'], llmConfig.batchSize, providerScopedOllamaConfig.batchSize), undefined),
     llmBatchPromptMaxChars: toNumber(firstDefined(flags['batch-prompt-max-chars'], llmConfig.batchPromptMaxChars), undefined),
     llmBatchFailureSplitRetryCount: toNumber(firstDefined(flags['batch-failure-split-retry-count'], llmConfig.batchFailureSplitRetryCount), undefined),
     llmBatchLedgerDir: firstDefined(flags['llm-batch-ledger-dir'], flags['batch-ledger-dir'], llmConfig.llmBatchLedgerDir, llmConfig.batchLedgerDir),
@@ -1504,6 +1518,8 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
     throw new Error('Keychain service and account are required.');
   }
 
+  const persistedModel = resolved.model || getDefaultInitLlmModel(resolved.provider);
+
   if (action === 'diagnose') {
     const auth = await loadAuthModules();
     const backends = await auth.getAvailableBackends();
@@ -1556,7 +1572,7 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
 
     const nextConfig = buildPersistedLlmConfig(config, {
       provider: resolved.provider,
-      model: resolved.model,
+      model: persistedModel,
       baseUrl: resolved.baseUrl,
       apiKeyEnv: resolved.apiKeyEnv || auth.getDefaultLlmApiKeyEnv(resolved.provider),
       apiKeySource: 'keychain',
@@ -1576,7 +1592,7 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
   await auth.deleteKeychainSecret({ service, account });
   const nextConfig = buildPersistedLlmConfig(config, {
     provider: resolved.provider,
-    model: resolved.model,
+    model: persistedModel,
     baseUrl: resolved.baseUrl,
     apiKeyEnv: resolved.apiKeyEnv || auth.getDefaultLlmApiKeyEnv(resolved.provider),
     apiKeySource: '',

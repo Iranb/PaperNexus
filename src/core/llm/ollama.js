@@ -40,6 +40,7 @@ const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+const DEFAULT_LLM_PROVIDER = 'deepseek';
 const DEFAULT_TIMEOUT_MS = 45000;
 const DEFAULT_BATCH_SIZE = 8;
 const DEFAULT_BATCH_PROMPT_MAX_CHARS = 24000;
@@ -1211,9 +1212,9 @@ export function resolveLlmConfig(options = {}) {
     pickDefined(
       options.llmProvider,
       process.env.PAPERNEXUS_LLM_PROVIDER,
-      inferLegacyOllamaUsage(options) ? 'ollama' : ''
+      inferLegacyOllamaUsage(options) ? 'ollama' : DEFAULT_LLM_PROVIDER
     )
-  ) || 'ollama';
+  ) || DEFAULT_LLM_PROVIDER;
   const model = pickDefined(
     options.llmModel,
     process.env.PAPERNEXUS_LLM_MODEL,
@@ -2598,22 +2599,65 @@ function sanitizeNodeCheckRecord(record, fallbackId = '', fallbackName = '') {
   };
 }
 
+function classifyLlmHttpStatusFailureReason(statusCode) {
+  const status = Number(statusCode || 0);
+  if (!Number.isFinite(status) || status <= 0) return '';
+  if (status === 429) return 'rate-limited';
+  if (status === 408 || status === 504) return 'provider-timeout';
+  if (status === 401 || status === 403) return 'provider-auth-failed';
+  if (status >= 500) return 'provider-http-5xx';
+  if (status >= 400) return 'provider-http-4xx';
+  return '';
+}
+
+function classifyLlmRequestErrorReason(error = {}) {
+  if (isLlmRateLimitError(error)) return 'rate-limited';
+  const explicit = String(error?.reason || '').trim();
+  if (explicit) return explicit;
+  const httpReason = classifyLlmHttpStatusFailureReason(error?.statusCode || error?.status);
+  if (httpReason) return httpReason;
+  return classifyLlmInferenceFailureReason({ error: error?.message || error });
+}
+
 function classifyLlmInferenceFailureReason(result = {}) {
   const explicit = String(result?.reason || '').trim();
   if (explicit) return explicit;
+  const httpReason = classifyLlmHttpStatusFailureReason(result?.statusCode || result?.status);
+  if (httpReason) return httpReason;
   const errorText = String(result?.error || '').toLowerCase();
   if (!errorText) return 'request-failed';
+  const httpStatusMatch = errorText.match(/(?:request failed with|http)\s+(\d{3})/i);
+  if (httpStatusMatch) {
+    const reason = classifyLlmHttpStatusFailureReason(Number(httpStatusMatch[1]));
+    if (reason) return reason;
+  }
+  if (/\b429\b|rate limit|too many requests/.test(errorText)) {
+    return 'rate-limited';
+  }
   if (errorText.includes('missing batch') || errorText.includes('missing split-retry')) {
     return 'missing-result';
+  }
+  if (errorText.includes('empty content') || errorText.includes('empty response')) {
+    return 'empty-response';
   }
   if (errorText.includes('schema') || errorText.includes('expected "') || errorText.includes('expected ')) {
     return 'schema-validation-failed';
   }
   if (errorText.includes('timed out') || errorText.includes('timeout') || errorText.includes('aborterror') || errorText.includes('aborted')) {
-    return 'timeout';
+    return 'provider-timeout';
   }
   if (errorText.includes('invalid json') || errorText.includes('not valid json') || errorText.includes('json parse') || errorText.includes('unexpected token')) {
     return 'invalid-json';
+  }
+  if (
+    errorText.includes('fetch failed')
+    || errorText.includes('econnreset')
+    || errorText.includes('econnrefused')
+    || errorText.includes('enotfound')
+    || errorText.includes('etimedout')
+    || errorText.includes('network')
+  ) {
+    return 'provider-network';
   }
   return 'request-failed';
 }
@@ -2686,7 +2730,7 @@ export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, opti
       effectiveMode: 'heuristic-only',
       attempted: true,
       participated: false,
-      reason: 'request-failed',
+      reason: classifyLlmRequestErrorReason(error),
       error: error.message
     });
   }
@@ -2809,7 +2853,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: classifyLlmInferenceFailureReason({ error: rawError }),
             error: rawError
           });
           continue;
@@ -2822,7 +2866,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: 'missing-result',
             error: `Missing batch semantic result for ${batchEntry.id}`
           });
           continue;
@@ -2899,7 +2943,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: 'missing-result',
             error: `Missing split-retry semantic result for ${batchEntry.id}`
           });
         }
@@ -2936,7 +2980,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: classifyLlmRequestErrorReason(error),
             error: error.message
           });
         }
@@ -3263,7 +3307,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: classifyLlmInferenceFailureReason({ error: rawError }),
             error: rawError,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3283,7 +3327,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: 'missing-result',
             error: `Missing batch semantic result for ${batchEntry.id}`,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3327,7 +3371,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: 'missing-result',
             error: `Missing split-retry semantic result for ${batchEntry.id}`,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3379,7 +3423,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
             effectiveMode: 'heuristic-only',
             attempted: true,
             participated: false,
-            reason: 'request-failed',
+            reason: classifyLlmRequestErrorReason(error),
             error: error.message,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3654,6 +3698,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: classifyLlmInferenceFailureReason({ error: rawError }),
             error: rawError,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3673,6 +3718,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: 'missing-result',
             error: `Missing batch relation result for ${batchEntry.id}`,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3718,6 +3764,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: 'missing-result',
             error: `Missing split-retry relation result for ${batchEntry.id}`,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3767,6 +3814,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: classifyLlmRequestErrorReason(error),
             error: error.message,
             chunkId: batchEntry.chunkId,
             paperId: batchEntry.paperId,
@@ -3928,6 +3976,7 @@ export async function inferPaperResearchSemantics(parsedPaper, semanticPaper, op
       findings: [],
       researchGoals: [],
       relations: [],
+      reason: classifyLlmRequestErrorReason(error),
       error: error.message
     };
   }
@@ -4062,6 +4111,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: classifyLlmInferenceFailureReason({ error: rawError }),
             error: rawError
           };
           continue;
@@ -4074,6 +4124,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: 'missing-result',
             error: `Missing batch relation result for ${batchEntry.id}`
           };
           continue;
@@ -4140,6 +4191,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: 'missing-result',
             error: `Missing split-retry relation result for ${batchEntry.id}`
           };
         }
@@ -4174,6 +4226,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
             findings: [],
             researchGoals: [],
             relations: [],
+            reason: classifyLlmRequestErrorReason(error),
             error: error.message
           };
         }
@@ -4364,7 +4417,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
             verdict: 'keep',
             canonicalName: batchEntry.name,
             confidence: 0,
-            reason: 'request-failed',
+            reason: classifyLlmInferenceFailureReason({ error: rawError }),
             provider: resultProvider,
             attempted: true,
             participated: false,
@@ -4379,7 +4432,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
             verdict: 'keep',
             canonicalName: batchEntry.name,
             confidence: 0,
-            reason: 'request-failed',
+            reason: 'missing-result',
             provider: resultProvider,
             attempted: true,
             participated: false,
@@ -4406,7 +4459,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
           verdict: 'keep',
           canonicalName: batchEntry.name,
           confidence: 0,
-          reason: rateLimited ? 'rate-limited' : 'request-failed',
+          reason: rateLimited ? 'rate-limited' : classifyLlmRequestErrorReason(error),
           provider: failedProvider,
           attempted: true,
           participated: false,

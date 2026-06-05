@@ -49,6 +49,22 @@ function createRateLimitResponse(message = 'rate limited') {
   };
 }
 
+function createProviderErrorResponse(status, statusText, message = statusText) {
+  return {
+    ok: false,
+    status,
+    statusText,
+    headers: {
+      get() {
+        return '';
+      }
+    },
+    async text() {
+      return JSON.stringify({ error: { message } });
+    }
+  };
+}
+
 test('inferPaperSemanticObjects extracts structured semantic objects from OpenAI-style JSON', async () => {
   globalThis.fetch = async () => ({
     ok: true,
@@ -282,7 +298,7 @@ test('inferPaperSemanticObjects sends DeepSeek JSON-mode chat requests', async (
   assert.equal(result.problems[0].name, 'deepseek json mode extraction');
 });
 
-test('inferPaperSemanticObjects reports empty DeepSeek JSON-mode content as request failure', async () => {
+test('inferPaperSemanticObjects reports empty DeepSeek JSON-mode content as empty response', async () => {
   globalThis.fetch = async () => ({
     ok: true,
     async json() {
@@ -321,8 +337,44 @@ test('inferPaperSemanticObjects reports empty DeepSeek JSON-mode content as requ
 
   assert.equal(result.provider, 'deepseek');
   assert.equal(result.participated, false);
-  assert.equal(result.reason, 'request-failed');
+  assert.equal(result.reason, 'empty-response');
   assert.match(result.error, /empty content/i);
+});
+
+test('inferPaperSemanticObjectsBatch classifies provider HTTP failures', async () => {
+  globalThis.fetch = async () => createProviderErrorResponse(500, 'Internal Server Error', 'upstream unavailable');
+
+  const results = await inferPaperSemanticObjectsBatch(
+    [
+      {
+        id: 'paper-http-1',
+        parsedPaper: {
+          title: 'Provider HTTP Failure One',
+          sections: [{ heading: 'Abstract', role: 'abstract', text: 'Provider 5xx should be classified.' }]
+        },
+        semanticPaper: { abstract: 'Provider 5xx should be classified.', problems: [], methods: [], claims: [] }
+      },
+      {
+        id: 'paper-http-2',
+        parsedPaper: {
+          title: 'Provider HTTP Failure Two',
+          sections: [{ heading: 'Abstract', role: 'abstract', text: 'The batch should keep per-paper failed results.' }]
+        },
+        semanticPaper: { abstract: 'The batch should keep per-paper failed results.', problems: [], methods: [], claims: [] }
+      }
+    ],
+    {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'deepseek',
+      llmModel: 'deepseek-v4-flash',
+      llmApiKey: 'deepseek-test-key',
+      llmRateLimitRetryCount: 0,
+      llmBatchSize: 2
+    }
+  );
+
+  assert.deepEqual(results.map((entry) => entry.reason), ['provider-http-5xx', 'provider-http-5xx']);
+  assert.equal(results.every((entry) => entry.participated === false), true);
 });
 
 test('inferPaperSemanticObjects records a one-hour OpenAI-compatible 429 cooldown without surfacing an error', async () => {
@@ -1983,6 +2035,26 @@ test('resolveLlmConfig fills default Keychain binding fields for keychain-backed
   assert.equal(config.apiKeySource, 'keychain');
   assert.equal(config.apiKeyService, 'papernexus.llm');
   assert.equal(config.apiKeyAccount, 'openai:https://coding.dashscope.aliyuncs.com/v1');
+});
+
+test('resolveLlmConfig prefers DeepSeek by default without implicitly enabling LLM calls', () => {
+  const config = resolveLlmConfig({});
+
+  assert.equal(config.provider, 'deepseek');
+  assert.equal(config.model, '');
+  assert.equal(config.baseUrl, 'https://api.deepseek.com');
+  assert.equal(config.apiKeyEnv, 'DEEPSEEK_API_KEY');
+  assert.equal(config.enabled, false);
+});
+
+test('resolveLlmConfig keeps legacy Ollama options on the Ollama path', () => {
+  const config = resolveLlmConfig({
+    ollamaModel: 'qwen2.5:0.5b'
+  });
+
+  assert.equal(config.provider, 'ollama');
+  assert.equal(config.model, 'qwen2.5:0.5b');
+  assert.equal(config.baseUrl, 'http://127.0.0.1:11434');
 });
 
 test('resolveLlmConfig resolves DeepSeek defaults and disables batch inference', () => {

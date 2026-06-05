@@ -202,10 +202,10 @@ Minimal default parser and LLM config:
     "doclingUseVlm": false
   },
   "llm": {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "baseUrl": "https://api.openai.com/v1",
-    "apiKeyEnv": "OPENAI_API_KEY"
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "baseUrl": "https://api.deepseek.com",
+    "apiKeyEnv": "DEEPSEEK_API_KEY"
   }
 }
 ```
