@@ -8,6 +8,7 @@ import { getCorpusPaths } from '../src/storage/corpus-store.js';
 import {
   completeImportTask,
   createImportTask,
+  getImportPaths,
   loadImportTask,
   markImportTaskStage,
   updateImportTaskProgress,
@@ -861,6 +862,7 @@ test('import_workflow status can return a requested task id batch', async () => 
     assert.equal(payload.summary.pending, 1);
     assert.equal(payload.summary.remaining, 1);
     assert.equal(payload.queueSummary.total >= 2, true);
+    assert.equal(payload.queueSummary.source, 'requested-tasks');
 
     const stringPayload = await executeImportWorkflowTool({
       operation: 'progress',
@@ -871,6 +873,58 @@ test('import_workflow status can return a requested task id batch', async () => 
     assert.equal(stringPayload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
     assert.deepEqual(stringPayload.requestedTaskIds, [pendingTask.id, completedTask.id]);
     assert.deepEqual(stringPayload.tasks.map((task) => task.id), [pendingTask.id, completedTask.id]);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow status batch reads requested task ids without waiting for queue lock', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-status-batch-lock-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-status-batch-lock-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'status-batch-lock.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Lock\n\n## Abstract\n\nA status batch lock test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+
+    const { queueLockPath } = getImportPaths(rootPath);
+    await fs.mkdir(queueLockPath, { recursive: true });
+    await fs.writeFile(path.join(queueLockPath, 'owner.json'), `${JSON.stringify({
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString()
+    })}\n`, 'utf8');
+
+    const startedAt = Date.now();
+    const payload = await executeImportWorkflowTool({
+      operation: 'status',
+      corpus: rootPath,
+      taskIds: [task.id],
+      importQueueLockTimeoutMs: 25,
+      importQueueLockStaleMs: 60_000
+    });
+
+    assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.equal(payload.taskCount, 1);
+    assert.equal(payload.tasks[0].id, task.id);
+    assert.equal(payload.missingTaskIds.length, 0);
+    assert.equal(payload.queueSummary.source, 'requested-tasks');
+    assert.ok(Date.now() - startedAt < 1000);
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

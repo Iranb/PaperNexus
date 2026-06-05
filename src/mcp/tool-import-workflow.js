@@ -15,12 +15,14 @@ import {
 import { getImportWorkerCoverageSnapshot } from '../core/imports/worker.js';
 import { listImportSemanticEnrichmentJobs } from '../storage/import-semantic-store.js';
 import {
+  loadImportTask,
   tailImportTaskDagEvents,
   tailImportTaskEvents
 } from '../storage/import-store.js';
 import { createImportDagComparisonReport } from '../storage/import-dag-comparison.js';
 import { getDefaultRuntimeConfigRoot } from '../lib/config.js';
 import { ensureDir, readJson, writeJson } from '../lib/fs.js';
+import { collapseHomePath } from '../lib/server-paths.js';
 
 const IMPORT_WORKFLOW_ASYNC_JOB_CONTRACT_VERSION = 'papernexus-import-workflow-job-v1';
 const DEFAULT_ASYNC_WAIT_TIMEOUT_MS = 60 * 1000;
@@ -679,6 +681,60 @@ function hasBatchTaskStatusRequest(args = {}) {
   return Object.hasOwn(args, 'taskIds') || Object.hasOwn(args, 'task_ids');
 }
 
+const IMPORT_WORKFLOW_PORTABLE_PATH_FIELDS = new Set([
+  'rootPath',
+  'root_path',
+  'storedPath',
+  'stored_path',
+  'sourcesDir',
+  'sources_dir',
+  'remoteFile',
+  'remote_file',
+  'serverFilePath',
+  'server_file_path'
+]);
+
+const IMPORT_WORKFLOW_PORTABLE_PATH_LIST_FIELDS = new Set([
+  'inputPaths',
+  'changedSourceKeys'
+]);
+
+function presentImportWorkflowPortablePayload(value, options = {}, fieldName = '') {
+  if (options?.portablePaths !== true) return value;
+  if (Array.isArray(value)) {
+    if (IMPORT_WORKFLOW_PORTABLE_PATH_LIST_FIELDS.has(fieldName)) {
+      return value.map((item) => collapseHomePath(item));
+    }
+    return value.map((item) => presentImportWorkflowPortablePayload(item, options, fieldName));
+  }
+  if (!value || typeof value !== 'object') {
+    return IMPORT_WORKFLOW_PORTABLE_PATH_FIELDS.has(fieldName) && typeof value === 'string'
+      ? collapseHomePath(value)
+      : value;
+  }
+  const output = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    if (IMPORT_WORKFLOW_PORTABLE_PATH_FIELDS.has(key) && typeof entryValue === 'string') {
+      output[key] = collapseHomePath(entryValue);
+      continue;
+    }
+    if (IMPORT_WORKFLOW_PORTABLE_PATH_LIST_FIELDS.has(key) && Array.isArray(entryValue)) {
+      output[key] = entryValue.map((item) => collapseHomePath(item));
+      continue;
+    }
+    output[key] = presentImportWorkflowPortablePayload(entryValue, options, key);
+  }
+  return output;
+}
+
+function createRequestedTaskQueueSummary(tasks = []) {
+  return {
+    contractVersion: 'import-queue-progress-v1',
+    ...summarizeProgressTasks(tasks),
+    source: 'requested-tasks'
+  };
+}
+
 function getTaskAuthoritativeSync(task = {}) {
   const resultSync = task?.result?.authoritativeSync;
   if (resultSync && typeof resultSync === 'object' && !Array.isArray(resultSync)) {
@@ -1163,14 +1219,15 @@ async function hydrateImportTaskPayloadAuthoritativeSync(payload = {}, rootPath 
 }
 
 async function importTaskBatchPayload(candidate, taskIds = [], operation = 'status', options = {}) {
-  const payload = await listImportTasksPayload(candidate, options);
-  const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, payload, options);
-  const taskById = new Map((payload.tasks || []).map((task) => [String(task?.id || '').trim(), task]));
+  const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, {}, options);
   const tasks = [];
   const missingTaskIds = [];
 
-  for (const taskId of taskIds) {
-    const task = taskById.get(taskId);
+  const loadedTasks = await Promise.all(taskIds.map(async (taskId) => ({
+    taskId,
+    task: await loadImportTask(internalRootPath, taskId)
+  })));
+  for (const { taskId, task } of loadedTasks) {
     if (task) {
       tasks.push(task);
     } else {
@@ -1179,17 +1236,18 @@ async function importTaskBatchPayload(candidate, taskIds = [], operation = 'stat
   }
 
   const hydratedTasks = await hydrateTasksAuthoritativeSync(internalRootPath, tasks);
+  const presentedTasks = presentImportWorkflowPortablePayload(hydratedTasks, options, 'tasks');
   return {
     contractVersion: 'papernexus-import-workflow-task-batch-v1',
-    rootPath: payload.rootPath,
+    rootPath: presentImportWorkflowPortablePayload(internalRootPath, options, 'rootPath'),
     operation,
     requestedTaskIds: taskIds,
     missingTaskIds,
-    taskCount: hydratedTasks.length,
-    tasks: hydratedTasks,
+    taskCount: presentedTasks.length,
+    tasks: presentedTasks,
     summary: summarizeProgressTasks(hydratedTasks),
-    queueSummary: payload.summary,
-    generatedAt: payload.generatedAt || new Date().toISOString()
+    queueSummary: createRequestedTaskQueueSummary(hydratedTasks),
+    generatedAt: new Date().toISOString()
   };
 }
 
