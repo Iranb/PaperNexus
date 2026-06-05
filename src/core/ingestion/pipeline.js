@@ -2661,6 +2661,19 @@ function getLongContextFallbackReason(result = null, summary = null, options = {
   return null;
 }
 
+const LONG_CONTEXT_FALLBACK_REASONS_ALLOWING_PAPER_LEVEL_RELATIONS = new Set([
+  'empty-response',
+  'missing-result',
+  'schema-validation-failed',
+  'semantic-quality-guard'
+]);
+
+function shouldUsePaperLevelRelationAfterLongContextFallback(record = null) {
+  if (!record?.sourceState?.longContextFallbackRequired) return false;
+  const reason = String(record.sourceState.longContextFallbackReason || '').trim();
+  return LONG_CONTEXT_FALLBACK_REASONS_ALLOWING_PAPER_LEVEL_RELATIONS.has(reason);
+}
+
 function createLongContextValidationDetails(result = null, summary = null, reason = null) {
   if (!reason) return null;
   return {
@@ -4559,8 +4572,11 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
     }
   }
 
-  const shouldUsePaperLevelFallback = (record) => (
-    !record.sourceState.longContextFallbackRequired
+  const shouldUsePaperLevelFallback = (record, phase = 'semantic') => (
+    (
+      !record.sourceState.longContextFallbackRequired
+      || (phase === 'relation' && shouldUsePaperLevelRelationAfterLongContextFallback(record))
+    )
     && (!useChunkPipeline
     || !record.sourceState.chunkPipelineProcessed
     || record.sourceState.chunkPipelineFallbackRequired)
@@ -4568,7 +4584,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   const initialSemanticPending = records.filter((record) => (
     record.sourceState.llmRefreshState.semanticRequired
-    && shouldUsePaperLevelFallback(record)
+    && shouldUsePaperLevelFallback(record, 'semantic')
   ));
   const semanticPending = [];
   for (const record of initialSemanticPending) {
@@ -4578,7 +4594,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   const relationPendingCount = records.filter((record) => (
     record.sourceState.llmRefreshState.relationRequired
-    && shouldUsePaperLevelFallback(record)
+    && shouldUsePaperLevelFallback(record, 'relation')
   )).length;
   const totalLlmUnits = semanticPending.length + relationPendingCount;
   const reportLlmBatchComplete = (phase, event = {}) => {
@@ -4839,7 +4855,20 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
         llmChunkPipeline: true,
         longContextFallbackActive: true
       };
-      await runChunkLlmPipelineForRecords(rootPath, fallbackRecords, chunkFallbackOptions, jobState);
+      const semanticOnlyFallbackRecords = fallbackRecords
+        .filter((record) => shouldUsePaperLevelRelationAfterLongContextFallback(record));
+      const fullChunkFallbackRecords = fallbackRecords
+        .filter((record) => !shouldUsePaperLevelRelationAfterLongContextFallback(record));
+      if (semanticOnlyFallbackRecords.length) {
+        await runChunkLlmPipelineForRecords(rootPath, semanticOnlyFallbackRecords, {
+          ...chunkFallbackOptions,
+          llmRelations: false,
+          ollamaRelations: false
+        }, jobState);
+      }
+      if (fullChunkFallbackRecords.length) {
+        await runChunkLlmPipelineForRecords(rootPath, fullChunkFallbackRecords, chunkFallbackOptions, jobState);
+      }
       for (const record of fallbackRecords) {
         const fallbackReason = record.sourceState.longContextFallbackReason || 'request-failed';
         record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record, {
@@ -4866,7 +4895,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       continue;
     }
     record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
-    if (record.sourceState.llmRefreshState.relationRequired && shouldUsePaperLevelFallback(record)) {
+    if (record.sourceState.llmRefreshState.relationRequired && shouldUsePaperLevelFallback(record, 'relation')) {
       await ensureParsedPaperForLlmRecord(record);
       relationPending.push(record);
     }

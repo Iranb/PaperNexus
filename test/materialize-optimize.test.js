@@ -1624,6 +1624,186 @@ The chunk extractor can still recover a grounded problem from this method sectio
   }
 });
 
+test('llmOptimizeCorpus uses paper-level relations after semantic-only long-context fallback', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-relation-after-fallback-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-relation-after-fallback-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+  let paperSemanticPromptCount = 0;
+  let chunkSemanticPromptCount = 0;
+  let paperRelationPromptCount = 0;
+  let chunkRelationPromptCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'relation-after-fallback.md'), `# Relation After Semantic Fallback
+
+## Abstract
+
+This paper should recover semantic objects through chunks after a missing paper-level response.
+
+## Method
+
+The recovered semantic object should still allow paper-level relation extraction without chunk relation fanout.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+      const isRelationPrompt = prompt.includes('Key relations to capture') || prompt.includes('Allowed relation types:');
+
+      if (isChunkPrompt && isRelationPrompt) {
+        chunkRelationPromptCount += 1;
+      } else if (isChunkPrompt) {
+        chunkSemanticPromptCount += 1;
+      } else if (isRelationPrompt) {
+        paperRelationPromptCount += 1;
+      } else {
+        paperSemanticPromptCount += 1;
+      }
+
+      return {
+        ok: true,
+        async json() {
+          if (isChunkPrompt && isRelationPrompt) {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      chunks: papers.map((paper) => ({
+                        id: paper.id,
+                        benchmarks: [],
+                        findings: [],
+                        researchGoals: [],
+                        relations: []
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+
+          if (isChunkPrompt) {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      chunks: papers.map((paper) => ({
+                        id: paper.id,
+                        problems: [{
+                          name: 'semantic-only fallback recovered problem',
+                          type: 'Problem',
+                          evidenceText: 'The recovered semantic object should still allow paper-level relation extraction.',
+                          sectionHeading: paper.sectionHeading || 'Method',
+                          sectionRole: paper.sectionRole || 'method',
+                          confidence: 0.92
+                        }]
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+
+          if (isRelationPrompt) {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      papers: papers.map((paper) => ({
+                        id: paper.id,
+                        findings: [{
+                          name: 'paper-level relation after semantic fallback',
+                          type: 'Finding',
+                          evidenceText: 'Paper-level relation extraction should run after semantic fallback.',
+                          sectionHeading: 'Method',
+                          sectionRole: 'method',
+                          confidence: 0.91
+                        }],
+                        benchmarks: [],
+                        researchGoals: [],
+                        relations: []
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({ papers: [] })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-relation-after-fallback-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-relation-after-fallback-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      identifierResolutionEnabled: false
+    });
+
+    assert.equal(paperSemanticPromptCount, 1);
+    assert.ok(chunkSemanticPromptCount >= 1);
+    assert.equal(paperRelationPromptCount, 1);
+    assert.equal(chunkRelationPromptCount, 0);
+    assert.ok(prompts.some((prompt) => prompt.includes('paper chunks')));
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+    assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'missing-result');
+    assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v1');
+    assert.ok(snapshot.findings.some((finding) => finding.name === 'paper-level relation after semantic fallback'));
+    assert.equal(snapshot.llm.chunkPipeline.relationChunkCount || 0, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus records schema-validation fallback for malformed long-context paper fields', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-corpus-'));
