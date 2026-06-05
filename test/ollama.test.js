@@ -1889,6 +1889,85 @@ test('inferPaperSemanticObjectsBatch retries malformed batch output with smaller
   assert.equal(batchEvents[0].completed, 4);
 });
 
+test('inferPaperSemanticObjectsBatch retries empty provider batch output with smaller batches', async () => {
+  let fetchCount = 0;
+  const retryEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    if (fetchCount === 1) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: ''
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  papers: papers.map((paper) => ({
+                    id: paper.id,
+                    problems: [],
+                    methods: [],
+                    claims: [],
+                    findings: []
+                  }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'paper-empty-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-empty-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} }
+  ];
+
+  const results = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmBatchSize: 2,
+    llmBatchFailureSplitRetryCount: 2,
+    onBatchRetry(event) {
+      retryEvents.push(event);
+    }
+  });
+
+  assert.equal(fetchCount, 3);
+  assert.equal(results.length, 2);
+  assert.equal(results.every((result) => result.participated), true);
+  assert.equal(retryEvents.length, 1);
+  assert.equal(retryEvents[0].batchSize, 2);
+  assert.equal(retryEvents[0].retryBatchSize, 1);
+  assert.match(retryEvents[0].error, /empty content/i);
+});
+
 test('inferPaperResearchSemantics supports OpenAI chat-completions style responses', async () => {
   let request;
   globalThis.fetch = async (_url, options) => {

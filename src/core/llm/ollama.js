@@ -1723,7 +1723,7 @@ function partitionEntriesByPromptBudget(entries = [], promptBuilder, options = {
 
 function isBatchOutputParseError(error) {
   if (Number(error?.statusCode || 0)) return false;
-  return /(?:valid json|json parse|unexpected token|unexpected end)/i.test(String(error?.message || ''));
+  return /(?:valid json|json parse|unexpected token|unexpected end|empty content|empty response)/i.test(String(error?.message || ''));
 }
 
 function shouldRetryBatchBySplitting(error, batch = [], retryCount = 0) {
@@ -2448,7 +2448,7 @@ async function requestLlmGenerate(config, prompt) {
 function parseJsonText(text) {
   const normalized = String(text || '').trim();
   if (!normalized) {
-    return {};
+    throw new Error('LLM response returned empty content.');
   }
 
   const collectJsonCandidates = (value) => {

@@ -1885,10 +1885,19 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
       : (snapshotChunkPipelineEnabled && !acceptedLongContextFallback));
   const semanticMissingCatalystMetadata = semanticConfiguredNow
     && !hasCatalystMetadataContract(snapshot);
+  const semanticRetryableReasons = new Set([
+    'request-failed',
+    'llm-unconfigured',
+    'empty-response',
+    'missing-result',
+    'invalid-json',
+    'provider-network',
+    'provider-timeout'
+  ]);
   const semanticRetryableFailure = semanticConfiguredNow
     && semanticRetryCount < maxRetries
     && !semanticSummary.participated
-    && ['request-failed', 'llm-unconfigured'].includes(semanticSummary.reason);
+    && semanticRetryableReasons.has(semanticSummary.reason);
   const semanticRateLimitExpired = semanticConfiguredNow
     && !rateLimitCooldownActive
     && !semanticSummary.participated
