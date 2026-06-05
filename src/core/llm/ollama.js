@@ -248,6 +248,98 @@ function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function hasOwnValue(raw, key) {
+  return Object.hasOwn(raw || {}, key) && raw[key] != null;
+}
+
+function copyArrayAliasFields(raw, aliasMap) {
+  if (!isPlainObject(raw)) return raw;
+  let normalized = raw;
+  const ensureCopy = () => {
+    if (normalized === raw) normalized = { ...raw };
+    return normalized;
+  };
+
+  for (const [canonicalKey, aliases] of Object.entries(aliasMap)) {
+    if (hasOwnValue(raw, canonicalKey)) continue;
+    for (const alias of aliases) {
+      if (!Array.isArray(raw[alias])) continue;
+      ensureCopy()[canonicalKey] = raw[alias];
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+const SEMANTIC_PAPER_ARRAY_FIELD_ALIASES = {
+  problems: ['researchProblems', 'research_problems'],
+  researchGoals: ['research_goals', 'researchObjectives', 'research_objectives', 'objectives', 'goals'],
+  researchQuestions: ['research_questions', 'questions'],
+  openChallenges: ['open_challenges', 'challenges'],
+  futureDirections: ['future_directions', 'futureWork', 'future_work'],
+  evidences: ['evidence', 'evidenceItems', 'evidence_items', 'supportingEvidence', 'supporting_evidence'],
+  fieldCandidates: ['field_candidates'],
+  domainTags: ['domain_tags'],
+  abstractMechanisms: ['abstract_mechanisms'],
+  abstractMechanismObjects: ['abstract_mechanism_objects'],
+  mechanismHints: ['mechanism_hints'],
+  ideaFragments: ['idea_fragments'],
+  metrics: ['evaluationMetrics', 'evaluation_metrics']
+};
+
+const RELATION_PAPER_ARRAY_FIELD_ALIASES = {
+  researchGoals: SEMANTIC_PAPER_ARRAY_FIELD_ALIASES.researchGoals,
+  relations: ['relationships', 'semanticRelations', 'semantic_relations', 'edges']
+};
+
+const RELATION_RECORD_STRING_ALIASES = {
+  sourceName: ['fromName', 'from', 'source', 'source_node', 'sourceNode'],
+  targetName: ['toName', 'to', 'target', 'target_node', 'targetNode'],
+  sourceType: ['fromType', 'source_type', 'sourceNodeType', 'source_node_type'],
+  targetType: ['toType', 'target_type', 'targetNodeType', 'target_node_type'],
+  type: ['relationType', 'relation_type', 'relationshipType', 'relationship_type', 'edgeType', 'edge_type'],
+  evidenceText: ['evidence_text', 'evidence']
+};
+
+function copyStringAliasFields(raw, aliasMap) {
+  if (!isPlainObject(raw)) return raw;
+  let normalized = raw;
+  const ensureCopy = () => {
+    if (normalized === raw) normalized = { ...raw };
+    return normalized;
+  };
+
+  for (const [canonicalKey, aliases] of Object.entries(aliasMap)) {
+    if (hasOwnValue(raw, canonicalKey)) continue;
+    for (const alias of aliases) {
+      if (typeof raw[alias] !== 'string') continue;
+      const value = cleanText(raw[alias], 280);
+      if (!value) continue;
+      ensureCopy()[canonicalKey] = value;
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeSemanticPaperOutputShape(rawPaper) {
+  return copyArrayAliasFields(rawPaper, SEMANTIC_PAPER_ARRAY_FIELD_ALIASES);
+}
+
+function normalizeRelationPaperOutputShape(rawPaper) {
+  const normalized = copyArrayAliasFields(rawPaper, RELATION_PAPER_ARRAY_FIELD_ALIASES);
+  if (!isPlainObject(normalized) || !Array.isArray(normalized.relations)) return normalized;
+
+  let copied = normalized;
+  const relations = normalized.relations.map((relation) => copyStringAliasFields(relation, RELATION_RECORD_STRING_ALIASES));
+  if (relations.some((relation, index) => relation !== normalized.relations[index])) {
+    copied = { ...normalized, relations };
+  }
+  return copied;
+}
+
 function validateOptionalArrayField(raw, key, options = {}) {
   if (!Object.hasOwn(raw || {}, key) || raw[key] == null) return null;
   if (!Array.isArray(raw[key])) return `Expected "${key}" to be an array.`;
@@ -1392,6 +1484,7 @@ function createSemanticObjectInferenceResult({
     methods,
     claims,
     findings,
+    researchGoals,
     limitations,
     assumptions,
     evidences,
@@ -2735,7 +2828,8 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           continue;
         }
 
-        const schemaError = validateSemanticPaperSchema(rawPaper);
+        const normalizedRawPaper = normalizeSemanticPaperOutputShape(rawPaper);
+        const schemaError = validateSemanticPaperSchema(normalizedRawPaper);
         if (schemaError) {
           results[batchEntry.__batchIndex] = createSemanticObjectInferenceResult({
             provider: resultProvider,
@@ -2756,23 +2850,23 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           attempted: true,
           participated: true,
           reason: null,
-          ...sanitizeSemanticMetadata(rawPaper),
-          problems: sanitizeEntityGroup(rawPaper, 'problems', NODE_TYPES.PROBLEM),
-          methods: sanitizeEntityGroup(rawPaper, 'methods', NODE_TYPES.METHOD),
-          claims: sanitizeEntityGroup(rawPaper, 'claims', NODE_TYPES.CLAIM),
-          findings: sanitizeEntityGroup(rawPaper, 'findings', NODE_TYPES.FINDING),
-          researchGoals: sanitizeEntityGroup(rawPaper, 'researchGoals', NODE_TYPES.RESEARCH_GOAL),
-          limitations: sanitizeEntityGroup(rawPaper, 'limitations', NODE_TYPES.LIMITATION),
-          assumptions: sanitizeEntityGroup(rawPaper, 'assumptions', NODE_TYPES.ASSUMPTION),
-          evidences: sanitizeEntityGroup(rawPaper, 'evidences', NODE_TYPES.EVIDENCE),
-          futureDirections: sanitizeEntityGroup(rawPaper, 'futureDirections', NODE_TYPES.FUTURE_DIRECTION),
-          benchmarks: sanitizeEntityGroup(rawPaper, 'benchmarks', NODE_TYPES.BENCHMARK),
-          datasets: sanitizeEntityGroup(rawPaper, 'datasets', NODE_TYPES.DATASET),
-          metrics: sanitizeEntityGroup(rawPaper, 'metrics', NODE_TYPES.METRIC),
-          researchQuestions: sanitizeResearchQuestionGroup(rawPaper),
-          openChallenges: sanitizeChallengeGroup(rawPaper),
-          takeaways: sanitizeTakeawayGroup(rawPaper),
-          ideaFragments: sanitizeIdeaFragmentGroup(rawPaper),
+          ...sanitizeSemanticMetadata(normalizedRawPaper),
+          problems: sanitizeEntityGroup(normalizedRawPaper, 'problems', NODE_TYPES.PROBLEM),
+          methods: sanitizeEntityGroup(normalizedRawPaper, 'methods', NODE_TYPES.METHOD),
+          claims: sanitizeEntityGroup(normalizedRawPaper, 'claims', NODE_TYPES.CLAIM),
+          findings: sanitizeEntityGroup(normalizedRawPaper, 'findings', NODE_TYPES.FINDING),
+          researchGoals: sanitizeEntityGroup(normalizedRawPaper, 'researchGoals', NODE_TYPES.RESEARCH_GOAL),
+          limitations: sanitizeEntityGroup(normalizedRawPaper, 'limitations', NODE_TYPES.LIMITATION),
+          assumptions: sanitizeEntityGroup(normalizedRawPaper, 'assumptions', NODE_TYPES.ASSUMPTION),
+          evidences: sanitizeEntityGroup(normalizedRawPaper, 'evidences', NODE_TYPES.EVIDENCE),
+          futureDirections: sanitizeEntityGroup(normalizedRawPaper, 'futureDirections', NODE_TYPES.FUTURE_DIRECTION),
+          benchmarks: sanitizeEntityGroup(normalizedRawPaper, 'benchmarks', NODE_TYPES.BENCHMARK),
+          datasets: sanitizeEntityGroup(normalizedRawPaper, 'datasets', NODE_TYPES.DATASET),
+          metrics: sanitizeEntityGroup(normalizedRawPaper, 'metrics', NODE_TYPES.METRIC),
+          researchQuestions: sanitizeResearchQuestionGroup(normalizedRawPaper),
+          openChallenges: sanitizeChallengeGroup(normalizedRawPaper),
+          takeaways: sanitizeTakeawayGroup(normalizedRawPaper),
+          ideaFragments: sanitizeIdeaFragmentGroup(normalizedRawPaper),
           error: null
         });
       }
@@ -3985,7 +4079,8 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
           continue;
         }
 
-        const schemaError = validateRelationPaperSchema(rawPaper);
+        const normalizedRawPaper = normalizeRelationPaperOutputShape(rawPaper);
+        const schemaError = validateRelationPaperSchema(normalizedRawPaper);
         if (schemaError) {
           results[batchEntry.__batchIndex] = {
             provider: resultProvider,
@@ -4001,16 +4096,16 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
 
         results[batchEntry.__batchIndex] = {
           provider: resultProvider,
-          benchmarks: (rawPaper.benchmarks || [])
+          benchmarks: (normalizedRawPaper.benchmarks || [])
             .map((record) => sanitizeEntityRecord(record, NODE_TYPES.BENCHMARK))
             .filter(Boolean),
-          findings: (rawPaper.findings || [])
+          findings: (normalizedRawPaper.findings || [])
             .map((record) => sanitizeEntityRecord(record, NODE_TYPES.FINDING))
             .filter(Boolean),
-          researchGoals: (rawPaper.researchGoals || [])
+          researchGoals: (normalizedRawPaper.researchGoals || [])
             .map((record) => sanitizeEntityRecord(record, NODE_TYPES.RESEARCH_GOAL))
             .filter(Boolean),
-          relations: (rawPaper.relations || [])
+          relations: (normalizedRawPaper.relations || [])
             .map(sanitizeRelationRecord)
             .filter(Boolean),
           error: null

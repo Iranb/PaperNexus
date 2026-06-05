@@ -1280,6 +1280,127 @@ test('batch LLM inference fails closed on malformed per-paper schema', async () 
   assert.equal(relationResults[1].error, null);
 });
 
+test('batch LLM inference normalizes safe output aliases before strict schema validation', async () => {
+  const entries = [
+    { id: 'paper-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} }
+  ];
+
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                papers: papers.map((paper) => ({
+                  id: paper.id,
+                  research_goals: [{
+                    name: 'quality-preserving fast ingestion',
+                    evidenceText: 'The fast ingestion path keeps graph-visible quality checks.'
+                  }],
+                  future_work: [{
+                    text: 'background semantic enrichment should avoid unnecessary chunk fallback',
+                    evidenceText: 'Long-context extraction should complete before chunk fallback.'
+                  }],
+                  evidence: [{
+                    text: 'worker telemetry shows fallback multiplies provider calls',
+                    evidenceText: 'Telemetry reports long-context fallback followed by chunk calls.'
+                  }],
+                  open_challenges: [{
+                    name: 'semantic throughput bottleneck',
+                    domainSpecificText: 'LLM optimization is the remaining throughput bottleneck.'
+                  }],
+                  field_candidates: ['Information Retrieval'],
+                  domain_tags: ['Paper Graphs']
+                }))
+              })
+            }
+          }]
+        };
+      }
+    };
+  };
+
+  const semanticResults = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmBatchSize: 1
+  });
+
+  assert.equal(semanticResults[0].participated, true);
+  assert.equal(semanticResults[0].error, null);
+  assert.equal(semanticResults[0].researchGoals[0].name, 'quality-preserving fast ingestion');
+  assert.equal(semanticResults[0].futureDirections[0].name, 'background semantic enrichment should avoid unnecessary chunk fallback');
+  assert.equal(semanticResults[0].evidences[0].name, 'worker telemetry shows fallback multiplies provider calls');
+  assert.equal(semanticResults[0].openChallenges[0].name, 'semantic throughput bottleneck');
+  assert.deepEqual(semanticResults[0].fieldCandidates, ['Information Retrieval']);
+  assert.deepEqual(semanticResults[0].domainTags, ['Paper Graphs']);
+
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                papers: papers.map((paper) => ({
+                  id: paper.id,
+                  research_goals: [{
+                    name: 'keep graph quality while ingesting faster',
+                    evidenceText: 'Graph quality remains a hard constraint.'
+                  }],
+                  relationships: [{
+                    from: 'fast ingestion path',
+                    source_type: 'Method',
+                    to: 'slow graph visibility',
+                    target_type: 'Problem',
+                    relationType: 'APPLIES_TO',
+                    evidence: 'The fast path targets the graph visibility bottleneck.'
+                  }]
+                }))
+              })
+            }
+          }]
+        };
+      }
+    };
+  };
+
+  const relationResults = await inferPaperResearchSemanticsBatch(entries, {
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmRelations: true,
+    llmBatchSize: 1
+  });
+
+  assert.equal(relationResults[0].error, null);
+  assert.equal(relationResults[0].researchGoals[0].name, 'keep graph quality while ingesting faster');
+  assert.equal(relationResults[0].relations.length, 1);
+  assert.equal(relationResults[0].relations[0].sourceName, 'fast ingestion path');
+  assert.equal(relationResults[0].relations[0].targetName, 'slow graph visibility');
+  assert.equal(relationResults[0].relations[0].type, 'APPLIES_TO');
+  assert.equal(relationResults[0].relations[0].evidenceText, 'The fast path targets the graph visibility bottleneck.');
+});
+
 test('inferPaperSemanticObjectsBatch forces DeepSeek requests to single-item batches', async () => {
   const batchEvents = [];
   const requestPaperCounts = [];
