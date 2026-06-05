@@ -789,11 +789,60 @@ function inferLlmBatchEventReason(event = {}) {
   return '';
 }
 
+function expandLlmBatchEventFailureReasons(event = {}) {
+  const reasons = [];
+  const appendReason = (reason, count = 1) => {
+    const normalized = String(reason || '').trim();
+    if (!normalized) return;
+    const parsedCount = Number(count);
+    const repeatCount = Number.isFinite(parsedCount) ? Math.max(0, Math.floor(parsedCount)) : 1;
+    if (repeatCount <= 0) return;
+    for (let index = 0; index < repeatCount; index += 1) {
+      reasons.push(normalized);
+    }
+  };
+  const collect = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item);
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const [reason, count] of Object.entries(value)) {
+        appendReason(reason, count);
+      }
+      return;
+    }
+    appendReason(value);
+  };
+
+  collect(event.failureReasons);
+  collect(event.failureReasonCounts);
+  collect(event.failure_reason_counts);
+  collect(event.failureReasonList);
+  collect(event.failure_reason_list);
+
+  const failureCount = Number(event.failureCount || event.failedCount || 0) || 0;
+  if (!reasons.length && failureCount > 0) {
+    appendReason(inferLlmBatchEventReason(event) || 'failed', failureCount);
+  }
+  return reasons;
+}
+
+function summarizeLlmBatchEventFailureReasons(events = []) {
+  return createCountMap(events.flatMap((event) => (
+    event.failureReasons?.length
+      ? event.failureReasons
+      : [event.reason || event.status || 'failed']
+  )));
+}
+
 function createLlmBatchMetricsCollector() {
   const completedEvents = [];
   const retryEvents = [];
   return {
     recordComplete(event = {}) {
+      const failureReasons = expandLlmBatchEventFailureReasons(event);
       completedEvents.push({
         phase: String(event.phase || '').trim() || null,
         batchNumber: Number(event.batchNumber || 0) || null,
@@ -807,7 +856,8 @@ function createLlmBatchMetricsCollector() {
         promptMaxChars: Number(event.promptMaxChars || 0) || 0,
         durationMs: roundMs(event.durationMs),
         llmBatchConcurrency: Number(event.llmBatchConcurrency || 0) || 0,
-        failureCount: Number(event.failureCount || event.failedCount || 0) || 0,
+        failureCount: Number(event.failureCount || event.failedCount || 0) || failureReasons.length || 0,
+        failureReasons,
         skipped: Boolean(event.skipped),
         cached: Boolean(event.cached),
         skippedProviderCall: Boolean(event.skippedProviderCall),
@@ -857,7 +907,7 @@ function createLlmBatchMetricsCollector() {
           skippedProviderCallCount: phaseEvents.filter((event) => event.skippedProviderCall).length,
           rateLimitSkippedBatchCount: phaseRateLimitedEvents.length,
           failedBatchCount: phaseFailureEvents.length,
-          failureReasons: createCountMap(phaseFailureEvents.map((event) => event.reason || event.status || 'failed')),
+          failureReasons: summarizeLlmBatchEventFailureReasons(phaseFailureEvents),
           rateLimitCooldowns: summarizeRateLimitCooldowns(phaseRateLimitedEvents),
           durationMs: summarizeNumericValues(phaseDurations),
           promptChars: summarizeNumericValues(phasePromptChars),
@@ -881,7 +931,7 @@ function createLlmBatchMetricsCollector() {
         durationMs: summarizeNumericValues(durationMs),
         providerDurationMs: summarizeNumericValues(providerDurationMs),
         maxConcurrency: concurrencyValues.length ? Math.max(...concurrencyValues) : null,
-        failureReasons: createCountMap(failedEvents.map((event) => event.reason || event.status || 'failed')),
+        failureReasons: summarizeLlmBatchEventFailureReasons(failedEvents),
         retryReasons: createCountMap(retryEvents.map((event) => event.error || 'retry')),
         rateLimitCooldowns: summarizeRateLimitCooldowns(rateLimitedEvents),
         byPhase: phaseSummaries,
@@ -1013,13 +1063,14 @@ function createLlmProgressDiagnosticsCollector(context = {}) {
     const phaseSummary = phaseState(phase);
     const status = inferLlmBatchEventStatus(event);
     const reason = inferLlmBatchEventReason(event) || status;
+    const failureReasons = expandLlmBatchEventFailureReasons(event);
     const completed = Number(event.completed || 0) || 0;
     const total = Number(event.total || 0) || 0;
     const concurrency = Number(event.llmBatchConcurrency || 0) || 0;
     const batchNumber = Number(event.batchNumber || 0) || null;
     const totalBatches = Number(event.totalBatches || 0) || null;
     const rateLimited = status === 'rate-limited' || Boolean(event.rateLimitCooldownUntil || event.skippedProviderCall);
-    const failed = status === 'failed' || Number(event.failureCount || event.failedCount || 0) > 0;
+    const failed = status === 'failed' || Number(event.failureCount || event.failedCount || 0) > 0 || failureReasons.length > 0;
 
     state.completedBatchCount += 1;
     phaseSummary.completedBatchCount += 1;
@@ -1044,8 +1095,11 @@ function createLlmProgressDiagnosticsCollector(context = {}) {
     if (failed) {
       state.failedBatchCount += 1;
       phaseSummary.failedBatchCount += 1;
-      incrementCountMap(state.failureReasons, reason || 'failed');
-      incrementCountMap(phaseSummary.failureReasons, reason || 'failed');
+      const reasons = failureReasons.length ? failureReasons : [reason || 'failed'];
+      for (const failureReason of reasons) {
+        incrementCountMap(state.failureReasons, failureReason);
+        incrementCountMap(phaseSummary.failureReasons, failureReason);
+      }
     }
     if (completed > 0) {
       state.completed = Math.max(state.completed, completed);
@@ -1078,6 +1132,7 @@ function createLlmProgressDiagnosticsCollector(context = {}) {
       durationMs: roundMs(event.durationMs),
       promptChars: Number(event.promptChars || 0) || 0,
       promptMaxChars: Number(event.promptMaxChars || 0) || 0,
+      ...(failureReasons.length ? { failureReasons: [...failureReasons] } : {}),
       rateLimitCooldownUntil: event.rateLimitCooldownUntil || null
     };
     return snapshot();

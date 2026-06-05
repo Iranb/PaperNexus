@@ -2505,6 +2505,35 @@ function sanitizeNodeCheckRecord(record, fallbackId = '', fallbackName = '') {
   };
 }
 
+function classifyLlmInferenceFailureReason(result = {}) {
+  const explicit = String(result?.reason || '').trim();
+  if (explicit) return explicit;
+  const errorText = String(result?.error || '').toLowerCase();
+  if (!errorText) return 'request-failed';
+  if (errorText.includes('missing batch') || errorText.includes('missing split-retry')) {
+    return 'missing-result';
+  }
+  if (errorText.includes('schema') || errorText.includes('expected "') || errorText.includes('expected ')) {
+    return 'schema-validation-failed';
+  }
+  if (errorText.includes('timed out') || errorText.includes('timeout') || errorText.includes('aborterror') || errorText.includes('aborted')) {
+    return 'timeout';
+  }
+  if (errorText.includes('invalid json') || errorText.includes('not valid json') || errorText.includes('json parse') || errorText.includes('unexpected token')) {
+    return 'invalid-json';
+  }
+  return 'request-failed';
+}
+
+function summarizeLlmInferenceFailureReasons(results = []) {
+  const counts = {};
+  for (const result of Array.isArray(results) ? results : []) {
+    const reason = classifyLlmInferenceFailureReason(result);
+    counts[reason] = (counts[reason] || 0) + 1;
+  }
+  return counts;
+}
+
 export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, options = {}) {
   const plan = resolveSemanticExtractionPlan(options);
   if (!plan.shouldAttempt) {
@@ -2848,6 +2877,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
       ));
       const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      const failureReasons = summarizeLlmInferenceFailureReasons(failedResults);
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
         batchId,
@@ -2872,6 +2902,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
+          failureReasons,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
         });
       }
@@ -2886,6 +2917,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
         promptMaxChars,
         durationMs,
         failureCount: failedResults.length,
+        failureReasons,
         rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }
@@ -3320,6 +3352,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
       ));
       const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      const failureReasons = summarizeLlmInferenceFailureReasons(failedResults);
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
         batchId,
@@ -3344,6 +3377,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
           durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
+          failureReasons,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
         });
       }
@@ -3358,6 +3392,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
         promptMaxChars,
         durationMs,
         failureCount: failedResults.length,
+        failureReasons,
         rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }
@@ -3686,6 +3721,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
       ));
       const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      const failureReasons = summarizeLlmInferenceFailureReasons(failedResults);
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
         batchId,
@@ -3710,6 +3746,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
           durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
+          failureReasons,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
         });
       }
@@ -3724,6 +3761,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         promptMaxChars,
         durationMs,
         failureCount: failedResults.length,
+        failureReasons,
         rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }
@@ -4067,6 +4105,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
       ));
       const durationMs = Date.now() - batchStartedAt;
       const status = failedResults.length ? 'completed_with_failures' : 'completed';
+      const failureReasons = summarizeLlmInferenceFailureReasons(failedResults);
       await appendLlmBatchLedger(ledger, 'llm-results.jsonl', {
         status,
         batchId,
@@ -4091,6 +4130,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
           durationMs,
           entryIds: batch.map((entry) => entry.id),
           failedCount: failedResults.length,
+          failureReasons,
           errors: failedResults.map((result) => result?.error || result?.reason || 'request-failed').slice(0, 20)
         });
       }
@@ -4105,6 +4145,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
         promptMaxChars,
         durationMs,
         failureCount: failedResults.length,
+        failureReasons,
         rateLimitCooldownUntil: batchResults.find((result) => result?.rateLimitCooldownUntil)?.rateLimitCooldownUntil || null
       });
     }

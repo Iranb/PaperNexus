@@ -532,7 +532,11 @@ test('import worker summarizes LLM batch latency and rate-limit tuning metrics',
     llmBatchConcurrency: 2,
     skippedProviderCall: true,
     rateLimitCooldownUntil: new Date(Date.now() + 60_000).toISOString(),
-    failureCount: 1
+    failureCount: 2,
+    failureReasons: {
+      'schema-validation-failed': 1,
+      'missing-result': 1
+    }
   });
   collector.recordRetry({
     phase: 'semantic-extraction',
@@ -558,12 +562,14 @@ test('import worker summarizes LLM batch latency and rate-limit tuning metrics',
   assert.equal(summary.providerDurationMs.count, 1);
   assert.equal(summary.providerDurationMs.total, 101.4);
   assert.equal(summary.rateLimitCooldowns.count, 1);
-  assert.equal(summary.failureReasons['rate-limited'], 1);
+  assert.equal(summary.failureReasons['schema-validation-failed'], 1);
+  assert.equal(summary.failureReasons['missing-result'], 1);
   assert.equal(summary.retryReasons['schema failure'], 1);
   assert.equal(summary.byPhase['semantic-extraction'].cachedBatchCount, 1);
   assert.equal(summary.byPhase['semantic-extraction'].durationMs.p50, 0);
   assert.equal(summary.byPhase['relation-extraction'].rateLimitSkippedBatchCount, 1);
-  assert.equal(summary.byPhase['relation-extraction'].failureReasons['rate-limited'], 1);
+  assert.equal(summary.byPhase['relation-extraction'].failureReasons['schema-validation-failed'], 1);
+  assert.equal(summary.byPhase['relation-extraction'].failureReasons['missing-result'], 1);
 });
 
 test('import worker builds pollable LLM optimize progress diagnostics', async () => {
@@ -612,7 +618,12 @@ test('import worker builds pollable LLM optimize progress diagnostics', async ()
     batchSize: 1,
     skippedProviderCall: true,
     rateLimitCooldownUntil: new Date(Date.now() + 60_000).toISOString(),
-    llmBatchConcurrency: 2
+    llmBatchConcurrency: 2,
+    failureCount: 2,
+    failureReasons: {
+      'schema-validation-failed': 1,
+      timeout: 1
+    }
   });
   const completed = collector.snapshot({
     status: 'completed',
@@ -637,7 +648,13 @@ test('import worker builds pollable LLM optimize progress diagnostics', async ()
   assert.equal(retry.phases['semantic-extraction'].retryReasons['provider-retry'], 1);
   assert.equal(rateLimited.rateLimitSkippedBatchCount, 1);
   assert.equal(rateLimited.skippedProviderCallCount, 1);
+  assert.equal(rateLimited.failedBatchCount, 1);
+  assert.equal(rateLimited.failureReasons['schema-validation-failed'], 1);
+  assert.equal(rateLimited.failureReasons.timeout, 1);
+  assert.deepEqual(rateLimited.latestEvent.failureReasons, ['schema-validation-failed', 'timeout']);
   assert.equal(rateLimited.phases['relation-extraction'].rateLimitSkippedBatchCount, 1);
+  assert.equal(rateLimited.phases['relation-extraction'].failureReasons['schema-validation-failed'], 1);
+  assert.equal(rateLimited.phases['relation-extraction'].failureReasons.timeout, 1);
   assert.equal(completed.status, 'completed');
   assert.equal(completed.completedAt, '2026-06-03T00:00:00.000Z');
 });
