@@ -2875,6 +2875,143 @@ We study cache-first stage reuse for paper B.
   }
 });
 
+test('llmOptimizeCorpus preserves concurrent manifest additions during scoped import optimization', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let semanticFetchCount = 0;
+  let addedConcurrentPaper = false;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'paper-a.md'), `# Scoped Race Paper A
+
+Alice Example
+
+## Abstract
+
+We study scoped import optimization for paper A.
+`, 'utf8');
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'llm-scoped-manifest-race-test',
+      force: true
+    });
+    const initialManifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const paperASourceKey = initialManifest.sources.find((entry) => (
+      String(entry.inputPath || '').endsWith('paper-a.md')
+    ))?.sourceKey;
+    assert.ok(paperASourceKey);
+
+    globalThis.fetch = async (_url, options) => {
+      semanticFetchCount += 1;
+      if (!addedConcurrentPaper) {
+        addedConcurrentPaper = true;
+        await fs.writeFile(path.join(tempCorpusRoot, 'paper-b.md'), `# Scoped Race Paper B
+
+Bob Example
+
+## Abstract
+
+We study scoped import optimization for paper B.
+`, 'utf8');
+        await ingestion.materializeCorpus(tempCorpusRoot, {
+          name: 'llm-scoped-manifest-race-test'
+        });
+      }
+
+      const request = JSON.parse(options.body);
+      const prompt = String(request.messages?.[0]?.content || '');
+      const marker = 'Papers:\n';
+      const markerIndex = prompt.lastIndexOf(marker);
+      const papers = markerIndex === -1 ? [] : JSON.parse(prompt.slice(markerIndex + marker.length).trim());
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    papers: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [
+                        {
+                          name: `scoped manifest preservation for ${paper.title.toLowerCase()}`,
+                          type: 'Problem',
+                          evidenceText: `We study scoped import optimization for ${paper.title}.`,
+                          sectionHeading: 'Abstract',
+                          sectionRole: 'abstract',
+                          confidence: 0.91
+                        }
+                      ]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const firstRun = await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-scoped-manifest-race-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 8,
+      changedSourceKeys: [paperASourceKey]
+    });
+    assert.equal(firstRun.stage, 'llm-optimized');
+    assert.equal(firstRun.reused, false);
+    assert.equal(firstRun.meta.sourceCount, 2);
+
+    const manifestAfterFirstRun = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(manifestAfterFirstRun.sources.length, 2);
+    const paperBEntry = manifestAfterFirstRun.sources.find((entry) => (
+      String(entry.inputPath || '').endsWith('paper-b.md')
+    ));
+    assert.ok(paperBEntry);
+
+    const fetchCountAfterFirstRun = semanticFetchCount;
+    const secondRun = await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'llm-scoped-manifest-race-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmBatchSize: 8,
+      changedSourceKeys: [paperBEntry.sourceKey]
+    });
+    assert.equal(secondRun.stage, 'llm-optimized');
+    assert.equal(secondRun.reused, false);
+    assert.ok(semanticFetchCount > fetchCountAfterFirstRun);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus trusts a matching manifest-level optimization token and skips redundant reruns', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-materialize-corpus-'));

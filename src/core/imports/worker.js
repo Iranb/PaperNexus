@@ -45,6 +45,8 @@ const DEFAULT_IMPORT_BATCH_COALESCE_MS = 0;
 const DEFAULT_IMPORT_BATCH_COALESCE_POLL_MS = 250;
 const DEFAULT_FAST_MD_BURST_TARGET_TASKS = 10;
 const DEFAULT_IMPORT_SEMANTIC_ENRICHMENT_BATCH_MAX_JOBS = 2;
+const DEFAULT_IMPORT_SEMANTIC_ENRICHMENT_BATCH_COALESCE_MS = 0;
+const DEFAULT_IMPORT_SEMANTIC_ENRICHMENT_BATCH_COALESCE_POLL_MS = 250;
 const HARD_IMPORT_BATCH_COALESCE_MS = 5 * 60 * 1000;
 const HARD_IMPORT_BATCH_COALESCE_POLL_MS = 10_000;
 const IMPORT_PERFORMANCE_CONTRACT_VERSION = 'import-performance-v1';
@@ -1727,6 +1729,101 @@ function resolveImportSemanticEnrichmentBatchMaxJobs(options = {}) {
   return Math.max(1, Math.min(16, parsed));
 }
 
+function resolveImportSemanticEnrichmentBatchCoalesceOptions(options = {}) {
+  const importsConfig = options.config?.imports && typeof options.config.imports === 'object'
+    ? options.config.imports
+    : {};
+  const importConfig = options.config?.import && typeof options.config.import === 'object'
+    ? options.config.import
+    : {};
+  const coalesceMs = resolveNonNegativeIntegerOption(
+    firstNonEmptyOptionValue(
+      options.importSemanticEnrichmentBatchCoalesceMs,
+      options.semanticEnrichmentBatchCoalesceMs,
+      options.backgroundSemanticEnrichmentBatchCoalesceMs,
+      options.semanticWorkerBatchCoalesceMs,
+      importsConfig.importSemanticEnrichmentBatchCoalesceMs,
+      importsConfig.semanticEnrichmentBatchCoalesceMs,
+      importsConfig.backgroundSemanticEnrichmentBatchCoalesceMs,
+      importsConfig.semanticWorkerBatchCoalesceMs,
+      importConfig.importSemanticEnrichmentBatchCoalesceMs,
+      importConfig.semanticEnrichmentBatchCoalesceMs
+    ),
+    DEFAULT_IMPORT_SEMANTIC_ENRICHMENT_BATCH_COALESCE_MS,
+    HARD_IMPORT_BATCH_COALESCE_MS
+  );
+  const pollMs = Math.max(25, resolveNonNegativeIntegerOption(
+    firstNonEmptyOptionValue(
+      options.importSemanticEnrichmentBatchCoalescePollMs,
+      options.semanticEnrichmentBatchCoalescePollMs,
+      options.backgroundSemanticEnrichmentBatchCoalescePollMs,
+      options.semanticWorkerBatchCoalescePollMs,
+      importsConfig.importSemanticEnrichmentBatchCoalescePollMs,
+      importsConfig.semanticEnrichmentBatchCoalescePollMs,
+      importsConfig.backgroundSemanticEnrichmentBatchCoalescePollMs,
+      importsConfig.semanticWorkerBatchCoalescePollMs,
+      importConfig.importSemanticEnrichmentBatchCoalescePollMs,
+      importConfig.semanticEnrichmentBatchCoalescePollMs
+    ),
+    DEFAULT_IMPORT_SEMANTIC_ENRICHMENT_BATCH_COALESCE_POLL_MS,
+    HARD_IMPORT_BATCH_COALESCE_POLL_MS
+  ));
+  return { coalesceMs, pollMs };
+}
+
+function countPendingImportSemanticEnrichmentJobs(jobs = []) {
+  return (Array.isArray(jobs) ? jobs : []).filter((job) => (
+    String(job?.status || '').trim().toLowerCase() === 'pending'
+  )).length;
+}
+
+async function waitForImportSemanticEnrichmentBatchCoalesce(rootPath, maxJobs, options = {}) {
+  const batchMaxJobs = Math.max(1, Number(maxJobs || 1) || 1);
+  const { coalesceMs, pollMs } = resolveImportSemanticEnrichmentBatchCoalesceOptions(options);
+  if (batchMaxJobs <= 1 || coalesceMs <= 0) {
+    return {
+      waited: false,
+      waitedMs: 0,
+      pendingJobCount: 0,
+      targetJobs: batchMaxJobs,
+      reason: 'disabled'
+    };
+  }
+
+  const startedAt = Date.now();
+  let payload = await listImportSemanticEnrichmentJobs(rootPath, options);
+  let pending = countPendingImportSemanticEnrichmentJobs(payload.jobs || []);
+  if (pending <= 0 || pending >= batchMaxJobs) {
+    return {
+      waited: false,
+      waitedMs: 0,
+      pendingJobCount: pending,
+      targetJobs: batchMaxJobs,
+      reason: pending >= batchMaxJobs ? 'target-filled' : 'no-pending'
+    };
+  }
+
+  const deadline = startedAt + coalesceMs;
+  let reason = 'timeout';
+  while (Date.now() < deadline) {
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+    payload = await listImportSemanticEnrichmentJobs(rootPath, options);
+    pending = countPendingImportSemanticEnrichmentJobs(payload.jobs || []);
+    if (pending <= 0 || pending >= batchMaxJobs) {
+      reason = pending >= batchMaxJobs ? 'target-filled' : 'no-pending';
+      break;
+    }
+  }
+
+  return {
+    waited: true,
+    waitedMs: Math.max(0, Date.now() - startedAt),
+    pendingJobCount: pending,
+    targetJobs: batchMaxJobs,
+    reason
+  };
+}
+
 function createSemanticEnrichmentResultPayload(jobs = [], fallbackStatus = 'queued') {
   const normalizedJobs = Array.isArray(jobs) ? jobs.filter(Boolean) : [];
   return {
@@ -3322,6 +3419,11 @@ export async function runImportSemanticEnrichmentQueueOnce(rootPath, options = {
   try {
     return await withFileLock(workerLockPath, async () => {
       const semanticBatchMaxJobs = resolveImportSemanticEnrichmentBatchMaxJobs(options);
+      const coalesceResult = await waitForImportSemanticEnrichmentBatchCoalesce(
+        rootPath,
+        semanticBatchMaxJobs,
+        options
+      );
       const reserved = semanticBatchMaxJobs > 1
         ? await reserveImportSemanticEnrichmentJobBatch(rootPath, {
             ...options,
@@ -3348,6 +3450,8 @@ export async function runImportSemanticEnrichmentQueueOnce(rootPath, options = {
           taskId: batchResult.taskId,
           taskIds: batchResult.taskIds,
           semanticEnrichmentBatchId: batchResult.semanticEnrichmentBatchId || null,
+          coalesced: coalesceResult.waited,
+          coalesce: coalesceResult,
           result: batchResult.result,
           results: batchResult.results,
           summary: (await listImportSemanticEnrichmentJobs(rootPath)).summary
@@ -3388,6 +3492,8 @@ export async function runImportSemanticEnrichmentQueueOnce(rootPath, options = {
           jobIds: reservedJobs.map((job) => job.id),
           taskId: reservedJobs[0]?.taskId || null,
           taskIds: reservedJobs.map((job) => job.taskId),
+          coalesced: coalesceResult.waited,
+          coalesce: coalesceResult,
           error: error.message,
           summary: finalSummary
         };
@@ -3833,6 +3939,9 @@ export const __importWorkerTestables = {
   shouldWaitForImportBatchCoalesce,
   resolveImportBatchCoalesceTargetTasks,
   resolveFastMdBurstTargetTasks,
+  resolveImportSemanticEnrichmentBatchCoalesceOptions,
+  countPendingImportSemanticEnrichmentJobs,
+  waitForImportSemanticEnrichmentBatchCoalesce,
   createFastMdBurstReserveBatchOptions,
   normalizeImportTaskLaneMode,
   filterImportTasksForLane,

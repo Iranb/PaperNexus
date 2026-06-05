@@ -10059,9 +10059,12 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
     llmStageDetail: 'semantic objects and relation extraction'
   };
   const previousJobState = !options.force ? await loadStage2JobState(rootPath) : null;
+  const changedSourceKeySet = normalizeChangedSourceKeySet(options.changedSourceKeys);
+  const scopedToChangedSources = changedSourceKeySet.size > 0;
 
   if (
     !options.force
+    && !scopedToChangedSources
     && manifestHasReusableLlmOptimization(manifest, analysisOptions)
     && isReusableStage2JobState(previousJobState, manifest, analysisOptions)
   ) {
@@ -10086,7 +10089,6 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
     };
   }
 
-  const changedSourceKeySet = normalizeChangedSourceKeySet(options.changedSourceKeys);
   const records = await buildStage2RecordsFromManifest(rootPath, manifest, analysisOptions);
   if (changedSourceKeySet.size) {
     scopeStage2RecordsToChangedSources(records, [...changedSourceKeySet]);
@@ -10138,6 +10140,8 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
     analysisOptions,
     previousJobState
   );
+  let manifestToSave = nextManifest;
+  let jobStateToSave = jobState;
 
   announceStage(analysisOptions, 1, 1, 'Writing optimized snapshots', 'persisting LLM-enriched snapshot metadata');
   const shouldBackupBeforePersist = analysisOptions.backupBeforeCommit === true;
@@ -10146,31 +10150,49 @@ export async function llmOptimizeCorpus(inputPath, options = {}) {
     onAcquiredLog: '[lock] corpus lock acquired for Stage 2 optimized snapshot write'
   });
   await withFileLock(getCorpusLockPath(rootPath), async () => {
+    const currentManifest = await loadSourceManifest(rootPath);
+    const currentManifestToken = createManifestCommitToken(currentManifest);
+    const originalManifestToken = createManifestCommitToken(manifest);
+    if (scopedToChangedSources && currentManifest && currentManifestToken !== originalManifestToken) {
+      const currentRecords = await buildStage2RecordsFromManifest(rootPath, currentManifest, analysisOptions);
+      scopeStage2RecordsToChangedSources(currentRecords, [...changedSourceKeySet]);
+      const scopedJobState = createStage2JobState(currentManifest, analysisOptions);
+      seedStage2JobStateFromRecords(scopedJobState, currentRecords);
+      scopedJobState.status = 'partial';
+      scopedJobState.completedAt = null;
+      scopedJobState.updatedAt = new Date().toISOString();
+      manifestToSave = createStage2ManifestFromRecords(rootPath, currentManifest, currentRecords, {
+        ...analysisOptions,
+        semanticExtraction: normalizedSemanticExtractionMode,
+        completed: false
+      });
+      jobStateToSave = scopedJobState;
+    }
     if (shouldBackupBeforePersist) {
       await backupExistingCorpusRoot(rootPath, {
         backupDir: analysisOptions.backupDir
       });
     }
-    await saveSourceManifest(rootPath, nextManifest);
-    await saveStage2JobState(rootPath, jobState);
+    await saveSourceManifest(rootPath, manifestToSave);
+    await saveStage2JobState(rootPath, jobStateToSave);
   }, mergeLockOptions(options.lockOptions, lockHandlers));
 
-  const paperCount = (nextManifest.sources || []).filter((entry) => entry.activeInGraph !== false).length
-    || (nextManifest.sources || []).length;
+  const paperCount = (manifestToSave.sources || []).filter((entry) => entry.activeInGraph !== false).length
+    || (manifestToSave.sources || []).length;
   return {
     graph: null,
     meta: {
-      name: nextManifest.corpusName || options.name || path.basename(rootPath),
-      indexedAt: nextManifest.indexedAt || new Date().toISOString(),
+      name: manifestToSave.corpusName || options.name || path.basename(rootPath),
+      indexedAt: manifestToSave.indexedAt || new Date().toISOString(),
       paperCount,
       relationshipCount: 0,
-      sourceCount: nextManifest.sources?.length || 0,
+      sourceCount: manifestToSave.sources?.length || 0,
       stage: 'llm-optimized',
       semanticExtractionMode: normalizedSemanticExtractionMode,
-      lastChangeSummary: nextManifest.lastChangeSummary || null
+      lastChangeSummary: manifestToSave.lastChangeSummary || null
     },
     rootPath,
-    changes: nextManifest.lastChangeSummary || null,
+    changes: manifestToSave.lastChangeSummary || null,
     reused: false,
     stage: 'llm-optimized',
     inputPath: absoluteInput

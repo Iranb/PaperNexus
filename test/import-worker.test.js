@@ -162,6 +162,26 @@ test('import worker grows progressive batch targets while queued work remains', 
       batching.shouldWaitForImportBatchCoalesce({ pending: 4, running: 0 }, explicitCoalesceTargetOptions),
       false
     );
+    const semanticCoalesceOptions = batching.resolveImportSemanticEnrichmentBatchCoalesceOptions({
+      importSemanticEnrichmentBatchCoalesceMs: 120,
+      importSemanticEnrichmentBatchCoalescePollMs: 5
+    });
+    assert.equal(semanticCoalesceOptions.coalesceMs, 120);
+    assert.equal(semanticCoalesceOptions.pollMs, 25);
+    assert.equal(batching.resolveImportSemanticEnrichmentBatchCoalesceOptions({}).coalesceMs, 0);
+    assert.equal(batching.countPendingImportSemanticEnrichmentJobs([
+      { id: 'pending-a', status: 'pending' },
+      { id: 'running-a', status: 'running' },
+      { id: 'pending-b', status: 'pending' }
+    ]), 2);
+    const disabledSemanticWait = await batching.waitForImportSemanticEnrichmentBatchCoalesce(rootPath, 2, {});
+    assert.equal(disabledSemanticWait.waited, false);
+    assert.equal(disabledSemanticWait.reason, 'disabled');
+    const emptySemanticWait = await batching.waitForImportSemanticEnrichmentBatchCoalesce(rootPath, 2, {
+      importSemanticEnrichmentBatchCoalesceMs: 10
+    });
+    assert.equal(emptySemanticWait.waited, false);
+    assert.equal(emptySemanticWait.reason, 'no-pending');
 
     const fastMdBurstTasks = Array.from({ length: 10 }, (_, index) => ({
       id: `fast-md-${index}`,
