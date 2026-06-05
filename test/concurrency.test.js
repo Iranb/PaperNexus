@@ -102,6 +102,83 @@ test('withFileLock only reports waiting after real lock contention and reports a
   }
 });
 
+test('withFileLock reuses one process cleanup listener set for many active locks', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-lock-listeners-'));
+  const releaseLocks = [];
+  const enteredLocks = new Set();
+  const releaseSignals = Array.from({ length: 12 }, () => new Promise((resolve) => {
+    releaseLocks.push(resolve);
+  }));
+  const beforeListeners = {
+    sigint: process.listenerCount('SIGINT'),
+    sigterm: process.listenerCount('SIGTERM'),
+    exit: process.listenerCount('exit')
+  };
+  const lockPromises = releaseSignals.map((releaseSignal, index) => withFileLock(
+    path.join(workspaceRoot, `resource-${index}.lock`),
+    async () => {
+      enteredLocks.add(index);
+      await releaseSignal;
+    },
+    {
+      timeoutMs: 2000,
+      pollIntervalMs: 25
+    }
+  ));
+
+  try {
+    const deadline = Date.now() + 5000;
+    while (enteredLocks.size < releaseSignals.length) {
+      if (Date.now() > deadline) {
+        throw new Error('Timed out waiting for all lock holders to enter.');
+      }
+      await sleep(25);
+    }
+
+    assert.ok(
+      process.listenerCount('SIGINT') <= beforeListeners.sigint + 1,
+      'SIGINT listener count should not grow per active lock'
+    );
+    assert.ok(
+      process.listenerCount('SIGTERM') <= beforeListeners.sigterm + 1,
+      'SIGTERM listener count should not grow per active lock'
+    );
+    assert.ok(
+      process.listenerCount('exit') <= beforeListeners.exit + 1,
+      'exit listener count should not grow per active lock'
+    );
+
+    for (const releaseLock of releaseLocks) {
+      releaseLock();
+    }
+    await Promise.all(lockPromises);
+
+    assert.ok(
+      process.listenerCount('SIGINT') <= beforeListeners.sigint,
+      'SIGINT cleanup listener should be removed after locks release'
+    );
+    assert.ok(
+      process.listenerCount('SIGTERM') <= beforeListeners.sigterm,
+      'SIGTERM cleanup listener should be removed after locks release'
+    );
+    assert.ok(
+      process.listenerCount('exit') <= beforeListeners.exit,
+      'exit cleanup listener should be removed after locks release'
+    );
+
+    const lockDirectoriesStillExist = await Promise.all(releaseSignals.map((_, index) => fs.stat(
+      path.join(workspaceRoot, `resource-${index}.lock`)
+    ).then(() => true).catch(() => false)));
+    assert.deepEqual(lockDirectoriesStillExist, Array.from({ length: releaseSignals.length }, () => false));
+  } finally {
+    for (const releaseLock of releaseLocks) {
+      releaseLock();
+    }
+    await Promise.allSettled(lockPromises);
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('withFileLock removes the lock directory when interrupted by SIGINT', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-lock-sigint-'));
   const lockPath = path.join(workspaceRoot, 'resource.lock');

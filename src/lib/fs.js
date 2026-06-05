@@ -99,6 +99,61 @@ function sleep(ms) {
   });
 }
 
+const activeLockCleanups = new Set();
+let lockCleanupHandlersRegistered = false;
+let lockCleanupSignalInProgress = false;
+let lockCleanupOnSigint = null;
+let lockCleanupOnSigterm = null;
+
+function releaseActiveLocksSync() {
+  for (const releaseLock of Array.from(activeLockCleanups)) {
+    releaseLock();
+  }
+}
+
+function unregisterLockCleanupHandlers() {
+  if (!lockCleanupHandlersRegistered) return;
+  process.off('exit', releaseActiveLocksSync);
+  if (lockCleanupOnSigint) {
+    process.off('SIGINT', lockCleanupOnSigint);
+  }
+  if (lockCleanupOnSigterm) {
+    process.off('SIGTERM', lockCleanupOnSigterm);
+  }
+  lockCleanupHandlersRegistered = false;
+  lockCleanupOnSigint = null;
+  lockCleanupOnSigterm = null;
+}
+
+function unregisterLockCleanupHandlersIfIdle() {
+  if (activeLockCleanups.size > 0) return;
+  unregisterLockCleanupHandlers();
+}
+
+function ensureLockCleanupHandlersRegistered() {
+  if (lockCleanupHandlersRegistered) return;
+  lockCleanupHandlersRegistered = true;
+
+  const handleSignal = (signal) => {
+    if (lockCleanupSignalInProgress) return;
+    lockCleanupSignalInProgress = true;
+    releaseActiveLocksSync();
+    unregisterLockCleanupHandlers();
+    lockCleanupSignalInProgress = false;
+    try {
+      process.kill(process.pid, signal);
+    } catch {
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    }
+  };
+  lockCleanupOnSigint = () => handleSignal('SIGINT');
+  lockCleanupOnSigterm = () => handleSignal('SIGTERM');
+
+  process.once('exit', releaseActiveLocksSync);
+  process.once('SIGINT', lockCleanupOnSigint);
+  process.once('SIGTERM', lockCleanupOnSigterm);
+}
+
 export async function withFileLock(lockPath, fn, options = {}) {
   const timeoutMs = Math.max(250, Number(options.timeoutMs || 30000));
   const pollIntervalMs = Math.max(25, Number(options.pollIntervalMs || 125));
@@ -158,9 +213,15 @@ export async function withFileLock(lockPath, fn, options = {}) {
   }
 
   let released = false;
+  let heartbeatHandle = null;
   const releaseLockSync = () => {
     if (released) return;
     released = true;
+    activeLockCleanups.delete(releaseLockSync);
+    unregisterLockCleanupHandlersIfIdle();
+    if (heartbeatHandle) {
+      clearInterval(heartbeatHandle);
+    }
     try {
       fsSync.rmSync(lockPath, { recursive: true, force: true });
     } catch {}
@@ -168,27 +229,15 @@ export async function withFileLock(lockPath, fn, options = {}) {
   const releaseLock = async () => {
     if (released) return;
     released = true;
-    await fs.rm(lockPath, { recursive: true, force: true });
-  };
-  const handleSignal = (signal) => {
+    activeLockCleanups.delete(releaseLockSync);
+    unregisterLockCleanupHandlersIfIdle();
     if (heartbeatHandle) {
       clearInterval(heartbeatHandle);
     }
-    releaseLockSync();
-    process.off('SIGINT', onSigint);
-    process.off('SIGTERM', onSigterm);
-    try {
-      process.kill(process.pid, signal);
-    } catch {
-      process.exit(signal === 'SIGINT' ? 130 : 143);
-    }
+    await fs.rm(lockPath, { recursive: true, force: true });
   };
-  const onSigint = () => handleSignal('SIGINT');
-  const onSigterm = () => handleSignal('SIGTERM');
-  const onExit = () => releaseLockSync();
-  process.once('SIGINT', onSigint);
-  process.once('SIGTERM', onSigterm);
-  process.once('exit', onExit);
+  ensureLockCleanupHandlersRegistered();
+  activeLockCleanups.add(releaseLockSync);
   const ownerPath = path.join(lockPath, 'owner.json');
   const writeOwnerHeartbeatSync = () => {
     const now = new Date();
@@ -203,7 +252,6 @@ export async function withFileLock(lockPath, fn, options = {}) {
       fsSync.utimesSync(lockPath, now, now);
     } catch {}
   };
-  let heartbeatHandle = null;
 
   try {
     writeOwnerHeartbeatSync();
@@ -213,9 +261,6 @@ export async function withFileLock(lockPath, fn, options = {}) {
     if (heartbeatHandle) {
       clearInterval(heartbeatHandle);
     }
-    process.off('SIGINT', onSigint);
-    process.off('SIGTERM', onSigterm);
-    process.off('exit', onExit);
     await releaseLock();
   }
 }
