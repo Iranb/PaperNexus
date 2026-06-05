@@ -53,8 +53,28 @@
     "fastMdBurstTargetTasks": 10,
     "batchCoalesceMs": 0,
     "batchCoalescePollMs": 250,
+    "workerRootConcurrency": 3,
+    "fastMdImportLaneEnabled": false,
+    "fastMdImportLaneIntervalMs": 1500,
     "batchMaxFiles": 16,
-    "batchMaxBytes": 104857600
+    "batchMaxBytes": 104857600,
+    "llmBatchSliceTimeoutMs": 90000,
+    "llmPersistenceTimeoutMs": 30000,
+    "llmJobStateTimeoutMs": 30000,
+    "llmRelationCircuitBreakerEnabled": true,
+    "llmRelationCircuitBreakerMinBatches": 4,
+    "llmRelationCircuitBreakerMinFailedBatches": 2,
+    "llmRelationCircuitBreakerFailureRate": 0.5,
+    "llmRelationCircuitBreakerConsecutiveFailedBatches": 3,
+    "importTaskTimeoutMs": 600000,
+    "importWorkerLockTimeoutMs": 20000,
+    "importWorkerLockStaleMs": 600000,
+    "importQueueLockTimeoutMs": 30000,
+    "importQueueLockStaleMs": 30000,
+    "importQueueLockHeartbeatIntervalMs": 5000,
+    "semanticEnrichmentRunningStaleMs": 600000,
+    "semanticEnrichmentDirectDeltaCommit": true,
+    "backgroundSemanticEnrichment": true
   },
   "serve": {
     "host": "0.0.0.0",
@@ -71,13 +91,19 @@
     }
   },
   "llm": {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "baseUrl": "https://api.openai.com/v1",
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "baseUrl": "https://api.deepseek.com",
     "relations": true,
     "batchPromptMaxChars": 24000,
     "batchFailureSplitRetryCount": 3,
-    "apiKeyEnv": "OPENAI_API_KEY"
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "fallback": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    }
   },
   "literatureDiscovery": {
     "providers": ["openalex", "semantic_scholar", "crossref", "arxiv"],

@@ -15,6 +15,20 @@ export function resolveLlmBatchConcurrency(options = {}) {
   return 1;
 }
 
+export function resolveLlmBatchSliceTimeoutMs(options = {}) {
+  const explicit = Number(pickDefined(
+    options.llmBatchSliceTimeoutMs,
+    options.llmSliceTimeoutMs,
+    options.sliceTimeoutMs,
+    options.llmBatchTimeoutMs,
+    process.env.PAPERNEXUS_LLM_BATCH_SLICE_TIMEOUT_MS
+  ));
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+  return 0;
+}
+
 export function createLlmBatchSlices(items = [], batchSize = 1) {
   const safeItems = Array.isArray(items) ? items : [];
   const safeBatchSize = Math.max(1, Math.floor(Number(batchSize || 1)));
@@ -76,6 +90,41 @@ export function getLlmResultRateLimitCooldownUntil(value = null, seen = new Set(
   return null;
 }
 
+export function createLlmBatchSliceTimeoutError(timeoutMs, item = null, index = -1) {
+  const error = new Error(`LLM batch slice timed out after ${timeoutMs}ms`);
+  error.name = 'LlmBatchSliceTimeoutError';
+  error.reason = 'provider-timeout';
+  error.timeoutMs = timeoutMs;
+  error.item = item;
+  error.itemIndex = index;
+  return error;
+}
+
+async function runWithOptionalSliceDeadline(work, options = {}, item = null, index = -1) {
+  const timeoutMs = resolveLlmBatchSliceTimeoutMs(options);
+  if (!timeoutMs) {
+    return work();
+  }
+
+  const pending = Promise.resolve().then(work);
+  let timeoutHandle = null;
+  const timeoutMarker = Symbol('llm-batch-slice-timeout');
+  const timeout = new Promise((resolve) => {
+    timeoutHandle = setTimeout(() => resolve(timeoutMarker), timeoutMs);
+  });
+  const result = await Promise.race([pending, timeout]);
+  if (result !== timeoutMarker) {
+    clearTimeout(timeoutHandle);
+    return result;
+  }
+
+  pending.catch(() => {});
+  if (typeof options.createTimeoutResult === 'function') {
+    return options.createTimeoutResult(item, timeoutMs, index);
+  }
+  throw createLlmBatchSliceTimeoutError(timeoutMs, item, index);
+}
+
 export async function runLlmBatchWorkerPool(items = [], options = {}) {
   if (!Array.isArray(items) || !items.length) return [];
   if (typeof options.iteratee !== 'function') {
@@ -107,7 +156,12 @@ export async function runLlmBatchWorkerPool(items = [], options = {}) {
         continue;
       }
 
-      const result = await options.iteratee(items[currentIndex], currentIndex);
+      const result = await runWithOptionalSliceDeadline(
+        () => options.iteratee(items[currentIndex], currentIndex),
+        options,
+        items[currentIndex],
+        currentIndex
+      );
       results[currentIndex] = result;
       const detectedCooldownUntil = detectRateLimitCooldownUntil(result);
       if (detectedCooldownUntil && !getFutureIsoTimestamp(rateLimitCooldownUntil)) {
@@ -120,8 +174,9 @@ export async function runLlmBatchWorkerPool(items = [], options = {}) {
   return results;
 }
 
-export async function mapLlmBatchSlicesWithRateLimitStop(items, concurrency, iteratee, createSkippedResult) {
+export async function mapLlmBatchSlicesWithRateLimitStop(items, concurrency, iteratee, createSkippedResult, options = {}) {
   return runLlmBatchWorkerPool(items, {
+    ...options,
     concurrency,
     iteratee,
     createSkippedResult

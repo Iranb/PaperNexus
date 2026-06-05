@@ -611,7 +611,7 @@ export const PAPERNEXUS_TOOLS = [
         },
         taskId: {
           type: 'string',
-          description: 'Import task id for status, log, or wait.'
+          description: 'Import task id for single-task status, progress, log, or wait.'
         },
         task_id: {
           type: 'string',
@@ -803,11 +803,28 @@ export const PAPERNEXUS_TOOLS = [
           type: 'number'
         },
         taskIds: {
-          type: 'array',
-          items: {
-            type: 'string'
-          },
-          description: 'Optional task ids used to filter queue_progress snapshots.'
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: {
+                type: 'string'
+              }
+            }
+          ],
+          description: 'Optional task ids for batch status/progress lookup or queue_progress filtering. Accepts an array or a comma/space-separated string.'
+        },
+        task_ids: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: {
+                type: 'string'
+              }
+            }
+          ],
+          description: 'Snake_case alias for taskIds. Accepts an array or a comma/space-separated string.'
         },
         includeSemanticQueue: {
           type: 'boolean',

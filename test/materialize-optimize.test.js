@@ -1363,6 +1363,153 @@ The explicit chunk-first path should not launch later relation provider calls af
   }
 });
 
+test('llmOptimizeCorpus circuit-breaks repeated failed chunk relation batches', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-relation-circuit-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-relation-circuit-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let semanticFetchCount = 0;
+  let relationFetchCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    for (let index = 1; index <= 5; index += 1) {
+      await fs.writeFile(path.join(tempCorpusRoot, `chunk-relation-circuit-${index}.md`), `# Chunk Relation Circuit Paper ${index}
+
+## Abstract
+
+Paper ${index} should complete semantic extraction before relation extraction begins.
+
+## Method
+
+Repeated relation failures should trip the circuit breaker and skip later relation provider calls.
+`, 'utf8');
+    }
+
+    globalThis.fetch = async (url, options) => {
+      if (!String(url || '').startsWith('https://api.openai.com/v1')) {
+        return createIdentifierResolutionMissResponse();
+      }
+
+      const request = JSON.parse(options.body);
+      const prompt = String(request.messages?.[0]?.content || '');
+      const papers = extractPromptPapers(prompt);
+      const isRelationPrompt = prompt.includes('Allowed relation types:');
+
+      if (isRelationPrompt) {
+        relationFetchCount += 1;
+        return {
+          ok: true,
+          async json() {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      chunks: papers.map((paper) => ({
+                        id: paper.id,
+                        error: 'simulated relation failure'
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+        };
+      }
+
+      semanticFetchCount += 1;
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    chunks: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [{
+                        name: `Semantic prerequisite for ${paper.title || paper.id}`,
+                        type: 'Problem',
+                        evidenceText: 'Semantic extraction succeeds before relation circuit breaking is evaluated.',
+                        sectionHeading: paper.sectionHeading || 'Method',
+                        sectionRole: paper.sectionRole || 'method',
+                        confidence: 0.9
+                      }]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'chunk-relation-circuit-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'chunk-relation-circuit-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmExtractionStrategy: 'chunk-first',
+      llmBatchSize: 1,
+      llmBatchConcurrency: 1,
+      llmBatchFailureSplitRetryCount: 0,
+      llmRelationCircuitBreakerMinBatches: 2,
+      llmRelationCircuitBreakerMinFailedBatches: 2,
+      llmRelationCircuitBreakerFailureRate: 1,
+      llmRelationCircuitBreakerConsecutiveFailedBatches: 2,
+      identifierResolutionEnabled: false
+    });
+
+    assert.ok(semanticFetchCount >= 1);
+    assert.equal(relationFetchCount, 2);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    assert.equal(snapshots.filter((snapshot) => snapshot.llm.semanticExtractionParticipated).length, 5);
+
+    const circuitSkipped = snapshots.filter((snapshot) => (
+      Number(snapshot.llm.chunkPipeline.relationCircuitBreakerSkippedChunkCount || 0) > 0
+    ));
+    assert.ok(circuitSkipped.length >= 1);
+    for (const snapshot of circuitSkipped) {
+      assert.equal(snapshot.llm.relationParticipationReason, 'relation-circuit-breaker');
+      assert.match(snapshot.llm.error || '', /Relation extraction circuit breaker tripped/);
+      assert.ok(snapshot.llm.chunkPipeline.relationSkippedProviderCallCount >= 1);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus falls back to chunk extraction when long-context paper output is invalid', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-invalid-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-invalid-corpus-'));
@@ -1851,6 +1998,264 @@ This paper simulates an invalid JSON provider output during long-context extract
       assert.equal(snapshot.llm.longContext.validationDetails.reason, reason);
       assert.equal(snapshot.llm.longContext.callCount, 1);
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus bounds stuck long-context slices and falls back to chunks', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-slice-timeout-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-slice-timeout-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+  const batchEvents = [];
+  let releaseStuckProvider = null;
+  let stuckProviderReleased = false;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'stuck-provider.md'), `# Stuck Provider Timeout
+
+## Abstract
+
+This paper simulates an LLM provider call that never resolves on the long-context path.
+
+## Method
+
+The chunk fallback should recover a concrete semantic object after the import-layer slice timeout.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+
+      if (!prompt.includes('paper chunks')) {
+        return new Promise((resolve) => {
+          releaseStuckProvider = () => {
+            if (stuckProviderReleased) return;
+            stuckProviderReleased = true;
+            resolve({
+              ok: true,
+              async json() {
+                return {
+                  choices: [
+                    {
+                      message: {
+                        content: JSON.stringify({
+                          papers: papers.map((paper) => ({
+                            id: paper.id,
+                            problems: [],
+                            methods: [],
+                            claims: []
+                          }))
+                        })
+                      }
+                    }
+                  ]
+                };
+              }
+            });
+          };
+        });
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    chunks: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [{
+                        name: 'bounded timeout chunk fallback',
+                        type: 'Problem',
+                        evidenceText: 'The chunk fallback recovered after a stuck long-context provider call.',
+                        sectionHeading: paper.sectionHeading || 'Method',
+                        sectionRole: paper.sectionRole || 'method',
+                        confidence: 0.9
+                      }]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-slice-timeout-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-slice-timeout-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      llmBatchSliceTimeoutMs: 20,
+      identifierResolutionEnabled: false,
+      onLlmBatchComplete(event = {}) {
+        batchEvents.push(event);
+      }
+    });
+    releaseStuckProvider?.();
+    await sleep(5);
+
+    assert.ok(prompts.some((prompt) => !prompt.includes('paper chunks')));
+    assert.ok(prompts.some((prompt) => prompt.includes('paper chunks')));
+    assert.ok(batchEvents.some((event) => event.reason === 'provider-timeout' && event.timeoutMs === 20));
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, true);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'timeout');
+    assert.equal(snapshot.llm.longContext.validationStatus, 'fallback');
+    assert.equal(snapshot.llm.longContext.validationDetails.reason, 'timeout');
+    assert.equal(snapshot.llm.longContext.validationDetails.attempted, true);
+    assert.equal(snapshot.llm.longContext.validationDetails.participated, false);
+  } finally {
+    releaseStuckProvider?.();
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('llmOptimizeCorpus bounds stuck chunk persistence and job-state writes', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-persistence-timeout-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-chunk-persistence-timeout-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const persistenceEvents = [];
+  let blockedJobStateSave = false;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'stuck-persistence.md'), `# Stuck Persistence Timeout
+
+## Abstract
+
+This paper simulates a chunk result persistence write that never resolves.
+
+## Method
+
+The LLM result should not be trusted as completed when the corresponding chunk
+extraction artifact cannot be saved within the configured deadline.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const papers = extractPromptPapers(prompt);
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    chunks: papers.map((paper) => ({
+                      id: paper.id,
+                      problems: [{
+                        name: 'untrusted unsaved chunk result',
+                        type: 'Problem',
+                        evidenceText: 'This result should be downgraded if chunk persistence times out.',
+                        sectionHeading: paper.sectionHeading || 'Method',
+                        sectionRole: paper.sectionRole || 'method',
+                        confidence: 0.9
+                      }]
+                    }))
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'chunk-persistence-timeout-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'chunk-persistence-timeout-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: false,
+      llmProvider: 'openai',
+      llmModel: 'gpt-4o-mini',
+      llmBaseUrl: 'https://api.openai.com/v1',
+      llmApiKey: 'test-key',
+      llmExtractionStrategy: 'chunk-first',
+      llmBatchSize: 1,
+      llmPersistenceTimeoutMs: 20,
+      llmJobStateTimeoutMs: 20,
+      identifierResolutionEnabled: false,
+      onBeforeSaveStage2JobState() {
+        if (blockedJobStateSave) return undefined;
+        blockedJobStateSave = true;
+        return new Promise(() => {});
+      },
+      onBeforeSaveChunkExtractionResult() {
+        return new Promise(() => {});
+      },
+      onLlmPersistenceTimeout(event = {}) {
+        persistenceEvents.push(event);
+      }
+    });
+
+    assert.ok(persistenceEvents.some((event) => event.reason === 'job-state-save-timeout'));
+    assert.ok(persistenceEvents.some((event) => event.reason === 'chunk-result-save-timeout'));
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, false);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, true);
+    assert.ok(snapshot.llm.chunkPipeline.failedChunkCount >= 1);
+    assert.match(snapshot.llmSemanticObjects.error || '', /chunk-result-save-timeout/);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;

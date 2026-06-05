@@ -135,6 +135,7 @@ test('import_workflow schema exposes handler aliases and queue diagnostics', () 
     'target_operation',
     'job_id',
     'task_id',
+    'task_ids',
     'paper_id',
     'server_file_path',
     'arxiv_id',
@@ -185,4 +186,9 @@ test('import_workflow schema exposes handler aliases and queue diagnostics', () 
   assert.equal(properties.eventTail?.default, 5);
   assert.equal(properties.dagTail?.default, 5);
   assert.equal(properties.includeDagComparison?.type, 'boolean');
+  for (const name of ['taskIds', 'task_ids']) {
+    const unionTypes = (properties[name]?.oneOf || []).map((entry) => entry.type);
+    assert.deepEqual(unionTypes, ['string', 'array']);
+    assert.equal(properties[name].oneOf[1].items.type, 'string');
+  }
 });

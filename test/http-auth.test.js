@@ -404,9 +404,20 @@ test('serveCommand forwards analyze parser config into the import worker', async
           batchProgressive: false,
           batchCoalesceMs: 75000,
           batchCoalescePollMs: 1000,
+          workerRootConcurrency: 3,
           fastMdBurstTargetTasks: 10,
           batchMaxFiles: 12,
-          batchMaxBytes: 1048576
+          batchMaxBytes: 1048576,
+          llmBatchSliceTimeoutMs: 45000,
+          importTaskTimeoutMs: 180000,
+          importPendingTimeoutMs: 3600000,
+          importWorkerLockTimeoutMs: 5000,
+          importWorkerLockStaleMs: 120000,
+          importQueueLockTimeoutMs: 30000,
+          importQueueLockStaleMs: 30000,
+          importQueueLockHeartbeatIntervalMs: 5000,
+          semanticEnrichmentRunningStaleMs: 600000,
+          semanticEnrichmentDirectDeltaCommit: false
         },
         serve: {
           apiToken: 'test'
@@ -434,6 +445,7 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].llmRelations, false);
       assert.equal(calls[0].llmBatchSize, 12);
       assert.equal(calls[0].llmBatchConcurrency, 2);
+      assert.equal(calls[0].llmBatchSliceTimeoutMs, 45000);
       assert.equal(calls[0].llmContextWindowTokens, 1_000_000);
       assert.equal(calls[0].batchEnabled, true);
       assert.equal(calls[0].batchMaxTasks, 4);
@@ -441,9 +453,180 @@ test('serveCommand forwards analyze parser config into the import worker', async
       assert.equal(calls[0].batchProgressive, false);
       assert.equal(calls[0].batchCoalesceMs, 75000);
       assert.equal(calls[0].batchCoalescePollMs, 1000);
+      assert.equal(calls[0].importWorkerRootConcurrency, 3);
       assert.equal(calls[0].fastMdBurstTargetTasks, 10);
       assert.equal(calls[0].batchMaxFiles, 12);
       assert.equal(calls[0].batchMaxBytes, 1048576);
+      assert.equal(calls[0].importTaskTimeoutMs, 180000);
+      assert.equal(calls[0].importPendingTimeoutMs, 3600000);
+      assert.equal(calls[0].lockTimeoutMs, 5000);
+      assert.equal(calls[0].lockStaleMs, 120000);
+      assert.equal(calls[0].importQueueLockTimeoutMs, 30000);
+      assert.equal(calls[0].importQueueLockStaleMs, 30000);
+      assert.equal(calls[0].importQueueLockHeartbeatIntervalMs, 5000);
+      assert.equal(calls[0].runningStaleMs, 600000);
+      assert.equal(calls[0].importSemanticEnrichmentEnabled, true);
+      assert.equal(calls[0].semanticEnrichmentDirectDeltaCommit, false);
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand can split fast markdown imports into an isolated lane', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-fast-md-lane-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = await pickAvailablePort(53100);
+  const calls = {
+    import: [],
+    fastMd: []
+  };
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableLiteratureDiscoveryRecovery: false,
+      enableRegistryReconcile: false,
+      enableMineruWarmup: false,
+      enableDoclingWarmup: false,
+      config: {
+        imports: {
+          fastMdImportLaneEnabled: true,
+          fastMdImportLaneIntervalMs: 750,
+          batchEnabled: true,
+          batchMaxTasks: 16,
+          fastMdBurstTargetTasks: 10,
+          semanticEnrichmentEnabled: true
+        },
+        serve: {
+          apiToken: 'test'
+        }
+      },
+      startImportWorker(workerOptions) {
+        calls.import.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      },
+      startFastMdImportWorker(workerOptions) {
+        calls.fastMd.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.import.length, 1);
+      assert.equal(calls.fastMd.length, 1);
+      assert.equal(calls.import[0].importTaskLaneMode, 'exclude-fast-md');
+      assert.equal(calls.import[0].importSemanticEnrichmentEnabled, true);
+      assert.equal(calls.fastMd[0].importTaskLaneMode, 'fast-md-only');
+      assert.equal(calls.fastMd[0].intervalMs, 750);
+      assert.equal(calls.fastMd[0].importSemanticEnrichmentEnabled, false);
+      assert.equal(calls.fastMd[0].semanticEnrichmentEnabled, false);
+      assert.equal(calls.fastMd[0].backgroundSemanticEnrichment, false);
+      assert.equal(calls.fastMd[0].batchMaxTasks, 16);
+      assert.equal(calls.fastMd[0].fastMdBurstTargetTasks, 10);
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand forwards configured LLM fallback into background workers', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-llm-fallback-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = await pickAvailablePort(53100);
+  const calls = {
+    enhancement: [],
+    import: []
+  };
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableAuthoritativeSync: false,
+      enableLiteratureDiscoveryRecovery: false,
+      enableRegistryReconcile: false,
+      enableMineruWarmup: false,
+      config: {
+        llm: {
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKeyEnv: 'OPENAI_API_KEY',
+          fallback: {
+            provider: 'deepseek',
+            model: 'deepseek-v4-flash',
+            baseUrl: 'https://api.deepseek.com',
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            timeoutMs: 120000,
+            batchSize: 8,
+            maxTokens: 4096,
+            rateLimitRetryCount: 1,
+            rateLimitRetryDelayMs: 250,
+            rateLimitRetryMaxDelayMs: 1000,
+            rateLimitCooldownMs: 30000
+          }
+        },
+        serve: {
+          apiToken: 'test'
+        }
+      },
+      startEnhancementWorker(workerOptions) {
+        calls.enhancement.push(workerOptions);
+        return {
+          stop() {}
+        };
+      },
+      startImportWorker(workerOptions) {
+        calls.import.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.enhancement.length, 1);
+      assert.equal(calls.import.length, 1);
+      for (const workerOptions of [calls.enhancement[0], calls.import[0]]) {
+        assert.equal(workerOptions.llmFallbackProvider, 'deepseek');
+        assert.equal(workerOptions.llmFallbackModel, 'deepseek-v4-flash');
+        assert.equal(workerOptions.llmFallbackBaseUrl, 'https://api.deepseek.com');
+        assert.equal(workerOptions.llmFallbackApiKeyEnv, 'DEEPSEEK_API_KEY');
+        assert.equal(workerOptions.llmFallbackTimeoutMs, 120000);
+        assert.equal(workerOptions.llmFallbackBatchSize, 8);
+        assert.equal(workerOptions.llmFallbackMaxTokens, 4096);
+        assert.equal(workerOptions.llmFallbackRateLimitRetryCount, 1);
+        assert.equal(workerOptions.llmFallbackRateLimitRetryDelayMs, 250);
+        assert.equal(workerOptions.llmFallbackRateLimitRetryMaxDelayMs, 1000);
+        assert.equal(workerOptions.llmFallbackRateLimitCooldownMs, 30000);
+      }
     } finally {
       await serverHandle.stop();
     }
@@ -495,6 +678,7 @@ test('serveCommand enables import batching by default for MCP serve workers', as
       assert.equal(calls[0].batchInitialTasks, 4);
       assert.equal(calls[0].fastMdBurstTargetTasks, undefined);
       assert.equal(calls[0].batchProgressive, true);
+      assert.equal(calls[0].importSemanticEnrichmentEnabled, true);
     } finally {
       await serverHandle.stop();
     }
@@ -618,6 +802,56 @@ test('serveCommand keeps background Docling warmup failure logs compact', async 
       assert.match(warning, /line three/);
       assert.doesNotMatch(warning, /line four/);
       assert.ok(warning.length < 560);
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand allows background semantic enrichment to be disabled explicitly', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-import-semantic-disabled-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = await pickAvailablePort(53250);
+  const calls = [];
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      config: {
+        imports: {
+          backgroundSemanticEnrichment: false
+        },
+        serve: {
+          apiToken: 'test'
+        }
+      },
+      startImportWorker(workerOptions) {
+        calls.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      },
+      warmDoclingRuntime() {
+        return Promise.resolve({ warmed: true });
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].importSemanticEnrichmentEnabled, false);
     } finally {
       await serverHandle.stop();
     }

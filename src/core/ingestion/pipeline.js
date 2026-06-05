@@ -45,7 +45,8 @@ import {
 import {
   createLlmBatchSlices,
   mapLlmBatchSlicesWithRateLimitStop,
-  resolveLlmBatchConcurrency
+  resolveLlmBatchConcurrency,
+  resolveLlmBatchSliceTimeoutMs
 } from '../llm/batch-worker-pool.js';
 import {
   PROMPT_VERSION as SEMANTIC_OBJECTS_PROMPT_VERSION,
@@ -2792,6 +2793,30 @@ function createRateLimitedSemanticInferenceResult(options = {}, semanticExtracti
   };
 }
 
+function createTimedOutSemanticInferenceResult(options = {}, semanticExtractionPlan = null, timeoutMs = 0, extra = {}) {
+  const config = semanticExtractionPlan?.config || resolveOllamaConfig(options);
+  return {
+    ...createChunkSemanticObjectInferenceResult({
+      provider: config?.provider || 'disabled',
+      requestedMode: semanticExtractionPlan?.requestedMode || 'heuristic-only',
+      effectiveMode: 'heuristic-only',
+      attempted: true,
+      participated: false,
+      reason: 'provider-timeout',
+      error: `LLM batch slice timed out after ${timeoutMs}ms`,
+      chunkId: extra.chunkId || null,
+      paperId: extra.paperId || null,
+      sourceKey: extra.sourceKey || null,
+      sectionHeading: extra.sectionHeading || null,
+      sectionRole: extra.sectionRole || null,
+      chunkOrder: extra.chunkOrder ?? null,
+      textHash: extra.textHash || null
+    }),
+    timeoutMs,
+    skippedProviderCall: Boolean(extra.skippedProviderCall)
+  };
+}
+
 function createRateLimitedRelationInferenceResult(options = {}, rateLimitCooldownUntil = null, extra = {}) {
   const config = resolveOllamaConfig(options);
   return {
@@ -2805,6 +2830,294 @@ function createRateLimitedRelationInferenceResult(options = {}, rateLimitCooldow
     error: null,
     skippedProviderCall: Boolean(extra.skippedProviderCall)
   };
+}
+
+function createTimedOutRelationInferenceResult(options = {}, timeoutMs = 0, extra = {}) {
+  const config = resolveOllamaConfig(options);
+  return {
+    provider: config?.provider || 'disabled',
+    benchmarks: [],
+    findings: [],
+    researchGoals: [],
+    relations: [],
+    reason: 'provider-timeout',
+    timeoutMs,
+    error: `LLM batch slice timed out after ${timeoutMs}ms`,
+    chunkId: extra.chunkId || null,
+    paperId: extra.paperId || null,
+    sourceKey: extra.sourceKey || null,
+    sectionHeading: extra.sectionHeading || null,
+    sectionRole: extra.sectionRole || null,
+    chunkOrder: extra.chunkOrder ?? null,
+    textHash: extra.textHash || null,
+    skippedProviderCall: Boolean(extra.skippedProviderCall)
+  };
+}
+
+function createLlmSliceTimeoutEvent(phase, slice = {}, timeoutMs = 0, total = 0, batchConcurrency = 1) {
+  const batchSize = Array.isArray(slice.batch) ? slice.batch.length : 0;
+  return {
+    phase,
+    batchNumber: slice.batchNumber,
+    totalBatches: slice.totalBatches,
+    completed: Math.min(Number(slice.start || 0) + batchSize, total),
+    total,
+    batchSize,
+    durationMs: timeoutMs,
+    timeoutMs,
+    failureCount: batchSize,
+    reason: 'provider-timeout',
+    llmBatchConcurrency: batchConcurrency
+  };
+}
+
+function resolveBoundedNumber(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function resolveLlmRelationCircuitBreakerConfig(options = {}) {
+  const importsConfig = options.config?.imports || {};
+  const importConfig = options.config?.import || {};
+  const llmConfig = options.config?.llm || {};
+  const enabledValue = firstDefinedValue(
+    options.llmRelationCircuitBreakerEnabled,
+    options.llmRelationCircuitBreaker,
+    importsConfig.llmRelationCircuitBreakerEnabled,
+    importsConfig.llmRelationCircuitBreaker,
+    importConfig.llmRelationCircuitBreakerEnabled,
+    importConfig.llmRelationCircuitBreaker,
+    llmConfig.relationCircuitBreakerEnabled,
+    process.env.PAPERNEXUS_LLM_RELATION_CIRCUIT_BREAKER
+  );
+  const minBatches = Math.floor(resolveBoundedNumber(firstDefinedValue(
+    options.llmRelationCircuitBreakerMinBatches,
+    importsConfig.llmRelationCircuitBreakerMinBatches,
+    importConfig.llmRelationCircuitBreakerMinBatches,
+    llmConfig.relationCircuitBreakerMinBatches,
+    process.env.PAPERNEXUS_LLM_RELATION_CIRCUIT_BREAKER_MIN_BATCHES
+  ), 4, { min: 1 }));
+  const minFailedBatches = Math.floor(resolveBoundedNumber(firstDefinedValue(
+    options.llmRelationCircuitBreakerMinFailedBatches,
+    options.llmRelationCircuitBreakerMinFailures,
+    importsConfig.llmRelationCircuitBreakerMinFailedBatches,
+    importsConfig.llmRelationCircuitBreakerMinFailures,
+    importConfig.llmRelationCircuitBreakerMinFailedBatches,
+    importConfig.llmRelationCircuitBreakerMinFailures,
+    llmConfig.relationCircuitBreakerMinFailedBatches,
+    process.env.PAPERNEXUS_LLM_RELATION_CIRCUIT_BREAKER_MIN_FAILED_BATCHES
+  ), 2, { min: 1 }));
+  const failureRate = resolveBoundedNumber(firstDefinedValue(
+    options.llmRelationCircuitBreakerFailureRate,
+    options.llmRelationCircuitBreakerMaxFailureRate,
+    importsConfig.llmRelationCircuitBreakerFailureRate,
+    importsConfig.llmRelationCircuitBreakerMaxFailureRate,
+    importConfig.llmRelationCircuitBreakerFailureRate,
+    importConfig.llmRelationCircuitBreakerMaxFailureRate,
+    llmConfig.relationCircuitBreakerFailureRate,
+    process.env.PAPERNEXUS_LLM_RELATION_CIRCUIT_BREAKER_FAILURE_RATE
+  ), 0.5, { min: 0, max: 1 });
+  const consecutiveFailedBatches = Math.floor(resolveBoundedNumber(firstDefinedValue(
+    options.llmRelationCircuitBreakerConsecutiveFailedBatches,
+    options.llmRelationCircuitBreakerConsecutiveFailures,
+    importsConfig.llmRelationCircuitBreakerConsecutiveFailedBatches,
+    importsConfig.llmRelationCircuitBreakerConsecutiveFailures,
+    importConfig.llmRelationCircuitBreakerConsecutiveFailedBatches,
+    importConfig.llmRelationCircuitBreakerConsecutiveFailures,
+    llmConfig.relationCircuitBreakerConsecutiveFailedBatches,
+    process.env.PAPERNEXUS_LLM_RELATION_CIRCUIT_BREAKER_CONSECUTIVE_FAILED_BATCHES
+  ), 3, { min: 1 }));
+
+  return {
+    enabled: !isDisabledFlag(enabledValue),
+    minBatches,
+    minFailedBatches,
+    failureRate,
+    consecutiveFailedBatches
+  };
+}
+
+function createRelationCircuitBreakerResult(options = {}, breaker = {}, extra = {}) {
+  const config = resolveOllamaConfig(options);
+  const reason = breaker.reason || 'relation-circuit-breaker';
+  const message = breaker.message || 'Relation extraction skipped after repeated LLM batch failures.';
+  return {
+    provider: config?.provider || 'disabled',
+    benchmarks: [],
+    findings: [],
+    researchGoals: [],
+    relations: [],
+    reason,
+    error: message,
+    chunkId: extra.chunkId || null,
+    paperId: extra.paperId || null,
+    sourceKey: extra.sourceKey || null,
+    sectionHeading: extra.sectionHeading || null,
+    sectionRole: extra.sectionRole || null,
+    chunkOrder: extra.chunkOrder ?? null,
+    textHash: extra.textHash || null,
+    skippedProviderCall: true,
+    circuitBreaker: {
+      ...breaker,
+      reason
+    }
+  };
+}
+
+function createRelationCircuitBreakerState(config = {}) {
+  return {
+    tripped: false,
+    reason: null,
+    message: null,
+    completedBatches: 0,
+    failedBatches: 0,
+    consecutiveFailedBatches: 0,
+    attemptedTasks: 0,
+    failedTasks: 0,
+    failureRate: 0,
+    config
+  };
+}
+
+function recordRelationCircuitBreakerBatch(state, batchRuns = []) {
+  if (!state?.config?.enabled || state.tripped) return state;
+  const attempted = batchRuns.filter((task) => task?.status !== 'completed' || !task?.reused);
+  const failed = batchRuns.filter((task) => task?.status === 'failed' || task?.status === 'rate-limited');
+  const completed = batchRuns.filter((task) => task?.status === 'completed');
+  state.completedBatches += 1;
+  state.attemptedTasks += attempted.length || batchRuns.length;
+  state.failedTasks += failed.length;
+  if (failed.length && !completed.length) {
+    state.failedBatches += 1;
+    state.consecutiveFailedBatches += 1;
+  } else {
+    state.consecutiveFailedBatches = 0;
+  }
+  state.failureRate = state.attemptedTasks
+    ? state.failedTasks / state.attemptedTasks
+    : 0;
+
+  const failureRateTripped = state.completedBatches >= state.config.minBatches
+    && state.failedBatches >= state.config.minFailedBatches
+    && state.failureRate >= state.config.failureRate;
+  const consecutiveTripped = state.consecutiveFailedBatches >= state.config.consecutiveFailedBatches;
+  if (failureRateTripped || consecutiveTripped) {
+    state.tripped = true;
+    state.reason = 'relation-circuit-breaker';
+    state.message = `Relation extraction circuit breaker tripped after ${state.failedBatches}/${state.completedBatches} failed batches (${Math.round(state.failureRate * 100)}% failed tasks).`;
+  }
+  return state;
+}
+
+function resolveLlmPersistenceTimeoutMs(options = {}) {
+  const importsConfig = options.config?.imports || {};
+  const importConfig = options.config?.import || {};
+  const llmConfig = options.config?.llm || {};
+  const explicit = Number(firstDefinedValue(
+    options.llmPersistenceTimeoutMs,
+    options.llmChunkPersistenceTimeoutMs,
+    options.chunkPersistenceTimeoutMs,
+    importsConfig.llmPersistenceTimeoutMs,
+    importsConfig.llmChunkPersistenceTimeoutMs,
+    importsConfig.chunkPersistenceTimeoutMs,
+    importConfig.llmPersistenceTimeoutMs,
+    importConfig.llmChunkPersistenceTimeoutMs,
+    llmConfig.persistenceTimeoutMs,
+    process.env.PAPERNEXUS_LLM_PERSISTENCE_TIMEOUT_MS,
+    process.env.PAPERNEXUS_LLM_CHUNK_PERSISTENCE_TIMEOUT_MS
+  ));
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+  return 0;
+}
+
+function resolveLlmJobStateTimeoutMs(options = {}) {
+  const importsConfig = options.config?.imports || {};
+  const importConfig = options.config?.import || {};
+  const llmConfig = options.config?.llm || {};
+  const explicit = Number(firstDefinedValue(
+    options.llmJobStateTimeoutMs,
+    options.jobStateTimeoutMs,
+    importsConfig.llmJobStateTimeoutMs,
+    importsConfig.jobStateTimeoutMs,
+    importConfig.llmJobStateTimeoutMs,
+    importConfig.jobStateTimeoutMs,
+    llmConfig.jobStateTimeoutMs,
+    resolveLlmPersistenceTimeoutMs(options),
+    process.env.PAPERNEXUS_LLM_JOB_STATE_TIMEOUT_MS
+  ));
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+  return 0;
+}
+
+function createLlmPersistenceTimeoutError(reason, timeoutMs, context = {}) {
+  const error = new Error(`${reason} after ${timeoutMs}ms`);
+  error.name = 'LlmPersistenceTimeoutError';
+  error.reason = reason;
+  error.timeoutMs = timeoutMs;
+  error.context = context;
+  return error;
+}
+
+async function runWithOptionalPersistenceDeadline(work, timeoutMs, reason, context = {}) {
+  if (!timeoutMs) {
+    return work();
+  }
+  const pending = Promise.resolve().then(work);
+  const timeoutMarker = Symbol(reason);
+  let timeoutHandle = null;
+  const timeout = new Promise((resolve) => {
+    timeoutHandle = setTimeout(() => resolve(timeoutMarker), timeoutMs);
+  });
+  const result = await Promise.race([pending, timeout]);
+  if (result !== timeoutMarker) {
+    clearTimeout(timeoutHandle);
+    return result;
+  }
+  pending.catch(() => {});
+  throw createLlmPersistenceTimeoutError(reason, timeoutMs, context);
+}
+
+function isLlmPersistenceTimeout(error, reason) {
+  return error?.name === 'LlmPersistenceTimeoutError' && (!reason || error.reason === reason);
+}
+
+async function saveChunkExtractionResultBounded(rootPath, taskKey, payload = {}, options = {}, context = {}) {
+  const timeoutMs = resolveLlmPersistenceTimeoutMs(options);
+  try {
+    return {
+      status: 'saved',
+      result: await runWithOptionalPersistenceDeadline(async () => {
+        await options.onBeforeSaveChunkExtractionResult?.({
+          rootPath,
+          taskKey,
+          payload,
+          context
+        });
+        return saveChunkExtractionResult(rootPath, taskKey, payload);
+      }, timeoutMs, 'chunk-result-save-timeout', context)
+    };
+  } catch (error) {
+    if (isLlmPersistenceTimeout(error, 'chunk-result-save-timeout')) {
+      options.onLlmPersistenceTimeout?.({
+        reason: error.reason,
+        timeoutMs: error.timeoutMs,
+        message: error.message,
+        context
+      });
+      return {
+        status: 'timeout',
+        reason: error.reason,
+        timeoutMs: error.timeoutMs,
+        error: error.message
+      };
+    }
+    throw error;
+  }
 }
 
 function shouldUseStage2ChunkLlmPipeline(options = {}) {
@@ -3121,6 +3434,33 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
   }
 
   const totalChunks = chunkReadyRecords.reduce((sum, record) => sum + (record.selectedChunks?.length || 0), 0);
+  const batchConcurrency = resolveLlmBatchConcurrency(options);
+  const batchSliceTimeoutMs = resolveLlmBatchSliceTimeoutMs(options);
+  const jobStateTimeoutMs = resolveLlmJobStateTimeoutMs(options);
+  const saveChunkPipelineJobState = async (context = {}) => {
+    if (!jobState) return;
+    try {
+      await runWithOptionalPersistenceDeadline(async () => {
+        await options.onBeforeSaveStage2JobState?.({ rootPath, jobState, context });
+        await saveStage2JobState(rootPath, jobState);
+      }, jobStateTimeoutMs, 'job-state-save-timeout', {
+        stage: 'llm-optimize',
+        ...context
+      });
+    } catch (error) {
+      if (!isLlmPersistenceTimeout(error, 'job-state-save-timeout')) {
+        throw error;
+      }
+      jobState.lastPersistenceError = {
+        reason: error.reason,
+        timeoutMs: error.timeoutMs,
+        message: error.message,
+        occurredAt: new Date().toISOString(),
+        context
+      };
+      options.onLlmPersistenceTimeout?.(jobState.lastPersistenceError);
+    }
+  };
   if (jobState) {
     jobState.phases.chunk = {
       ...jobState.phases.chunk,
@@ -3146,7 +3486,7 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
       batchCount: Math.ceil(totalPapers / batchSize),
       lastBatchNumber: 0
     };
-    await saveStage2JobState(rootPath, jobState);
+    await saveChunkPipelineJobState({ phase: 'chunk-pipeline-start' });
   }
 
   const semanticTaskRuns = [];
@@ -3155,7 +3495,6 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
   let completedRelationTasks = 0;
   const semanticWorkRecords = chunkReadyRecords.filter((record) => record.sourceState.llmRefreshState?.semanticRequired);
   const semanticChunkCount = semanticWorkRecords.reduce((sum, record) => sum + (record.selectedChunks?.length || 0), 0);
-  const batchConcurrency = resolveLlmBatchConcurrency(options);
   let jobStateWriteChain = Promise.resolve();
   const updateJobStateSequentially = async (updater) => {
     if (!jobState) {
@@ -3164,9 +3503,22 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
     }
     jobStateWriteChain = jobStateWriteChain.then(async () => {
       updater(true);
-      await saveStage2JobState(rootPath, jobState);
+      await saveChunkPipelineJobState({ phase: 'chunk-pipeline-progress' });
     });
     await jobStateWriteChain;
+  };
+  const applyChunkSaveOutcome = (payload = {}, saveOutcome = {}) => {
+    if (saveOutcome.status !== 'timeout') return payload;
+    return {
+      ...payload,
+      status: 'failed',
+      completedAt: null,
+      error: saveOutcome.error,
+      persistenceFailure: {
+        reason: saveOutcome.reason,
+        timeoutMs: saveOutcome.timeoutMs
+      }
+    };
   };
   const reportChunkLlmBatchComplete = (phase, event = {}) => {
     options.onLlmBatchComplete?.({
@@ -3208,7 +3560,7 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
     if (jobState) {
       jobState.phases.chunk.total = semanticTasks.length;
       jobState.phases.llmMap.total = semanticTasks.length;
-      await saveStage2JobState(rootPath, jobState);
+      await saveChunkPipelineJobState({ phase: 'chunk-semantic-initialized' });
     }
 
     const semanticBatchSlices = createLlmBatchSlices(semanticTasks, batchSize);
@@ -3288,10 +3640,16 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           error: result?.error || null,
           rateLimitCooldownUntil: result?.rateLimitCooldownUntil || null
         };
-        await saveChunkExtractionResult(rootPath, task.taskKey, payload);
+        const saveOutcome = await saveChunkExtractionResultBounded(rootPath, task.taskKey, payload, options, {
+          phase: 'chunk-semantic-extraction',
+          chunkId: task.chunk.chunkId,
+          paperId: task.record.semanticPaper.paperId,
+          sourceKey: task.record.sourceState.sourceKey
+        });
+        const effectivePayload = applyChunkSaveOutcome(payload, saveOutcome);
         semanticTaskRunsByIndex[start + index] = {
           ...task,
-          ...payload
+          ...effectivePayload
         };
       }
 
@@ -3341,10 +3699,17 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           error: null,
           rateLimitCooldownUntil
         };
-        await saveChunkExtractionResult(rootPath, task.taskKey, payload);
+        const saveOutcome = await saveChunkExtractionResultBounded(rootPath, task.taskKey, payload, options, {
+          phase: 'chunk-semantic-extraction',
+          chunkId: task.chunk.chunkId,
+          paperId: task.record.semanticPaper.paperId,
+          sourceKey: task.record.sourceState.sourceKey,
+          rateLimitSkipped: true
+        });
+        const effectivePayload = applyChunkSaveOutcome(payload, saveOutcome);
         semanticTaskRunsByIndex[start + index] = {
           ...task,
-          ...payload
+          ...effectivePayload
         };
       }
 
@@ -3362,6 +3727,82 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
         rateLimitSkipped: true,
         rateLimitCooldownUntil
       };
+    }, {
+      llmBatchSliceTimeoutMs: batchSliceTimeoutMs,
+      async createTimeoutResult(slice, timeoutMs) {
+        const { start, batch, batchNumber, totalBatches } = slice;
+        const timeoutResults = [];
+        for (let index = 0; index < batch.length; index += 1) {
+          const task = batch[index];
+          if (task.status === 'completed') {
+            semanticTaskRunsByIndex[start + index] = task;
+            timeoutResults.push(task.result || null);
+            continue;
+          }
+          const result = createTimedOutSemanticInferenceResult(
+            options,
+            semanticExtractionPlan,
+            timeoutMs,
+            {
+              chunkId: task.chunk.chunkId,
+              paperId: task.record.semanticPaper.paperId,
+              sourceKey: task.record.sourceState.sourceKey,
+              sectionHeading: task.chunk.sectionHeading,
+              sectionRole: task.chunk.sectionRole,
+              chunkOrder: task.chunk.chunkOrder,
+              textHash: task.chunk.textHash
+            }
+          );
+          const payload = {
+            status: 'failed',
+            chunk: task.chunk,
+            result,
+            sourceKey: task.record.sourceState.sourceKey,
+            paperId: task.record.semanticPaper.paperId,
+            completedAt: null,
+            error: result.error,
+            timeoutMs
+          };
+          const saveOutcome = await saveChunkExtractionResultBounded(rootPath, task.taskKey, payload, options, {
+            phase: 'chunk-semantic-extraction',
+            chunkId: task.chunk.chunkId,
+            paperId: task.record.semanticPaper.paperId,
+            sourceKey: task.record.sourceState.sourceKey,
+            providerTimeout: true
+          });
+          const effectivePayload = applyChunkSaveOutcome(payload, saveOutcome);
+          semanticTaskRunsByIndex[start + index] = {
+            ...task,
+            ...effectivePayload
+          };
+          timeoutResults.push(result);
+        }
+
+        await updateJobStateSequentially((hasJobState) => {
+          completedChunkTasks = Math.min(completedChunkTasks + batch.length, semanticTasks.length);
+          completedSemanticBatches += 1;
+          if (!hasJobState) return;
+          jobState.phases.chunk.completed = completedChunkTasks;
+          jobState.phases.llmMap.completed = completedChunkTasks;
+          jobState.phases.chunk.lastBatchNumber = completedSemanticBatches;
+          jobState.phases.llmMap.lastBatchNumber = completedSemanticBatches;
+        });
+        const timeoutEvent = createLlmSliceTimeoutEvent(
+          'chunk-semantic-extraction',
+          slice,
+          timeoutMs,
+          semanticTasks.length,
+          batchConcurrency
+        );
+        options.onBatchComplete?.(timeoutEvent);
+        reportChunkLlmBatchComplete('chunk-semantic-extraction', timeoutEvent);
+        return {
+          ...slice,
+          timeout: true,
+          timeoutMs,
+          semanticBatchResults: timeoutResults
+        };
+      }
     });
     semanticTaskRuns.push(...semanticTaskRunsByIndex.filter(Boolean));
   } else if (semanticChunkCount) {
@@ -3538,14 +3979,91 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           batchCount: Math.ceil(relationTasks.length / batchSize),
           lastBatchNumber: 0
         };
-        await saveStage2JobState(rootPath, jobState);
+        await saveChunkPipelineJobState({ phase: 'chunk-relation-initialized' });
       }
 
       const relationBatchSlices = createLlmBatchSlices(relationTasks, batchSize);
       const relationTaskRunsByIndex = new Array(relationTasks.length);
+      const relationCircuitBreakerState = createRelationCircuitBreakerState(
+        resolveLlmRelationCircuitBreakerConfig(options)
+      );
       let completedRelationBatches = 0;
       await mapLlmBatchSlicesWithRateLimitStop(relationBatchSlices, batchConcurrency, async (slice) => {
         const { start, batch, batchNumber, totalBatches } = slice;
+        if (relationCircuitBreakerState.tripped) {
+          const skippedResults = [];
+          for (let index = 0; index < batch.length; index += 1) {
+            const task = batch[index];
+            if (task.status === 'completed') {
+              relationTaskRunsByIndex[start + index] = task;
+              skippedResults.push(task.result || null);
+              continue;
+            }
+            const result = createRelationCircuitBreakerResult(options, relationCircuitBreakerState, {
+              chunkId: task.chunk.chunkId,
+              paperId: task.record.semanticPaper.paperId,
+              sourceKey: task.record.sourceState.sourceKey,
+              sectionHeading: task.chunk.sectionHeading,
+              sectionRole: task.chunk.sectionRole,
+              chunkOrder: task.chunk.chunkOrder,
+              textHash: task.chunk.textHash
+            });
+            const payload = {
+              status: 'skipped',
+              chunk: task.chunk,
+              result,
+              sourceKey: task.record.sourceState.sourceKey,
+              paperId: task.record.semanticPaper.paperId,
+              completedAt: null,
+              error: result.error
+            };
+            const saveOutcome = await saveChunkExtractionResultBounded(rootPath, task.taskKey, payload, options, {
+              phase: 'chunk-relation-extraction',
+              chunkId: task.chunk.chunkId,
+              paperId: task.record.semanticPaper.paperId,
+              sourceKey: task.record.sourceState.sourceKey,
+              circuitBreakerSkipped: true
+            });
+            const effectivePayload = applyChunkSaveOutcome(payload, saveOutcome);
+            relationTaskRunsByIndex[start + index] = {
+              ...task,
+              result,
+              status: effectivePayload.status,
+              error: effectivePayload.error,
+              persistenceFailure: effectivePayload.persistenceFailure
+            };
+            skippedResults.push(result);
+          }
+
+          await updateJobStateSequentially((hasJobState) => {
+            completedRelationTasks = Math.min(completedRelationTasks + batch.length, relationTasks.length);
+            completedRelationBatches += 1;
+            if (!hasJobState) return;
+            jobState.phases.relation.completed = completedRelationTasks;
+            jobState.phases.relation.lastBatchNumber = completedRelationBatches;
+          });
+          const breakerEvent = {
+            phase: 'chunk-relation-extraction',
+            status: 'skipped',
+            reason: relationCircuitBreakerState.reason,
+            message: relationCircuitBreakerState.message,
+            batchNumber,
+            totalBatches,
+            completed: Math.min(start + batch.length, relationTasks.length),
+            total: relationTasks.length,
+            batchSize: batch.length,
+            skippedProviderCallCount: batch.length,
+            failureRate: relationCircuitBreakerState.failureRate,
+            llmBatchConcurrency: batchConcurrency
+          };
+          options.onBatchComplete?.(breakerEvent);
+          reportChunkLlmBatchComplete('chunk-relation-extraction', breakerEvent);
+          return {
+            ...slice,
+            circuitBreakerSkipped: true,
+            relationBatchResults: skippedResults
+          };
+        }
         const pending = batch.filter((item) => item.status !== 'completed');
         const inferredBatchResults = pending.length
           ? await inferChunkResearchSemanticsBatch(pending.map((item) => ({
@@ -3599,16 +4117,18 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
             })
           : [];
         const batchResults = [...inferredBatchResults];
+        const batchRuns = [];
 
         for (let index = 0; index < batch.length; index += 1) {
           const task = batch[index];
           if (task.status === 'completed') {
             relationTaskRunsByIndex[start + index] = task;
+            batchRuns.push(task);
             continue;
           }
           const result = batchResults.shift();
           const status = result?.rateLimitCooldownUntil ? 'rate-limited' : result?.error ? 'failed' : 'completed';
-          await saveChunkExtractionResult(rootPath, task.taskKey, {
+          const payload = {
             status,
             chunk: task.chunk,
             result,
@@ -3617,13 +4137,25 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
             completedAt: status === 'completed' ? new Date().toISOString() : null,
             error: result?.error || null,
             rateLimitCooldownUntil: result?.rateLimitCooldownUntil || null
+          };
+          const saveOutcome = await saveChunkExtractionResultBounded(rootPath, task.taskKey, payload, options, {
+            phase: 'chunk-relation-extraction',
+            chunkId: task.chunk.chunkId,
+            paperId: task.record.semanticPaper.paperId,
+            sourceKey: task.record.sourceState.sourceKey
           });
-          relationTaskRunsByIndex[start + index] = {
+          const effectivePayload = applyChunkSaveOutcome(payload, saveOutcome);
+          const taskRun = {
             ...task,
             result,
-            status
+            status: effectivePayload.status,
+            error: effectivePayload.error,
+            persistenceFailure: effectivePayload.persistenceFailure
           };
+          relationTaskRunsByIndex[start + index] = taskRun;
+          batchRuns.push(taskRun);
         }
+        recordRelationCircuitBreakerBatch(relationCircuitBreakerState, batchRuns);
 
         await updateJobStateSequentially((hasJobState) => {
           completedRelationTasks = Math.min(completedRelationTasks + batch.length, relationTasks.length);
@@ -3649,7 +4181,7 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
             rateLimitCooldownUntil,
             { skippedProviderCall: true }
           );
-          await saveChunkExtractionResult(rootPath, task.taskKey, {
+          const payload = {
             status: 'rate-limited',
             chunk: task.chunk,
             result,
@@ -3658,12 +4190,22 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
             completedAt: null,
             error: null,
             rateLimitCooldownUntil
+          };
+          const saveOutcome = await saveChunkExtractionResultBounded(rootPath, task.taskKey, payload, options, {
+            phase: 'chunk-relation-extraction',
+            chunkId: task.chunk.chunkId,
+            paperId: task.record.semanticPaper.paperId,
+            sourceKey: task.record.sourceState.sourceKey,
+            rateLimitSkipped: true
           });
+          const effectivePayload = applyChunkSaveOutcome(payload, saveOutcome);
           relationTaskRunsByIndex[start + index] = {
             ...task,
             result,
-            status: 'rate-limited',
-            rateLimitCooldownUntil
+            status: effectivePayload.status,
+            error: effectivePayload.error,
+            rateLimitCooldownUntil,
+            persistenceFailure: effectivePayload.persistenceFailure
           };
         }
 
@@ -3679,6 +4221,84 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           rateLimitSkipped: true,
           rateLimitCooldownUntil
         };
+      }, {
+        llmBatchSliceTimeoutMs: batchSliceTimeoutMs,
+        async createTimeoutResult(slice, timeoutMs) {
+          const { start, batch } = slice;
+          const timeoutResults = [];
+          const timeoutTaskRuns = [];
+          for (let index = 0; index < batch.length; index += 1) {
+            const task = batch[index];
+            if (task.status === 'completed') {
+              relationTaskRunsByIndex[start + index] = task;
+              timeoutTaskRuns.push(task);
+              timeoutResults.push(task.result || null);
+              continue;
+            }
+            const result = createTimedOutRelationInferenceResult(options, timeoutMs, {
+              chunkId: task.chunk.chunkId,
+              paperId: task.record.semanticPaper.paperId,
+              sourceKey: task.record.sourceState.sourceKey,
+              sectionHeading: task.chunk.sectionHeading,
+              sectionRole: task.chunk.sectionRole,
+              chunkOrder: task.chunk.chunkOrder,
+              textHash: task.chunk.textHash
+            });
+            const payload = {
+              status: 'failed',
+              chunk: task.chunk,
+              result,
+              sourceKey: task.record.sourceState.sourceKey,
+              paperId: task.record.semanticPaper.paperId,
+              completedAt: null,
+              error: result.error,
+              timeoutMs
+            };
+            const saveOutcome = await saveChunkExtractionResultBounded(rootPath, task.taskKey, payload, options, {
+              phase: 'chunk-relation-extraction',
+              chunkId: task.chunk.chunkId,
+              paperId: task.record.semanticPaper.paperId,
+              sourceKey: task.record.sourceState.sourceKey,
+              providerTimeout: true
+            });
+            const effectivePayload = applyChunkSaveOutcome(payload, saveOutcome);
+            const taskRun = {
+              ...task,
+              result,
+              status: effectivePayload.status,
+              error: effectivePayload.error,
+              timeoutMs,
+              persistenceFailure: effectivePayload.persistenceFailure
+            };
+            relationTaskRunsByIndex[start + index] = taskRun;
+            timeoutTaskRuns.push(taskRun);
+            timeoutResults.push(result);
+          }
+          recordRelationCircuitBreakerBatch(relationCircuitBreakerState, timeoutTaskRuns);
+
+          await updateJobStateSequentially((hasJobState) => {
+            completedRelationTasks = Math.min(completedRelationTasks + batch.length, relationTasks.length);
+            completedRelationBatches += 1;
+            if (!hasJobState) return;
+            jobState.phases.relation.completed = completedRelationTasks;
+            jobState.phases.relation.lastBatchNumber = completedRelationBatches;
+          });
+          const timeoutEvent = createLlmSliceTimeoutEvent(
+            'chunk-relation-extraction',
+            slice,
+            timeoutMs,
+            relationTasks.length,
+            batchConcurrency
+          );
+          options.onBatchComplete?.(timeoutEvent);
+          reportChunkLlmBatchComplete('chunk-relation-extraction', timeoutEvent);
+          return {
+            ...slice,
+            timeout: true,
+            timeoutMs,
+            relationBatchResults: timeoutResults
+          };
+        }
       });
       relationTaskRuns.push(...relationTaskRunsByIndex.filter(Boolean));
 
@@ -3687,6 +4307,8 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
         const relationCompletedCount = perPaperRelationRuns.filter((task) => task.status === 'completed').length;
         const relationFailedCount = perPaperRelationRuns.filter((task) => task.status === 'failed').length;
         const relationRateLimitedCount = perPaperRelationRuns.filter((task) => task.status === 'rate-limited').length;
+        const relationCircuitBreakerSkippedCount = perPaperRelationRuns
+          .filter((task) => task.status === 'skipped' && task.result?.reason === 'relation-circuit-breaker').length;
         const reduced = perPaperRelationRuns.reduce((acc, task) => {
           const result = task.result || {};
           if (task.status === 'rate-limited') {
@@ -3728,7 +4350,9 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           researchGoals: reduced.researchGoals,
           relations: reduced.relations,
           error: reduced.error,
-          reason: relationRateLimitedCount ? 'rate-limited' : null,
+          reason: relationRateLimitedCount
+            ? 'rate-limited'
+            : (relationCircuitBreakerSkippedCount ? 'relation-circuit-breaker' : null),
           rateLimitCooldownUntil: reduced.rateLimitCooldownUntil
         }, options);
         record.semanticPaper.llm.chunkPipeline = {
@@ -3737,6 +4361,7 @@ async function runChunkLlmPipelineForRecords(rootPath, records, options = {}, jo
           relationProcessedChunkCount: relationCompletedCount,
           relationFailedChunkCount: relationFailedCount,
           relationRateLimitedChunkCount: relationRateLimitedCount,
+          relationCircuitBreakerSkippedChunkCount: relationCircuitBreakerSkippedCount,
           relationSkippedProviderCallCount: perPaperRelationRuns
             .filter((task) => task.result?.skippedProviderCall).length
         };
@@ -3865,6 +4490,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   const batchSize = Math.max(1, Number(firstDefinedValue(options.llmBatchSize, options.batchSize, 8)));
   const batchConcurrency = resolveLlmBatchConcurrency(options);
+  const batchSliceTimeoutMs = resolveLlmBatchSliceTimeoutMs(options);
   let llmCompletedUnits = 0;
   announceStage(
     options,
@@ -4061,6 +4687,34 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
           }
         ))
       };
+    }, {
+      llmBatchSliceTimeoutMs: batchSliceTimeoutMs,
+      createTimeoutResult(slice, timeoutMs) {
+        const { batch: batchRecords } = slice;
+        const timeoutEvent = createLlmSliceTimeoutEvent(
+          'semantic-extraction',
+          slice,
+          timeoutMs,
+          semanticPending.length,
+          batchConcurrency
+        );
+        options.onBatchComplete?.(timeoutEvent);
+        reportLlmBatchComplete('semantic-extraction', timeoutEvent);
+        return {
+          ...slice,
+          timeout: true,
+          timeoutMs,
+          semanticBatchResults: batchRecords.map((record) => createTimedOutSemanticInferenceResult(
+            options,
+            semanticExtractionPlan,
+            timeoutMs,
+            {
+              paperId: record.semanticPaper?.paperId || null,
+              sourceKey: record.sourceState?.sourceKey || null
+            }
+          ))
+        };
+      }
     });
     await semanticProgressChain;
 
@@ -4296,6 +4950,33 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
           { skippedProviderCall: true }
         ))
       };
+    }, {
+      llmBatchSliceTimeoutMs: batchSliceTimeoutMs,
+      createTimeoutResult(slice, timeoutMs) {
+        const { batch: batchRecords } = slice;
+        const timeoutEvent = createLlmSliceTimeoutEvent(
+          'relation-extraction',
+          slice,
+          timeoutMs,
+          relationPending.length,
+          batchConcurrency
+        );
+        options.onBatchComplete?.(timeoutEvent);
+        reportLlmBatchComplete('relation-extraction', timeoutEvent);
+        return {
+          ...slice,
+          timeout: true,
+          timeoutMs,
+          relationBatchResults: batchRecords.map((record) => createTimedOutRelationInferenceResult(
+            options,
+            timeoutMs,
+            {
+              paperId: record.semanticPaper?.paperId || null,
+              sourceKey: record.sourceState?.sourceKey || null
+            }
+          ))
+        };
+      }
     });
     await relationProgressChain;
 

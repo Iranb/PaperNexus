@@ -9,7 +9,8 @@ import {
   configuredWorkerCoveragePayload,
   importTaskLogPayload,
   importTaskPayload,
-  listImportTasksPayload
+  listImportTasksPayload,
+  resolveCorpusForApi
 } from '../server/api.js';
 import { getImportWorkerCoverageSnapshot } from '../core/imports/worker.js';
 import { listImportSemanticEnrichmentJobs } from '../storage/import-semantic-store.js';
@@ -504,8 +505,15 @@ function taskLifecycleStatus(task = {}, name = '') {
     return normalizeProgressToken(task.semanticStatus || task.result?.semanticStatus, 'unknown');
   }
   if (key === 'authoritative-sync') {
-    const sync = getTaskAuthoritativeSync(task);
-    return normalizeProgressToken(task.authoritativeSyncStatus || task.result?.authoritativeSyncStatus || sync?.status, 'unknown');
+    const sync = getCurrentTaskAuthoritativeSync(task);
+    const status = normalizeAuthoritativeSyncLifecycleStatus(
+      sync?.status || task.authoritativeSyncStatus || task.result?.authoritativeSyncStatus,
+      'unknown'
+    );
+    if (shouldTreatAuthoritativeSyncAsNotRequired(task, sync, status)) {
+      return 'not-required';
+    }
+    return status;
   }
   return 'unknown';
 }
@@ -568,7 +576,7 @@ function summarizeActiveTask(task = null) {
     graphVisibilityStatus: taskLifecycleStatus(task, 'graph-visibility'),
     semanticStatus: taskLifecycleStatus(task, 'semantic'),
     authoritativeSyncStatus: taskLifecycleStatus(task, 'authoritative-sync'),
-    authoritativeSyncJobId: getTaskAuthoritativeSync(task)?.jobId || null,
+    authoritativeSyncJobId: getCurrentTaskAuthoritativeSync(task)?.jobId || null,
     progressDiagnostics: isPlainObject(progress.diagnostics) ? progress.diagnostics : null,
     importPerformance: summarizeTaskImportPerformance(task)
   };
@@ -642,6 +650,35 @@ async function resolveTaskId(candidate, args = {}, options = {}) {
   return String(task?.id || '').trim();
 }
 
+function normalizeTaskIdListValue(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => normalizeTaskIdListValue(entry));
+  }
+  return String(value || '')
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function collectRequestedTaskIds(args = {}) {
+  const rawValues = [];
+  if (Object.hasOwn(args, 'taskIds')) rawValues.push(args.taskIds);
+  if (Object.hasOwn(args, 'task_ids')) rawValues.push(args.task_ids);
+
+  const seen = new Set();
+  const taskIds = [];
+  for (const taskId of rawValues.flatMap((value) => normalizeTaskIdListValue(value))) {
+    if (seen.has(taskId)) continue;
+    seen.add(taskId);
+    taskIds.push(taskId);
+  }
+  return taskIds;
+}
+
+function hasBatchTaskStatusRequest(args = {}) {
+  return Object.hasOwn(args, 'taskIds') || Object.hasOwn(args, 'task_ids');
+}
+
 function getTaskAuthoritativeSync(task = {}) {
   const resultSync = task?.result?.authoritativeSync;
   if (resultSync && typeof resultSync === 'object' && !Array.isArray(resultSync)) {
@@ -654,9 +691,77 @@ function getTaskAuthoritativeSync(task = {}) {
   return null;
 }
 
+function getTaskSemanticAuthoritativeSync(task = {}) {
+  const resultSemanticSync = task?.result?.semanticEnrichment?.result?.authoritativeSync;
+  if (resultSemanticSync && typeof resultSemanticSync === 'object' && !Array.isArray(resultSemanticSync)) {
+    return resultSemanticSync;
+  }
+  const taskSemanticSync = task?.semanticEnrichment?.result?.authoritativeSync;
+  if (taskSemanticSync && typeof taskSemanticSync === 'object' && !Array.isArray(taskSemanticSync)) {
+    return taskSemanticSync;
+  }
+  return null;
+}
+
+function getCurrentTaskAuthoritativeSync(task = {}) {
+  return getTaskSemanticAuthoritativeSync(task) || getTaskAuthoritativeSync(task);
+}
+
+function getAuthoritativeSyncJobId(sync = {}) {
+  return String(sync?.jobId || sync?.job_id || '').trim();
+}
+
+function collectTaskAuthoritativeSyncJobIds(task = {}) {
+  const jobIds = new Set();
+  for (const sync of [getTaskAuthoritativeSync(task), getTaskSemanticAuthoritativeSync(task)]) {
+    const jobId = getAuthoritativeSyncJobId(sync);
+    if (jobId) jobIds.add(jobId);
+  }
+  return Array.from(jobIds);
+}
+
 function isAuthoritativeSyncTerminal(job = {}) {
   const status = String(job?.status || '').trim().toLowerCase();
   return status === 'completed' || status === 'failed' || status === 'superseded';
+}
+
+function normalizeAuthoritativeSyncLifecycleStatus(value, fallback = 'unknown') {
+  const status = normalizeProgressToken(value, fallback);
+  return status === 'queued' ? 'pending' : status;
+}
+
+const NON_WAITABLE_AUTHORITATIVE_SYNC_STATUSES = new Set(['pending', 'running']);
+const LEGACY_AUTHORITATIVE_SYNC_NO_JOB_SOURCE = 'legacy-no-authoritative-sync-job';
+
+function shouldTreatAuthoritativeSyncAsNotRequired(task = {}, sync = null, normalizedStatus = '') {
+  if (!isPlainObject(sync)) return false;
+  if (normalizeProgressToken(task?.status, '') !== 'completed') return false;
+  if (getAuthoritativeSyncJobId(sync)) return false;
+
+  const status = normalizedStatus || normalizeAuthoritativeSyncLifecycleStatus(
+    sync?.status || task?.authoritativeSyncStatus || task?.result?.authoritativeSyncStatus,
+    ''
+  );
+  if (!NON_WAITABLE_AUTHORITATIVE_SYNC_STATUSES.has(status)) return false;
+
+  const semanticStatus = taskLifecycleStatus(task, 'semantic');
+  return semanticStatus !== 'pending' && semanticStatus !== 'queued' && semanticStatus !== 'running';
+}
+
+function createNoJobAuthoritativeSyncPayload(sync = {}) {
+  const originalStatus = normalizeAuthoritativeSyncLifecycleStatus(sync?.status, '');
+  return {
+    ...(isPlainObject(sync) ? sync : {}),
+    jobId: null,
+    status: 'not-required',
+    originalStatus: originalStatus || null,
+    source: LEGACY_AUTHORITATIVE_SYNC_NO_JOB_SOURCE
+  };
+}
+
+function createNoJobAuthoritativeSyncForTask(task = {}, sync = null) {
+  if (!shouldTreatAuthoritativeSyncAsNotRequired(task, sync)) return null;
+  return createNoJobAuthoritativeSyncPayload(sync);
 }
 
 function normalizeImportWaitTarget(args = {}) {
@@ -809,7 +914,7 @@ async function loadAuthoritativeSyncJobSnapshotIndex(rootPath) {
 
 function createHydratedAuthoritativeSyncPayload(sync = {}, job = null) {
   const jobId = String(sync?.jobId || sync?.job_id || job?.jobId || job?.job_id || '').trim();
-  const status = normalizeProgressToken(job?.status || sync?.status, sync?.status || 'unknown');
+  const status = normalizeAuthoritativeSyncLifecycleStatus(job?.status || sync?.status, sync?.status || 'unknown');
   return {
     ...(sync && typeof sync === 'object' ? sync : {}),
     jobId: jobId || null,
@@ -825,75 +930,284 @@ function createHydratedAuthoritativeSyncPayload(sync = {}, job = null) {
   };
 }
 
+function createHydratedAuthoritativeSyncForJob(sync = {}, job = null) {
+  if (!sync || typeof sync !== 'object' || !job) return null;
+  const syncJobId = getAuthoritativeSyncJobId(sync);
+  const jobId = String(job?.jobId || job?.job_id || '').trim();
+  if (!syncJobId || !jobId || syncJobId !== jobId) return null;
+  return createHydratedAuthoritativeSyncPayload(sync, job);
+}
+
 function applyHydratedAuthoritativeSync(task = {}, job = null) {
   if (!task || typeof task !== 'object' || !job) return task;
-  const sync = getTaskAuthoritativeSync(task) || {};
-  const hydratedSync = createHydratedAuthoritativeSyncPayload(sync, job);
   const result = task.result && typeof task.result === 'object' && !Array.isArray(task.result)
     ? task.result
     : null;
   const taskSync = task.authoritativeSync && typeof task.authoritativeSync === 'object' && !Array.isArray(task.authoritativeSync)
     ? task.authoritativeSync
     : null;
+  const resultSync = result?.authoritativeSync && typeof result.authoritativeSync === 'object' && !Array.isArray(result.authoritativeSync)
+    ? result.authoritativeSync
+    : null;
+  const resultSemantic = result?.semanticEnrichment && typeof result.semanticEnrichment === 'object' && !Array.isArray(result.semanticEnrichment)
+    ? result.semanticEnrichment
+    : null;
+  const resultSemanticResult = resultSemantic?.result && typeof resultSemantic.result === 'object' && !Array.isArray(resultSemantic.result)
+    ? resultSemantic.result
+    : null;
+  const resultSemanticSync = resultSemanticResult?.authoritativeSync && typeof resultSemanticResult.authoritativeSync === 'object' && !Array.isArray(resultSemanticResult.authoritativeSync)
+    ? resultSemanticResult.authoritativeSync
+    : null;
+  const taskSemantic = task.semanticEnrichment && typeof task.semanticEnrichment === 'object' && !Array.isArray(task.semanticEnrichment)
+    ? task.semanticEnrichment
+    : null;
+  const taskSemanticResult = taskSemantic?.result && typeof taskSemantic.result === 'object' && !Array.isArray(taskSemantic.result)
+    ? taskSemantic.result
+    : null;
+  const taskSemanticSync = taskSemanticResult?.authoritativeSync && typeof taskSemanticResult.authoritativeSync === 'object' && !Array.isArray(taskSemanticResult.authoritativeSync)
+    ? taskSemanticResult.authoritativeSync
+    : null;
 
-  return {
+  const hydratedTaskSync = createHydratedAuthoritativeSyncForJob(taskSync, job);
+  const hydratedResultSync = createHydratedAuthoritativeSyncForJob(resultSync, job);
+  const hydratedResultSemanticSync = createHydratedAuthoritativeSyncForJob(resultSemanticSync, job);
+  const hydratedTaskSemanticSync = createHydratedAuthoritativeSyncForJob(taskSemanticSync, job);
+
+  const updatedResult = result
+    ? {
+        ...result,
+        ...(hydratedResultSync
+          ? {
+              authoritativeSyncStatus: hydratedResultSync.status,
+              authoritativeSync: {
+                ...resultSync,
+                ...hydratedResultSync
+              }
+            }
+          : {}),
+        ...(hydratedResultSemanticSync && resultSemantic && resultSemanticResult
+          ? {
+              semanticEnrichment: {
+                ...resultSemantic,
+                result: {
+                  ...resultSemanticResult,
+                  authoritativeSync: {
+                    ...resultSemanticSync,
+                    ...hydratedResultSemanticSync
+                  }
+                }
+              }
+            }
+          : {})
+      }
+    : task.result;
+
+  const updatedTask = {
     ...task,
-    authoritativeSyncStatus: hydratedSync.status,
-    authoritativeSync: taskSync
+    authoritativeSync: hydratedTaskSync && taskSync
       ? {
           ...taskSync,
-          ...hydratedSync
+          ...hydratedTaskSync
         }
       : task.authoritativeSync,
-    result: result
+    result: updatedResult,
+    semanticEnrichment: hydratedTaskSemanticSync && taskSemantic && taskSemanticResult
       ? {
-          ...result,
-          authoritativeSyncStatus: hydratedSync.status,
-          authoritativeSync: {
-            ...(result.authoritativeSync && typeof result.authoritativeSync === 'object' && !Array.isArray(result.authoritativeSync)
-              ? result.authoritativeSync
-              : {}),
-            ...hydratedSync
+          ...taskSemantic,
+          result: {
+            ...taskSemanticResult,
+            authoritativeSync: {
+              ...taskSemanticSync,
+              ...hydratedTaskSemanticSync
+            }
           }
         }
-      : task.result
+      : task.semanticEnrichment
+  };
+
+  return {
+    ...updatedTask,
+    authoritativeSyncStatus: taskLifecycleStatus(updatedTask, 'authoritative-sync')
+  };
+}
+
+function applyNoJobAuthoritativeSyncFallback(task = {}) {
+  if (!task || typeof task !== 'object') return task;
+  const currentSync = getCurrentTaskAuthoritativeSync(task);
+  if (!shouldTreatAuthoritativeSyncAsNotRequired(task, currentSync)) return task;
+
+  const result = task.result && typeof task.result === 'object' && !Array.isArray(task.result)
+    ? task.result
+    : null;
+  const taskSync = task.authoritativeSync && typeof task.authoritativeSync === 'object' && !Array.isArray(task.authoritativeSync)
+    ? task.authoritativeSync
+    : null;
+  const resultSync = result?.authoritativeSync && typeof result.authoritativeSync === 'object' && !Array.isArray(result.authoritativeSync)
+    ? result.authoritativeSync
+    : null;
+  const resultSemantic = result?.semanticEnrichment && typeof result.semanticEnrichment === 'object' && !Array.isArray(result.semanticEnrichment)
+    ? result.semanticEnrichment
+    : null;
+  const resultSemanticResult = resultSemantic?.result && typeof resultSemantic.result === 'object' && !Array.isArray(resultSemantic.result)
+    ? resultSemantic.result
+    : null;
+  const resultSemanticSync = resultSemanticResult?.authoritativeSync && typeof resultSemanticResult.authoritativeSync === 'object' && !Array.isArray(resultSemanticResult.authoritativeSync)
+    ? resultSemanticResult.authoritativeSync
+    : null;
+  const taskSemantic = task.semanticEnrichment && typeof task.semanticEnrichment === 'object' && !Array.isArray(task.semanticEnrichment)
+    ? task.semanticEnrichment
+    : null;
+  const taskSemanticResult = taskSemantic?.result && typeof taskSemantic.result === 'object' && !Array.isArray(taskSemantic.result)
+    ? taskSemantic.result
+    : null;
+  const taskSemanticSync = taskSemanticResult?.authoritativeSync && typeof taskSemanticResult.authoritativeSync === 'object' && !Array.isArray(taskSemanticResult.authoritativeSync)
+    ? taskSemanticResult.authoritativeSync
+    : null;
+
+  const fallbackTaskSync = createNoJobAuthoritativeSyncForTask(task, taskSync);
+  const fallbackResultSync = createNoJobAuthoritativeSyncForTask(task, resultSync);
+  const fallbackResultSemanticSync = createNoJobAuthoritativeSyncForTask(task, resultSemanticSync);
+  const fallbackTaskSemanticSync = createNoJobAuthoritativeSyncForTask(task, taskSemanticSync);
+
+  const updatedResult = result
+    ? {
+        ...result,
+        ...(fallbackResultSync
+          ? {
+              authoritativeSyncStatus: fallbackResultSync.status,
+              authoritativeSync: {
+                ...resultSync,
+                ...fallbackResultSync
+              }
+            }
+          : {}),
+        ...(fallbackResultSemanticSync && resultSemantic && resultSemanticResult
+          ? {
+              semanticEnrichment: {
+                ...resultSemantic,
+                result: {
+                  ...resultSemanticResult,
+                  authoritativeSync: {
+                    ...resultSemanticSync,
+                    ...fallbackResultSemanticSync
+                  }
+                }
+              }
+            }
+          : {})
+      }
+    : task.result;
+
+  const updatedTask = {
+    ...task,
+    authoritativeSync: fallbackTaskSync && taskSync
+      ? {
+          ...taskSync,
+          ...fallbackTaskSync
+        }
+      : task.authoritativeSync,
+    result: updatedResult,
+    semanticEnrichment: fallbackTaskSemanticSync && taskSemantic && taskSemanticResult
+      ? {
+          ...taskSemantic,
+          result: {
+            ...taskSemanticResult,
+            authoritativeSync: {
+              ...taskSemanticSync,
+              ...fallbackTaskSemanticSync
+            }
+          }
+        }
+      : task.semanticEnrichment
+  };
+
+  return {
+    ...updatedTask,
+    authoritativeSyncStatus: taskLifecycleStatus(updatedTask, 'authoritative-sync')
   };
 }
 
 async function hydrateTaskAuthoritativeSync(rootPath, task = {}) {
-  const sync = getTaskAuthoritativeSync(task);
-  const jobId = String(sync?.jobId || sync?.job_id || '').trim();
-  if (!jobId) return task;
-  const job = await loadAuthoritativeSyncJobSnapshot(rootPath, jobId);
-  return applyHydratedAuthoritativeSync(task, job);
+  const jobIds = collectTaskAuthoritativeSyncJobIds(task);
+  if (!jobIds.length) return applyNoJobAuthoritativeSyncFallback(task);
+  let hydratedTask = task;
+  for (const jobId of jobIds) {
+    const job = await loadAuthoritativeSyncJobSnapshot(rootPath, jobId);
+    hydratedTask = applyHydratedAuthoritativeSync(hydratedTask, job);
+  }
+  return applyNoJobAuthoritativeSyncFallback(hydratedTask);
 }
 
 async function hydrateTasksAuthoritativeSync(rootPath, tasks = []) {
   if (!Array.isArray(tasks) || !tasks.length) return tasks;
-  const hasSyncJobs = tasks.some((task) => {
-    const sync = getTaskAuthoritativeSync(task);
-    return Boolean(String(sync?.jobId || sync?.job_id || '').trim());
-  });
-  if (!hasSyncJobs) return tasks;
+  const hasSyncJobs = tasks.some((task) => collectTaskAuthoritativeSyncJobIds(task).length > 0);
+  if (!hasSyncJobs) return tasks.map((task) => applyNoJobAuthoritativeSyncFallback(task));
 
   const jobIndex = await loadAuthoritativeSyncJobSnapshotIndex(rootPath);
   return tasks.map((task) => {
-    const sync = getTaskAuthoritativeSync(task);
-    const jobId = String(sync?.jobId || sync?.job_id || '').trim();
-    return jobId ? applyHydratedAuthoritativeSync(task, jobIndex.get(jobId) || null) : task;
+    let hydratedTask = task;
+    for (const jobId of collectTaskAuthoritativeSyncJobIds(task)) {
+      hydratedTask = applyHydratedAuthoritativeSync(hydratedTask, jobIndex.get(jobId) || null);
+    }
+    return applyNoJobAuthoritativeSyncFallback(hydratedTask);
   });
 }
 
-async function hydrateImportTaskPayloadAuthoritativeSync(payload = {}) {
+async function hydrateImportTaskPayloadAuthoritativeSync(payload = {}, rootPath = '') {
   if (!payload?.task) return payload;
+  const hydrationRootPath = rootPath || payload.rootPath;
   return {
     ...payload,
-    task: await hydrateTaskAuthoritativeSync(payload.rootPath, payload.task)
+    task: await hydrateTaskAuthoritativeSync(hydrationRootPath, payload.task)
   };
 }
 
+async function importTaskBatchPayload(candidate, taskIds = [], operation = 'status', options = {}) {
+  const payload = await listImportTasksPayload(candidate, options);
+  const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, payload, options);
+  const taskById = new Map((payload.tasks || []).map((task) => [String(task?.id || '').trim(), task]));
+  const tasks = [];
+  const missingTaskIds = [];
+
+  for (const taskId of taskIds) {
+    const task = taskById.get(taskId);
+    if (task) {
+      tasks.push(task);
+    } else {
+      missingTaskIds.push(taskId);
+    }
+  }
+
+  const hydratedTasks = await hydrateTasksAuthoritativeSync(internalRootPath, tasks);
+  return {
+    contractVersion: 'papernexus-import-workflow-task-batch-v1',
+    rootPath: payload.rootPath,
+    operation,
+    requestedTaskIds: taskIds,
+    missingTaskIds,
+    taskCount: hydratedTasks.length,
+    tasks: hydratedTasks,
+    summary: summarizeProgressTasks(hydratedTasks),
+    queueSummary: payload.summary,
+    generatedAt: payload.generatedAt || new Date().toISOString()
+  };
+}
+
+async function resolveImportWorkflowInternalRootPath(candidate, payload = {}, options = {}) {
+  const payloadRoot = String(payload?.rootPath || '').trim();
+  if (payloadRoot && !payloadRoot.startsWith('~')) return payloadRoot;
+  try {
+    return await resolveCorpusForApi(candidate, {
+      ...options,
+      portablePaths: false
+    });
+  } catch {
+    return payloadRoot;
+  }
+}
+
 async function waitForAuthoritativeSyncJob(rootPath, task, deadline, intervalSeconds) {
-  const sync = getTaskAuthoritativeSync(task);
+  const sync = getCurrentTaskAuthoritativeSync(task);
   const jobId = String(sync?.jobId || sync?.job_id || '').trim();
   if (!jobId) return sync;
 
@@ -979,22 +1293,31 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       if (Number.isFinite(limit) && limit > 0) {
         payload.tasks = (payload.tasks || []).slice(0, limit);
       }
-      payload.tasks = await hydrateTasksAuthoritativeSync(payload.rootPath, payload.tasks || []);
+      const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, payload, options);
+      payload.tasks = await hydrateTasksAuthoritativeSync(internalRootPath, payload.tasks || []);
       return payload;
     }
     case 'progress':
     case 'status': {
+      if (hasBatchTaskStatusRequest(args)) {
+        const requestedTaskIds = collectRequestedTaskIds(args);
+        if (!requestedTaskIds.length) {
+          throw new Error(`taskIds is required for import_workflow ${operation} batch lookup.`);
+        }
+        return importTaskBatchPayload(candidate, requestedTaskIds, operation, options);
+      }
       const taskId = await resolveTaskId(candidate, args, options);
       if (!taskId) {
         throw new Error(`taskId is required for import_workflow ${operation}.`);
       }
-      return hydrateImportTaskPayloadAuthoritativeSync(await importTaskPayload(candidate, taskId, options));
+      const payload = await importTaskPayload(candidate, taskId, options);
+      const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, payload, options);
+      return hydrateImportTaskPayloadAuthoritativeSync(payload, internalRootPath);
     }
     case 'queue_progress': {
       const payload = await listImportTasksPayload(candidate, options);
-      const requestedTaskIds = Array.isArray(args.taskIds)
-        ? args.taskIds.map((value) => String(value || '').trim()).filter(Boolean)
-        : [];
+      const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, payload, options);
+      const requestedTaskIds = collectRequestedTaskIds(args);
       let tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
       if (requestedTaskIds.length) {
         const requested = new Set(requestedTaskIds);
@@ -1009,33 +1332,34 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       if (Number.isFinite(limit) && limit > 0) {
         tasks = tasks.slice(0, limit);
       }
-      tasks = await hydrateTasksAuthoritativeSync(payload.rootPath, tasks);
+      tasks = await hydrateTasksAuthoritativeSync(internalRootPath, tasks);
       const summary = summarizeProgressTasks(tasks);
       const eventTail = Math.max(0, Number(args.eventTail ?? args.event_tail ?? args.recentEventLimit ?? args.recent_event_limit ?? 5) || 0);
       const dagTail = Math.max(0, Number(args.dagTail ?? args.dag_tail ?? args.recentDagEventLimit ?? args.recent_dag_event_limit ?? eventTail) || 0);
       const includeDagComparison = enabledFlag(args.includeDagComparison ?? args.include_dag_comparison, true);
       if (summary.activeTaskId && summary.activeTask && eventTail > 0) {
-        summary.activeTask.eventLedger = await tailImportTaskEvents(payload.rootPath, summary.activeTaskId, {
+        summary.activeTask.eventLedger = await tailImportTaskEvents(internalRootPath, summary.activeTaskId, {
           tail: eventTail
         });
       }
       if (summary.activeTaskId && summary.activeTask && dagTail > 0) {
-        summary.activeTask.dagEventLedger = await tailImportTaskDagEvents(payload.rootPath, summary.activeTaskId, {
+        summary.activeTask.dagEventLedger = await tailImportTaskDagEvents(internalRootPath, summary.activeTaskId, {
           tail: dagTail
         });
       }
       if (summary.activeTaskId && summary.activeTask && includeDagComparison) {
-        summary.activeTask.dagComparison = await createImportDagComparisonReport(payload.rootPath, summary.activeTaskId);
+        summary.activeTask.dagComparison = await createImportDagComparisonReport(internalRootPath, summary.activeTaskId);
       }
-      const workerCoverage = await configuredWorkerCoveragePayload(payload.rootPath, options);
-      const workerSeen = getImportWorkerCoverageSnapshot(payload.rootPath);
+      const workerCoverage = await configuredWorkerCoveragePayload(internalRootPath, options);
+      const workerRootPath = workerCoverage.coveredRootPath || internalRootPath;
+      const workerSeen = getImportWorkerCoverageSnapshot(workerRootPath) || getImportWorkerCoverageSnapshot(internalRootPath);
       const includeSemanticQueue = enabledFlag(args.includeSemanticQueue ?? args.include_semantic_queue, true);
       return {
         rootPath: payload.rootPath,
         summary,
         queueSummary: payload.summary,
         semanticQueue: includeSemanticQueue
-          ? await importSemanticQueueProgressPayload(payload.rootPath, args)
+          ? await importSemanticQueueProgressPayload(workerRootPath, args)
           : null,
         workerCoverage: {
           ...workerCoverage,
@@ -1063,26 +1387,31 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       const deadline = Date.now() + (Math.max(1, timeoutSeconds) * 1000);
       const waitTarget = normalizeImportWaitTarget(args);
       const waitForAuthoritativeSync = shouldWaitForAuthoritativeSyncAfterTarget(args, waitTarget);
+      const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, {}, options);
 
       while (true) {
         const [taskPayload, logPayload] = await Promise.all([
           importTaskPayload(candidate, taskId, options),
           importTaskLogPayload(candidate, taskId, options)
         ]);
-        const waitStatus = isImportWaitTargetSatisfied(taskPayload.task, waitTarget);
-        const taskStatus = normalizeProgressToken(taskPayload.task?.status, 'unknown');
+        const task = await hydrateTaskAuthoritativeSync(internalRootPath, taskPayload.task);
+        const waitStatus = isImportWaitTargetSatisfied(task, waitTarget);
+        const taskStatus = normalizeProgressToken(task?.status, 'unknown');
         if (waitStatus) {
           const authoritativeSync = taskStatus === 'completed' && waitForAuthoritativeSync
             ? await waitForAuthoritativeSyncJob(
-                taskPayload.rootPath,
-                taskPayload.task,
+                internalRootPath,
+                task,
                 deadline,
                 intervalSeconds
               )
-            : getTaskAuthoritativeSync(taskPayload.task);
+            : getTaskAuthoritativeSync(task);
+          const hydratedTask = authoritativeSync?.job
+            ? applyHydratedAuthoritativeSync(task, authoritativeSync.job)
+            : task;
           return {
             rootPath: taskPayload.rootPath,
-            task: taskPayload.task,
+            task: hydratedTask,
             authoritativeSync,
             waitTarget,
             waitForAuthoritativeSync,
@@ -1092,9 +1421,9 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
           };
         }
         if (Date.now() >= deadline) {
-          const latestWaitStatus = importWaitStatus(taskPayload.task, waitTarget, 'timeout');
+          const latestWaitStatus = importWaitStatus(task, waitTarget, 'timeout');
           throw new Error(
-            `Timed out waiting for task ${taskId} target=${waitTarget}. Last status=${latestWaitStatus.taskStatus} graph=${latestWaitStatus.graphVisibilityStatus} semantic=${latestWaitStatus.semanticStatus} stage=${taskPayload.task?.stage || 'unknown'}`
+            `Timed out waiting for task ${taskId} target=${waitTarget}. Last status=${latestWaitStatus.taskStatus} graph=${latestWaitStatus.graphVisibilityStatus} semantic=${latestWaitStatus.semanticStatus} stage=${task?.stage || 'unknown'}`
           );
         }
         await sleep(Math.max(0.05, intervalSeconds) * 1000);

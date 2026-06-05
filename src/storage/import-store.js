@@ -28,6 +28,9 @@ const IMPORT_DAG_EVENT_CONTRACT_VERSION = 'import-dag-event-v1';
 const IMPORT_STAGE_TOTAL = 4;
 const DEFAULT_FAILED_IMPORT_RETRY_DELAY_MS = 5 * 60 * 1000;
 const DEFAULT_FAILED_IMPORT_RETRY_MAX = 3;
+const DEFAULT_IMPORT_QUEUE_LOCK_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_IMPORT_QUEUE_LOCK_STALE_MS = 30 * 1000;
+const DEFAULT_IMPORT_QUEUE_LOCK_HEARTBEAT_INTERVAL_MS = 5 * 1000;
 const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
 const HARD_IMPORT_BATCH_MAX_TASKS = 16;
 const IMPORT_PROCESSING_PROFILES = new Set([
@@ -269,11 +272,17 @@ function decorateTaskWithQueueProgress(task, queueOrderedTasks = []) {
   const activeTasks = queueOrderedTasks.filter((entry) => !['completed', 'failed'].includes(String(entry?.status || '').trim().toLowerCase()));
   const queuePosition = activeTasks.findIndex((entry) => entry.id === task.id);
   const decoratedTask = decorateImportTaskLifecycle(task);
+  const lastEventAt = decoratedTask.progress?.lastEventAt
+    || decoratedTask.updatedAt
+    || decoratedTask.startedAt
+    || decoratedTask.createdAt
+    || new Date(0).toISOString();
   return {
     ...decoratedTask,
     progress: createImportProgress(decoratedTask, {
       queuePosition: queuePosition === -1 ? null : queuePosition + 1,
-      queuedAhead: queuePosition === -1 ? 0 : queuePosition
+      queuedAhead: queuePosition === -1 ? 0 : queuePosition,
+      lastEventAt
     })
   };
 }
@@ -714,6 +723,22 @@ function resolveImportBatchReserveLimits(options = {}) {
   };
 }
 
+function normalizeImportReserveTaskIdSet(options = {}) {
+  const raw = options.importReserveTaskIds ?? options.reserveTaskIds;
+  if (raw === undefined || raw === null) return null;
+  const values = Array.isArray(raw) ? raw : String(raw).split(/[,\s]+/);
+  const ids = values
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  return ids.length ? new Set(ids) : new Set();
+}
+
+function importTaskAllowedByReserveSet(taskOrJob = {}, reserveTaskIds = null) {
+  if (!reserveTaskIds) return true;
+  const id = String(taskOrJob?.id || '').trim();
+  return Boolean(id && reserveTaskIds.has(id));
+}
+
 function getImportTaskFileCount(task = {}) {
   return Array.isArray(task.files) ? task.files.length : 0;
 }
@@ -875,6 +900,59 @@ function resolveFailedImportRetryMax(options = {}) {
   const raw = Number(options.importFailedRetryMax ?? options.failedRetryMax ?? DEFAULT_FAILED_IMPORT_RETRY_MAX);
   if (!Number.isFinite(raw) || raw < 0) return DEFAULT_FAILED_IMPORT_RETRY_MAX;
   return Math.floor(raw);
+}
+
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === '') continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return Math.floor(numeric);
+  }
+  return null;
+}
+
+export function createImportQueueLockOptions(options = {}) {
+  const baseLockOptions = options.lockOptions && typeof options.lockOptions === 'object' && !Array.isArray(options.lockOptions)
+    ? options.lockOptions
+    : {};
+  const timeoutMs = firstPositiveNumber(
+    options.importQueueLockTimeoutMs,
+    options.queueLockTimeoutMs,
+    options.importsQueueLockTimeoutMs,
+    baseLockOptions.timeoutMs,
+    DEFAULT_IMPORT_QUEUE_LOCK_TIMEOUT_MS
+  );
+  const staleMs = Math.max(timeoutMs, firstPositiveNumber(
+    options.importQueueLockStaleMs,
+    options.queueLockStaleMs,
+    options.importsQueueLockStaleMs,
+    baseLockOptions.staleMs,
+    DEFAULT_IMPORT_QUEUE_LOCK_STALE_MS
+  ));
+  const heartbeatIntervalMs = firstPositiveNumber(
+    options.importQueueLockHeartbeatIntervalMs,
+    options.queueLockHeartbeatIntervalMs,
+    options.importsQueueLockHeartbeatIntervalMs,
+    baseLockOptions.heartbeatIntervalMs,
+    DEFAULT_IMPORT_QUEUE_LOCK_HEARTBEAT_INTERVAL_MS
+  );
+  const pollIntervalMs = firstPositiveNumber(
+    options.importQueueLockPollIntervalMs,
+    options.queueLockPollIntervalMs,
+    options.importsQueueLockPollIntervalMs,
+    baseLockOptions.pollIntervalMs
+  );
+  return {
+    ...baseLockOptions,
+    timeoutMs,
+    staleMs,
+    heartbeatIntervalMs,
+    ...(pollIntervalMs ? { pollIntervalMs } : {})
+  };
+}
+
+function withImportQueueLock(queueLockPath, fn, options = {}) {
+  return withFileLock(queueLockPath, fn, createImportQueueLockOptions(options));
 }
 
 export function getImportPaths(rootPath) {
@@ -1121,9 +1199,9 @@ function buildReconciledImportQueue(queue, tasks = []) {
   };
 }
 
-export async function reconcileImportQueue(rootPath) {
+export async function reconcileImportQueue(rootPath, options = {}) {
   const { queueLockPath } = getImportPaths(rootPath);
-  return withFileLock(queueLockPath, async () => {
+  return withImportQueueLock(queueLockPath, async () => {
     const [queue, tasks] = await Promise.all([
       loadImportQueue(rootPath),
       loadImportTasksOnDisk(rootPath)
@@ -1133,7 +1211,7 @@ export async function reconcileImportQueue(rootPath) {
       await saveImportQueue(rootPath, reconciled.queue);
     }
     return reconciled.queue;
-  });
+  }, options);
 }
 
 export async function appendImportTaskLog(rootPath, taskId, entry = {}) {
@@ -1848,10 +1926,10 @@ export async function tailImportTaskDagEvents(rootPath, taskId, options = {}) {
   };
 }
 
-async function clearImportFingerprintEntry(rootPath, importFingerprint, taskId = null) {
+async function clearImportFingerprintEntry(rootPath, importFingerprint, taskId = null, options = {}) {
   if (!importFingerprint) return false;
   const { queueLockPath } = getImportPaths(rootPath);
-  return withFileLock(queueLockPath, async () => {
+  return withImportQueueLock(queueLockPath, async () => {
     const index = await loadImportContentIndex(rootPath);
     const entry = index.entries?.[importFingerprint];
     if (!entry) return false;
@@ -1860,7 +1938,7 @@ async function clearImportFingerprintEntry(rootPath, importFingerprint, taskId =
     index.updatedAt = new Date().toISOString();
     await saveImportContentIndex(rootPath, index);
     return true;
-  });
+  }, options);
 }
 
 async function importTaskStoredFilesExist(task = {}) {
@@ -1913,7 +1991,7 @@ function findCompletedEquivalentImportTasks(task = {}, completedIndex = {}) {
 
 export async function recoverFailedImportTasks(rootPath, options = {}) {
   const { queueLockPath } = getImportPaths(rootPath);
-  return withFileLock(queueLockPath, async () => {
+  return withImportQueueLock(queueLockPath, async () => {
     const [queue, contentIndex, tasks] = await Promise.all([
       loadImportQueue(rootPath),
       loadImportContentIndex(rootPath),
@@ -2068,7 +2146,7 @@ export async function recoverFailedImportTasks(rootPath, options = {}) {
       superseded,
       skipped
     };
-  });
+  }, options);
 }
 
 export async function createImportTask(rootPath, options = {}) {
@@ -2101,7 +2179,7 @@ export async function createImportTask(rootPath, options = {}) {
   });
   const importFingerprint = createImportFingerprint(rootPath, normalizedFiles);
 
-  return withFileLock(queueLockPath, async () => {
+  return withImportQueueLock(queueLockPath, async () => {
     const [queue, contentIndex] = await Promise.all([
       loadImportQueue(rootPath),
       loadImportContentIndex(rootPath)
@@ -2221,11 +2299,11 @@ export async function createImportTask(rootPath, options = {}) {
       ...task,
       deduped: false
     };
-  });
+  }, options);
 }
 
-export async function listImportTasks(rootPath) {
-  const queue = await reconcileImportQueue(rootPath);
+export async function listImportTasks(rootPath, options = {}) {
+  const queue = await reconcileImportQueue(rootPath, options);
   const tasks = await Promise.all(queue.jobs.map((job) => loadImportTask(rootPath, job.id)));
   const rawQueueOrderedTasks = buildQueueOrderedTasks(queue, tasks);
   const queueOrderedTasks = rawQueueOrderedTasks.map((task) => decorateTaskWithQueueProgress(task, rawQueueOrderedTasks));
@@ -2241,16 +2319,16 @@ export async function listImportTasks(rootPath) {
   };
 }
 
-export async function listActiveImportSourceDirs(rootPath) {
-  const { tasks } = await listImportTasks(rootPath);
+export async function listActiveImportSourceDirs(rootPath, options = {}) {
+  const { tasks } = await listImportTasks(rootPath, options);
   return tasks
     .filter((task) => task.includeInGraph && task.status === 'running')
     .map((task) => task.sourcesDir);
 }
 
-async function updateTaskWithQueue(rootPath, taskId, mutate) {
+async function updateTaskWithQueue(rootPath, taskId, mutate, options = {}) {
   const { queueLockPath } = getImportPaths(rootPath);
-  return withFileLock(queueLockPath, async () => {
+  return withImportQueueLock(queueLockPath, async () => {
     const [queue, existingTask] = await Promise.all([
       loadImportQueue(rootPath),
       loadImportTask(rootPath, taskId)
@@ -2270,12 +2348,13 @@ async function updateTaskWithQueue(rootPath, taskId, mutate) {
     queue.updatedAt = nextTask.updatedAt;
     await saveImportQueue(rootPath, queue);
     return nextTask;
-  });
+  }, options);
 }
 
-export async function reserveNextImportTask(rootPath) {
+export async function reserveNextImportTask(rootPath, options = {}) {
   const { queueLockPath } = getImportPaths(rootPath);
-  return withFileLock(queueLockPath, async () => {
+  const reserveTaskIds = normalizeImportReserveTaskIdSet(options);
+  return withImportQueueLock(queueLockPath, async () => {
     const [queue, tasks] = await Promise.all([
       loadImportQueue(rootPath),
       loadImportTasksOnDisk(rootPath)
@@ -2293,11 +2372,14 @@ export async function reserveNextImportTask(rootPath) {
       const rightTime = Date.parse(right.updatedAt || right.createdAt || 0) || 0;
       return leftTime - rightTime;
     });
-    const candidate = jobs.find((job) => job.status === 'pending' || job.status === 'running');
+    const candidate = jobs.find((job) => (
+      (job.status === 'pending' || job.status === 'running')
+      && importTaskAllowedByReserveSet(job, reserveTaskIds)
+    ));
     if (!candidate) return null;
 
     const task = await loadImportTask(rootPath, candidate.id);
-    if (!task) return null;
+    if (!task || !importTaskAllowedByReserveSet(task, reserveTaskIds)) return null;
 
     const now = new Date().toISOString();
     task.status = 'running';
@@ -2326,14 +2408,15 @@ export async function reserveNextImportTask(rootPath) {
     return {
       task
     };
-  });
+  }, options);
 }
 
 export async function reserveImportTaskBatch(rootPath, options = {}) {
   const { queueLockPath } = getImportPaths(rootPath);
   const limits = resolveImportBatchReserveLimits(options);
+  const reserveTaskIds = normalizeImportReserveTaskIdSet(options);
 
-  return withFileLock(queueLockPath, async () => {
+  return withImportQueueLock(queueLockPath, async () => {
     const [queue, tasks] = await Promise.all([
       loadImportQueue(rootPath),
       loadImportTasksOnDisk(rootPath)
@@ -2350,7 +2433,10 @@ export async function reserveImportTaskBatch(rootPath, options = {}) {
       const rightTime = Date.parse(right.updatedAt || right.createdAt || 0) || 0;
       return leftTime - rightTime;
     });
-    const runningJob = jobsByReserveAge.find((job) => String(job?.status || '').trim().toLowerCase() === 'running');
+    const runningJob = jobsByReserveAge.find((job) => (
+      String(job?.status || '').trim().toLowerCase() === 'running'
+      && importTaskAllowedByReserveSet(job, reserveTaskIds)
+    ));
     const runningTask = runningJob ? taskById.get(runningJob.id) : null;
 
     const pendingTasks = runningTask
@@ -2360,7 +2446,9 @@ export async function reserveImportTaskBatch(rootPath, options = {}) {
         .filter((task) => {
           const status = String(task?.status || '').trim().toLowerCase();
           const stage = String(task?.stage || task?.progress?.stage || 'queued').trim().toLowerCase();
-          return status === 'pending' && (!stage || stage === 'queued');
+          return status === 'pending'
+            && (!stage || stage === 'queued')
+            && importTaskAllowedByReserveSet(task, reserveTaskIds);
         });
 
     if (!pendingTasks.length) {
@@ -2443,10 +2531,10 @@ export async function reserveImportTaskBatch(rootPath, options = {}) {
       fileCount: selectedFileCount,
       sizeBytes: selectedSizeBytes
     };
-  });
+  }, options);
 }
 
-export async function markImportTaskStage(rootPath, taskId, stage, message = '') {
+export async function markImportTaskStage(rootPath, taskId, stage, message = '', options = {}) {
   const task = await updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
     nextTask.stage = stage;
     nextTask.status = 'running';
@@ -2460,7 +2548,7 @@ export async function markImportTaskStage(rootPath, taskId, stage, message = '')
       stageStartedAt: new Date().toISOString(),
       message: message || defaultProgressMessage(stage, 'running')
     });
-  });
+  }, options);
   if (!task) return null;
   if (message) {
     await appendImportTaskLog(rootPath, taskId, {
@@ -2478,7 +2566,7 @@ export async function markImportTaskStage(rootPath, taskId, stage, message = '')
   return task;
 }
 
-export async function updateImportTaskProgress(rootPath, taskId, progress = {}) {
+export async function updateImportTaskProgress(rootPath, taskId, progress = {}, options = {}) {
   const task = await updateTaskWithQueue(rootPath, taskId, async (nextTask) => {
     nextTask.progress = createImportProgress(nextTask, progress);
     const diagnostics = progress.diagnostics && typeof progress.diagnostics === 'object' && !Array.isArray(progress.diagnostics)
@@ -2492,7 +2580,7 @@ export async function updateImportTaskProgress(rootPath, taskId, progress = {}) 
         ...diagnostics
       };
     }
-  });
+  }, options);
   if (!task) return null;
   await appendImportTaskEvent(rootPath, taskId, {
     event: 'task.progress',
@@ -2556,7 +2644,7 @@ export async function updateImportTaskSemanticLifecycle(rootPath, taskId, status
           }
         : (result.throughputMetrics || nextTask.throughputMetrics || null)
     };
-  });
+  }, options);
   if (!task) return null;
   if (options.message) {
     await appendImportTaskLog(rootPath, taskId, {
@@ -2640,7 +2728,7 @@ export async function updateImportTasksAuthoritativeSyncLifecycle(rootPath, jobI
     };
   }
   const normalizedStatus = normalizeImportLifecycleStatus(status, 'pending');
-  const { tasks } = await listImportTasks(rootPath);
+  const { tasks } = await listImportTasks(rootPath, options);
   const matchingTaskIds = (tasks || [])
     .filter((task) => getImportTaskAuthoritativeSyncJobId(task) === normalizedJobId)
     .map((task) => task.id)
@@ -2669,7 +2757,7 @@ export async function updateImportTasksAuthoritativeSyncLifecycle(rootPath, jobI
           ...syncPayload
         }
       };
-    });
+    }, options);
     if (!updatedTask) continue;
     updatedTaskIds.push(updatedTask.id);
     if (options.message !== false) {
@@ -2791,7 +2879,7 @@ export async function quarantineImportTasks(rootPath, taskIds = [], options = {}
   }
 
   const { queueLockPath, quarantineDir } = getImportPaths(rootPath);
-  return withFileLock(queueLockPath, async () => {
+  return withImportQueueLock(queueLockPath, async () => {
     const [queue, contentIndex] = await Promise.all([
       loadImportQueue(rootPath),
       loadImportContentIndex(rootPath)
@@ -2896,5 +2984,5 @@ export async function quarantineImportTasks(rootPath, taskIds = [], options = {}
       count: tasks.length,
       tasks
     };
-  });
+  }, options);
 }

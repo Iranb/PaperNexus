@@ -2428,13 +2428,45 @@ function firstNonEmptyString(...values) {
   return '';
 }
 
+function getImportConfigSection(options = {}, name) {
+  const section = options.config?.[name];
+  return section && typeof section === 'object' && !Array.isArray(section) ? section : {};
+}
+
+function pickImportQueueLockOptions(options = {}) {
+  const importsConfig = getImportConfigSection(options, 'imports');
+  const importConfig = getImportConfigSection(options, 'import');
+  return {
+    importQueueLockTimeoutMs: firstConfiguredValue(
+      options.importQueueLockTimeoutMs,
+      options.queueLockTimeoutMs,
+      importsConfig.importQueueLockTimeoutMs,
+      importsConfig.queueLockTimeoutMs,
+      importConfig.importQueueLockTimeoutMs,
+      importConfig.queueLockTimeoutMs
+    ),
+    importQueueLockStaleMs: firstConfiguredValue(
+      options.importQueueLockStaleMs,
+      options.queueLockStaleMs,
+      importsConfig.importQueueLockStaleMs,
+      importsConfig.queueLockStaleMs,
+      importConfig.importQueueLockStaleMs,
+      importConfig.queueLockStaleMs
+    ),
+    importQueueLockHeartbeatIntervalMs: firstConfiguredValue(
+      options.importQueueLockHeartbeatIntervalMs,
+      options.queueLockHeartbeatIntervalMs,
+      importsConfig.importQueueLockHeartbeatIntervalMs,
+      importsConfig.queueLockHeartbeatIntervalMs,
+      importConfig.importQueueLockHeartbeatIntervalMs,
+      importConfig.queueLockHeartbeatIntervalMs
+    )
+  };
+}
+
 function pickConfiguredImportExecutionMode(options = {}) {
-  const importsConfig = options.config?.imports && typeof options.config.imports === 'object'
-    ? options.config.imports
-    : {};
-  const importConfig = options.config?.import && typeof options.config.import === 'object'
-    ? options.config.import
-    : {};
+  const importsConfig = getImportConfigSection(options, 'imports');
+  const importConfig = getImportConfigSection(options, 'import');
   return firstNonEmptyString(
     options.importExecutionMode,
     options.import_execution_mode,
@@ -2493,7 +2525,8 @@ export async function createImportTaskPayload(candidate, body = {}, options = {}
     trigger: body.trigger || 'api',
     inputPaths,
     files,
-    ...pickImportTaskExecutionOptions(body, options)
+    ...pickImportTaskExecutionOptions(body, options),
+    ...pickImportQueueLockOptions(options)
   });
 
   let identifierSync = null;
@@ -2526,7 +2559,7 @@ export async function createImportTaskPayload(candidate, body = {}, options = {}
 
 export async function listImportTasksPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
-  const payload = await listImportTasks(rootPath);
+  const payload = await listImportTasks(rootPath, pickImportQueueLockOptions(options));
   return presentPortablePayload({
     rootPath,
     summary: payload.summary,
@@ -2540,7 +2573,7 @@ export async function importTaskPayload(candidate, taskId, options = {}) {
   if (!taskId) {
     throw new Error('taskId is required.');
   }
-  const listed = await listImportTasks(rootPath);
+  const listed = await listImportTasks(rootPath, pickImportQueueLockOptions(options));
   const task = (listed.tasks || []).find((entry) => entry.id === taskId) || await loadImportTask(rootPath, taskId);
   if (!task) {
     throw new Error(`No import task found for ${taskId}.`);

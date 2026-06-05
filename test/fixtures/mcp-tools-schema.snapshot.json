@@ -1590,14 +1590,34 @@
         "task_id": {
           "type": "string"
         },
+        "task_ids": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
         "taskId": {
           "type": "string"
         },
         "taskIds": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         },
         "timeout": {
           "type": "number",

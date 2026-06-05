@@ -472,6 +472,95 @@ test('inferPaperSemanticObjects falls back to Ollama after an OpenAI-compatible 
   }
 });
 
+test('inferPaperSemanticObjects falls back to DeepSeek after an OpenAI-compatible 429', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-deepseek-fallback-'));
+  process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = path.join(tempDir, 'llm-rate-limits.json');
+  const requests = [];
+
+  try {
+    globalThis.fetch = async (url, options) => {
+      const requestBody = JSON.parse(options.body);
+      requests.push({
+        url: String(url),
+        authorization: options.headers.authorization,
+        body: requestBody
+      });
+      if (String(url) === 'https://coding.dashscope.aliyuncs.com/v1/chat/completions') {
+        return createRateLimitResponse('temporary upstream quota exhausted');
+      }
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    problems: [
+                      {
+                        name: 'deepseek fallback semantic extraction',
+                        type: 'Problem',
+                        evidenceText: 'The DeepSeek fallback model extracted this problem.',
+                        confidence: 0.84
+                      }
+                    ]
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const result = await inferPaperSemanticObjects(
+      {
+        title: 'DeepSeek Fallback Recovery',
+        sections: [
+          { heading: 'Abstract', role: 'abstract', text: 'A fallback LLM should recover from repeated upstream 429s.' }
+        ]
+      },
+      {
+        abstract: 'A DeepSeek fallback test paper.',
+        problems: [],
+        methods: [],
+        claims: []
+      },
+      {
+        semanticExtraction: 'llm-assisted',
+        llmProvider: 'openai',
+        llmModel: 'qwen3.6-plus',
+        llmBaseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+        llmApiKey: 'primary-test-key',
+        llmRateLimitRetryCount: 0,
+        llmRateLimitRetryDelayMs: 0,
+        llmRateLimitRetryMaxDelayMs: 0,
+        llmFallbackProvider: 'deepseek',
+        llmFallbackModel: 'deepseek-v4-flash',
+        llmFallbackBaseUrl: 'https://api.deepseek.com',
+        llmFallbackApiKey: 'fallback-test-key'
+      }
+    );
+
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].url, 'https://coding.dashscope.aliyuncs.com/v1/chat/completions');
+    assert.equal(requests[0].authorization, 'Bearer primary-test-key');
+    assert.equal(requests[0].body.model, 'qwen3.6-plus');
+    assert.equal(requests[1].url, 'https://api.deepseek.com/chat/completions');
+    assert.equal(requests[1].authorization, 'Bearer fallback-test-key');
+    assert.equal(requests[1].body.model, 'deepseek-v4-flash');
+    assert.equal(requests[1].body.max_tokens, 2048);
+    assert.equal(requests[1].body.max_completion_tokens, undefined);
+    assert.equal(result.provider, 'deepseek');
+    assert.equal(result.participated, true);
+    assert.equal(result.reason, null);
+    assert.equal(result.problems[0].name, 'deepseek fallback semantic extraction');
+  } finally {
+    await clearLlmRateLimitCooldowns();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('inferPaperSemanticObjects auto-starts and pulls fallback Ollama models before parsing', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-llm-fallback-bootstrap-'));
   process.env.PAPERNEXUS_LLM_RATE_LIMIT_STATE_PATH = path.join(tempDir, 'llm-rate-limits.json');

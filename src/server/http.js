@@ -46,6 +46,7 @@ import { getMcpHttpConfig, handleMcpHttpRequest } from '../mcp/http.js';
 import { startEnhancementWorker } from '../core/enhancements/worker.js';
 import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.js';
 import { startImportWorker } from '../core/imports/worker.js';
+import { startIsolatedFastMdImportWorker } from '../core/imports/fast-md-lane-worker.js';
 import { startLiteratureDiscoveryRecoveryWorker } from '../mcp/tool-literature-discovery.js';
 import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 import { startRegistryReconcileWorker } from '../storage/registry-reconcile.js';
@@ -87,10 +88,93 @@ function firstNumber(...values) {
   return Number.isFinite(normalized) ? normalized : undefined;
 }
 
+function normalizeObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function buildLlmFallbackWorkerOptions(options = {}, llmConfig = {}) {
+  const fallbackConfig = normalizeObject(llmConfig.fallback);
+  const fallbackOllamaConfig = normalizeObject(fallbackConfig.ollamaBootstrap || fallbackConfig.ollama);
+
+  return {
+    llmFallbackProvider: firstDefined(options.llmFallbackProvider, fallbackConfig.provider),
+    llmFallbackModel: firstDefined(options.llmFallbackModel, fallbackConfig.model),
+    llmFallbackBaseUrl: firstDefined(
+      options.llmFallbackBaseUrl,
+      options.llmFallbackUrl,
+      fallbackConfig.baseUrl,
+      fallbackConfig.url
+    ),
+    llmFallbackApiKey: firstDefined(options.llmFallbackApiKey, fallbackConfig.apiKey),
+    llmFallbackApiKeyEnv: firstDefined(options.llmFallbackApiKeyEnv, fallbackConfig.apiKeyEnv),
+    llmFallbackApiKeySource: firstDefined(options.llmFallbackApiKeySource, fallbackConfig.apiKeySource),
+    llmFallbackApiKeyService: firstDefined(options.llmFallbackApiKeyService, fallbackConfig.apiKeyService),
+    llmFallbackApiKeyAccount: firstDefined(options.llmFallbackApiKeyAccount, fallbackConfig.apiKeyAccount),
+    llmFallbackSshHost: firstDefined(options.llmFallbackSshHost, fallbackConfig.sshHost),
+    llmFallbackTimeoutMs: firstNumber(options.llmFallbackTimeoutMs, fallbackConfig.timeoutMs),
+    llmFallbackBatchSize: firstNumber(options.llmFallbackBatchSize, fallbackConfig.batchSize),
+    llmFallbackMaxTokens: firstNumber(options.llmFallbackMaxTokens, fallbackConfig.maxTokens),
+    llmFallbackRateLimitRetryCount: firstNumber(
+      options.llmFallbackRateLimitRetryCount,
+      options.llmFallbackRetryCount,
+      fallbackConfig.rateLimitRetryCount,
+      fallbackConfig.retryCount
+    ),
+    llmFallbackRateLimitRetryDelayMs: firstNumber(
+      options.llmFallbackRateLimitRetryDelayMs,
+      options.llmFallbackRetryDelayMs,
+      fallbackConfig.rateLimitRetryDelayMs,
+      fallbackConfig.retryDelayMs
+    ),
+    llmFallbackRateLimitRetryMaxDelayMs: firstNumber(
+      options.llmFallbackRateLimitRetryMaxDelayMs,
+      options.llmFallbackRetryMaxDelayMs,
+      fallbackConfig.rateLimitRetryMaxDelayMs,
+      fallbackConfig.retryMaxDelayMs
+    ),
+    llmFallbackRateLimitCooldownMs: firstNumber(
+      options.llmFallbackRateLimitCooldownMs,
+      fallbackConfig.rateLimitCooldownMs
+    ),
+    llmFallbackAutoStart: firstDefined(options.llmFallbackAutoStart, fallbackConfig.autoStart),
+    llmFallbackAutoPull: firstDefined(options.llmFallbackAutoPull, fallbackConfig.autoPull),
+    llmFallbackStartupWaitMs: firstNumber(options.llmFallbackStartupWaitMs, fallbackConfig.startupWaitMs),
+    llmFallbackOllamaBootstrap: firstDefined(options.llmFallbackOllamaBootstrap, fallbackOllamaConfig.mode),
+    llmFallbackOllamaCommand: firstDefined(options.llmFallbackOllamaCommand, fallbackOllamaConfig.command),
+    llmFallbackOllamaStartCommand: firstDefined(
+      options.llmFallbackOllamaStartCommand,
+      options.llmFallbackStartCommand,
+      fallbackOllamaConfig.startCommand
+    ),
+    llmFallbackOllamaPullCommand: firstDefined(
+      options.llmFallbackOllamaPullCommand,
+      options.llmFallbackPullCommand,
+      fallbackOllamaConfig.pullCommand
+    ),
+    llmFallbackOllamaDockerBin: firstDefined(options.llmFallbackOllamaDockerBin, fallbackOllamaConfig.dockerBin),
+    llmFallbackOllamaDockerContainer: firstDefined(
+      options.llmFallbackOllamaDockerContainer,
+      fallbackOllamaConfig.dockerContainer
+    ),
+    llmFallbackOllamaDockerImage: firstDefined(options.llmFallbackOllamaDockerImage, fallbackOllamaConfig.dockerImage),
+    llmFallbackOllamaDockerVolume: firstDefined(
+      options.llmFallbackOllamaDockerVolume,
+      fallbackOllamaConfig.dockerVolume
+    ),
+    llmFallbackOllamaDockerGpus: firstDefined(options.llmFallbackOllamaDockerGpus, fallbackOllamaConfig.dockerGpus)
+  };
+}
+
 function isFalseLike(value) {
   if (value === false) return true;
   if (value === true || value === undefined || value === null) return false;
   return ['0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
+}
+
+function isTrueLike(value) {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
 }
 
 function resolveJsonBodyLimitBytes(options = {}) {
@@ -284,6 +368,25 @@ function resolveRegistryReconcileEnabled(options = {}) {
   ));
 }
 
+function resolveFastMdImportLaneEnabled(options = {}) {
+  const importsConfig = getConfigSection(options, 'imports');
+  const importConfig = getConfigSection(options, 'import');
+  return isTrueLike(firstDefined(
+    options.enableFastMdImportLane,
+    options.fastMdImportLaneEnabled,
+    options.importFastMdLaneEnabled,
+    options.importFastMdIsolatedLaneEnabled,
+    importsConfig.enableFastMdImportLane,
+    importsConfig.fastMdImportLaneEnabled,
+    importsConfig.importFastMdLaneEnabled,
+    importsConfig.importFastMdIsolatedLaneEnabled,
+    importConfig.enableFastMdImportLane,
+    importConfig.fastMdImportLaneEnabled,
+    importConfig.importFastMdLaneEnabled,
+    importConfig.importFastMdIsolatedLaneEnabled
+  ));
+}
+
 function resolveRegistryReconcileIntervalMs(options = {}) {
   const serveConfig = getServeConfig(options);
   return firstNumber(
@@ -333,6 +436,30 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     rootPaths,
     intervalMs: options.importIntervalMs,
     logger,
+    importSemanticEnrichmentEnabled: firstDefined(
+      options.importSemanticEnrichmentEnabled,
+      options.semanticEnrichmentEnabled,
+      options.backgroundSemanticEnrichment,
+      importsConfig.importSemanticEnrichmentEnabled,
+      importsConfig.semanticEnrichmentEnabled,
+      importsConfig.backgroundSemanticEnrichment,
+      importConfig.importSemanticEnrichmentEnabled,
+      importConfig.semanticEnrichmentEnabled,
+      importConfig.backgroundSemanticEnrichment,
+      true
+    ),
+    semanticEnrichmentDirectDeltaCommit: firstDefined(
+      options.importSemanticEnrichmentDirectDeltaCommit,
+      options.semanticEnrichmentDirectDeltaCommit,
+      options.backgroundSemanticEnrichmentDirectDeltaCommit,
+      importsConfig.importSemanticEnrichmentDirectDeltaCommit,
+      importsConfig.semanticEnrichmentDirectDeltaCommit,
+      importsConfig.backgroundSemanticEnrichmentDirectDeltaCommit,
+      importConfig.importSemanticEnrichmentDirectDeltaCommit,
+      importConfig.semanticEnrichmentDirectDeltaCommit,
+      importConfig.backgroundSemanticEnrichmentDirectDeltaCommit,
+      true
+    ),
     batchEnabled: firstDefined(
       options.importBatchEnabled,
       options.batchEnabled,
@@ -375,6 +502,99 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       options.batchCoalescePollMs,
       importsConfig.batchCoalescePollMs,
       importConfig.batchCoalescePollMs
+    ),
+    importWorkerRootConcurrency: firstNumber(
+      options.importWorkerRootConcurrency,
+      options.workerRootConcurrency,
+      options.rootConcurrency,
+      options.multiRootConcurrency,
+      importsConfig.importWorkerRootConcurrency,
+      importsConfig.workerRootConcurrency,
+      importsConfig.rootConcurrency,
+      importsConfig.multiRootConcurrency,
+      importConfig.importWorkerRootConcurrency,
+      importConfig.workerRootConcurrency,
+      importConfig.rootConcurrency,
+      importConfig.multiRootConcurrency
+    ),
+    importTaskTimeoutMs: firstNumber(
+      options.importTaskTimeoutMs,
+      options.taskTimeoutMs,
+      importsConfig.importTaskTimeoutMs,
+      importsConfig.taskTimeoutMs,
+      importConfig.importTaskTimeoutMs,
+      importConfig.taskTimeoutMs
+    ),
+    importPendingTimeoutMs: firstNumber(
+      options.importPendingTimeoutMs,
+      options.pendingTimeoutMs,
+      importsConfig.importPendingTimeoutMs,
+      importsConfig.pendingTimeoutMs,
+      importConfig.importPendingTimeoutMs,
+      importConfig.pendingTimeoutMs
+    ),
+    lockTimeoutMs: firstNumber(
+      options.importWorkerLockTimeoutMs,
+      options.workerLockTimeoutMs,
+      options.lockTimeoutMs,
+      importsConfig.importWorkerLockTimeoutMs,
+      importsConfig.workerLockTimeoutMs,
+      importsConfig.lockTimeoutMs,
+      importConfig.importWorkerLockTimeoutMs,
+      importConfig.workerLockTimeoutMs,
+      importConfig.lockTimeoutMs
+    ),
+    lockStaleMs: firstNumber(
+      options.importWorkerLockStaleMs,
+      options.workerLockStaleMs,
+      options.lockStaleMs,
+      importsConfig.importWorkerLockStaleMs,
+      importsConfig.workerLockStaleMs,
+      importsConfig.lockStaleMs,
+      importConfig.importWorkerLockStaleMs,
+      importConfig.workerLockStaleMs,
+      importConfig.lockStaleMs
+    ),
+    importQueueLockTimeoutMs: firstNumber(
+      options.importQueueLockTimeoutMs,
+      options.queueLockTimeoutMs,
+      importsConfig.importQueueLockTimeoutMs,
+      importsConfig.queueLockTimeoutMs,
+      importConfig.importQueueLockTimeoutMs,
+      importConfig.queueLockTimeoutMs
+    ),
+    importQueueLockStaleMs: firstNumber(
+      options.importQueueLockStaleMs,
+      options.queueLockStaleMs,
+      importsConfig.importQueueLockStaleMs,
+      importsConfig.queueLockStaleMs,
+      importConfig.importQueueLockStaleMs,
+      importConfig.queueLockStaleMs
+    ),
+    importQueueLockHeartbeatIntervalMs: firstNumber(
+      options.importQueueLockHeartbeatIntervalMs,
+      options.queueLockHeartbeatIntervalMs,
+      importsConfig.importQueueLockHeartbeatIntervalMs,
+      importsConfig.queueLockHeartbeatIntervalMs,
+      importConfig.importQueueLockHeartbeatIntervalMs,
+      importConfig.queueLockHeartbeatIntervalMs
+    ),
+    runningStaleMs: firstNumber(
+      options.importSemanticEnrichmentRunningStaleMs,
+      options.semanticEnrichmentRunningStaleMs,
+      options.backgroundSemanticEnrichmentRunningStaleMs,
+      options.semanticRunningStaleMs,
+      options.runningStaleMs,
+      importsConfig.importSemanticEnrichmentRunningStaleMs,
+      importsConfig.semanticEnrichmentRunningStaleMs,
+      importsConfig.backgroundSemanticEnrichmentRunningStaleMs,
+      importsConfig.semanticRunningStaleMs,
+      importsConfig.runningStaleMs,
+      importConfig.importSemanticEnrichmentRunningStaleMs,
+      importConfig.semanticEnrichmentRunningStaleMs,
+      importConfig.backgroundSemanticEnrichmentRunningStaleMs,
+      importConfig.semanticRunningStaleMs,
+      importConfig.runningStaleMs
     ),
     fastMdBurstTargetTasks: firstNumber(
       options.importFastMdBurstTargetTasks,
@@ -740,6 +960,21 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       llmConfig.batchConcurrency,
       llmConfig.llmBatchConcurrency
     ),
+    llmBatchSliceTimeoutMs: firstNumber(
+      options.importLlmBatchSliceTimeoutMs,
+      options.llmBatchSliceTimeoutMs,
+      options.llmSliceTimeoutMs,
+      importsConfig.llmBatchSliceTimeoutMs,
+      importsConfig.llmSliceTimeoutMs,
+      importsConfig.llmBatchTimeoutMs,
+      importConfig.llmBatchSliceTimeoutMs,
+      importConfig.llmSliceTimeoutMs,
+      importConfig.llmBatchTimeoutMs,
+      llmConfig.llmBatchSliceTimeoutMs,
+      llmConfig.llmSliceTimeoutMs,
+      llmConfig.batchSliceTimeoutMs,
+      90000
+    ),
     llmContextWindowTokens: firstNumber(
       options.importLlmContextWindowTokens,
       importsConfig.llmContextWindowTokens,
@@ -752,6 +987,7 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       llmConfig.llmContextWindowTokens
     ),
     llmMaxTokens: firstNumber(options.llmMaxTokens, llmConfig.maxTokens),
+    ...buildLlmFallbackWorkerOptions(options, llmConfig),
     ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),
     ollamaUrl: firstDefined(options.ollamaUrl, ollamaConfig.url),
     ollamaSshHost: firstDefined(options.ollamaSshHost, llmSshHost),
@@ -764,6 +1000,28 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     ),
     ollamaTimeoutMs: firstNumber(options.ollamaTimeoutMs, ollamaConfig.timeoutMs),
     ollamaBatchSize: firstNumber(options.ollamaBatchSize, ollamaConfig.batchSize)
+  };
+}
+
+function buildFastMdImportLaneWorkerOptions(importWorkerOptions = {}, options = {}) {
+  const importsConfig = getConfigSection(options, 'imports');
+  const importConfig = getConfigSection(options, 'import');
+  return {
+    ...importWorkerOptions,
+    intervalMs: firstNumber(
+      options.fastMdImportLaneIntervalMs,
+      options.importFastMdLaneIntervalMs,
+      importsConfig.fastMdImportLaneIntervalMs,
+      importsConfig.importFastMdLaneIntervalMs,
+      importConfig.fastMdImportLaneIntervalMs,
+      importConfig.importFastMdLaneIntervalMs,
+      importWorkerOptions.intervalMs,
+      1500
+    ),
+    importTaskLaneMode: 'fast-md-only',
+    importSemanticEnrichmentEnabled: false,
+    semanticEnrichmentEnabled: false,
+    backgroundSemanticEnrichment: false
   };
 }
 
@@ -798,6 +1056,7 @@ function buildEnhancementWorkerOptions(options = {}, rootPaths, logger = console
     llmRelations: firstDefined(options.llmRelations, llmConfig.relations, ollamaConfig.relations),
     llmTimeoutMs: firstDefined(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
     llmBatchSize: firstDefined(options.llmBatchSize, llmConfig.batchSize, ollamaConfig.batchSize),
+    ...buildLlmFallbackWorkerOptions(options, llmConfig),
     ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),
     ollamaUrl: firstDefined(options.ollamaUrl, ollamaConfig.url),
     ollamaSshHost: firstDefined(options.ollamaSshHost, ollamaConfig.sshHost),
@@ -859,9 +1118,18 @@ export async function serveCommand(options = {}) {
   const enhancementWorkerStarter = options.startEnhancementWorker || startEnhancementWorker;
   const authoritativeSyncWorkerStarter = options.startAuthoritativeSyncWorker || startAuthoritativeSyncWorker;
   const importWorkerStarter = options.startImportWorker || startImportWorker;
+  const fastMdImportWorkerStarter = options.startFastMdImportWorker || startIsolatedFastMdImportWorker;
   const literatureDiscoveryRecoveryWorkerStarter = options.startLiteratureDiscoveryRecoveryWorker || startLiteratureDiscoveryRecoveryWorker;
   const registryReconcileWorkerStarter = options.startRegistryReconcileWorker || startRegistryReconcileWorker;
-  const importWorkerOptions = buildImportWorkerOptions(options, rootPaths, workerLogger);
+  const baseImportWorkerOptions = buildImportWorkerOptions(options, rootPaths, workerLogger);
+  const fastMdImportLaneEnabled = resolveFastMdImportLaneEnabled(options);
+  const importWorkerOptions = fastMdImportLaneEnabled
+    ? {
+        ...baseImportWorkerOptions,
+        importTaskLaneMode: 'exclude-fast-md'
+      }
+    : baseImportWorkerOptions;
+  const fastMdImportWorkerOptions = buildFastMdImportLaneWorkerOptions(baseImportWorkerOptions, options);
   const enhancementWorker = startNamedWorker(
     'enhancement worker',
     options.enableEnhancements !== false,
@@ -885,6 +1153,13 @@ export async function serveCommand(options = {}) {
     options.enableImports !== false,
     importWorkerStarter,
     importWorkerOptions,
+    workerLogger
+  );
+  const fastMdImportWorker = startNamedWorker(
+    'fast-md import lane',
+    options.enableImports !== false && fastMdImportLaneEnabled,
+    fastMdImportWorkerStarter,
+    fastMdImportWorkerOptions,
     workerLogger
   );
   const literatureDiscoveryRecoveryWorker = startNamedWorker(
@@ -968,6 +1243,7 @@ export async function serveCommand(options = {}) {
         workerRootPaths: rootPaths,
         onImportTaskCreated() {
           importWorker?.pollNow?.();
+          fastMdImportWorker?.pollNow?.();
         }
       };
 
@@ -995,6 +1271,7 @@ export async function serveCommand(options = {}) {
           workerRootPaths: rootPaths,
           onImportTaskCreated() {
             importWorker?.pollNow?.();
+            fastMdImportWorker?.pollNow?.();
           }
         });
         logMcpHttpRequest(
@@ -1332,6 +1609,7 @@ export async function serveCommand(options = {}) {
       enhancementWorker?.stop?.(),
       authoritativeSyncWorker?.stop?.(),
       importWorker?.stop?.(),
+      fastMdImportWorker?.stop?.(),
       literatureDiscoveryRecoveryWorker?.stop?.(),
       registryReconcileWorker?.stop?.()
     ]);

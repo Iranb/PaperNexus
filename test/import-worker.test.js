@@ -215,6 +215,21 @@ test('import worker grows progressive batch targets while queued work remains', 
       true
     );
 
+    const earlyFastMdBurstOptions = batching.createFastMdBurstReserveBatchOptions(
+      fastMdBurstTasks.slice(0, 2),
+      fastMdBatchOptions,
+      progressiveReserveOptions,
+      {}
+    );
+    assert.equal(earlyFastMdBurstOptions.fastMdBurstFilling, true);
+    assert.equal(earlyFastMdBurstOptions.fastMdBurstReady, false);
+    assert.equal(earlyFastMdBurstOptions.maxTasks, 10);
+    assert.equal(earlyFastMdBurstOptions.coalesceTargetTasks, 10);
+    assert.equal(
+      batching.shouldWaitForImportBatchCoalesce({ pending: 2, running: 0 }, earlyFastMdBurstOptions),
+      true
+    );
+
     const smallFastMdBatchOptions = batching.resolveImportBatchOptions({
       batchEnabled: true,
       batchMaxTasks: 4,
@@ -263,6 +278,196 @@ test('import worker grows progressive batch targets while queued work remains', 
     batching?.resetProgressiveImportBatchTarget(rootPath);
     batching?.resetProgressiveImportBatchTarget(cappedRootPath);
   }
+});
+
+test('import worker reports batch task progress serially to avoid queue lock stampedes', async () => {
+  let batching = null;
+  ({ __importWorkerTestables: batching } = await import('../src/core/imports/worker.js'));
+
+  let activeReports = 0;
+  let maxActiveReports = 0;
+  const seenPayloads = [];
+  const reporters = Array.from({ length: 5 }, (_, index) => ({
+    async report(payload) {
+      activeReports += 1;
+      maxActiveReports = Math.max(maxActiveReports, activeReports);
+      seenPayloads.push({ index, payload });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      activeReports -= 1;
+    },
+    async flush() {}
+  }));
+
+  await batching.reportBatchProgressSerially(reporters, {
+    stagePercent: 42,
+    phase: 'materialize'
+  }, 'materialize', 'impbatch:test');
+
+  assert.equal(maxActiveReports, 1);
+  assert.deepEqual(seenPayloads.map((entry) => entry.index), [0, 1, 2, 3, 4]);
+  assert.equal(seenPayloads[0].payload.currentStep, 'materialize');
+  assert.equal(seenPayloads[0].payload.message, 'Running materialize as import batch impbatch:test');
+  assert.equal(seenPayloads[0].payload.stagePercent, 42);
+});
+
+test('import worker scans corpus roots with bounded concurrency', async () => {
+  let workerTestables = null;
+  ({ __importWorkerTestables: workerTestables } = await import('../src/core/imports/worker.js'));
+
+  const roots = [
+    { rootPath: '/tmp/papernexus-root-a', name: 'root-a' },
+    { rootPath: '/tmp/papernexus-root-b', name: 'root-b' },
+    { rootPath: '/tmp/papernexus-root-c', name: 'root-c' }
+  ];
+  const active = new Set();
+  const started = [];
+  let maxActive = 0;
+
+  const results = await workerTestables.mapImportWorkerCorpora(
+    roots,
+    { importWorkerRootConcurrency: 2 },
+    async (corpus) => {
+      started.push(corpus.name);
+      active.add(corpus.name);
+      maxActive = Math.max(maxActive, active.size);
+      await new Promise((resolve) => setTimeout(resolve, corpus.name === 'root-a' ? 30 : 5));
+      active.delete(corpus.name);
+      return {
+        rootPath: corpus.rootPath,
+        corpusName: corpus.name,
+        processed: corpus.name
+      };
+    }
+  );
+
+  assert.equal(maxActive, 2);
+  assert.deepEqual(started.slice(0, 2), ['root-a', 'root-b']);
+  assert.deepEqual(results.map((result) => result.corpusName), ['root-a', 'root-b', 'root-c']);
+  assert.equal(workerTestables.resolveImportWorkerRootConcurrency({ importWorkerRootConcurrency: 99 }, roots.length), 3);
+  assert.equal(workerTestables.resolveImportWorkerRootConcurrency({ importWorkerRootConcurrency: 0 }, roots.length), 1);
+  assert.equal(workerTestables.resolveImportWorkerRootConcurrency({}, roots.length), 2);
+});
+
+test('import worker prioritizes fast markdown corpus roots before full import roots', async () => {
+  let workerTestables = null;
+  let importStore = null;
+  ({ __importWorkerTestables: workerTestables } = await import('../src/core/imports/worker.js'));
+  importStore = await import('../src/storage/import-store.js');
+
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-root-priority-'));
+  const fastRoot = path.join(tempRoot, 'fast-md-root');
+  const fullRoot = path.join(tempRoot, 'full-root');
+  const idleRoot = path.join(tempRoot, 'idle-root');
+
+  try {
+    await importStore.createImportTask(fastRoot, {
+      processingProfile: 'fast-md-background-semantic',
+      files: [
+        {
+          name: 'fast.md',
+          mimeType: 'text/markdown',
+          content: '# Fast Markdown Paper\n\nA structural-only import candidate.'
+        }
+      ]
+    });
+    await importStore.createImportTask(fullRoot, {
+      processingProfile: 'full',
+      files: [
+        {
+          name: 'full.md',
+          mimeType: 'text/markdown',
+          content: '# Full Import Paper\n\nA normal import candidate.'
+        }
+      ]
+    });
+
+    const fastPriority = await workerTestables.getImportWorkerCorpusPriority(
+      { rootPath: fastRoot, name: 'fast' },
+      {}
+    );
+    const fullPriority = await workerTestables.getImportWorkerCorpusPriority(
+      { rootPath: fullRoot, name: 'full' },
+      {}
+    );
+    const idlePriority = await workerTestables.getImportWorkerCorpusPriority(
+      { rootPath: idleRoot, name: 'idle' },
+      {}
+    );
+
+    assert.equal(fastPriority.reason, 'fast-md-pending');
+    assert.equal(fastPriority.fastMdPending, 1);
+    assert.equal(fullPriority.reason, 'pending');
+    assert.equal(idlePriority.reason, 'idle');
+    assert.ok(fastPriority.score > fullPriority.score);
+    assert.ok(fullPriority.score > idlePriority.score);
+
+    const prioritizedRoots = await workerTestables.prioritizeImportWorkerCorpora([
+      { rootPath: idleRoot, name: 'idle' },
+      { rootPath: fullRoot, name: 'full' },
+      { rootPath: fastRoot, name: 'fast' }
+    ], {});
+
+    assert.deepEqual(prioritizedRoots.map((root) => root.name), ['fast', 'full', 'idle']);
+    assert.equal(workerTestables.resolveImportRootPriorityQueueLockTimeoutMs({}), 750);
+    assert.equal(
+      workerTestables.resolveImportRootPriorityQueueLockTimeoutMs({ importRootPriorityQueueLockTimeoutMs: 10 }),
+      100
+    );
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('import worker lane filters separate fast markdown tasks from full tasks', async () => {
+  let workerTestables = null;
+  ({ __importWorkerTestables: workerTestables } = await import('../src/core/imports/worker.js'));
+
+  const tasks = [
+    {
+      id: 'imp:fast-md',
+      status: 'pending',
+      stage: 'queued',
+      processingProfile: 'fast-md-background-semantic',
+      files: [{ name: 'fast.md', mimeType: 'text/markdown' }]
+    },
+    {
+      id: 'imp:full-md',
+      status: 'pending',
+      stage: 'queued',
+      processingProfile: 'full',
+      files: [{ name: 'full.md', mimeType: 'text/markdown' }]
+    },
+    {
+      id: 'imp:fast-pdf',
+      status: 'pending',
+      stage: 'queued',
+      processingProfile: 'fast-md-background-semantic',
+      files: [{ name: 'fast.pdf', mimeType: 'application/pdf' }]
+    },
+    {
+      id: 'imp:running-fast',
+      status: 'running',
+      stage: 'materialize',
+      processingProfile: 'fast-md-structural',
+      files: [{ name: 'running.md', mimeType: 'text/markdown' }]
+    }
+  ];
+
+  assert.equal(workerTestables.normalizeImportTaskLaneMode({ importTaskLaneMode: 'fast-md-only' }), 'fast-md-only');
+  assert.equal(workerTestables.normalizeImportTaskLaneMode({ importTaskLaneMode: 'exclude-fast-md' }), 'exclude-fast-md');
+  assert.equal(workerTestables.normalizeImportTaskLaneMode({}), 'all');
+  assert.deepEqual(
+    workerTestables.filterImportTasksForLane(tasks, { importTaskLaneMode: 'fast-md-only' }).map((task) => task.id),
+    ['imp:fast-md', 'imp:running-fast']
+  );
+  assert.deepEqual(
+    workerTestables.filterImportTasksForLane(tasks, { importTaskLaneMode: 'exclude-fast-md' }).map((task) => task.id),
+    ['imp:full-md', 'imp:fast-pdf']
+  );
+  assert.deepEqual(
+    workerTestables.getReservableImportLaneTaskIds(tasks, { importTaskLaneMode: 'fast-md-only' }),
+    ['imp:fast-md', 'imp:running-fast']
+  );
 });
 
 test('import worker summarizes LLM batch latency and rate-limit tuning metrics', async () => {
@@ -943,6 +1148,12 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
     assert.equal(completedFirstSemanticJob.progress.status, 'completed');
     assert.equal(completedFirstSemanticJob.progress.stage, 'completed');
     assert.equal(completedFirstSemanticJob.progress.currentStep, 'semantic enrichment complete');
+    assert.equal(completedFirstSemanticJob.result.fastCommitted.directDeltaCommit, true);
+    assert.equal(completedFirstSemanticJob.result.metrics.importPerformance.directDeltaCommit, true);
+    assert.equal(
+      typeof completedFirstSemanticJob.result.metrics.importPerformance.fastCommitPhasesMs.prepareDirectDelta,
+      'number'
+    );
 
     const enrichedFirstTask = await importStore.loadImportTask(indexRoot, firstTask.id);
     const enrichedSecondTask = await importStore.loadImportTask(indexRoot, secondTask.id);
@@ -950,6 +1161,7 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
     assert.equal(enrichedSecondTask.semanticStatus, 'completed');
     assert.equal(enrichedFirstTask.result.semanticEnrichment.status, 'completed');
     assert.equal(enrichedFirstTask.result.semanticEnrichment.result.taskId, firstTask.id);
+    assert.equal(enrichedFirstTask.result.semanticEnrichment.result.fastCommitted.directDeltaCommit, true);
     assert.equal(enrichedFirstTask.throughputMetrics.semanticEnrichmentJobId, loadedFirstTask.result.semanticEnrichment.jobIds[0]);
 
     const enrichedFirstDag = await importStore.loadImportTaskDag(indexRoot, firstTask.id);
@@ -993,6 +1205,54 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
     else process.env.PAPERNEXUS_HOME = previousHome;
     await fs.rm(workspaceRoot, { recursive: true, force: true });
     await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('semantic enrichment queue recovers stale running jobs with configured stale window', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-semantic-stale-recovery-'));
+
+  try {
+    const importSemanticStore = await import('../src/storage/import-semantic-store.js');
+    const queued = await importSemanticStore.enqueueImportSemanticEnrichmentJobs(tempRoot, [
+      {
+        taskId: 'imp:semantic-stale-test',
+        changedSourceKeys: ['paper.md'],
+        maxAttempts: 3
+      }
+    ]);
+    assert.equal(queued.queuedCount, 1);
+
+    const firstReservation = await importSemanticStore.reserveNextImportSemanticEnrichmentJob(tempRoot, {
+      workerId: 'pid:old-worker'
+    });
+    assert.equal(firstReservation.job.status, 'running');
+    assert.equal(firstReservation.job.workerId, 'pid:old-worker');
+    assert.equal(firstReservation.job.attempts, 1);
+
+    const { queuePath } = importSemanticStore.getImportSemanticEnrichmentPaths(tempRoot);
+    const queue = JSON.parse(await fs.readFile(queuePath, 'utf8'));
+    const staleStartedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    queue.jobs[0].startedAt = staleStartedAt;
+    queue.jobs[0].updatedAt = staleStartedAt;
+    queue.jobs[0].progress.updatedAt = staleStartedAt;
+    await fs.writeFile(queuePath, `${JSON.stringify(queue, null, 2)}\n`);
+
+    const secondReservation = await importSemanticStore.reserveNextImportSemanticEnrichmentJob(tempRoot, {
+      workerId: 'pid:new-worker',
+      runningStaleMs: 60_000
+    });
+    assert.equal(secondReservation.job.id, firstReservation.job.id);
+    assert.equal(secondReservation.job.status, 'running');
+    assert.equal(secondReservation.job.workerId, 'pid:new-worker');
+    assert.equal(secondReservation.job.attempts, 2);
+    assert.notEqual(secondReservation.job.startedAt, staleStartedAt);
+
+    const listed = await importSemanticStore.listImportSemanticEnrichmentJobs(tempRoot);
+    assert.equal(listed.summary.running, 1);
+    assert.equal(listed.summary.pending, 0);
+    assert.equal(listed.jobs[0].workerId, 'pid:new-worker');
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -1663,6 +1923,63 @@ test('import worker quarantines stale pending tasks before processing newer queu
     else process.env.PAPERNEXUS_HOME = previousHome;
     await fs.rm(workspaceRoot, { recursive: true, force: true });
     await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker recovers stale running tasks after queue progress polling', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-worker-stale-running-'));
+
+  try {
+    const [
+      importStore,
+      importWorker
+    ] = await Promise.all([
+      import('../src/storage/import-store.js'),
+      import('../src/core/imports/worker.js')
+    ]);
+
+    const task = await importStore.createImportTask(rootPath, {
+      trigger: 'api',
+      files: [
+        {
+          name: 'stale-running-paper.md',
+          contentBase64: Buffer.from('# Stale Running Paper\n\n## Abstract\n\nThis task should time out even after progress polling.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    await importStore.reserveNextImportTask(rootPath);
+    await importStore.markImportTaskStage(rootPath, task.id, 'fast-commit', 'loading lite graph');
+
+    const staleIso = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const { taskPath } = importStore.getImportTaskPaths(rootPath, task.id);
+    const payload = JSON.parse(await fs.readFile(taskPath, 'utf8'));
+    payload.startedAt = staleIso;
+    payload.updatedAt = staleIso;
+    payload.progress.stageStartedAt = staleIso;
+    payload.progress.lastEventAt = staleIso;
+    await fs.writeFile(taskPath, `${JSON.stringify(payload, null, 2)}\n`);
+
+    const listed = await importStore.listImportTasks(rootPath);
+    const listedTask = listed.tasks.find((entry) => entry.id === task.id);
+    assert.ok(listedTask);
+    assert.equal(listedTask.progress.lastEventAt, staleIso);
+
+    const result = await importWorker.runImportQueueOnce(rootPath, {
+      importTaskTimeoutMs: 60_000,
+      semanticExtraction: 'heuristic-only'
+    });
+
+    assert.equal(result.processed, false);
+    assert.deepEqual(result.timedOutTaskIds, [task.id]);
+    assert.deepEqual(result.recoveredFailedTaskIds, []);
+
+    const loaded = await importStore.loadImportTask(rootPath, task.id);
+    assert.equal(loaded.status, 'failed');
+    assert.match(loaded.error?.message || '', /timed out/i);
+    assert.match(loaded.error?.message || '', /fast-commit/i);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
 

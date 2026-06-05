@@ -468,7 +468,7 @@ function buildSuggestedCorpusName(inputs, fallback = 'my-corpus') {
 
 function getDefaultInitLlmModel(provider) {
   if (provider === 'openai') return 'gpt-4o-mini';
-  if (provider === 'deepseek') return 'deepseek-chat';
+  if (provider === 'deepseek') return 'deepseek-v4-flash';
   if (provider === 'anthropic') return 'claude-3-5-sonnet-latest';
   return 'qwen2.5:0.5b';
 }
@@ -751,6 +751,8 @@ function buildCatalystBackfillOptions(flags, config) {
 
 function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = null) {
   const commandConfig = getSection(config, 'serve');
+  const importsConfig = getSection(config, 'imports');
+  const importConfig = getSection(config, 'import');
   const storageConfig = getStorageConfig(config);
   const enhanceConfig = getSection(config, 'enhance');
   const rawBackupDir = firstDefined(commandConfig.backupDir, storageConfig.backupDir);
@@ -765,6 +767,21 @@ function buildServeOptions(flags, config, baseDir = process.cwd(), configPath = 
     enhancementIntervalMs: toNumber(firstDefined(flags['interval-ms'], enhanceConfig.intervalMs), 5000),
     enhancementBackfillLimit: toNumber(firstDefined(flags['backfill-limit'], enhanceConfig.backfillLimit), 0),
     enhancementCatalystBackfill: firstDefined(flags['catalyst-backfill'], enhanceConfig.catalystBackfill, false) !== false,
+    importSemanticEnrichmentEnabled: firstDefined(
+      flags['import-semantic-enrichment'],
+      flags['semantic-enrichment'],
+      flags['background-semantic-enrichment'],
+      commandConfig.importSemanticEnrichmentEnabled,
+      commandConfig.semanticEnrichmentEnabled,
+      commandConfig.backgroundSemanticEnrichment,
+      importsConfig.importSemanticEnrichmentEnabled,
+      importsConfig.semanticEnrichmentEnabled,
+      importsConfig.backgroundSemanticEnrichment,
+      importConfig.importSemanticEnrichmentEnabled,
+      importConfig.semanticEnrichmentEnabled,
+      importConfig.backgroundSemanticEnrichment,
+      true
+    ),
     config,
     configBaseDir: baseDir,
     configPath
@@ -1057,8 +1074,8 @@ async function handleInitCommand(flags, config, configBaseDir, configPath) {
       console.log('LLM provider: choose a provider from the list below. Use `deepseek` for DeepSeek JSON mode, `openai` for OpenAI-compatible cloud APIs, `anthropic` for Claude-compatible APIs, or `ollama` for local models.');
       const requestedProvider = (await prompt.promptChoice(
         'LLM provider',
-        ['ollama', 'openai', 'deepseek', 'anthropic'],
-        currentLlm.provider || (currentLegacyOllama.model ? 'ollama' : 'ollama')
+        ['deepseek', 'openai', 'anthropic', 'ollama'],
+        currentLlm.provider || (currentLegacyOllama.model ? 'ollama' : 'deepseek')
       )).trim().toLowerCase();
       llmProvider = init.resolveLlmConfig({ llmProvider: requestedProvider }).provider;
       if (!['ollama', 'openai', 'deepseek', 'anthropic'].includes(llmProvider)) {
@@ -1520,7 +1537,7 @@ async function handleAuthCommand(flags, positionals, config, configBaseDir, conf
     }
     
     console.log('\nTo configure your LLM API key, run:');
-    console.log('  papernexus auth llm set --provider deepseek --model deepseek-chat --base-url https://api.deepseek.com');
+    console.log('  papernexus auth llm set --provider deepseek --model deepseek-v4-flash --base-url https://api.deepseek.com');
     return;
   }
 
@@ -1630,7 +1647,7 @@ function logErrorAndExit(error) {
 async function handleProbeLlmCommand(flags, config) {
   const { loadLlmApiKey } = await import('../core/llm/ollama.js');
 
-  const provider = flags.provider || config.llm?.provider || 'openai';
+  const provider = flags.provider || config.llm?.provider || 'deepseek';
   const model = flags.model || config.llm?.model;
   const baseUrl = flags['base-url'] || config.llm?.baseUrl;
 
@@ -1641,7 +1658,7 @@ async function handleProbeLlmCommand(flags, config) {
       provider: 'openai'
     },
     deepseek: {
-      model: model || 'deepseek-chat',
+      model: model || 'deepseek-v4-flash',
       baseUrl: baseUrl || 'https://api.deepseek.com',
       provider: 'deepseek'
     },

@@ -741,6 +741,141 @@ test('import_workflow queue_progress summarizes operator phases and lifecycle st
   }
 });
 
+test('import_workflow queue_progress reads semantic queue from covered absolute root when paths are portable', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-portable-home-'));
+  const rootPath = path.join(tempHome, 'corpus');
+  const previousHome = process.env.HOME;
+  const previousServerHome = process.env.PAPERNEXUS_SERVER_HOME;
+
+  try {
+    process.env.HOME = tempHome;
+    process.env.PAPERNEXUS_SERVER_HOME = tempHome;
+
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-portable-semantic-queue-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'portable-semantic.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Portable Semantic\n\n## Abstract\n\nA portable semantic queue test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const semanticEnqueue = await enqueueImportSemanticEnrichmentJobs(rootPath, [
+      {
+        taskId: task.id,
+        changedSourceKeys: ['portable-semantic.md'],
+        processingProfile: 'fast-md-background-semantic',
+        completionPolicy: 'graph-visible'
+      }
+    ]);
+    assert.equal(semanticEnqueue.queuedCount, 1);
+
+    const payload = await executeImportWorkflowTool({
+      operation: 'queue_progress',
+      corpus: rootPath,
+      taskIds: [task.id],
+      semanticJobLimit: 5
+    }, {
+      portablePaths: true,
+      workerRootPaths: [rootPath]
+    });
+
+    assert.equal(payload.rootPath, '~/corpus');
+    assert.equal(payload.workerCoverage.covered, true);
+    assert.equal(payload.workerCoverage.coveredRootPath, rootPath);
+    assert.equal(payload.semanticQueue.summary.pending, 1);
+    assert.equal(payload.semanticQueue.summary.remaining, 1);
+    assert.equal(payload.semanticQueue.recentJobs[0].taskId, task.id);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousServerHome === undefined) delete process.env.PAPERNEXUS_SERVER_HOME;
+    else process.env.PAPERNEXUS_SERVER_HOME = previousServerHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow status can return a requested task id batch', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-status-batch-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-status-batch-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const pendingTask = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'status-batch-pending.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Pending\n\n## Abstract\n\nA pending status batch test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const completedTask = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'status-batch-completed.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Completed\n\n## Abstract\n\nA completed status batch test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    await completeImportTask(rootPath, completedTask.id, {
+      graphVisibilityStatus: 'completed',
+      semanticStatus: 'completed',
+      authoritativeSync: {
+        status: 'completed',
+        jobId: null
+      }
+    });
+
+    const payload = await executeImportWorkflowTool({
+      operation: 'status',
+      corpus: rootPath,
+      taskIds: [completedTask.id, 'imp:missing-status-batch', pendingTask.id]
+    });
+
+    assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.deepEqual(payload.requestedTaskIds, [completedTask.id, 'imp:missing-status-batch', pendingTask.id]);
+    assert.deepEqual(payload.missingTaskIds, ['imp:missing-status-batch']);
+    assert.deepEqual(payload.tasks.map((task) => task.id), [completedTask.id, pendingTask.id]);
+    assert.equal(payload.taskCount, 2);
+    assert.equal(payload.summary.completed, 1);
+    assert.equal(payload.summary.pending, 1);
+    assert.equal(payload.summary.remaining, 1);
+    assert.equal(payload.queueSummary.total >= 2, true);
+
+    const stringPayload = await executeImportWorkflowTool({
+      operation: 'progress',
+      corpus: rootPath,
+      task_ids: `${pendingTask.id}, ${completedTask.id} ${pendingTask.id}`
+    });
+
+    assert.equal(stringPayload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.deepEqual(stringPayload.requestedTaskIds, [pendingTask.id, completedTask.id]);
+    assert.deepEqual(stringPayload.tasks.map((task) => task.id), [pendingTask.id, completedTask.id]);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('import_workflow hydrates authoritative sync lifecycle from job history', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-sync-hydration-'));
 
@@ -805,6 +940,284 @@ test('import_workflow hydrates authoritative sync lifecycle from job history', a
     assert.equal(statusPayload.task.result.authoritativeSync.status, 'completed');
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow treats completed authoritative sync without job as non-blocking legacy state', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-sync-no-job-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-sync-no-job-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'sync-no-job-paper.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Sync No Job\n\n## Abstract\n\nA legacy sync no-job test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    await completeImportTask(rootPath, task.id, {
+      graphVisibilityStatus: 'completed',
+      semanticStatus: 'completed',
+      authoritativeSync: {
+        status: 'pending',
+        jobId: null
+      }
+    });
+
+    const progressPayload = await executeImportWorkflowTool({
+      operation: 'queue_progress',
+      corpus: rootPath,
+      taskIds: [task.id],
+      eventTail: 0,
+      includeDagComparison: false
+    });
+
+    assert.equal(progressPayload.summary.phaseCounts.completed, 1);
+    assert.equal(progressPayload.summary.phaseCounts['authoritative-sync'], undefined);
+    assert.equal(progressPayload.summary.lifecycleCounts.authoritativeSync['not-required'], 1);
+    assert.equal(progressPayload.summary.activeTask, null);
+    assert.equal(progressPayload.tasks[0].authoritativeSyncStatus, 'not-required');
+    assert.equal(progressPayload.tasks[0].result.authoritativeSync.status, 'not-required');
+    assert.equal(progressPayload.tasks[0].result.authoritativeSync.originalStatus, 'pending');
+    assert.equal(progressPayload.tasks[0].result.authoritativeSync.source, 'legacy-no-authoritative-sync-job');
+
+    const statusPayload = await executeImportWorkflowTool({
+      operation: 'status',
+      corpus: rootPath,
+      taskId: task.id
+    });
+
+    assert.equal(statusPayload.task.authoritativeSyncStatus, 'not-required');
+    assert.equal(statusPayload.task.result.authoritativeSync.status, 'not-required');
+
+    const startedAt = Date.now();
+    const waitPayload = await executeImportWorkflowTool({
+      operation: 'wait',
+      corpus: rootPath,
+      taskId: task.id,
+      waitUntil: 'authoritative-sync',
+      timeout: 1,
+      interval: 0.05
+    });
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(waitPayload.authoritativeSync.status, 'not-required');
+    assert.equal(waitPayload.authoritativeSync.source, 'legacy-no-authoritative-sync-job');
+    assert.equal(waitPayload.waitStatus.authoritativeSyncStatus, 'not-required');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow hydrates semantic enrichment authoritative sync lifecycle', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-semantic-sync-hydration-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-semantic-sync-hydration-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'semantic-sync-hydration-paper.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Semantic Sync Hydration\n\n## Abstract\n\nA semantic sync hydration test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const importSyncJob = await enqueueAuthoritativeSyncJob(rootPath, {
+      baseManifestToken: 'manifest:semantic-sync-import-base',
+      targetManifestToken: 'manifest:semantic-sync-import-target',
+      changedSourceKeys: ['source:semantic-sync-import'],
+      mode: 'delta'
+    });
+    const semanticSyncJob = await enqueueAuthoritativeSyncJob(rootPath, {
+      baseManifestToken: 'manifest:semantic-sync-semantic-base',
+      targetManifestToken: 'manifest:semantic-sync-semantic-target',
+      changedSourceKeys: ['source:semantic-sync-semantic'],
+      mode: 'delta'
+    });
+    await completeAuthoritativeSyncJob(rootPath, importSyncJob.jobId, {
+      appliedAt: new Date().toISOString()
+    });
+    await completeImportTask(rootPath, task.id, {
+      semanticStatus: 'queued',
+      authoritativeSync: {
+        status: 'completed',
+        jobId: importSyncJob.jobId
+      }
+    });
+    await updateImportTaskSemanticLifecycle(rootPath, task.id, 'completed', {
+      jobId: 'isem:semantic-sync-hydration',
+      jobIds: ['isem:semantic-sync-hydration'],
+      result: {
+        taskId: task.id,
+        authoritativeSync: {
+          status: 'pending',
+          jobId: semanticSyncJob.jobId
+        }
+      }
+    });
+
+    const pendingPayload = await executeImportWorkflowTool({
+      operation: 'queue_progress',
+      corpus: rootPath,
+      taskIds: [task.id]
+    });
+
+    assert.equal(pendingPayload.summary.lifecycleCounts.authoritativeSync.pending, 1);
+    assert.equal(pendingPayload.summary.phaseCounts['authoritative-sync'], 1);
+    assert.equal(pendingPayload.summary.activeTask.authoritativeSyncJobId, semanticSyncJob.jobId);
+    assert.equal(pendingPayload.tasks[0].authoritativeSyncStatus, 'pending');
+    assert.equal(pendingPayload.tasks[0].result.authoritativeSync.jobId, importSyncJob.jobId);
+    assert.equal(
+      pendingPayload.tasks[0].result.semanticEnrichment.result.authoritativeSync.jobId,
+      semanticSyncJob.jobId
+    );
+    assert.equal(
+      pendingPayload.tasks[0].result.semanticEnrichment.result.authoritativeSync.status,
+      'pending'
+    );
+
+    await completeAuthoritativeSyncJob(rootPath, semanticSyncJob.jobId, {
+      appliedAt: new Date().toISOString()
+    });
+
+    const statusPayload = await executeImportWorkflowTool({
+      operation: 'status',
+      corpus: rootPath,
+      taskId: task.id
+    });
+
+    assert.equal(statusPayload.task.authoritativeSyncStatus, 'completed');
+    assert.equal(statusPayload.task.result.authoritativeSync.jobId, importSyncJob.jobId);
+    assert.equal(statusPayload.task.result.authoritativeSync.status, 'completed');
+    assert.equal(
+      statusPayload.task.result.semanticEnrichment.result.authoritativeSync.jobId,
+      semanticSyncJob.jobId
+    );
+    assert.equal(
+      statusPayload.task.result.semanticEnrichment.result.authoritativeSync.status,
+      'completed'
+    );
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow hydrates authoritative sync lifecycle when paths are portable', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-portable-sync-home-'));
+  const rootPath = path.join(tempHome, 'corpus');
+  const previousHome = process.env.HOME;
+  const previousServerHome = process.env.PAPERNEXUS_SERVER_HOME;
+
+  try {
+    process.env.HOME = tempHome;
+    process.env.PAPERNEXUS_SERVER_HOME = tempHome;
+
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-portable-sync-hydration-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'portable-sync-hydration-paper.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Portable Sync Hydration\n\n## Abstract\n\nA portable sync hydration test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const syncJob = await enqueueAuthoritativeSyncJob(rootPath, {
+      baseManifestToken: 'manifest:portable-sync-base',
+      targetManifestToken: 'manifest:portable-sync-target',
+      changedSourceKeys: ['source:portable-sync-hydration-paper'],
+      mode: 'delta'
+    });
+    await completeImportTask(rootPath, task.id, {
+      semanticStatus: 'completed',
+      authoritativeSync: {
+        status: 'pending',
+        jobId: syncJob.jobId
+      }
+    });
+    await completeAuthoritativeSyncJob(rootPath, syncJob.jobId, {
+      appliedAt: new Date().toISOString()
+    });
+
+    const progressPayload = await executeImportWorkflowTool({
+      operation: 'queue_progress',
+      corpus: rootPath,
+      taskIds: [task.id],
+      eventTail: 0,
+      includeDagComparison: false
+    }, {
+      portablePaths: true
+    });
+
+    assert.equal(progressPayload.rootPath, '~/corpus');
+    assert.equal(progressPayload.summary.lifecycleCounts.authoritativeSync.completed, 1);
+    assert.equal(progressPayload.summary.lifecycleCounts.authoritativeSync.pending, undefined);
+    assert.equal(progressPayload.tasks[0].authoritativeSyncStatus, 'completed');
+    assert.equal(progressPayload.tasks[0].result.authoritativeSync.status, 'completed');
+
+    const statusPayload = await executeImportWorkflowTool({
+      operation: 'status',
+      corpus: rootPath,
+      taskId: task.id
+    }, {
+      portablePaths: true
+    });
+
+    assert.equal(statusPayload.rootPath, '~/corpus');
+    assert.equal(statusPayload.task.authoritativeSyncStatus, 'completed');
+    assert.equal(statusPayload.task.result.authoritativeSync.status, 'completed');
+
+    const waitPayload = await executeImportWorkflowTool({
+      operation: 'wait',
+      corpus: rootPath,
+      taskId: task.id,
+      waitUntil: 'authoritative-sync',
+      timeout: 1,
+      interval: 0.05
+    }, {
+      portablePaths: true
+    });
+
+    assert.equal(waitPayload.rootPath, '~/corpus');
+    assert.equal(waitPayload.task.authoritativeSyncStatus, 'completed');
+    assert.equal(waitPayload.authoritativeSync.status, 'completed');
+    assert.equal(waitPayload.authoritativeSync.jobId, syncJob.jobId);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousServerHome === undefined) delete process.env.PAPERNEXUS_SERVER_HOME;
+    else process.env.PAPERNEXUS_SERVER_HOME = previousServerHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
 

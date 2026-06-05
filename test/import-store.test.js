@@ -144,6 +144,72 @@ test('createImportTask stores uploaded files, queue state, and append-only logs'
   }
 });
 
+test('reserve import tasks can be constrained to explicit task ids', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-reserve-filter-'));
+
+  try {
+    const {
+      createImportTask,
+      reserveImportTaskBatch,
+      reserveNextImportTask
+    } = await import('../src/storage/import-store.js');
+
+    const first = await createImportTask(rootPath, {
+      files: [{
+        name: 'first.md',
+        mimeType: 'text/markdown',
+        contentBase64: Buffer.from('# First\n\nA first queued paper.', 'utf8').toString('base64')
+      }]
+    });
+    const second = await createImportTask(rootPath, {
+      files: [{
+        name: 'second.md',
+        mimeType: 'text/markdown',
+        contentBase64: Buffer.from('# Second\n\nA second queued paper.', 'utf8').toString('base64')
+      }]
+    });
+
+    const reservedSingle = await reserveNextImportTask(rootPath, {
+      importReserveTaskIds: [second.id]
+    });
+    assert.equal(reservedSingle.task.id, second.id);
+
+    const batchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-reserve-filter-batch-'));
+    try {
+      const batchTasks = [];
+      for (let index = 0; index < 3; index += 1) {
+        batchTasks.push(await createImportTask(batchRoot, {
+          files: [{
+            name: `batch-${index + 1}.md`,
+            mimeType: 'text/markdown',
+            contentBase64: Buffer.from(`# Batch ${index + 1}\n\nA queued paper.`, 'utf8').toString('base64')
+          }]
+        }));
+      }
+
+      const reservedBatch = await reserveImportTaskBatch(batchRoot, {
+        maxTasks: 3,
+        importReserveTaskIds: [batchTasks[2].id, batchTasks[0].id]
+      });
+      assert.deepEqual(
+        reservedBatch.tasks.map((task) => task.id),
+        [batchTasks[0].id, batchTasks[2].id]
+      );
+      assert.equal(reservedBatch.batchTaskIds.length, 2);
+    } finally {
+      await fs.rm(batchRoot, { recursive: true, force: true });
+    }
+
+    const skipped = await reserveNextImportTask(rootPath, {
+      importReserveTaskIds: ['imp:missing']
+    });
+    assert.equal(skipped, null);
+    assert.equal(first.status, 'pending');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('appendImportDagEvent records node artifact references for resumable DAG work', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-dag-artifacts-'));
 
@@ -203,6 +269,47 @@ test('appendImportDagEvent records node artifact references for resumable DAG wo
     assert.ok(artifactEvent);
     assert.equal(artifactEvent.nodeId, 'paper.long_context_llm');
     assert.ok(artifactEvent.artifactRefs.outputArtifacts.some((artifact) => artifact.path === semanticArtifactPath));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('listImportTasks reaps stale import queue locks', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-stale-lock-'));
+
+  try {
+    const {
+      createImportQueueLockOptions,
+      getImportPaths,
+      listImportTasks
+    } = await import('../src/storage/import-store.js');
+    const { queueLockPath } = getImportPaths(rootPath);
+
+    const lockOptions = createImportQueueLockOptions({
+      importQueueLockTimeoutMs: 1000,
+      importQueueLockStaleMs: 1000,
+      importQueueLockHeartbeatIntervalMs: 250
+    });
+    assert.equal(lockOptions.timeoutMs, 1000);
+    assert.equal(lockOptions.staleMs, 1000);
+    assert.equal(lockOptions.heartbeatIntervalMs, 250);
+
+    await fs.mkdir(queueLockPath, { recursive: true });
+    await fs.writeFile(path.join(queueLockPath, 'owner.json'), `${JSON.stringify({
+      pid: 99999999,
+      acquiredAt: new Date(Date.now() - 60_000).toISOString(),
+      heartbeatAt: new Date(Date.now() - 60_000).toISOString()
+    })}\n`, 'utf8');
+    const staleDate = new Date(Date.now() - 60_000);
+    await fs.utimes(queueLockPath, staleDate, staleDate);
+
+    const listed = await listImportTasks(rootPath, {
+      importQueueLockTimeoutMs: 1000,
+      importQueueLockStaleMs: 1000,
+      importQueueLockHeartbeatIntervalMs: 250
+    });
+    assert.equal(listed.summary.total, 0);
+    await assert.rejects(fs.access(queueLockPath), /ENOENT/);
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }
@@ -959,6 +1066,52 @@ test('listImportTasks reconciles stale queue.json statuses back to the task.json
     const repairedJob = repairedQueue.jobs.find((job) => job.id === task.id);
     assert.equal(repairedJob.status, 'pending');
     assert.equal(repairedJob.stage, 'queued');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('listImportTasks preserves execution heartbeat while decorating queue position', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-heartbeat-'));
+
+  try {
+    const {
+      createImportTask,
+      getImportTaskPaths,
+      listImportTasks,
+      reserveNextImportTask
+    } = await import('../src/storage/import-store.js');
+
+    const task = await createImportTask(rootPath, {
+      trigger: 'api',
+      inputPaths: [path.join(rootPath, 'papers')],
+      files: [
+        {
+          name: 'heartbeat-paper.md',
+          contentBase64: Buffer.from('# Heartbeat Paper\n\n## Abstract\n\nQueue display should not refresh execution heartbeat.\n', 'utf8').toString('base64'),
+          mimeType: 'text/markdown'
+        }
+      ]
+    });
+    const reserved = await reserveNextImportTask(rootPath);
+    assert.equal(reserved.task.id, task.id);
+
+    const staleIso = new Date(Date.now() - (10 * 60 * 1000)).toISOString();
+    const { taskPath } = getImportTaskPaths(rootPath, task.id);
+    const payload = JSON.parse(await fs.readFile(taskPath, 'utf8'));
+    payload.startedAt = staleIso;
+    payload.updatedAt = staleIso;
+    payload.progress.stageStartedAt = staleIso;
+    payload.progress.lastEventAt = staleIso;
+    await fs.writeFile(taskPath, `${JSON.stringify(payload, null, 2)}\n`);
+
+    const listed = await listImportTasks(rootPath);
+    const listedTask = listed.tasks.find((entry) => entry.id === task.id);
+    assert.ok(listedTask);
+    assert.equal(listedTask.status, 'running');
+    assert.equal(listedTask.progress.queuePosition, 1);
+    assert.equal(listedTask.progress.queuedAhead, 0);
+    assert.equal(listedTask.progress.lastEventAt, staleIso);
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

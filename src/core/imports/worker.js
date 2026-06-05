@@ -218,8 +218,8 @@ function countPendingImportTasks(tasks = []) {
   }).length;
 }
 
-async function countPendingImportTasksOnDisk(rootPath) {
-  const payload = await listImportTasks(rootPath);
+async function countPendingImportTasksOnDisk(rootPath, options = {}) {
+  const payload = await listImportTasks(rootPath, options);
   return countPendingImportTasks(payload.tasks || []);
 }
 
@@ -242,6 +242,68 @@ function pendingQueuedImportTasks(tasks = []) {
     const stage = String(task?.stage || task?.progress?.stage || '').trim().toLowerCase();
     return status === 'pending' && (!stage || stage === 'queued');
   });
+}
+
+function normalizeImportTaskLaneMode(options = {}) {
+  const raw = normalizeDashedToken(
+    options.importTaskLaneMode
+    ?? options.taskLaneMode
+    ?? options.importProcessingLane
+    ?? options.processingLane
+  );
+  if (['fast-md-only', 'only-fast-md', 'fast-md', 'fast-markdown-only', 'only-fast-markdown'].includes(raw)) {
+    return 'fast-md-only';
+  }
+  if (['exclude-fast-md', 'non-fast-md', 'without-fast-md', 'full-only', 'default-without-fast-md'].includes(raw)) {
+    return 'exclude-fast-md';
+  }
+  return 'all';
+}
+
+function hasImportTaskLaneFilter(options = {}) {
+  return normalizeImportTaskLaneMode(options) !== 'all';
+}
+
+function importTaskMatchesLane(task = {}, options = {}) {
+  const laneMode = normalizeImportTaskLaneMode(options);
+  if (laneMode === 'fast-md-only') return shouldUseFastMdStructuralPath(task, options);
+  if (laneMode === 'exclude-fast-md') return !shouldUseFastMdStructuralPath(task, options);
+  return true;
+}
+
+function filterImportTasksForLane(tasks = [], options = {}) {
+  const normalizedTasks = Array.isArray(tasks) ? tasks : [];
+  if (!hasImportTaskLaneFilter(options)) return normalizedTasks;
+  return normalizedTasks.filter((task) => importTaskMatchesLane(task, options));
+}
+
+function getReservableImportLaneTaskIds(tasks = [], options = {}) {
+  return filterImportTasksForLane(tasks, options)
+    .filter((task) => {
+      const status = String(task?.status || '').trim().toLowerCase();
+      const stage = String(task?.stage || task?.progress?.stage || '').trim().toLowerCase();
+      return status === 'running' || (status === 'pending' && (!stage || stage === 'queued'));
+    })
+    .map((task) => String(task.id || '').trim())
+    .filter(Boolean);
+}
+
+async function createImportLaneReserveOptions(rootPath, options = {}, payload = null) {
+  if (!hasImportTaskLaneFilter(options)) {
+    return {
+      reserveOptions: options,
+      reserveTaskIds: null
+    };
+  }
+  const activePayload = payload || await listImportTasks(rootPath, options);
+  const reserveTaskIds = getReservableImportLaneTaskIds(activePayload?.tasks || [], options);
+  return {
+    reserveOptions: {
+      ...options,
+      importReserveTaskIds: reserveTaskIds
+    },
+    reserveTaskIds
+  };
 }
 
 function resolveImportBatchCoalesceTargetTasks(batchOptions = {}) {
@@ -282,15 +344,21 @@ async function reportImportBatchCoalescingProgress(rootPath, tasks = [], summary
   const targetTasks = resolveImportBatchCoalesceTargetTasks(batchOptions);
   const pending = Math.max(0, Number(summary.pending || pendingTasks.length) || 0);
   const stagePercent = Math.min(99, Math.round((Math.min(pending, targetTasks) / targetTasks) * 10000) / 100);
-  await Promise.all(pendingTasks.map((task) => updateImportTaskProgress(rootPath, task.id, {
-    stage: 'queued',
-    status: 'pending',
-    stagePercent,
-    processedUnits: pending,
-    totalUnits: targetTasks,
-    currentStep: 'coalescing',
-    message: `Coalescing import batch: ${pending}/${targetTasks} task(s) queued`
-  }).catch(() => null)));
+  for (const task of pendingTasks) {
+    try {
+      await updateImportTaskProgress(rootPath, task.id, {
+        stage: 'queued',
+        status: 'pending',
+        stagePercent,
+        processedUnits: pending,
+        totalUnits: targetTasks,
+        currentStep: 'coalescing',
+        message: `Coalescing import batch: ${pending}/${targetTasks} task(s) queued`
+      });
+    } catch {
+      // Coalescing progress is best-effort and must not block queue reservation.
+    }
+  }
 }
 
 function shouldWaitForImportBatchCoalesce(summary = {}, batchOptions = {}) {
@@ -313,8 +381,9 @@ async function waitForImportBatchCoalesce(rootPath, batchOptions = {}, initialPa
 
   const targetTasks = resolveImportBatchCoalesceTargetTasks(batchOptions);
   const startedAt = Date.now();
-  let payload = initialPayload || await listImportTasks(rootPath);
-  let summary = summarizeImportBatchCoalesceTasks(payload.tasks || []);
+  let payload = initialPayload || await listImportTasks(rootPath, batchOptions);
+  let laneTasks = filterImportTasksForLane(payload.tasks || [], batchOptions);
+  let summary = summarizeImportBatchCoalesceTasks(laneTasks);
   if (!shouldWaitForImportBatchCoalesce(summary, batchOptions)) {
     return {
       waited: false,
@@ -334,11 +403,12 @@ async function waitForImportBatchCoalesce(rootPath, batchOptions = {}, initialPa
     const progressSignature = `${summary.pending}:${summary.running}:${targetTasks}`;
     if (progressSignature !== lastProgressSignature) {
       lastProgressSignature = progressSignature;
-      await reportImportBatchCoalescingProgress(rootPath, payload.tasks || [], summary, batchOptions);
+      await reportImportBatchCoalescingProgress(rootPath, laneTasks, summary, batchOptions);
     }
     await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
-    payload = await listImportTasks(rootPath);
-    summary = summarizeImportBatchCoalesceTasks(payload.tasks || []);
+    payload = await listImportTasks(rootPath, batchOptions);
+    laneTasks = filterImportTasksForLane(payload.tasks || [], batchOptions);
+    summary = summarizeImportBatchCoalesceTasks(laneTasks);
     if (!shouldWaitForImportBatchCoalesce(summary, batchOptions)) {
       reason = summary.running ? 'running-task' : (summary.pending >= targetTasks ? 'target-filled' : 'no-pending');
       break;
@@ -361,11 +431,6 @@ function createFastMdBurstReserveBatchOptions(tasks = [], batchOptions = {}, res
 
   const fastMdPendingTasks = pendingTasks.filter((task) => shouldUseFastMdStructuralPath(task, options));
   if (fastMdPendingTasks.length !== pendingTasks.length) {
-    return reserveBatchOptions;
-  }
-
-  const minStartTasks = Math.max(1, Number(batchOptions.initialTasks || reserveBatchOptions.initialTasks || 1) || 1);
-  if (fastMdPendingTasks.length < minStartTasks) {
     return reserveBatchOptions;
   }
 
@@ -444,7 +509,7 @@ function getImportTaskHeartbeatMs(task = {}) {
 async function recoverTimedOutImportTasks(rootPath, options = {}) {
   const timeoutMs = resolveImportTaskTimeoutMs(options);
   const now = Date.now();
-  const { tasks } = await listImportTasks(rootPath);
+  const { tasks } = await listImportTasks(rootPath, options);
   const timedOutTasks = tasks.filter((task) => {
     const status = String(task?.status || '').trim().toLowerCase();
     if (status !== 'running') return false;
@@ -476,7 +541,7 @@ function getImportTaskQueueAgeMs(task = {}) {
 async function quarantineStalePendingImportTasks(rootPath, options = {}) {
   const timeoutMs = resolveImportPendingTimeoutMs(options);
   const now = Date.now();
-  const { tasks } = await listImportTasks(rootPath);
+  const { tasks } = await listImportTasks(rootPath, options);
   const runningTasks = tasks.filter((task) => String(task?.status || '').trim().toLowerCase() === 'running');
   if (runningTasks.length) {
     return null;
@@ -543,18 +608,31 @@ function createTaskProgressReporter(rootPath, taskId, stage) {
   };
 }
 
+async function reportBatchProgressSerially(reporters = [], event = {}, stage = '', batchId = '') {
+  const payload = {
+    ...event,
+    currentStep: event.currentStep || event.phase || `batch ${batchId}`,
+    message: event.message || event.label || `Running ${stage} as import batch ${batchId}`
+  };
+  for (const reporter of reporters) {
+    await reporter.report(payload);
+  }
+}
+
+async function flushBatchProgressReportersSerially(reporters = []) {
+  for (const reporter of reporters) {
+    await reporter.flush();
+  }
+}
+
 function createBatchProgressReporter(rootPath, taskIds = [], stage, batchId) {
   const reporters = taskIds.map((taskId) => createTaskProgressReporter(rootPath, taskId, stage));
   return {
     async report(event = {}) {
-      await Promise.all(reporters.map((reporter) => reporter.report({
-        ...event,
-        currentStep: event.currentStep || event.phase || `batch ${batchId}`,
-        message: event.message || event.label || `Running ${stage} as import batch ${batchId}`
-      })));
+      await reportBatchProgressSerially(reporters, event, stage, batchId);
     },
     async flush() {
-      await Promise.all(reporters.map((reporter) => reporter.flush()));
+      await flushBatchProgressReportersSerially(reporters);
     }
   };
 }
@@ -1583,12 +1661,21 @@ function shouldEnqueueBackgroundSemanticEnrichment(processingProfile = '') {
   return processingProfile === 'fast-md-background-semantic';
 }
 
+function shouldUseSemanticEnrichmentDirectDeltaCommit(options = {}) {
+  return resolveBooleanOption(
+    options.importSemanticEnrichmentDirectDeltaCommit
+    ?? options.semanticEnrichmentDirectDeltaCommit
+    ?? options.backgroundSemanticEnrichmentDirectDeltaCommit,
+    true
+  );
+}
+
 function isImportSemanticEnrichmentWorkerEnabled(options = {}) {
   return resolveBooleanOption(
     options.importSemanticEnrichmentEnabled
     ?? options.semanticEnrichmentEnabled
     ?? options.backgroundSemanticEnrichment,
-    false
+    true
   );
 }
 
@@ -1782,7 +1869,7 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
 }
 
 async function startQueuedImportPreparse(rootPath, options = {}, currentTaskId = '') {
-  const payload = await listImportTasks(rootPath);
+  const payload = await listImportTasks(rootPath, options);
   const pendingTasks = (payload.tasks || [])
     .filter((task) => task?.status === 'pending' && task?.id !== currentTaskId)
     .sort((left, right) => {
@@ -2253,9 +2340,9 @@ async function materializeFastMdImportTaskBatch(rootPath, tasks = [], options = 
     };
   }
 
-  await Promise.all(eligibleTasks.map(({ task }) => (
-    markImportTaskStage(rootPath, task.id, 'materialize', `stage materialize batch ${context.batchId}`)
-  )));
+  for (const { task } of eligibleTasks) {
+    await markImportTaskStage(rootPath, task.id, 'materialize', `stage materialize batch ${context.batchId}`);
+  }
   const materializeProgress = createBatchProgressReporter(
     rootPath,
     eligibleTasks.map(({ task }) => task.id),
@@ -2479,9 +2566,9 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
         processingProfile: batchProcessingProfile
       };
     } else {
-      await Promise.all(materializedEntries.map((entry) => (
-        markImportTaskStage(rootPath, entry.task.id, 'llm-optimize', `stage llm-optimize batch ${batchId}`)
-      )));
+      for (const entry of materializedEntries) {
+        await markImportTaskStage(rootPath, entry.task.id, 'llm-optimize', `stage llm-optimize batch ${batchId}`);
+      }
       llmOptimizationGroups = createImportBatchLlmConfigGroups(materializedEntries, sharedOptions);
       llmOptimizationGroupSummaries = summarizeImportBatchLlmConfigGroups(llmOptimizationGroups);
       for (const group of llmOptimizationGroups) {
@@ -2596,9 +2683,9 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
       await batchLlmProgress.flush();
     }
 
-    await Promise.all(materializedEntries.map((entry) => (
-      markImportTaskStage(rootPath, entry.task.id, 'fast-commit', `stage fast-commit batch ${batchId}`)
-    )));
+    for (const entry of materializedEntries) {
+      await markImportTaskStage(rootPath, entry.task.id, 'fast-commit', `stage fast-commit batch ${batchId}`);
+    }
     const fastCommitProgress = createBatchProgressReporter(rootPath, completedTaskIds, 'fast-commit', batchId);
     const fastCommitStartedAt = Date.now();
     committed = await fastCommitCorpus(inputPath, {
@@ -2879,9 +2966,11 @@ async function processImportSemanticEnrichmentJob(rootPath, job, options = {}) {
 
   const fastCommitStartedAt = Date.now();
   const fastCommitProgress = createSemanticJobProgressReporter(rootPath, job.id, 'fast-commit');
+  const directSemanticCommit = shouldUseSemanticEnrichmentDirectDeltaCommit(sharedOptions);
   const committed = await fastCommitCorpus(inputPath, {
     ...sharedOptions,
     changedSourceKeys,
+    ...(directSemanticCommit ? createFastMdCommitOptions(sharedOptions) : {}),
     mode: 'import-semantic-enrichment',
     onProgress(event = {}) {
       void fastCommitProgress.report(event);
@@ -2907,7 +2996,8 @@ async function processImportSemanticEnrichmentJob(rootPath, job, options = {}) {
       reused: Boolean(committed?.reused),
       paperCount: committed?.meta?.paperCount || 0,
       nodeCount: committed?.meta?.nodeCount || 0,
-      relationshipCount: committed?.meta?.relationshipCount || 0
+      relationshipCount: committed?.meta?.relationshipCount || 0,
+      directDeltaCommit: Boolean(committed?.directDeltaCommit)
     },
     authoritativeSync: {
       status: committed?.meta?.authoritativeSyncStatus || 'pending',
@@ -2925,7 +3015,9 @@ async function processImportSemanticEnrichmentJob(rootPath, job, options = {}) {
           fastCommit: roundMs(fastCommitMs),
           total: roundMs(totalMs)
         },
-        llmBatches: llmMetrics.summary()
+        llmBatches: llmMetrics.summary(),
+        directDeltaCommit: Boolean(committed?.directDeltaCommit),
+        fastCommitPhasesMs: committed?.fastCommitMetrics?.phaseTimingsMs || null
       }
     }
   };
@@ -3058,21 +3150,71 @@ export async function runImportQueueOnce(rootPath, options = {}) {
           }
         : batchOptions;
       const useBatchReserve = reserveBatchOptions.enabled && reserveBatchOptions.maxTasks > 1;
-      const initialImportQueue = useBatchReserve ? await listImportTasks(rootPath) : null;
+      const laneFiltered = hasImportTaskLaneFilter(options);
+      const initialImportQueue = (useBatchReserve || laneFiltered) ? await listImportTasks(rootPath, options) : null;
+      const initialLaneTasks = initialImportQueue
+        ? filterImportTasksForLane(initialImportQueue.tasks || [], options)
+        : null;
+      if (laneFiltered && !getReservableImportLaneTaskIds(initialImportQueue?.tasks || [], options).length) {
+        if (batchOptions.progressive) {
+          resetProgressiveImportBatchTarget(rootPath);
+        }
+        return {
+          processed: false,
+          reason: 'lane-idle',
+          laneMode: normalizeImportTaskLaneMode(options),
+          timedOutTaskIds,
+          recoveredFailedTaskIds: failedRecovery.recovered.map((entry) => entry.taskId),
+          supersededFailedTaskIds: failedRecovery.superseded.map((entry) => entry.taskId),
+          quarantinedTaskIds: quarantineResult?.tasks?.map((task) => task.taskId) || [],
+          quarantineBatchId: quarantineResult?.batchId || null
+        };
+      }
       const effectiveReserveBatchOptions = useBatchReserve
         ? createFastMdBurstReserveBatchOptions(
-            initialImportQueue?.tasks || [],
+            initialLaneTasks || [],
             batchOptions,
             reserveBatchOptions,
             options
           )
         : reserveBatchOptions;
-      const batchCoalescing = useBatchReserve
-        ? await waitForImportBatchCoalesce(rootPath, effectiveReserveBatchOptions, initialImportQueue)
+      const coalesceOptions = {
+        ...options,
+        ...effectiveReserveBatchOptions
+      };
+      const initialCoalescePayload = initialImportQueue
+        ? {
+            ...initialImportQueue,
+            tasks: initialLaneTasks || initialImportQueue.tasks || []
+          }
         : null;
+      const batchCoalescing = useBatchReserve
+        ? await waitForImportBatchCoalesce(rootPath, coalesceOptions, initialCoalescePayload)
+        : null;
+      const laneReserve = await createImportLaneReserveOptions(
+        rootPath,
+        coalesceOptions,
+        batchCoalescing?.waited ? null : initialImportQueue
+      );
+      if (laneFiltered && !laneReserve.reserveTaskIds?.length) {
+        if (batchOptions.progressive) {
+          resetProgressiveImportBatchTarget(rootPath);
+        }
+        return {
+          processed: false,
+          reason: 'lane-idle',
+          laneMode: normalizeImportTaskLaneMode(options),
+          timedOutTaskIds,
+          recoveredFailedTaskIds: failedRecovery.recovered.map((entry) => entry.taskId),
+          supersededFailedTaskIds: failedRecovery.superseded.map((entry) => entry.taskId),
+          quarantinedTaskIds: quarantineResult?.tasks?.map((task) => task.taskId) || [],
+          quarantineBatchId: quarantineResult?.batchId || null,
+          ...(batchCoalescing?.waited ? { batchCoalescing } : {})
+        };
+      }
       const reserved = useBatchReserve
-        ? await reserveImportTaskBatch(rootPath, effectiveReserveBatchOptions)
-        : await reserveNextImportTask(rootPath);
+        ? await reserveImportTaskBatch(rootPath, laneReserve.reserveOptions)
+        : await reserveNextImportTask(rootPath, laneReserve.reserveOptions);
       const reservedTasks = Array.isArray(reserved?.tasks)
         ? reserved.tasks.filter(Boolean)
         : (reserved?.task ? [reserved.task] : []);
@@ -3115,7 +3257,7 @@ export async function runImportQueueOnce(rootPath, options = {}) {
             rootPath,
             batchOptions,
             result,
-            await countPendingImportTasksOnDisk(rootPath)
+            await countPendingImportTasksOnDisk(rootPath, options)
           );
           return {
             ...result,
@@ -3141,7 +3283,7 @@ export async function runImportQueueOnce(rootPath, options = {}) {
                 failed: true,
                 taskId: reservedTasks[0]?.id || null
               },
-              await countPendingImportTasksOnDisk(rootPath)
+              await countPendingImportTasksOnDisk(rootPath, options)
             )
           : null;
         return {
@@ -3199,7 +3341,166 @@ export async function runImportQueueUntilIdle(rootPath, options = {}) {
   };
 }
 
+function resolveImportWorkerRootConcurrency(options = {}, rootCount = 1) {
+  const configured = options.importWorkerRootConcurrency
+    ?? options.workerRootConcurrency
+    ?? options.rootConcurrency
+    ?? options.multiRootConcurrency;
+  const parsed = Number(configured ?? 2);
+  const concurrency = Number.isFinite(parsed) ? Math.floor(parsed) : 2;
+  const boundedRootCount = Math.max(1, Number(rootCount) || 1);
+  return Math.max(1, Math.min(8, boundedRootCount, concurrency || 1));
+}
+
+function resolveImportRootPriorityQueueLockTimeoutMs(options = {}) {
+  const configured = options.importRootPriorityQueueLockTimeoutMs
+    ?? options.rootPriorityQueueLockTimeoutMs
+    ?? options.importQueuePriorityLockTimeoutMs
+    ?? options.queuePriorityLockTimeoutMs;
+  const parsed = Number(configured ?? 750);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 750;
+  return Math.max(100, Math.min(5000, Math.floor(parsed)));
+}
+
+async function getImportWorkerCorpusPriority(corpus = {}, options = {}) {
+  if (!corpus?.rootPath) {
+    return {
+      score: 0,
+      pending: 0,
+      fastMdPending: 0,
+      running: 0,
+      reason: 'missing-root'
+    };
+  }
+
+  try {
+    const payload = await listImportTasks(corpus.rootPath, {
+      ...options,
+      importQueueLockTimeoutMs: resolveImportRootPriorityQueueLockTimeoutMs(options)
+    });
+    const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+    const summary = summarizeImportBatchCoalesceTasks(tasks);
+    const pendingTasks = pendingQueuedImportTasks(tasks);
+    const fastMdPending = pendingTasks.filter((task) => shouldUseFastMdStructuralPath(task, options)).length;
+    if (summary.running > 0) {
+      return {
+        score: 1,
+        pending: summary.pending,
+        fastMdPending,
+        running: summary.running,
+        reason: 'running'
+      };
+    }
+    if (fastMdPending > 0) {
+      return {
+        score: 1000 + Math.min(999, fastMdPending),
+        pending: summary.pending,
+        fastMdPending,
+        running: 0,
+        reason: 'fast-md-pending'
+      };
+    }
+    if (summary.pending > 0) {
+      return {
+        score: 10 + Math.min(99, summary.pending),
+        pending: summary.pending,
+        fastMdPending: 0,
+        running: 0,
+        reason: 'pending'
+      };
+    }
+    return {
+      score: 0,
+      pending: 0,
+      fastMdPending: 0,
+      running: 0,
+      reason: 'idle'
+    };
+  } catch (error) {
+    return {
+      score: 0,
+      pending: 0,
+      fastMdPending: 0,
+      running: 0,
+      reason: isLockTimeout(error) ? 'queue-lock-busy' : 'priority-scan-failed',
+      error: error.message
+    };
+  }
+}
+
+async function prioritizeImportWorkerCorpora(roots = [], options = {}) {
+  const rootList = Array.isArray(roots) ? roots.filter(Boolean) : [];
+  if (rootList.length <= 1) return rootList;
+  const entries = await Promise.all(rootList.map(async (corpus, index) => ({
+    corpus,
+    index,
+    priority: await getImportWorkerCorpusPriority(corpus, options)
+  })));
+
+  entries.sort((left, right) => {
+    const scoreDelta = Number(right.priority?.score || 0) - Number(left.priority?.score || 0);
+    if (scoreDelta !== 0) return scoreDelta;
+    return left.index - right.index;
+  });
+  return entries.map((entry) => entry.corpus);
+}
+
+async function mapImportWorkerCorpora(roots, options, mapper) {
+  const rootList = Array.isArray(roots) ? roots : [];
+  if (!rootList.length) return [];
+
+  const results = new Array(rootList.length);
+  const concurrency = resolveImportWorkerRootConcurrency(options, rootList.length);
+  let nextIndex = 0;
+
+  const runNext = async () => {
+    while (nextIndex < rootList.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(rootList[index], index);
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => runNext()));
+  return results;
+}
+
 export async function runImportsForAllCorporaOnce(options = {}) {
+  const configuredRoots = Array.isArray(options.rootPaths)
+    ? options.rootPaths.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const registry = configuredRoots.length ? null : await loadRegistry();
+  const roots = configuredRoots.length
+    ? configuredRoots.map((rootPath) => ({ rootPath, name: rootPath }))
+    : (registry?.corpora || []);
+  const prioritizedRoots = await prioritizeImportWorkerCorpora(roots, options);
+
+  return mapImportWorkerCorpora(prioritizedRoots, options, async (corpus) => {
+    markImportWorkerSeen(corpus.rootPath, corpus.name);
+    const importResult = await runImportQueueOnce(corpus.rootPath, options);
+    if (!importResult.processed && isImportSemanticEnrichmentWorkerEnabled(options)) {
+      const semanticResult = await runImportSemanticEnrichmentQueueOnce(corpus.rootPath, options);
+      if (semanticResult.processed) {
+        return {
+          rootPath: corpus.rootPath,
+          corpusName: corpus.name,
+          ...semanticResult
+        };
+      }
+    }
+    return {
+      rootPath: corpus.rootPath,
+      corpusName: corpus.name,
+      ...importResult
+    };
+  });
+}
+
+export async function runImportSemanticEnrichmentForAllCorporaOnce(options = {}) {
+  if (!isImportSemanticEnrichmentWorkerEnabled(options)) {
+    return [];
+  }
+
   const configuredRoots = Array.isArray(options.rootPaths)
     ? options.rootPaths.map((item) => String(item || '').trim()).filter(Boolean)
     : [];
@@ -3211,22 +3512,11 @@ export async function runImportsForAllCorporaOnce(options = {}) {
 
   for (const corpus of roots) {
     markImportWorkerSeen(corpus.rootPath, corpus.name);
-    const importResult = await runImportQueueOnce(corpus.rootPath, options);
-    if (!importResult.processed && isImportSemanticEnrichmentWorkerEnabled(options)) {
-      const semanticResult = await runImportSemanticEnrichmentQueueOnce(corpus.rootPath, options);
-      if (semanticResult.processed) {
-        results.push({
-          rootPath: corpus.rootPath,
-          corpusName: corpus.name,
-          ...semanticResult
-        });
-        continue;
-      }
-    }
+    const semanticResult = await runImportSemanticEnrichmentQueueOnce(corpus.rootPath, options);
     results.push({
       rootPath: corpus.rootPath,
       corpusName: corpus.name,
-      ...importResult
+      ...semanticResult
     });
   }
 
@@ -3245,22 +3535,62 @@ export const __importWorkerTestables = {
   resolveImportBatchCoalesceTargetTasks,
   resolveFastMdBurstTargetTasks,
   createFastMdBurstReserveBatchOptions,
+  normalizeImportTaskLaneMode,
+  filterImportTasksForLane,
+  getReservableImportLaneTaskIds,
   createImportBatchLlmConfigGroups,
   createLlmBatchMetricsCollector,
-  createLlmProgressDiagnosticsCollector
+  createLlmProgressDiagnosticsCollector,
+  reportBatchProgressSerially,
+  flushBatchProgressReportersSerially,
+  resolveImportWorkerRootConcurrency,
+  resolveImportRootPriorityQueueLockTimeoutMs,
+  getImportWorkerCorpusPriority,
+  prioritizeImportWorkerCorpora,
+  mapImportWorkerCorpora
 };
 
 export function startImportWorker(options = {}) {
   const logger = options.logger || console;
   const intervalMs = Math.max(1500, Number(options.intervalMs || 5000));
+  const semanticEnabled = isImportSemanticEnrichmentWorkerEnabled(options);
+  const semanticIntervalMs = Math.max(1500, Number(
+    options.importSemanticEnrichmentIntervalMs
+    || options.semanticEnrichmentIntervalMs
+    || options.backgroundSemanticEnrichmentIntervalMs
+    || options.intervalMs
+    || 5000
+  ));
   let closed = false;
   let running = false;
+  let semanticRunning = false;
   let timer = null;
+  let semanticTimer = null;
 
   const schedule = () => {
     if (closed) return;
     clearTimeout(timer);
     timer = setTimeout(tick, intervalMs);
+  };
+
+  const scheduleSemantic = () => {
+    if (closed || !semanticEnabled) return;
+    clearTimeout(semanticTimer);
+    semanticTimer = setTimeout(semanticTick, semanticIntervalMs);
+  };
+
+  const logSemanticResult = (result) => {
+    if (!result.semanticEnrichment || !result.processed) return;
+    if (result.failed) {
+      logger.error?.(
+        `[imports] ${result.corpusName || result.rootPath}: semantic enrichment job ${result.jobId} failed`
+        + (result.error ? ` (${result.error})` : '')
+      );
+      return;
+    }
+    logger.log?.(
+      `[imports] ${result.corpusName || result.rootPath}: completed semantic enrichment job ${result.jobId}`
+    );
   };
 
   const tick = async () => {
@@ -3271,19 +3601,18 @@ export function startImportWorker(options = {}) {
 
     running = true;
     try {
-      const results = await runImportsForAllCorporaOnce(options);
+      const importOptions = semanticEnabled
+        ? {
+            ...options,
+            importSemanticEnrichmentEnabled: false,
+            semanticEnrichmentEnabled: false,
+            backgroundSemanticEnrichment: false
+          }
+        : options;
+      const results = await runImportsForAllCorporaOnce(importOptions);
       for (const result of results) {
         if (result.semanticEnrichment) {
-          if (result.failed) {
-            logger.error?.(
-              `[imports] ${result.corpusName || result.rootPath}: semantic enrichment job ${result.jobId} failed`
-              + (result.error ? ` (${result.error})` : '')
-            );
-          } else {
-            logger.log?.(
-              `[imports] ${result.corpusName || result.rootPath}: completed semantic enrichment job ${result.jobId}`
-            );
-          }
+          logSemanticResult(result);
           continue;
         }
         if (!result.processed) {
@@ -3324,19 +3653,50 @@ export function startImportWorker(options = {}) {
     }
   };
 
+  const semanticTick = async () => {
+    if (closed || semanticRunning) {
+      scheduleSemantic();
+      return;
+    }
+
+    semanticRunning = true;
+    try {
+      const results = await runImportSemanticEnrichmentForAllCorporaOnce(options);
+      for (const result of results) {
+        logSemanticResult(result);
+      }
+    } catch (error) {
+      logger.error?.(`[imports] semantic enrichment worker: ${error.message}`);
+    } finally {
+      semanticRunning = false;
+      scheduleSemantic();
+    }
+  };
+
   void tick();
+  if (semanticEnabled) {
+    void semanticTick();
+  }
 
   return {
     async stop() {
       closed = true;
       clearTimeout(timer);
+      clearTimeout(semanticTimer);
       while (running) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      while (semanticRunning) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     },
     pollNow() {
       clearTimeout(timer);
       void tick();
+      if (semanticEnabled) {
+        clearTimeout(semanticTimer);
+        void semanticTick();
+      }
     }
   };
 }
