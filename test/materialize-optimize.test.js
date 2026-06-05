@@ -1624,7 +1624,7 @@ The chunk extractor can still recover a grounded problem from this method sectio
   }
 });
 
-test('llmOptimizeCorpus uses paper-level relations after semantic-only long-context fallback', async () => {
+test('llmOptimizeCorpus uses paper-level relations after empty-response semantic-only fallback', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-relation-after-fallback-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-relation-after-fallback-corpus-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
@@ -1744,11 +1744,7 @@ The recovered semantic object should still allow paper-level relation extraction
 
           return {
             choices: [
-              {
-                message: {
-                  content: JSON.stringify({ papers: [] })
-                }
-              }
+              { message: { content: '' } }
             ]
           };
         }
@@ -1789,7 +1785,7 @@ The recovered semantic object should still allow paper-level relation extraction
     const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
     assert.equal(snapshot.llm.semanticExtractionParticipated, true);
     assert.equal(snapshot.llm.longContext.fallbackUsed, true);
-    assert.equal(snapshot.llm.longContext.fallbackReason, 'missing-result');
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'empty-response');
     assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v1');
     assert.ok(snapshot.findings.some((finding) => finding.name === 'paper-level relation after semantic fallback'));
     assert.equal(snapshot.llm.chunkPipeline.relationChunkCount || 0, 0);

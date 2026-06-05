@@ -2636,6 +2636,9 @@ function getLongContextFallbackReason(result = null, summary = null, options = {
   if (textIncludesAny(errorText, ['missing batch semantic result', 'missing split-retry semantic result'])) {
     return 'missing-result';
   }
+  if (textIncludesAny(errorText, ['empty content', 'empty response', 'empty provider response', 'returned empty'])) {
+    return 'empty-response';
+  }
   if (textIncludesAny(errorText, ['timed out', 'timeout', 'aborterror', 'aborted', 'etimedout'])) {
     return 'timeout';
   }
