@@ -1149,6 +1149,10 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
     assert.equal(completedFirstSemanticJob.progress.stage, 'completed');
     assert.equal(completedFirstSemanticJob.progress.currentStep, 'semantic enrichment complete');
     assert.equal(completedFirstSemanticJob.result.fastCommitted.directDeltaCommit, true);
+    assert.equal(completedFirstSemanticJob.result.metrics.importPerformance.mode, 'semantic-enrichment-batch');
+    assert.equal(completedFirstSemanticJob.result.metrics.importPerformance.batchTaskCount, 2);
+    assert.equal(completedFirstSemanticJob.result.semanticEnrichmentJobIds.length, 2);
+    assert.ok(completedFirstSemanticJob.result.semanticEnrichmentBatchId);
     assert.equal(completedFirstSemanticJob.result.metrics.importPerformance.directDeltaCommit, true);
     assert.equal(
       typeof completedFirstSemanticJob.result.metrics.importPerformance.fastCommitPhasesMs.prepareDirectDelta,

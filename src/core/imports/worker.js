@@ -21,6 +21,7 @@ import {
   failImportSemanticEnrichmentJob,
   getImportSemanticEnrichmentPaths,
   listImportSemanticEnrichmentJobs,
+  reserveImportSemanticEnrichmentJobBatch,
   reserveNextImportSemanticEnrichmentJob,
   updateImportSemanticEnrichmentJobProgress
 } from '../../storage/import-semantic-store.js';
@@ -43,6 +44,7 @@ const DEFAULT_IMPORT_BATCH_MAX_TASKS = 16;
 const DEFAULT_IMPORT_BATCH_COALESCE_MS = 0;
 const DEFAULT_IMPORT_BATCH_COALESCE_POLL_MS = 250;
 const DEFAULT_FAST_MD_BURST_TARGET_TASKS = 10;
+const DEFAULT_IMPORT_SEMANTIC_ENRICHMENT_BATCH_MAX_JOBS = 2;
 const HARD_IMPORT_BATCH_COALESCE_MS = 5 * 60 * 1000;
 const HARD_IMPORT_BATCH_COALESCE_POLL_MS = 10_000;
 const IMPORT_PERFORMANCE_CONTRACT_VERSION = 'import-performance-v1';
@@ -669,6 +671,22 @@ function createSemanticJobProgressReporter(rootPath, jobId, stage) {
     },
     async flush() {
       await chain;
+    }
+  };
+}
+
+function createSemanticJobBatchProgressReporter(rootPath, jobIds = [], stage) {
+  const reporters = jobIds.map((jobId) => createSemanticJobProgressReporter(rootPath, jobId, stage));
+  return {
+    async report(event = {}) {
+      for (const reporter of reporters) {
+        await reporter.report(event);
+      }
+    },
+    async flush() {
+      for (const reporter of reporters) {
+        await reporter.flush();
+      }
     }
   };
 }
@@ -1677,6 +1695,36 @@ function isImportSemanticEnrichmentWorkerEnabled(options = {}) {
     ?? options.backgroundSemanticEnrichment,
     true
   );
+}
+
+function resolveImportSemanticEnrichmentBatchMaxJobs(options = {}) {
+  const importsConfig = options.config?.imports && typeof options.config.imports === 'object'
+    ? options.config.imports
+    : {};
+  const importConfig = options.config?.import && typeof options.config.import === 'object'
+    ? options.config.import
+    : {};
+  const llmConfig = options.config?.llm && typeof options.config.llm === 'object'
+    ? options.config.llm
+    : {};
+  const raw = firstNonEmptyOptionValue(
+    options.importSemanticEnrichmentBatchMaxJobs,
+    options.semanticEnrichmentBatchMaxJobs,
+    options.backgroundSemanticEnrichmentBatchMaxJobs,
+    options.semanticWorkerBatchMaxJobs,
+    importsConfig.importSemanticEnrichmentBatchMaxJobs,
+    importsConfig.semanticEnrichmentBatchMaxJobs,
+    importsConfig.backgroundSemanticEnrichmentBatchMaxJobs,
+    importsConfig.semanticWorkerBatchMaxJobs,
+    importConfig.importSemanticEnrichmentBatchMaxJobs,
+    importConfig.semanticEnrichmentBatchMaxJobs,
+    options.llmLongContextMaxPapersPerCall,
+    importsConfig.llmLongContextMaxPapersPerCall,
+    llmConfig.longContextMaxPapersPerCall,
+    llmConfig.llmLongContextMaxPapersPerCall
+  );
+  const parsed = normalizePositiveIntegerOption(raw) || DEFAULT_IMPORT_SEMANTIC_ENRICHMENT_BATCH_MAX_JOBS;
+  return Math.max(1, Math.min(16, parsed));
 }
 
 function createSemanticEnrichmentResultPayload(jobs = [], fallbackStatus = 'queued') {
@@ -3040,12 +3088,248 @@ async function processImportSemanticEnrichmentJob(rootPath, job, options = {}) {
   return result;
 }
 
+async function processImportSemanticEnrichmentJobBatch(rootPath, jobs = [], options = {}) {
+  const semanticJobs = (Array.isArray(jobs) ? jobs : []).filter((job) => job?.id);
+  if (!semanticJobs.length) {
+    throw new Error('No import semantic enrichment jobs were reserved.');
+  }
+  if (semanticJobs.length === 1) {
+    const result = await processImportSemanticEnrichmentJob(rootPath, semanticJobs[0], options);
+    return {
+      batch: false,
+      jobId: semanticJobs[0].id,
+      jobIds: [semanticJobs[0].id],
+      taskId: semanticJobs[0].taskId,
+      taskIds: [semanticJobs[0].taskId],
+      results: [result],
+      result
+    };
+  }
+
+  const tasks = [];
+  for (const job of semanticJobs) {
+    const task = await loadImportTask(rootPath, job.taskId);
+    if (!task?.id) {
+      throw new Error(`Import semantic enrichment job ${job.id} references missing task ${job.taskId}.`);
+    }
+    tasks.push(task);
+  }
+
+  const corpusMeta = await loadCorpusMeta(rootPath);
+  const inputPath = await resolveTaskInputPath(rootPath, tasks[0]);
+  const changedSourceKeysByJobId = new Map();
+  const batchChangedSourceKeys = uniqueSortedStrings((await Promise.all(semanticJobs.map(async (job, index) => {
+    const task = tasks[index];
+    const changedSourceKeys = uniqueSortedStrings(
+      job.changedSourceKeys?.length ? job.changedSourceKeys : await resolveTaskChangedSourceKeys(rootPath, task)
+    );
+    if (!changedSourceKeys.length) {
+      throw new Error(`Import semantic enrichment job ${job.id} has no changed source keys.`);
+    }
+    changedSourceKeysByJobId.set(job.id, changedSourceKeys);
+    return changedSourceKeys;
+  }))).flat());
+
+  const jobIds = semanticJobs.map((job) => job.id);
+  const taskIds = tasks.map((task) => task.id);
+  const semanticEnrichmentBatchId = `isembatch:${jobIds.join('+')}`;
+  for (const [index, job] of semanticJobs.entries()) {
+    const task = tasks[index];
+    await updateImportTaskSemanticLifecycle(rootPath, task.id, 'running', {
+      jobId: job.id,
+      message: `started background semantic enrichment batch ${semanticEnrichmentBatchId}`
+    });
+    await appendSemanticEnrichmentDagNodeEvent(rootPath, task.id, job, 'running', {
+      message: `started background semantic enrichment batch ${semanticEnrichmentBatchId}`
+    });
+  }
+
+  const startedAt = Date.now();
+  const jobLlmOptions = resolveTaskLlmOptionOverrides(semanticJobs[0]);
+  const sharedOptions = {
+    ...options,
+    ...jobLlmOptions,
+    rootPath,
+    quiet: true,
+    name: corpusMeta.name,
+    importBatchTaskIds: taskIds,
+    importSemanticEnrichmentBatchId: semanticEnrichmentBatchId,
+    importSemanticEnrichmentJobIds: jobIds
+  };
+  const llmMetrics = createLlmBatchMetricsCollector();
+  const upstreamOnLlmBatchComplete = sharedOptions.onLlmBatchComplete;
+  const upstreamOnLlmBatchRetry = sharedOptions.onLlmBatchRetry;
+  const upstreamOnProgress = sharedOptions.onProgress;
+
+  const llmStartedAt = Date.now();
+  const llmProgress = createSemanticJobBatchProgressReporter(rootPath, jobIds, 'llm-optimize');
+  const llmDiagnostics = createLlmProgressDiagnosticsCollector({
+    mode: 'semantic-enrichment-batch',
+    semanticEnrichmentBatchId,
+    batchTaskCount: taskIds.length,
+    changedSourceKeyCount: batchChangedSourceKeys.length,
+    llmConfig: {
+      llmContextWindowTokens: sharedOptions.llmContextWindowTokens || null,
+      llmExtractionStrategy: sharedOptions.llmExtractionStrategy || null,
+      llmLongContextMaxPapersPerCall: sharedOptions.llmLongContextMaxPapersPerCall || null,
+      llmBatchConcurrency: sharedOptions.llmBatchConcurrency || null
+    }
+  });
+  const optimized = await llmOptimizeCorpus(inputPath, {
+    ...sharedOptions,
+    changedSourceKeys: batchChangedSourceKeys,
+    onProgress(event = {}) {
+      void llmProgress.report(event);
+      upstreamOnProgress?.(event);
+    },
+    onLlmBatchComplete(event = {}) {
+      const decoratedEvent = {
+        ...event,
+        semanticEnrichmentBatchId,
+        semanticEnrichmentJobIds: jobIds
+      };
+      llmMetrics.recordComplete(decoratedEvent);
+      void reportLlmProgressDiagnostics(llmProgress, llmDiagnostics, decoratedEvent, 'complete');
+      upstreamOnLlmBatchComplete?.(decoratedEvent);
+    },
+    onLlmBatchRetry(event = {}) {
+      const decoratedEvent = {
+        ...event,
+        semanticEnrichmentBatchId,
+        semanticEnrichmentJobIds: jobIds
+      };
+      llmMetrics.recordRetry(decoratedEvent);
+      void reportLlmProgressDiagnostics(llmProgress, llmDiagnostics, decoratedEvent, 'retry');
+      upstreamOnLlmBatchRetry?.(decoratedEvent);
+    }
+  });
+  const llmOptimizeMs = elapsedMs(llmStartedAt);
+  await llmProgress.report({
+    stagePercent: 100,
+    currentStep: 'llm optimization complete',
+    message: 'Completed background semantic LLM optimization batch',
+    diagnostics: llmDiagnostics.snapshot({
+      status: 'completed',
+      completedAt: new Date().toISOString()
+    })
+  });
+  await llmProgress.flush();
+
+  const fastCommitStartedAt = Date.now();
+  const fastCommitProgress = createSemanticJobBatchProgressReporter(rootPath, jobIds, 'fast-commit');
+  const directSemanticCommit = shouldUseSemanticEnrichmentDirectDeltaCommit(sharedOptions);
+  const committed = await fastCommitCorpus(inputPath, {
+    ...sharedOptions,
+    changedSourceKeys: batchChangedSourceKeys,
+    ...(directSemanticCommit ? createFastMdCommitOptions(sharedOptions) : {}),
+    mode: 'import-semantic-enrichment-batch',
+    onProgress(event = {}) {
+      void fastCommitProgress.report(event);
+      upstreamOnProgress?.(event);
+    }
+  });
+  const fastCommitMs = elapsedMs(fastCommitStartedAt);
+  await fastCommitProgress.report({
+    stagePercent: 100,
+    currentStep: 'fast commit complete',
+    message: 'Applied background semantic graph update batch'
+  });
+  await fastCommitProgress.flush();
+
+  const totalMs = elapsedMs(startedAt);
+  const llmBatchSummary = llmMetrics.summary();
+  const results = [];
+  for (const [index, job] of semanticJobs.entries()) {
+    const task = tasks[index];
+    const changedSourceKeys = changedSourceKeysByJobId.get(job.id) || [];
+    const result = {
+      taskId: task.id,
+      jobId: job.id,
+      semanticEnrichmentBatchId,
+      semanticEnrichmentJobIds: jobIds,
+      batchTaskIds: taskIds,
+      changedSourceKeys,
+      batchChangedSourceKeys,
+      optimized: {
+        reused: Boolean(optimized?.reused)
+      },
+      fastCommitted: {
+        reused: Boolean(committed?.reused),
+        paperCount: committed?.meta?.paperCount || 0,
+        nodeCount: committed?.meta?.nodeCount || 0,
+        relationshipCount: committed?.meta?.relationshipCount || 0,
+        directDeltaCommit: Boolean(committed?.directDeltaCommit)
+      },
+      authoritativeSync: {
+        status: committed?.meta?.authoritativeSyncStatus || 'pending',
+        jobId: committed?.syncJob?.jobId || null
+      },
+      metrics: {
+        importPerformance: {
+          contractVersion: IMPORT_PERFORMANCE_CONTRACT_VERSION,
+          mode: 'semantic-enrichment-batch',
+          taskId: task.id,
+          semanticEnrichmentJobId: job.id,
+          semanticEnrichmentBatchId,
+          semanticEnrichmentJobIds: jobIds,
+          batchTaskCount: taskIds.length,
+          changedSourceKeyCount: changedSourceKeys.length,
+          batchChangedSourceKeyCount: batchChangedSourceKeys.length,
+          stageTimingsMs: {
+            llmOptimize: roundMs(llmOptimizeMs),
+            fastCommit: roundMs(fastCommitMs),
+            total: roundMs(totalMs)
+          },
+          llmBatches: llmBatchSummary,
+          directDeltaCommit: Boolean(committed?.directDeltaCommit),
+          fastCommitPhasesMs: committed?.fastCommitMetrics?.phaseTimingsMs || null
+        }
+      }
+    };
+
+    await completeImportSemanticEnrichmentJob(rootPath, job.id, result);
+    await updateImportTaskSemanticLifecycle(rootPath, task.id, 'completed', {
+      jobId: job.id,
+      result,
+      throughputMetrics: {
+        semanticEnrichmentLatencyMs: roundMs(totalMs),
+        semanticEnrichmentJobId: job.id,
+        semanticEnrichmentBatchId
+      },
+      message: `completed background semantic enrichment batch ${semanticEnrichmentBatchId}`
+    });
+    await appendSemanticEnrichmentDagNodeEvent(rootPath, task.id, job, 'completed', {
+      result,
+      message: `completed background semantic enrichment batch ${semanticEnrichmentBatchId}`
+    });
+    results.push(result);
+  }
+
+  return {
+    batch: true,
+    semanticEnrichmentBatchId,
+    jobId: jobIds[0],
+    jobIds,
+    taskId: taskIds[0],
+    taskIds,
+    result: results[0],
+    results
+  };
+}
+
 export async function runImportSemanticEnrichmentQueueOnce(rootPath, options = {}) {
   const { workerLockPath } = getImportSemanticEnrichmentPaths(rootPath);
   try {
     return await withFileLock(workerLockPath, async () => {
-      const reserved = await reserveNextImportSemanticEnrichmentJob(rootPath, options);
-      if (!reserved?.job) {
+      const semanticBatchMaxJobs = resolveImportSemanticEnrichmentBatchMaxJobs(options);
+      const reserved = semanticBatchMaxJobs > 1
+        ? await reserveImportSemanticEnrichmentJobBatch(rootPath, {
+            ...options,
+            maxJobs: semanticBatchMaxJobs
+          })
+        : await reserveNextImportSemanticEnrichmentJob(rootPath, options);
+      const reservedJobs = reserved?.jobs?.length ? reserved.jobs : (reserved?.job ? [reserved.job] : []);
+      if (!reservedJobs.length) {
         return {
           processed: false,
           reason: 'idle',
@@ -3054,46 +3338,58 @@ export async function runImportSemanticEnrichmentQueueOnce(rootPath, options = {
       }
 
       try {
-        const result = await processImportSemanticEnrichmentJob(rootPath, reserved.job, options);
+        const batchResult = await processImportSemanticEnrichmentJobBatch(rootPath, reservedJobs, options);
         return {
           processed: true,
           failed: false,
           semanticEnrichment: true,
-          jobId: reserved.job.id,
-          taskId: reserved.job.taskId,
-          result,
+          jobId: batchResult.jobId,
+          jobIds: batchResult.jobIds,
+          taskId: batchResult.taskId,
+          taskIds: batchResult.taskIds,
+          semanticEnrichmentBatchId: batchResult.semanticEnrichmentBatchId || null,
+          result: batchResult.result,
+          results: batchResult.results,
           summary: (await listImportSemanticEnrichmentJobs(rootPath)).summary
         };
       } catch (error) {
-        const failed = await failImportSemanticEnrichmentJob(rootPath, reserved.job.id, error, options);
-        const nextStatus = failed?.retryable ? 'queued' : 'failed';
-        await updateImportTaskSemanticLifecycle(rootPath, reserved.job.taskId, nextStatus, {
-          jobId: reserved.job.id,
-          error,
-          message: `background semantic enrichment job ${reserved.job.id} ${failed?.retryable ? 'will retry' : 'failed'}: ${error.message}`
-        });
-        await appendSemanticEnrichmentDagNodeEvent(
-          rootPath,
-          reserved.job.taskId,
-          failed?.job || reserved.job,
-          failed?.retryable ? 'pending' : 'failed',
-          {
-            event: failed?.retryable ? 'dag.node.retry_scheduled' : 'dag.node.failed',
-            level: failed?.retryable ? 'warning' : 'error',
-            retryable: Boolean(failed?.retryable),
+        const failedResults = [];
+        for (const job of reservedJobs) {
+          const failed = await failImportSemanticEnrichmentJob(rootPath, job.id, error, options);
+          const nextStatus = failed?.retryable ? 'queued' : 'failed';
+          await updateImportTaskSemanticLifecycle(rootPath, job.taskId, nextStatus, {
+            jobId: job.id,
             error,
-            message: `background semantic enrichment job ${reserved.job.id} ${failed?.retryable ? 'will retry' : 'failed'}: ${error.message}`
-          }
-        );
+            message: `background semantic enrichment job ${job.id} ${failed?.retryable ? 'will retry' : 'failed'}: ${error.message}`
+          });
+          await appendSemanticEnrichmentDagNodeEvent(
+            rootPath,
+            job.taskId,
+            failed?.job || job,
+            failed?.retryable ? 'pending' : 'failed',
+            {
+              event: failed?.retryable ? 'dag.node.retry_scheduled' : 'dag.node.failed',
+              level: failed?.retryable ? 'warning' : 'error',
+              retryable: Boolean(failed?.retryable),
+              error,
+              message: `background semantic enrichment job ${job.id} ${failed?.retryable ? 'will retry' : 'failed'}: ${error.message}`
+            }
+          );
+          failedResults.push(failed);
+        }
+        const retryable = failedResults.some((failed) => failed?.retryable);
+        const finalSummary = (await listImportSemanticEnrichmentJobs(rootPath)).summary;
         return {
           processed: true,
           failed: true,
           semanticEnrichment: true,
-          retryable: Boolean(failed?.retryable),
-          jobId: reserved.job.id,
-          taskId: reserved.job.taskId,
+          retryable,
+          jobId: reservedJobs[0]?.id || null,
+          jobIds: reservedJobs.map((job) => job.id),
+          taskId: reservedJobs[0]?.taskId || null,
+          taskIds: reservedJobs.map((job) => job.taskId),
           error: error.message,
-          summary: failed?.summary || (await listImportSemanticEnrichmentJobs(rootPath)).summary
+          summary: finalSummary
         };
       }
     }, {
@@ -3120,7 +3416,10 @@ export async function runImportSemanticEnrichmentQueueUntilIdle(rootPath, option
     const result = await runImportSemanticEnrichmentQueueOnce(rootPath, options);
     if (result.summary) lastSummary = result.summary;
     if (!result.processed) break;
-    if (result.jobId && !result.failed) completedJobIds.push(result.jobId);
+    if (!result.failed) {
+      const jobIds = result.jobIds?.length ? result.jobIds : (result.jobId ? [result.jobId] : []);
+      completedJobIds.push(...jobIds);
+    }
     if (result.failed && result.retryable !== true) failedCount += 1;
   }
 
@@ -3581,15 +3880,18 @@ export function startImportWorker(options = {}) {
 
   const logSemanticResult = (result) => {
     if (!result.semanticEnrichment || !result.processed) return;
+    const jobLabel = result.jobIds?.length > 1
+      ? `${result.jobIds.length} semantic enrichment jobs`
+      : `semantic enrichment job ${result.jobId}`;
     if (result.failed) {
       logger.error?.(
-        `[imports] ${result.corpusName || result.rootPath}: semantic enrichment job ${result.jobId} failed`
+        `[imports] ${result.corpusName || result.rootPath}: ${jobLabel} failed`
         + (result.error ? ` (${result.error})` : '')
       );
       return;
     }
     logger.log?.(
-      `[imports] ${result.corpusName || result.rootPath}: completed semantic enrichment job ${result.jobId}`
+      `[imports] ${result.corpusName || result.rootPath}: completed ${jobLabel}`
     );
   };
 

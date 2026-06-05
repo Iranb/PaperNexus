@@ -141,6 +141,35 @@ function sortReservableJobs(jobs = []) {
   });
 }
 
+function createSemanticJobReservationGroupKey(job = {}) {
+  return JSON.stringify({
+    semanticConfigKey: String(job.semanticConfigKey || 'default').trim() || 'default',
+    processingProfile: String(job.processingProfile || '').trim() || null,
+    completionPolicy: String(job.completionPolicy || '').trim() || null,
+    llmContextWindowTokens: job.llmContextWindowTokens || null,
+    llmExtractionStrategy: job.llmExtractionStrategy || null,
+    llmLongContextMaxPapersPerCall: job.llmLongContextMaxPapersPerCall || null,
+    llmBatchConcurrency: job.llmBatchConcurrency || null
+  });
+}
+
+function reserveSemanticJobForWorker(job, now, options = {}) {
+  job.status = 'running';
+  job.stage = 'semantic-enrichment';
+  job.startedAt = job.startedAt || now;
+  job.updatedAt = now;
+  job.attempts = Number(job.attempts || 0) + 1;
+  job.workerId = String(options.workerId || `pid:${process.pid}`);
+  job.error = null;
+  job.progress = normalizeSemanticJobProgress(job, {
+    status: 'running',
+    stage: 'semantic-enrichment',
+    currentStep: 'reserved',
+    message: 'Reserved background semantic enrichment job'
+  });
+  return job;
+}
+
 function createSemanticJobId(entry = {}) {
   const taskId = String(entry.taskId || '').trim();
   const changedSourceKeys = normalizeStringArray(entry.changedSourceKeys || entry.changed_source_keys);
@@ -403,23 +432,59 @@ export async function reserveNextImportSemanticEnrichmentJob(rootPath, options =
     }
 
     const now = new Date().toISOString();
-    job.status = 'running';
-    job.stage = 'semantic-enrichment';
-    job.startedAt = job.startedAt || now;
-    job.updatedAt = now;
-    job.attempts = Number(job.attempts || 0) + 1;
-    job.workerId = String(options.workerId || `pid:${process.pid}`);
-    job.error = null;
-    job.progress = normalizeSemanticJobProgress(job, {
-      status: 'running',
-      stage: 'semantic-enrichment',
-      currentStep: 'reserved',
-      message: 'Reserved background semantic enrichment job'
-    });
+    reserveSemanticJobForWorker(job, now, options);
     queue.updatedAt = now;
     await saveImportSemanticEnrichmentQueue(rootPath, queue);
     return {
       job: { ...job },
+      summary: summarizeQueue(queue)
+    };
+  }, {
+    timeoutMs: Number(options.lockTimeoutMs || 5000)
+  });
+}
+
+export async function reserveImportSemanticEnrichmentJobBatch(rootPath, options = {}) {
+  const { queueLockPath } = getImportSemanticEnrichmentPaths(rootPath);
+  const maxJobs = Math.max(1, Math.min(16, Number(options.maxJobs || options.batchMaxJobs || 1) || 1));
+  return withFileLock(queueLockPath, async () => {
+    const queue = await loadImportSemanticEnrichmentQueue(rootPath);
+    const recovered = recoverStaleRunningJobs(queue, options);
+    const candidates = sortReservableJobs(queue.jobs || [])
+      .filter((entry) => normalizeStatus(entry.status) === 'pending');
+    const anchor = candidates[0] || null;
+
+    if (!anchor) {
+      if (recovered) {
+        queue.updatedAt = new Date().toISOString();
+        await saveImportSemanticEnrichmentQueue(rootPath, queue);
+      }
+      return null;
+    }
+
+    const groupKey = createSemanticJobReservationGroupKey(anchor);
+    const jobs = candidates
+      .filter((entry) => createSemanticJobReservationGroupKey(entry) === groupKey)
+      .slice(0, maxJobs);
+    const now = new Date().toISOString();
+
+    for (const job of jobs) {
+      reserveSemanticJobForWorker(job, now, options);
+      if (jobs.length > 1) {
+        job.progress = normalizeSemanticJobProgress(job, {
+          status: 'running',
+          stage: 'semantic-enrichment',
+          currentStep: 'reserved batch',
+          message: `Reserved background semantic enrichment batch with ${jobs.length} job(s)`
+        });
+      }
+    }
+
+    queue.updatedAt = now;
+    await saveImportSemanticEnrichmentQueue(rootPath, queue);
+    return {
+      job: { ...jobs[0] },
+      jobs: jobs.map((job) => ({ ...job })),
       summary: summarizeQueue(queue)
     };
   }, {
