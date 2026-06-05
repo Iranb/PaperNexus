@@ -2671,6 +2671,35 @@ function summarizeLlmInferenceFailureReasons(results = []) {
   return counts;
 }
 
+const SPLIT_RETRYABLE_BATCH_RESULT_REASONS = new Set([
+  'empty-response',
+  'missing-result',
+  'provider-timeout'
+]);
+
+function findSplitRetryableBatchResult(results = [], batch = []) {
+  return collectLlmBatchResults(results, batch).find((result) => {
+    if (!result) return false;
+    const reason = classifyLlmInferenceFailureReason(result);
+    if (!SPLIT_RETRYABLE_BATCH_RESULT_REASONS.has(reason)) return false;
+    return Boolean(result.error || result.reason);
+  }) || null;
+}
+
+function shouldRetryBatchResultsBySplitting(results = [], batch = [], retryCount = 0) {
+  return Boolean(
+    retryCount > 0
+    && batch.length > 1
+    && findSplitRetryableBatchResult(results, batch)
+  );
+}
+
+function describeRetryableBatchResult(result = {}) {
+  const reason = classifyLlmInferenceFailureReason(result);
+  const error = String(result?.error || '').trim();
+  return error ? `${reason}: ${error}` : reason;
+}
+
 export async function inferPaperSemanticObjects(parsedPaper, semanticPaper, options = {}) {
   const plan = resolveSemanticExtractionPlan(options);
   if (!plan.shouldAttempt) {
@@ -2913,6 +2942,58 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
           ideaFragments: sanitizeIdeaFragmentGroup(normalizedRawPaper),
           error: null
         });
+      }
+
+      if (shouldRetryBatchResultsBySplitting(results, batch, splitRetryCount)) {
+        const retryableResult = findSplitRetryableBatchResult(results, batch);
+        options.onBatchRetry?.({
+          phase: 'semantic-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
+          error: describeRetryableBatchResult(retryableResult)
+        });
+        const retryResults = await inferPaperSemanticObjectsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = retryResults[offset] || createSemanticObjectInferenceResult({
+            provider: plan.config.provider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'missing-result',
+            error: `Missing split-retry semantic result for ${batchEntry.id}`
+          });
+        }
+
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            results[index] = createSemanticObjectInferenceResult({
+              provider: rateLimitedResult.provider || plan.config.provider,
+              requestedMode: plan.requestedMode,
+              effectiveMode: 'heuristic-only',
+              attempted: true,
+              participated: false,
+              reason: 'rate-limited',
+              error: null,
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null
+            });
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
       }
     } catch (error) {
       let recoveredBySplitRetry = false;
@@ -3342,6 +3423,73 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
 
         results[batchEntry.__batchIndex] = sanitizeChunkSemanticRaw(rawPaper, batchEntry, resultProvider, plan);
       }
+
+      if (shouldRetryBatchResultsBySplitting(results, batch, splitRetryCount)) {
+        const retryableResult = findSplitRetryableBatchResult(results, batch);
+        options.onBatchRetry?.({
+          phase: 'chunk-semantic-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
+          error: describeRetryableBatchResult(retryableResult)
+        });
+        const retryResults = await inferChunkSemanticObjectsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = retryResults[offset] || createChunkSemanticObjectInferenceResult({
+            provider: plan.config.provider,
+            requestedMode: plan.requestedMode,
+            effectiveMode: 'heuristic-only',
+            attempted: true,
+            participated: false,
+            reason: 'missing-result',
+            error: `Missing split-retry semantic result for ${batchEntry.id}`,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          });
+        }
+
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            const batchEntry = normalizedEntries[index];
+            results[index] = createChunkSemanticObjectInferenceResult({
+              provider: rateLimitedResult.provider || plan.config.provider,
+              requestedMode: plan.requestedMode,
+              effectiveMode: 'heuristic-only',
+              attempted: true,
+              participated: false,
+              reason: 'rate-limited',
+              error: null,
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null,
+              chunkId: batchEntry.chunkId,
+              paperId: batchEntry.paperId,
+              sourceKey: batchEntry.sourceKey,
+              sectionHeading: batchEntry.sectionHeading,
+              sectionRole: batchEntry.sectionRole,
+              chunkOrder: batchEntry.chunkOrder,
+              textHash: batchEntry.textHash
+            });
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
+      }
     } catch (error) {
       let recoveredBySplitRetry = false;
       if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
@@ -3734,6 +3882,73 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
         results[batchEntry.__batchIndex] = sanitizeChunkRelationRaw(rawPaper, batchEntry, resultProvider, {
           signature: createCrossPaperJudgmentConfigSignature(options)
         });
+      }
+
+      if (shouldRetryBatchResultsBySplitting(results, batch, splitRetryCount)) {
+        const retryableResult = findSplitRetryableBatchResult(results, batch);
+        options.onBatchRetry?.({
+          phase: 'chunk-relation-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
+          error: describeRetryableBatchResult(retryableResult)
+        });
+        const retryResults = await inferChunkResearchSemanticsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = retryResults[offset] || {
+            provider: config.provider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            reason: 'missing-result',
+            error: `Missing split-retry relation result for ${batchEntry.id}`,
+            chunkId: batchEntry.chunkId,
+            paperId: batchEntry.paperId,
+            sourceKey: batchEntry.sourceKey,
+            sectionHeading: batchEntry.sectionHeading,
+            sectionRole: batchEntry.sectionRole,
+            chunkOrder: batchEntry.chunkOrder,
+            textHash: batchEntry.textHash
+          };
+        }
+
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            const batchEntry = normalizedEntries[index];
+            results[index] = {
+              provider: rateLimitedResult.provider || config.provider,
+              benchmarks: [],
+              findings: [],
+              researchGoals: [],
+              relations: [],
+              reason: 'rate-limited',
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null,
+              error: null,
+              chunkId: batchEntry.chunkId,
+              paperId: batchEntry.paperId,
+              sourceKey: batchEntry.sourceKey,
+              sectionHeading: batchEntry.sectionHeading,
+              sectionRole: batchEntry.sectionRole,
+              chunkOrder: batchEntry.chunkOrder,
+              textHash: batchEntry.textHash
+            };
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
       }
     } catch (error) {
       let recoveredBySplitRetry = false;
@@ -4161,6 +4376,58 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
             .filter(Boolean),
           error: null
         };
+      }
+
+      if (shouldRetryBatchResultsBySplitting(results, batch, splitRetryCount)) {
+        const retryableResult = findSplitRetryableBatchResult(results, batch);
+        options.onBatchRetry?.({
+          phase: 'relation-extraction',
+          batchNumber: batchIndex + 1,
+          totalBatches,
+          batchSize: batch.length,
+          retryBatchCount: splitBatchForRetry(batch).length,
+          retryBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          remainingRetries: splitRetryCount,
+          promptChars,
+          promptMaxChars,
+          error: describeRetryableBatchResult(retryableResult)
+        });
+        const retryResults = await inferPaperResearchSemanticsBatch(batch, {
+          ...options,
+          llmBatchSize: Math.max(1, Math.ceil(batch.length / 2)),
+          llmBatchFailureSplitRetryCount: splitRetryCount - 1,
+          onBatchComplete: undefined
+        });
+        for (let offset = 0; offset < batch.length; offset += 1) {
+          const batchEntry = batch[offset];
+          results[batchEntry.__batchIndex] = retryResults[offset] || {
+            provider: config.provider,
+            benchmarks: [],
+            findings: [],
+            researchGoals: [],
+            relations: [],
+            reason: 'missing-result',
+            error: `Missing split-retry relation result for ${batchEntry.id}`
+          };
+        }
+
+        const rateLimitedResult = retryResults.find((result) => result?.rateLimitCooldownUntil || result?.reason === 'rate-limited');
+        if (rateLimitedResult) {
+          for (let index = completedAfterBatch; index < entries.length; index += 1) {
+            results[index] = {
+              provider: rateLimitedResult.provider || config.provider,
+              benchmarks: [],
+              findings: [],
+              researchGoals: [],
+              relations: [],
+              reason: 'rate-limited',
+              rateLimitCooldownUntil: rateLimitedResult.rateLimitCooldownUntil || null,
+              error: null
+            };
+          }
+          completedAfterBatch = entries.length;
+          stopAfterCurrentBatch = true;
+        }
       }
     } catch (error) {
       let recoveredBySplitRetry = false;

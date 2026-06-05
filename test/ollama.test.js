@@ -1968,6 +1968,176 @@ test('inferPaperSemanticObjectsBatch retries empty provider batch output with sm
   assert.match(retryEvents[0].error, /empty content/i);
 });
 
+test('inferPaperResearchSemanticsBatch retries transient per-paper batch failures with smaller batches', async () => {
+  let fetchCount = 0;
+  const retryEvents = [];
+  const batchEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+    const shouldReturnPerPaperError = fetchCount === 1 && papers.length > 1;
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  errors: shouldReturnPerPaperError
+                    ? [{ id: papers[0].id, error: 'empty response from provider' }]
+                    : [],
+                  papers: papers
+                    .filter((paper) => !(shouldReturnPerPaperError && paper.id === papers[0].id))
+                    .map((paper) => ({
+                      id: paper.id,
+                      benchmarks: [],
+                      findings: [],
+                      researchGoals: [],
+                      relations: []
+                    }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'paper-relation-empty-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'paper-relation-empty-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} }
+  ];
+
+  const results = await inferPaperResearchSemanticsBatch(entries, {
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmRelations: true,
+    llmBatchSize: 2,
+    llmBatchFailureSplitRetryCount: 2,
+    onBatchRetry(event) {
+      retryEvents.push(event);
+    },
+    onBatchComplete(event) {
+      batchEvents.push(event);
+    }
+  });
+
+  assert.equal(fetchCount, 3);
+  assert.equal(results.length, 2);
+  assert.equal(results.every((result) => result.error === null), true);
+  assert.equal(retryEvents.length, 1);
+  assert.equal(retryEvents[0].phase, 'relation-extraction');
+  assert.equal(retryEvents[0].batchSize, 2);
+  assert.equal(retryEvents[0].retryBatchSize, 1);
+  assert.match(retryEvents[0].error, /empty-response/i);
+  assert.equal(batchEvents.length, 1);
+  assert.equal(batchEvents[0].failureCount, 0);
+});
+
+test('inferChunkSemanticObjectsBatch retries transient per-chunk batch failures with smaller batches', async () => {
+  let fetchCount = 0;
+  const retryEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const chunks = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+    const shouldReturnPerChunkError = fetchCount === 1 && chunks.length > 1;
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  errors: shouldReturnPerChunkError
+                    ? [{ id: chunks[0].id, error: 'empty response from provider' }]
+                    : [],
+                  chunks: chunks
+                    .filter((chunk) => !(shouldReturnPerChunkError && chunk.id === chunks[0].id))
+                    .map((chunk) => ({
+                      id: chunk.id,
+                      problems: [],
+                      methods: [],
+                      claims: [],
+                      findings: [],
+                      researchGoals: [],
+                      limitations: [],
+                      assumptions: [],
+                      evidences: [],
+                      futureDirections: [],
+                      benchmarks: [],
+                      datasets: [],
+                      metrics: [],
+                      fieldOfStudy: 'Computer Science',
+                      fieldCandidates: ['Computer Science'],
+                      domainTags: ['Computer Science'],
+                      abstractMechanisms: [],
+                      researchQuestions: [],
+                      openChallenges: [],
+                      takeaways: [],
+                      ideaFragments: []
+                    }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    {
+      id: 'chunk-empty-1',
+      text: 'Chunk A',
+      chunk: { chunkId: 'chunk-empty-1', text: 'Chunk A' },
+      semanticPaper: { paperId: 'paper-empty-1', paperTitle: 'Paper 1' }
+    },
+    {
+      id: 'chunk-empty-2',
+      text: 'Chunk B',
+      chunk: { chunkId: 'chunk-empty-2', text: 'Chunk B' },
+      semanticPaper: { paperId: 'paper-empty-2', paperTitle: 'Paper 2' }
+    }
+  ];
+
+  const results = await inferChunkSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'openai',
+    llmModel: 'gpt-4o-mini',
+    llmBaseUrl: 'https://api.openai.com/v1',
+    llmApiKey: 'test-key',
+    llmBatchSize: 2,
+    llmBatchFailureSplitRetryCount: 2,
+    onBatchRetry(event) {
+      retryEvents.push(event);
+    }
+  });
+
+  assert.equal(fetchCount, 3);
+  assert.equal(results.length, 2);
+  assert.equal(results.every((result) => result.participated), true);
+  assert.equal(retryEvents.length, 1);
+  assert.equal(retryEvents[0].phase, 'chunk-semantic-extraction');
+  assert.equal(retryEvents[0].batchSize, 2);
+  assert.equal(retryEvents[0].retryBatchSize, 1);
+  assert.match(retryEvents[0].error, /empty-response/i);
+});
+
 test('inferPaperResearchSemantics supports OpenAI chat-completions style responses', async () => {
   let request;
   globalThis.fetch = async (_url, options) => {

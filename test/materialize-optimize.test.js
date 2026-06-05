@@ -3452,6 +3452,7 @@ We propose a metacontrol policy transfer framework.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
+      llmChunkPipeline: false,
       identifierResolutionEnabled: false
     });
     assert.equal(semanticFetchCount, 1);
@@ -3493,6 +3494,7 @@ We propose a metacontrol policy transfer framework.
       llmModel: 'gpt-4o-mini',
       llmBaseUrl: 'https://api.openai.com/v1',
       llmApiKey: 'test-key',
+      llmChunkPipeline: false,
       identifierResolutionEnabled: false
     });
 
