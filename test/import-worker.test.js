@@ -174,6 +174,76 @@ test('import worker grows progressive batch targets while queued work remains', 
       { id: 'running-a', status: 'running' },
       { id: 'pending-b', status: 'pending' }
     ]), 2);
+    const completeSemanticImportBatch = batching.getPendingImportSemanticEnrichmentCoalesceReadiness(
+      Array.from({ length: 6 }, (_, index) => ({
+        id: `isem:complete-${index}`,
+        taskId: `task-${index}`,
+        status: 'pending',
+        enqueuedAt: new Date(1000 + index).toISOString(),
+        processingProfile: 'fast-md-background-semantic',
+        completionPolicy: 'graph-visible',
+        llmContextWindowTokens: 1000000,
+        llmExtractionStrategy: 'long-context-first',
+        llmLongContextMaxPapersPerCall: 5,
+        llmBatchConcurrency: 2,
+        batchTaskIds: Array.from({ length: 6 }, (_, taskIndex) => `task-${taskIndex}`)
+      })),
+      10
+    );
+    assert.equal(completeSemanticImportBatch.ready, true);
+    assert.equal(completeSemanticImportBatch.reason, 'import-batch-filled');
+    assert.equal(completeSemanticImportBatch.pendingJobCount, 6);
+    assert.equal(completeSemanticImportBatch.targetJobs, 6);
+    const smallCompleteSemanticImportBatch = batching.getPendingImportSemanticEnrichmentCoalesceReadiness(
+      Array.from({ length: 2 }, (_, index) => ({
+        id: `isem:small-${index}`,
+        taskId: `small-${index}`,
+        status: 'pending',
+        enqueuedAt: new Date(1000 + index).toISOString(),
+        batchTaskIds: ['small-0', 'small-1']
+      })),
+      10
+    );
+    assert.equal(smallCompleteSemanticImportBatch.ready, false);
+    assert.equal(smallCompleteSemanticImportBatch.reason, 'waiting');
+
+    const mixedSemanticGroups = batching.getPendingImportSemanticEnrichmentCoalesceReadiness([
+      {
+        id: 'isem:anchor-a',
+        taskId: 'anchor-a',
+        status: 'pending',
+        enqueuedAt: new Date(1000).toISOString(),
+        llmBatchConcurrency: 2,
+        batchTaskIds: ['anchor-a', 'anchor-b', 'anchor-c']
+      },
+      {
+        id: 'isem:anchor-b',
+        taskId: 'anchor-b',
+        status: 'pending',
+        enqueuedAt: new Date(1001).toISOString(),
+        llmBatchConcurrency: 2,
+        batchTaskIds: ['anchor-a', 'anchor-b', 'anchor-c']
+      },
+      {
+        id: 'isem:other-a',
+        taskId: 'other-a',
+        status: 'pending',
+        enqueuedAt: new Date(1002).toISOString(),
+        llmBatchConcurrency: 1,
+        batchTaskIds: ['other-a', 'other-b']
+      },
+      {
+        id: 'isem:other-b',
+        taskId: 'other-b',
+        status: 'pending',
+        enqueuedAt: new Date(1003).toISOString(),
+        llmBatchConcurrency: 1,
+        batchTaskIds: ['other-a', 'other-b']
+      }
+    ], 4);
+    assert.equal(mixedSemanticGroups.ready, false);
+    assert.equal(mixedSemanticGroups.reason, 'waiting');
+    assert.equal(mixedSemanticGroups.pendingJobCount, 4);
     const disabledSemanticWait = await batching.waitForImportSemanticEnrichmentBatchCoalesce(rootPath, 2, {});
     assert.equal(disabledSemanticWait.waited, false);
     assert.equal(disabledSemanticWait.reason, 'disabled');

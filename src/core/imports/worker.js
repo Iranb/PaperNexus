@@ -1832,6 +1832,86 @@ function countPendingImportSemanticEnrichmentJobs(jobs = []) {
   )).length;
 }
 
+function sortImportSemanticEnrichmentCoalesceCandidates(jobs = []) {
+  return [...(Array.isArray(jobs) ? jobs : [])].sort((left, right) => {
+    const leftPriority = Number(left?.priority || 0);
+    const rightPriority = Number(right?.priority || 0);
+    if (leftPriority !== rightPriority) return rightPriority - leftPriority;
+    const leftTime = Date.parse(left?.enqueuedAt || left?.updatedAt || 0) || 0;
+    const rightTime = Date.parse(right?.enqueuedAt || right?.updatedAt || 0) || 0;
+    return leftTime - rightTime;
+  });
+}
+
+function createImportSemanticEnrichmentCoalesceGroupKey(job = {}) {
+  return JSON.stringify({
+    semanticConfigKey: String(job.semanticConfigKey || 'default').trim() || 'default',
+    processingProfile: String(job.processingProfile || '').trim() || null,
+    completionPolicy: String(job.completionPolicy || '').trim() || null,
+    llmContextWindowTokens: job.llmContextWindowTokens || null,
+    llmExtractionStrategy: job.llmExtractionStrategy || null,
+    llmLongContextMaxPapersPerCall: job.llmLongContextMaxPapersPerCall || null,
+    llmBatchConcurrency: job.llmBatchConcurrency || null
+  });
+}
+
+function getPendingImportSemanticEnrichmentCoalesceReadiness(jobs = [], maxJobs = 1) {
+  const batchMaxJobs = Math.max(1, Number(maxJobs || 1) || 1);
+  const pendingJobs = sortImportSemanticEnrichmentCoalesceCandidates(jobs).filter((job) => (
+    String(job?.status || '').trim().toLowerCase() === 'pending'
+  ));
+  const pending = pendingJobs.length;
+  if (pending <= 0) {
+    return {
+      ready: true,
+      pendingJobCount: 0,
+      reason: 'no-pending'
+    };
+  }
+
+  const anchor = pendingJobs[0];
+  const anchorGroupKey = createImportSemanticEnrichmentCoalesceGroupKey(anchor);
+  const anchorGroupJobs = pendingJobs.filter((job) => (
+    createImportSemanticEnrichmentCoalesceGroupKey(job) === anchorGroupKey
+  ));
+  if (anchorGroupJobs.length >= batchMaxJobs) {
+    return {
+      ready: true,
+      pendingJobCount: pending,
+      reason: 'target-filled'
+    };
+  }
+
+  const anchorBatchTaskIds = [...new Set(
+    (Array.isArray(anchor?.batchTaskIds) ? anchor.batchTaskIds : [])
+      .map((taskId) => String(taskId || '').trim())
+      .filter(Boolean)
+  )].sort();
+  const minCompleteImportBatchJobs = Math.max(2, Math.ceil(batchMaxJobs / 2));
+  if (
+    anchorBatchTaskIds.length >= minCompleteImportBatchJobs
+    && anchorBatchTaskIds.length <= batchMaxJobs
+  ) {
+    const pendingTaskIds = new Set(anchorGroupJobs.map((job) => String(job?.taskId || '').trim()).filter(Boolean));
+    const anchorBatchFilled = anchorBatchTaskIds.every((taskId) => pendingTaskIds.has(taskId));
+    if (anchorBatchFilled) {
+      return {
+        ready: true,
+        pendingJobCount: pending,
+        targetJobs: anchorBatchTaskIds.length,
+        reason: 'import-batch-filled'
+      };
+    }
+  }
+
+  return {
+    ready: false,
+    pendingJobCount: pending,
+    targetJobs: batchMaxJobs,
+    reason: 'waiting'
+  };
+}
+
 async function waitForImportSemanticEnrichmentBatchCoalesce(rootPath, maxJobs, options = {}) {
   const batchMaxJobs = Math.max(1, Number(maxJobs || 1) || 1);
   const { coalesceMs, pollMs } = resolveImportSemanticEnrichmentBatchCoalesceOptions(options);
@@ -1847,14 +1927,14 @@ async function waitForImportSemanticEnrichmentBatchCoalesce(rootPath, maxJobs, o
 
   const startedAt = Date.now();
   let payload = await listImportSemanticEnrichmentJobs(rootPath, options);
-  let pending = countPendingImportSemanticEnrichmentJobs(payload.jobs || []);
-  if (pending <= 0 || pending >= batchMaxJobs) {
+  let readiness = getPendingImportSemanticEnrichmentCoalesceReadiness(payload.jobs || [], batchMaxJobs);
+  if (readiness.ready) {
     return {
       waited: false,
       waitedMs: 0,
-      pendingJobCount: pending,
-      targetJobs: batchMaxJobs,
-      reason: pending >= batchMaxJobs ? 'target-filled' : 'no-pending'
+      pendingJobCount: readiness.pendingJobCount,
+      targetJobs: readiness.targetJobs || batchMaxJobs,
+      reason: readiness.reason
     };
   }
 
@@ -1863,9 +1943,9 @@ async function waitForImportSemanticEnrichmentBatchCoalesce(rootPath, maxJobs, o
   while (Date.now() < deadline) {
     await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
     payload = await listImportSemanticEnrichmentJobs(rootPath, options);
-    pending = countPendingImportSemanticEnrichmentJobs(payload.jobs || []);
-    if (pending <= 0 || pending >= batchMaxJobs) {
-      reason = pending >= batchMaxJobs ? 'target-filled' : 'no-pending';
+    readiness = getPendingImportSemanticEnrichmentCoalesceReadiness(payload.jobs || [], batchMaxJobs);
+    if (readiness.ready) {
+      reason = readiness.reason;
       break;
     }
   }
@@ -1873,8 +1953,8 @@ async function waitForImportSemanticEnrichmentBatchCoalesce(rootPath, maxJobs, o
   return {
     waited: true,
     waitedMs: Math.max(0, Date.now() - startedAt),
-    pendingJobCount: pending,
-    targetJobs: batchMaxJobs,
+    pendingJobCount: readiness.pendingJobCount,
+    targetJobs: readiness.targetJobs || batchMaxJobs,
     reason
   };
 }
@@ -4002,6 +4082,7 @@ export const __importWorkerTestables = {
   resolveFastMdBurstTargetTasks,
   resolveImportSemanticEnrichmentBatchCoalesceOptions,
   countPendingImportSemanticEnrichmentJobs,
+  getPendingImportSemanticEnrichmentCoalesceReadiness,
   waitForImportSemanticEnrichmentBatchCoalesce,
   createFastMdBurstReserveBatchOptions,
   normalizeImportTaskLaneMode,
