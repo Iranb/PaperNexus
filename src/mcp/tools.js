@@ -812,7 +812,7 @@ export const PAPERNEXUS_TOOLS = [
               }
             }
           ],
-          description: 'Optional task ids for batch status/progress lookup or queue_progress filtering. Accepts an array or a comma/space-separated string.'
+          description: 'Optional task ids for batch status/progress/wait lookup or queue_progress filtering. Accepts an array or a comma/space-separated string.'
         },
         task_ids: {
           oneOf: [

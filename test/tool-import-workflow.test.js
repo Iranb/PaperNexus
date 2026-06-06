@@ -8,6 +8,7 @@ import { getCorpusPaths } from '../src/storage/corpus-store.js';
 import {
   completeImportTask,
   createImportTask,
+  failImportTask,
   getImportPaths,
   loadImportTask,
   markImportTaskStage,
@@ -145,6 +146,73 @@ test('import_workflow wait includes downstream authoritative sync readiness', as
   }
 });
 
+test('import_workflow wait batch includes downstream authoritative sync readiness', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-batch-sync-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-wait-batch-sync-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'queued-batch-sync-paper.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Queued Batch Sync Paper\n\n## Abstract\n\nA queued batch sync test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const syncJob = await enqueueAuthoritativeSyncJob(rootPath, {
+      baseManifestToken: 'manifest:base',
+      targetManifestToken: 'manifest:target',
+      changedSourceKeys: ['source:queued-batch-sync-paper'],
+      mode: 'delta'
+    });
+    await completeImportTask(rootPath, task.id, {
+      authoritativeSync: {
+        status: 'pending',
+        jobId: syncJob.jobId
+      }
+    });
+
+    const completion = setTimeout(() => {
+      completeAuthoritativeSyncJob(rootPath, syncJob.jobId, {
+        appliedAt: new Date().toISOString()
+      }).catch(() => {});
+    }, 120);
+
+    const startedAt = Date.now();
+    const payload = await executeImportWorkflowTool({
+      operation: 'wait',
+      corpus: rootPath,
+      taskIds: [task.id],
+      timeout: 5,
+      interval: 0.05
+    });
+
+    clearTimeout(completion);
+
+    assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.equal(payload.waitTarget, 'task-completed');
+    assert.equal(payload.waitForAuthoritativeSync, true);
+    assert.equal(payload.waitStatus.satisfied, true);
+    assert.equal(payload.waitStatus.satisfiedTaskCount, 1);
+    assert.equal(payload.tasks[0].authoritativeSyncStatus, 'completed');
+    assert.equal(payload.tasks[0].result.authoritativeSync.jobId, syncJob.jobId);
+    assert.equal(payload.tasks[0].result.authoritativeSync.status, 'completed');
+    assert.ok(Date.now() - startedAt >= 100);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('import_workflow wait can return at graph-visible without waiting for authoritative sync', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-graph-visible-'));
 
@@ -262,6 +330,194 @@ test('import_workflow wait can target semantic-complete for background enrichmen
     assert.equal(payload.task.graphVisibilityStatus, 'completed');
     assert.equal(payload.task.semanticStatus, 'completed');
     assert.ok(Date.now() - startedAt >= 100);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow wait can return a requested task id batch at graph-visible', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-batch-graph-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-wait-batch-graph-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const completedTask = await createImportTask(rootPath, {
+      processingProfile: 'fast-md-background-semantic',
+      completionPolicy: 'graph-visible',
+      files: [
+        {
+          name: 'wait-batch-completed.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Completed\n\n## Abstract\n\nA completed batch wait test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    const pendingTask = await createImportTask(rootPath, {
+      processingProfile: 'fast-md-background-semantic',
+      completionPolicy: 'graph-visible',
+      files: [
+        {
+          name: 'wait-batch-pending.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Pending\n\n## Abstract\n\nA pending batch wait test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+
+    await completeImportTask(rootPath, completedTask.id, {
+      semanticStatus: 'queued'
+    });
+
+    const completion = setTimeout(() => {
+      completeImportTask(rootPath, pendingTask.id, {
+        semanticStatus: 'queued'
+      }).catch(() => {});
+    }, 120);
+
+    const startedAt = Date.now();
+    const payload = await executeImportWorkflowTool({
+      operation: 'wait',
+      corpus: rootPath,
+      taskIds: [completedTask.id, pendingTask.id],
+      waitUntil: 'graph-visible',
+      timeout: 5,
+      interval: 0.05
+    });
+
+    clearTimeout(completion);
+
+    assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.equal(payload.operation, 'wait');
+    assert.equal(payload.waitTarget, 'graph-visible');
+    assert.equal(payload.waitForAuthoritativeSync, false);
+    assert.equal(payload.waitStatus.satisfied, true);
+    assert.equal(payload.waitStatus.satisfiedTaskCount, 2);
+    assert.equal(payload.waitStatus.unsatisfiedTaskCount, 0);
+    assert.deepEqual(payload.requestedTaskIds, [completedTask.id, pendingTask.id]);
+    assert.deepEqual(payload.tasks.map((task) => task.id), [completedTask.id, pendingTask.id]);
+    assert.equal(payload.summary.completed, 2);
+    assert.equal(payload.queueSummary.source, 'requested-tasks');
+    assert.ok(Date.now() - startedAt >= 100);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow wait batch returns terminal failure without marking it satisfied', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-batch-failed-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-wait-batch-failed-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'wait-batch-failed.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Failed\n\n## Abstract\n\nA failed batch wait test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    await failImportTask(rootPath, task.id, new Error('materialize failed'));
+
+    const payload = await executeImportWorkflowTool({
+      operation: 'wait',
+      corpus: rootPath,
+      taskIds: [task.id],
+      waitUntil: 'graph-visible',
+      timeout: 1,
+      interval: 0.05
+    });
+
+    assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.equal(payload.waitStatus.satisfied, false);
+    assert.equal(payload.waitStatus.terminal, true);
+    assert.equal(payload.waitStatus.reason, 'terminal-with-failures');
+    assert.equal(payload.waitStatus.satisfiedTaskCount, 0);
+    assert.equal(payload.waitStatus.terminalTaskCount, 1);
+    assert.equal(payload.waitStatus.failedTaskCount, 1);
+    assert.equal(payload.waitStatus.tasks[0].failed, true);
+    assert.equal(payload.waitStatus.tasks[0].satisfied, false);
+    assert.equal(payload.waitStatus.tasks[0].terminal, true);
+    assert.equal(payload.waitStatus.tasks[0].waitStatus.reason, 'task-failed');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow wait batch reads requested task ids without waiting for queue lock', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-batch-lock-'));
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-wait-batch-lock-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const task = await createImportTask(rootPath, {
+      files: [
+        {
+          name: 'wait-batch-lock.md',
+          mimeType: 'text/markdown',
+          contentBase64: Buffer.from('# Lock\n\n## Abstract\n\nA wait batch lock test.\n', 'utf8').toString('base64')
+        }
+      ]
+    });
+    await completeImportTask(rootPath, task.id, {
+      semanticStatus: 'completed',
+      authoritativeSync: {
+        status: 'completed',
+        jobId: null
+      }
+    });
+
+    const { queueLockPath } = getImportPaths(rootPath);
+    await fs.mkdir(queueLockPath, { recursive: true });
+    await fs.writeFile(path.join(queueLockPath, 'owner.json'), `${JSON.stringify({
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString()
+    })}\n`, 'utf8');
+
+    const startedAt = Date.now();
+    const payload = await executeImportWorkflowTool({
+      operation: 'wait',
+      corpus: rootPath,
+      taskIds: [task.id],
+      waitUntil: 'graph-visible',
+      timeout: 1,
+      interval: 0.05,
+      importQueueLockTimeoutMs: 25,
+      importQueueLockStaleMs: 60_000
+    });
+
+    assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.equal(payload.taskCount, 1);
+    assert.equal(payload.tasks[0].id, task.id);
+    assert.equal(payload.waitStatus.satisfied, true);
+    assert.equal(payload.queueSummary.source, 'requested-tasks');
+    assert.ok(Date.now() - startedAt < 1000);
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }

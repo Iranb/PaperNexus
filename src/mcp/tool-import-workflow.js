@@ -888,6 +888,10 @@ function isSuccessfulLifecycleStatus(status) {
   return status === 'completed' || status === 'not-required' || status === 'skipped';
 }
 
+function isTerminalAuthoritativeSyncLifecycleStatus(status) {
+  return isSuccessfulLifecycleStatus(status) || status === 'failed' || status === 'superseded';
+}
+
 function importWaitStatus(task = {}, waitTarget = 'task-completed', reason = '') {
   return {
     waitTarget,
@@ -939,6 +943,75 @@ function isImportWaitTargetSatisfied(task = {}, waitTarget = 'task-completed') {
     return importWaitStatus(task, waitTarget, 'task-completed');
   }
   return null;
+}
+
+function createImportBatchWaitStatus(tasks = [], missingTaskIds = [], waitTarget = 'task-completed', waitForAuthoritativeSync = false) {
+  const entries = tasks.map((task) => {
+    const targetStatus = isImportWaitTargetSatisfied(task, waitTarget);
+    const taskStatus = normalizeProgressToken(task?.status, 'unknown');
+    const authoritativeSyncStatus = taskLifecycleStatus(task, 'authoritative-sync');
+    let waitStatus = targetStatus || importWaitStatus(task, waitTarget, 'not-satisfied');
+    let terminal = Boolean(targetStatus);
+    let failed = Boolean(waitStatus?.reason?.includes('failed'));
+    let satisfied = Boolean(targetStatus && !failed);
+
+    if (
+      satisfied
+      && waitForAuthoritativeSync
+      && taskStatus === 'completed'
+      && !isTerminalAuthoritativeSyncLifecycleStatus(authoritativeSyncStatus)
+    ) {
+      satisfied = false;
+      terminal = false;
+      waitStatus = {
+        ...waitStatus,
+        reason: `authoritative-sync-${authoritativeSyncStatus || 'unknown'}`
+      };
+    } else if (
+      targetStatus
+      && waitForAuthoritativeSync
+      && taskStatus === 'completed'
+      && authoritativeSyncStatus
+      && !isSuccessfulLifecycleStatus(authoritativeSyncStatus)
+    ) {
+      satisfied = false;
+      terminal = isTerminalAuthoritativeSyncLifecycleStatus(authoritativeSyncStatus);
+      waitStatus = {
+        ...waitStatus,
+        reason: `authoritative-sync-${authoritativeSyncStatus}`
+      };
+    }
+    failed = Boolean(waitStatus?.reason?.includes('failed'));
+
+    return {
+      taskId: task?.id || null,
+      satisfied,
+      terminal,
+      failed,
+      waitStatus
+    };
+  });
+  const satisfiedTaskCount = entries.filter((entry) => entry.satisfied).length;
+  const terminalTaskCount = entries.filter((entry) => entry.terminal).length;
+  const unsatisfiedTaskCount = entries.length - satisfiedTaskCount;
+  const failedTaskCount = entries.filter((entry) => entry.failed).length;
+  const allSatisfied = missingTaskIds.length === 0 && entries.length > 0 && unsatisfiedTaskCount === 0;
+  const allTerminal = missingTaskIds.length === 0 && entries.length > 0 && terminalTaskCount === entries.length;
+  return {
+    waitTarget,
+    waitForAuthoritativeSync,
+    satisfied: allSatisfied,
+    terminal: allTerminal,
+    reason: allSatisfied ? 'all-satisfied' : (allTerminal ? 'terminal-with-failures' : 'waiting'),
+    total: entries.length + missingTaskIds.length,
+    taskCount: entries.length,
+    missingTaskIds,
+    satisfiedTaskCount,
+    terminalTaskCount,
+    unsatisfiedTaskCount,
+    failedTaskCount,
+    tasks: entries
+  };
 }
 
 async function loadAuthoritativeSyncJobSnapshot(rootPath, jobId) {
@@ -1218,7 +1291,7 @@ async function hydrateImportTaskPayloadAuthoritativeSync(payload = {}, rootPath 
   };
 }
 
-async function importTaskBatchPayload(candidate, taskIds = [], operation = 'status', options = {}) {
+async function loadImportTaskBatch(candidate, taskIds = [], options = {}) {
   const internalRootPath = await resolveImportWorkflowInternalRootPath(candidate, {}, options);
   const tasks = [];
   const missingTaskIds = [];
@@ -1236,7 +1309,20 @@ async function importTaskBatchPayload(candidate, taskIds = [], operation = 'stat
   }
 
   const hydratedTasks = await hydrateTasksAuthoritativeSync(internalRootPath, tasks);
-  const presentedTasks = presentImportWorkflowPortablePayload(hydratedTasks, options, 'tasks');
+  return {
+    internalRootPath,
+    tasks: hydratedTasks,
+    missingTaskIds
+  };
+}
+
+async function importTaskBatchPayload(candidate, taskIds = [], operation = 'status', options = {}) {
+  const {
+    internalRootPath,
+    tasks,
+    missingTaskIds
+  } = await loadImportTaskBatch(candidate, taskIds, options);
+  const presentedTasks = presentImportWorkflowPortablePayload(tasks, options, 'tasks');
   return {
     contractVersion: 'papernexus-import-workflow-task-batch-v1',
     rootPath: presentImportWorkflowPortablePayload(internalRootPath, options, 'rootPath'),
@@ -1245,10 +1331,64 @@ async function importTaskBatchPayload(candidate, taskIds = [], operation = 'stat
     missingTaskIds,
     taskCount: presentedTasks.length,
     tasks: presentedTasks,
-    summary: summarizeProgressTasks(hydratedTasks),
-    queueSummary: createRequestedTaskQueueSummary(hydratedTasks),
+    summary: summarizeProgressTasks(tasks),
+    queueSummary: createRequestedTaskQueueSummary(tasks),
     generatedAt: new Date().toISOString()
   };
+}
+
+async function importTaskBatchWaitPayload(candidate, taskIds = [], args = {}, options = {}) {
+  const timeoutSeconds = Number(args.timeout || 1800);
+  const intervalSeconds = Number(args.interval || 2);
+  const deadline = Date.now() + (Math.max(1, timeoutSeconds) * 1000);
+  const waitTarget = normalizeImportWaitTarget(args);
+  const waitForAuthoritativeSync = shouldWaitForAuthoritativeSyncAfterTarget(args, waitTarget);
+
+  while (true) {
+    const {
+      internalRootPath,
+      tasks,
+      missingTaskIds
+    } = await loadImportTaskBatch(candidate, taskIds, options);
+    const waitStatus = createImportBatchWaitStatus(
+      tasks,
+      missingTaskIds,
+      waitTarget,
+      waitForAuthoritativeSync
+    );
+
+    if (waitStatus.satisfied || waitStatus.terminal) {
+      const presentedTasks = presentImportWorkflowPortablePayload(tasks, options, 'tasks');
+      return {
+        contractVersion: 'papernexus-import-workflow-task-batch-v1',
+        rootPath: presentImportWorkflowPortablePayload(internalRootPath, options, 'rootPath'),
+        operation: 'wait',
+        requestedTaskIds: taskIds,
+        missingTaskIds,
+        taskCount: presentedTasks.length,
+        tasks: presentedTasks,
+        summary: summarizeProgressTasks(tasks),
+        queueSummary: createRequestedTaskQueueSummary(tasks),
+        waitTarget,
+        waitForAuthoritativeSync,
+        waitStatus,
+        generatedAt: new Date().toISOString()
+      };
+    }
+
+    if (Date.now() >= deadline) {
+      const missing = missingTaskIds.length ? ` missing=${missingTaskIds.join(',')}` : '';
+      const unsatisfied = waitStatus.tasks
+        .filter((entry) => !entry.satisfied)
+        .map((entry) => `${entry.taskId || 'unknown'}:${entry.waitStatus?.reason || 'waiting'}`)
+        .join(',');
+      throw new Error(
+        `Timed out waiting for task batch target=${waitTarget}.${missing} unsatisfied=${unsatisfied || 'none'}`
+      );
+    }
+
+    await sleep(Math.max(0.05, intervalSeconds) * 1000);
+  }
 }
 
 async function resolveImportWorkflowInternalRootPath(candidate, payload = {}, options = {}) {
@@ -1436,6 +1576,13 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
       return importTaskLogPayload(candidate, taskId, options);
     }
     case 'wait': {
+      if (hasBatchTaskStatusRequest(args)) {
+        const requestedTaskIds = collectRequestedTaskIds(args);
+        if (!requestedTaskIds.length) {
+          throw new Error('taskIds is required for import_workflow wait batch lookup.');
+        }
+        return importTaskBatchWaitPayload(candidate, requestedTaskIds, args, options);
+      }
       const taskId = await resolveTaskId(candidate, args, options);
       if (!taskId) {
         throw new Error('taskId is required for import_workflow wait.');
