@@ -1884,6 +1884,7 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
       ? snapshotChunkPipelineSignature !== currentChunkPipelineSignature
       : (snapshotChunkPipelineEnabled && !acceptedLongContextFallback));
   const semanticMissingCatalystMetadata = semanticConfiguredNow
+    && !acceptedLongContextFallback
     && !hasCatalystMetadataContract(snapshot);
   const semanticRetryableReasons = new Set([
     'request-failed',
@@ -1896,6 +1897,7 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
   ]);
   const semanticRetryableFailure = semanticConfiguredNow
     && semanticRetryCount < maxRetries
+    && !acceptedLongContextFallback
     && !semanticSummary.participated
     && semanticRetryableReasons.has(semanticSummary.reason);
   const semanticRateLimitExpired = semanticConfiguredNow
@@ -2525,6 +2527,10 @@ function createLongContextLlmMetadata(options = {}, record = null, extra = {}) {
     fallbackEnabled: isLongContextFallbackEnabled(options),
     fallbackUsed: Boolean(extra.fallbackUsed),
     fallbackReason: extra.fallbackReason || null,
+    fallbackMode: extra.fallbackMode || null,
+    structuralSemanticObjectCount: Number.isFinite(Number(extra.structuralSemanticObjectCount))
+      ? Number(extra.structuralSemanticObjectCount)
+      : null,
     callCount: Number.isFinite(Number(extra.callCount)) ? Number(extra.callCount) : 0,
     validationStatus: extra.validationStatus || null,
     validationDetails: extra.validationDetails || null,
@@ -2671,10 +2677,99 @@ const LONG_CONTEXT_FALLBACK_REASONS_ALLOWING_PAPER_LEVEL_RELATIONS = new Set([
   'semantic-quality-guard'
 ]);
 
+const LONG_CONTEXT_STRUCTURAL_FALLBACK_REASONS = new Set([
+  'empty-response',
+  'missing-result'
+]);
+
 function shouldUsePaperLevelRelationAfterLongContextFallback(record = null) {
   if (!record?.sourceState?.longContextFallbackRequired) return false;
   const reason = String(record.sourceState.longContextFallbackReason || '').trim();
   return LONG_CONTEXT_FALLBACK_REASONS_ALLOWING_PAPER_LEVEL_RELATIONS.has(reason);
+}
+
+function isLongContextStructuralFallbackEnabled(options = {}) {
+  const explicit = firstDefinedValue(
+    options.llmLongContextStructuralFallback,
+    options.longContextStructuralFallback,
+    options.structuralSemanticFallback,
+    process.env.PAPERNEXUS_LLM_LONG_CONTEXT_STRUCTURAL_FALLBACK
+  );
+  return explicit === undefined ? false : !isDisabledFlag(explicit);
+}
+
+function resolveLongContextStructuralFallbackMinObjects(options = {}) {
+  const raw = firstDefinedValue(
+    options.llmLongContextStructuralFallbackMinObjects,
+    options.longContextStructuralFallbackMinObjects,
+    options.structuralSemanticFallbackMinObjects,
+    process.env.PAPERNEXUS_LLM_LONG_CONTEXT_STRUCTURAL_FALLBACK_MIN_OBJECTS
+  );
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 3;
+}
+
+function countStructuralSemanticFallbackObjects(record = null) {
+  return countSemanticObjectEntries(record?.semanticPaper || {});
+}
+
+function shouldUseStructuralSemanticFallback(record = null, options = {}) {
+  if (!isLongContextStructuralFallbackEnabled(options)) return false;
+  if (!record?.sourceState?.longContextFallbackRequired) return false;
+  const reason = String(record.sourceState.longContextFallbackReason || '').trim();
+  if (!LONG_CONTEXT_STRUCTURAL_FALLBACK_REASONS.has(reason)) return false;
+  return countStructuralSemanticFallbackObjects(record) >= resolveLongContextStructuralFallbackMinObjects(options);
+}
+
+function applyStructuralSemanticFallback(record, options = {}) {
+  const fallbackReason = record?.sourceState?.longContextFallbackReason || 'request-failed';
+  const structuralSemanticObjectCount = countStructuralSemanticFallbackObjects(record);
+  const previousLlm = record.semanticPaper.llm || {};
+  const validationDetails = record.sourceState.longContextFallbackDetails?.validationDetails || null;
+  const longContext = createLongContextLlmMetadata(options, record, {
+    callCount: Number(record.sourceState.longContextFallbackDetails?.semanticCallCount || 0),
+    validationStatus: 'fallback',
+    fallbackUsed: true,
+    fallbackReason,
+    fallbackMode: 'structural-semantic',
+    structuralSemanticObjectCount,
+    validationDetails: {
+      ...(validationDetails || {}),
+      fallbackMode: 'structural-semantic',
+      structuralSemanticObjectCount
+    },
+    artifacts: getExistingLongContextArtifacts(record)
+  });
+  record.semanticPaper.llm = {
+    ...previousLlm,
+    error: null,
+    rateLimitCooldownUntil: null,
+    semanticConfigSignature: createSemanticConfigSignature(options),
+    semanticPromptVersion: SEMANTIC_OBJECTS_PROMPT_VERSION,
+    semanticExtractionMode: previousLlm.semanticExtractionMode || resolveSemanticExtractionPlan(options).requestedMode,
+    semanticExtractionModeEffective: previousLlm.semanticExtractionModeEffective || 'heuristic-only',
+    semanticExtractionAttempted: true,
+    semanticExtractionParticipated: false,
+    semanticExtractionParticipationReason: 'structural-fallback',
+    semanticObjectCount: structuralSemanticObjectCount,
+    semanticRetryCount: 0,
+    chunkPipeline: {
+      enabled: false,
+      reason: 'long-context-structural-fallback',
+      configSignature: createChunkPipelineConfigSignature(options)
+    },
+    longContext
+  };
+  record.semanticPaper.llmSemanticObjects = {
+    ...(record.semanticPaper.llmSemanticObjects || {}),
+    error: null,
+    rateLimitCooldownUntil: null,
+    reason: 'structural-fallback',
+    chunkPipeline: record.semanticPaper.llm.chunkPipeline,
+    longContext
+  };
+  record.sourceState.llmRefreshState = summarizeLlmRefreshState(record.semanticPaper, options);
+  return longContext;
 }
 
 function createLongContextValidationDetails(result = null, summary = null, reason = null) {
@@ -4844,13 +4939,23 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
     const fallbackRecords = [...longContextFallbackRecords.values()]
       .filter((record) => !record.sourceState.llmRefreshState?.scopedOut);
     if (fallbackRecords.length) {
+      const structuralFallbackRecords = fallbackRecords
+        .filter((record) => shouldUseStructuralSemanticFallback(record, options));
+      const chunkFallbackRecords = fallbackRecords
+        .filter((record) => !shouldUseStructuralSemanticFallback(record, options));
+      for (const record of structuralFallbackRecords) {
+        applyStructuralSemanticFallback(record, options);
+        await saveSemanticPaperSnapshot(rootPath, record.sourceState.sourceKey, record.semanticPaper);
+      }
       emitPipelineProgress(options, {
         stage: 'llm-optimize',
         currentStep: 'chunk fallback',
         processedUnits: 0,
-        totalUnits: fallbackRecords.length,
+        totalUnits: chunkFallbackRecords.length,
         stagePercent: totalLlmUnits ? ((llmCompletedUnits / totalLlmUnits) * 100) : 0,
-        message: `Running chunk fallback for ${fallbackRecords.length} long-context papers`
+        message: chunkFallbackRecords.length
+          ? `Running chunk fallback for ${chunkFallbackRecords.length} long-context papers`
+          : `Using structural fallback for ${structuralFallbackRecords.length} long-context papers`
       });
       const chunkFallbackOptions = {
         ...options,
@@ -4858,9 +4963,9 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
         llmChunkPipeline: true,
         longContextFallbackActive: true
       };
-      const semanticOnlyFallbackRecords = fallbackRecords
+      const semanticOnlyFallbackRecords = chunkFallbackRecords
         .filter((record) => shouldUsePaperLevelRelationAfterLongContextFallback(record));
-      const fullChunkFallbackRecords = fallbackRecords
+      const fullChunkFallbackRecords = chunkFallbackRecords
         .filter((record) => !shouldUsePaperLevelRelationAfterLongContextFallback(record));
       if (semanticOnlyFallbackRecords.length) {
         await runChunkLlmPipelineForRecords(rootPath, semanticOnlyFallbackRecords, {
@@ -4872,7 +4977,7 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
       if (fullChunkFallbackRecords.length) {
         await runChunkLlmPipelineForRecords(rootPath, fullChunkFallbackRecords, chunkFallbackOptions, jobState);
       }
-      for (const record of fallbackRecords) {
+      for (const record of chunkFallbackRecords) {
         const fallbackReason = record.sourceState.longContextFallbackReason || 'request-failed';
         record.semanticPaper.llm.longContext = createLongContextLlmMetadata(options, record, {
           callCount: Number(record.sourceState.longContextFallbackDetails?.semanticCallCount || 0),
@@ -5038,9 +5143,11 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
         record.semanticPaper.llm.chunkPipeline = {
           ...(record.semanticPaper.llm.chunkPipeline || {}),
           enabled: false,
-          reason: useChunkPipeline
-            ? 'chunk-pipeline-fallback'
-            : (shouldDefaultToLongContextFirst(options) ? 'long-context-first' : 'disabled'),
+          reason: record.semanticPaper.llm.chunkPipeline?.reason === 'long-context-structural-fallback'
+            ? 'long-context-structural-fallback'
+            : (useChunkPipeline
+              ? 'chunk-pipeline-fallback'
+              : (shouldDefaultToLongContextFirst(options) ? 'long-context-first' : 'disabled')),
           configSignature: createChunkPipelineConfigSignature(options)
         };
         const relationArtifact = await persistLongContextArtifactForRecord(
@@ -5065,6 +5172,8 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
           validationStatus: previousLongContext.validationStatus,
           fallbackUsed: previousLongContext.fallbackUsed,
           fallbackReason: previousLongContext.fallbackReason,
+          fallbackMode: previousLongContext.fallbackMode,
+          structuralSemanticObjectCount: previousLongContext.structuralSemanticObjectCount,
           validationDetails: previousLongContext.validationDetails,
           artifacts: mergeLongContextArtifact(
             getExistingLongContextArtifacts(record),

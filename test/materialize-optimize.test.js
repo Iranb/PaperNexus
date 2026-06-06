@@ -1800,6 +1800,156 @@ The recovered semantic object should still allow paper-level relation extraction
   }
 });
 
+test('llmOptimizeCorpus can accept structural semantic fallback after empty long-context response', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-structural-fallback-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-structural-fallback-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  const prompts = [];
+  let paperSemanticPromptCount = 0;
+  let chunkSemanticPromptCount = 0;
+  let paperRelationPromptCount = 0;
+  let chunkRelationPromptCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    await fs.writeFile(path.join(tempCorpusRoot, 'structural-fallback.md'), `# Structural Fallback Paper
+
+## Abstract
+
+This paper has enough structured markdown evidence for a structural semantic fallback when the provider returns empty content.
+
+## Problem
+
+The system must avoid unnecessary chunk semantic fanout after a transient empty provider response.
+
+## Method
+
+We keep structured semantic nodes and still ask the model to judge paper-level links.
+`, 'utf8');
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      prompts.push(prompt);
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+      const isRelationPrompt = prompt.includes('Key relations to capture') || prompt.includes('Allowed relation types:');
+
+      if (isChunkPrompt && isRelationPrompt) {
+        chunkRelationPromptCount += 1;
+      } else if (isChunkPrompt) {
+        chunkSemanticPromptCount += 1;
+      } else if (isRelationPrompt) {
+        paperRelationPromptCount += 1;
+      } else {
+        paperSemanticPromptCount += 1;
+      }
+
+      return {
+        ok: true,
+        async json() {
+          if (isRelationPrompt) {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      papers: papers.map((paper) => ({
+                        id: paper.id,
+                        findings: [{
+                          name: 'paper-level relation after structural fallback',
+                          type: 'Finding',
+                          evidenceText: 'Paper-level relation extraction still runs after structural fallback.',
+                          sectionHeading: 'Method',
+                          sectionRole: 'method',
+                          confidence: 0.9
+                        }],
+                        benchmarks: [],
+                        researchGoals: [],
+                        relations: []
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+
+          return {
+            choices: [
+              { message: { content: '' } }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-structural-fallback-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    const optimizeOptions = {
+      name: 'long-context-structural-fallback-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'deepseek',
+      llmModel: 'deepseek-v4-flash',
+      llmBaseUrl: 'https://api.deepseek.com',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 1,
+      llmLongContextStructuralFallback: true,
+      llmLongContextStructuralFallbackMinObjects: 1,
+      identifierResolutionEnabled: false
+    };
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, optimizeOptions);
+
+    assert.equal(paperSemanticPromptCount, 1);
+    assert.equal(chunkSemanticPromptCount, 0);
+    assert.equal(paperRelationPromptCount, 1);
+    assert.equal(chunkRelationPromptCount, 0);
+    assert.equal(prompts.some((prompt) => prompt.includes('paper chunks')), false);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    assert.equal(snapshot.llm.semanticExtractionParticipated, false);
+    assert.equal(snapshot.llm.semanticExtractionParticipationReason, 'structural-fallback');
+    assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'empty-response');
+    assert.equal(snapshot.llm.longContext.fallbackMode, 'structural-semantic');
+    assert.ok(snapshot.llm.longContext.structuralSemanticObjectCount >= 1);
+    assert.equal(snapshot.llm.chunkPipeline.enabled, false);
+    assert.equal(snapshot.llm.chunkPipeline.reason, 'long-context-structural-fallback');
+    assert.equal(snapshot.llmSemanticObjects.longContext.fallbackMode, 'structural-semantic');
+    assert.ok(snapshot.findings.some((finding) => finding.name === 'paper-level relation after structural fallback'));
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, optimizeOptions);
+    assert.equal(paperSemanticPromptCount, 1);
+    assert.equal(chunkSemanticPromptCount, 0);
+    assert.equal(paperRelationPromptCount, 1);
+    assert.equal(chunkRelationPromptCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus records schema-validation fallback for malformed long-context paper fields', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-corpus-'));

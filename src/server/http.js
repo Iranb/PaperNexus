@@ -986,6 +986,32 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       llmConfig.contextWindowTokens,
       llmConfig.llmContextWindowTokens
     ),
+    llmLongContextStructuralFallback: firstDefined(
+      options.importLlmLongContextStructuralFallback,
+      options.llmLongContextStructuralFallback,
+      options.longContextStructuralFallback,
+      importsConfig.llmLongContextStructuralFallback,
+      importsConfig.longContextStructuralFallback,
+      importsConfig.structuralSemanticFallback,
+      importConfig.llmLongContextStructuralFallback,
+      importConfig.longContextStructuralFallback,
+      llmConfig.llmLongContextStructuralFallback,
+      llmConfig.longContextStructuralFallback,
+      llmConfig.structuralSemanticFallback
+    ),
+    llmLongContextStructuralFallbackMinObjects: firstNumber(
+      options.importLlmLongContextStructuralFallbackMinObjects,
+      options.llmLongContextStructuralFallbackMinObjects,
+      options.longContextStructuralFallbackMinObjects,
+      importsConfig.llmLongContextStructuralFallbackMinObjects,
+      importsConfig.longContextStructuralFallbackMinObjects,
+      importsConfig.structuralSemanticFallbackMinObjects,
+      importConfig.llmLongContextStructuralFallbackMinObjects,
+      importConfig.longContextStructuralFallbackMinObjects,
+      llmConfig.llmLongContextStructuralFallbackMinObjects,
+      llmConfig.longContextStructuralFallbackMinObjects,
+      llmConfig.structuralSemanticFallbackMinObjects
+    ),
     llmMaxTokens: firstNumber(options.llmMaxTokens, llmConfig.maxTokens),
     ...buildLlmFallbackWorkerOptions(options, llmConfig),
     ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),

@@ -2280,6 +2280,8 @@ async function processImportTask(rootPath, task, options = {}) {
         llmContextWindowTokens: sharedOptions.llmContextWindowTokens || null,
         llmExtractionStrategy: sharedOptions.llmExtractionStrategy || null,
         llmLongContextMaxPapersPerCall: sharedOptions.llmLongContextMaxPapersPerCall || null,
+        llmLongContextStructuralFallback: sharedOptions.llmLongContextStructuralFallback ?? null,
+        llmLongContextStructuralFallbackMinObjects: sharedOptions.llmLongContextStructuralFallbackMinObjects || null,
         llmBatchConcurrency: sharedOptions.llmBatchConcurrency || null
       }
     });
@@ -3131,6 +3133,8 @@ async function processImportSemanticEnrichmentJob(rootPath, job, options = {}) {
       llmContextWindowTokens: sharedOptions.llmContextWindowTokens || null,
       llmExtractionStrategy: sharedOptions.llmExtractionStrategy || null,
       llmLongContextMaxPapersPerCall: sharedOptions.llmLongContextMaxPapersPerCall || null,
+      llmLongContextStructuralFallback: sharedOptions.llmLongContextStructuralFallback ?? null,
+      llmLongContextStructuralFallbackMinObjects: sharedOptions.llmLongContextStructuralFallbackMinObjects || null,
       llmBatchConcurrency: sharedOptions.llmBatchConcurrency || null
     }
   });
@@ -3324,6 +3328,8 @@ async function processImportSemanticEnrichmentJobBatch(rootPath, jobs = [], opti
       llmContextWindowTokens: sharedOptions.llmContextWindowTokens || null,
       llmExtractionStrategy: sharedOptions.llmExtractionStrategy || null,
       llmLongContextMaxPapersPerCall: sharedOptions.llmLongContextMaxPapersPerCall || null,
+      llmLongContextStructuralFallback: sharedOptions.llmLongContextStructuralFallback ?? null,
+      llmLongContextStructuralFallbackMinObjects: sharedOptions.llmLongContextStructuralFallbackMinObjects || null,
       llmBatchConcurrency: sharedOptions.llmBatchConcurrency || null
     }
   });
