@@ -29,9 +29,22 @@ const DEFAULT_ASYNC_WAIT_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_ASYNC_POLL_INTERVAL_MS = 500;
 const IMPORT_WORKFLOW_OPERATIONS = new Set(['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait']);
 const ASYNC_JOB_OPERATIONS = new Set(['submit_async', 'async_status', 'async_wait']);
+const IMPORT_WORKFLOW_OPERATION_ALIASES = new Map([
+  ['status_batch', 'status'],
+  ['batch_status', 'status']
+]);
+
+function normalizeOperationToken(value) {
+  return String(value || '').trim().toLowerCase().replace(/-/g, '_');
+}
 
 function normalizeOperation(value) {
-  return String(value || '').trim().toLowerCase().replace(/-/g, '_');
+  const normalized = normalizeOperationToken(value);
+  return IMPORT_WORKFLOW_OPERATION_ALIASES.get(normalized) || normalized;
+}
+
+function isExplicitBatchTaskStatusOperation(value) {
+  return IMPORT_WORKFLOW_OPERATION_ALIASES.has(normalizeOperationToken(value));
 }
 
 function sleep(ms) {
@@ -662,10 +675,19 @@ function normalizeTaskIdListValue(value) {
     .filter(Boolean);
 }
 
-function collectRequestedTaskIds(args = {}) {
+function isMultiTaskIdListValue(value) {
+  return normalizeTaskIdListValue(value).length > 1;
+}
+
+function collectRequestedTaskIds(args = {}, options = {}) {
   const rawValues = [];
   if (Object.hasOwn(args, 'taskIds')) rawValues.push(args.taskIds);
   if (Object.hasOwn(args, 'task_ids')) rawValues.push(args.task_ids);
+  const includeSingular = Boolean(options.includeSingular)
+    || isMultiTaskIdListValue(args.taskId)
+    || isMultiTaskIdListValue(args.task_id);
+  if (includeSingular && Object.hasOwn(args, 'taskId')) rawValues.push(args.taskId);
+  if (includeSingular && Object.hasOwn(args, 'task_id')) rawValues.push(args.task_id);
 
   const seen = new Set();
   const taskIds = [];
@@ -678,7 +700,11 @@ function collectRequestedTaskIds(args = {}) {
 }
 
 function hasBatchTaskStatusRequest(args = {}) {
-  return Object.hasOwn(args, 'taskIds') || Object.hasOwn(args, 'task_ids');
+  return Object.hasOwn(args, 'taskIds')
+    || Object.hasOwn(args, 'task_ids')
+    || isMultiTaskIdListValue(args.taskId)
+    || isMultiTaskIdListValue(args.task_id)
+    || isExplicitBatchTaskStatusOperation(args.operation);
 }
 
 const IMPORT_WORKFLOW_PORTABLE_PATH_FIELDS = new Set([
@@ -1498,7 +1524,9 @@ export async function executeImportWorkflowTool(args = {}, options = {}) {
     case 'progress':
     case 'status': {
       if (hasBatchTaskStatusRequest(args)) {
-        const requestedTaskIds = collectRequestedTaskIds(args);
+        const requestedTaskIds = collectRequestedTaskIds(args, {
+          includeSingular: isExplicitBatchTaskStatusOperation(args.operation)
+        });
         if (!requestedTaskIds.length) {
           throw new Error(`taskIds is required for import_workflow ${operation} batch lookup.`);
         }

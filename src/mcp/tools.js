@@ -546,8 +546,8 @@ export const PAPERNEXUS_TOOLS = [
       properties: {
         operation: {
           type: 'string',
-          enum: ['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait', 'submit_async', 'async_status', 'async_wait'],
-          description: 'Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until task completion by default, can target graph-visible or semantic-complete readiness, and submit_async starts a background import_workflow operation returning a jobId for async_status/async_wait.'
+          enum: ['submit', 'list', 'status', 'status_batch', 'batch_status', 'progress', 'queue_progress', 'log', 'wait', 'submit_async', 'async_status', 'async_wait'],
+          description: 'Use queue_progress/status/wait to track graph-build latency after import submission. status_batch and batch_status are aliases for status with taskIds/task_id batches. wait blocks until task completion by default, can target graph-visible or semantic-complete readiness, and submit_async starts a background import_workflow operation returning a jobId for async_status/async_wait.'
         },
         asyncOperation: {
           type: 'string',
@@ -610,12 +610,28 @@ export const PAPERNEXUS_TOOLS = [
           description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
         },
         taskId: {
-          type: 'string',
-          description: 'Import task id for single-task status, progress, log, or wait.'
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: {
+                type: 'string'
+              }
+            }
+          ],
+          description: 'Import task id for single-task status, progress, log, or wait. For status/status_batch/progress, accepts an array or comma/space-separated string for batch lookup.'
         },
         task_id: {
-          type: 'string',
-          description: 'Snake_case alias for taskId.'
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: {
+                type: 'string'
+              }
+            }
+          ],
+          description: 'Snake_case alias for taskId. For status/status_batch/progress, accepts an array or comma/space-separated string for batch lookup.'
         },
         paperId: {
           type: 'string',

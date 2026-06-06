@@ -92,6 +92,67 @@ function normalizeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function normalizeLlmWorkerProvider(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'claude' || normalized === 'claudecode' || normalized === 'anthropic') return 'anthropic';
+  if (normalized === 'openai') return 'openai';
+  if (normalized === 'deepseek') return 'deepseek';
+  if (normalized === 'ollama') return 'ollama';
+  return normalized;
+}
+
+function isQwenOpenAiCompatibleWorkerConfig(config = {}) {
+  const provider = normalizeLlmWorkerProvider(config.llmProvider);
+  if (provider !== 'openai') return false;
+  const model = String(config.llmModel || '').trim().toLowerCase();
+  const baseUrl = String(config.llmBaseUrl || '').trim().toLowerCase();
+  return model.includes('qwen') || baseUrl.includes('dashscope.aliyuncs.com');
+}
+
+function hasDeepSeekFallbackWorkerConfig(config = {}) {
+  return normalizeLlmWorkerProvider(config.llmFallbackProvider) === 'deepseek'
+    && Boolean(String(config.llmFallbackModel || '').trim());
+}
+
+const LLM_FALLBACK_TO_PRIMARY_WORKER_FIELDS = [
+  ['llmFallbackProvider', 'llmProvider'],
+  ['llmFallbackModel', 'llmModel'],
+  ['llmFallbackBaseUrl', 'llmBaseUrl'],
+  ['llmFallbackApiKey', 'llmApiKey'],
+  ['llmFallbackApiKeyEnv', 'llmApiKeyEnv'],
+  ['llmFallbackApiKeySource', 'llmApiKeySource'],
+  ['llmFallbackApiKeyService', 'llmApiKeyService'],
+  ['llmFallbackApiKeyAccount', 'llmApiKeyAccount'],
+  ['llmFallbackSshHost', 'llmSshHost'],
+  ['llmFallbackTimeoutMs', 'llmTimeoutMs'],
+  ['llmFallbackBatchSize', 'llmBatchSize'],
+  ['llmFallbackMaxTokens', 'llmMaxTokens'],
+  ['llmFallbackRateLimitRetryCount', 'llmRateLimitRetryCount'],
+  ['llmFallbackRateLimitRetryDelayMs', 'llmRateLimitRetryDelayMs'],
+  ['llmFallbackRateLimitRetryMaxDelayMs', 'llmRateLimitRetryMaxDelayMs'],
+  ['llmFallbackRateLimitCooldownMs', 'llmRateLimitCooldownMs']
+];
+
+function assignDefined(object, key, value) {
+  if (value !== undefined) object[key] = value;
+}
+
+function promoteDeepSeekFallbackWorkerOptions(primaryOptions = {}, fallbackOptions = {}) {
+  const combined = {
+    ...primaryOptions,
+    ...fallbackOptions
+  };
+  if (!isQwenOpenAiCompatibleWorkerConfig(primaryOptions) || !hasDeepSeekFallbackWorkerConfig(fallbackOptions)) {
+    return combined;
+  }
+
+  for (const [fallbackKey, primaryKey] of LLM_FALLBACK_TO_PRIMARY_WORKER_FIELDS) {
+    assignDefined(combined, primaryKey, fallbackOptions[fallbackKey]);
+    assignDefined(combined, fallbackKey, primaryOptions[primaryKey]);
+  }
+  return combined;
+}
+
 function buildLlmFallbackWorkerOptions(options = {}, llmConfig = {}) {
   const fallbackConfig = normalizeObject(llmConfig.fallback);
   const fallbackOllamaConfig = normalizeObject(fallbackConfig.ollamaBootstrap || fallbackConfig.ollama);
@@ -430,6 +491,30 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
     llmConfig.sshHost,
     ollamaConfig.sshHost
   );
+  const llmWorkerOptions = promoteDeepSeekFallbackWorkerOptions({
+    llmProvider: firstDefined(options.llmProvider, llmConfig.provider),
+    llmModel: firstDefined(options.llmModel, llmConfig.model),
+    llmBaseUrl: firstDefined(options.llmBaseUrl, llmConfig.baseUrl),
+    llmApiKey: firstDefined(options.llmApiKey, llmConfig.apiKey),
+    llmApiKeyEnv: firstDefined(options.llmApiKeyEnv, llmConfig.apiKeyEnv),
+    llmApiKeySource: firstDefined(options.llmApiKeySource, llmConfig.apiKeySource),
+    llmApiKeyService: firstDefined(options.llmApiKeyService, llmConfig.apiKeyService),
+    llmApiKeyAccount: firstDefined(options.llmApiKeyAccount, llmConfig.apiKeyAccount),
+    llmSshHost,
+    llmTimeoutMs: firstNumber(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
+    llmBatchSize: firstNumber(
+      options.importLlmBatchSize,
+      importsConfig.llmBatchSize,
+      importsConfig.batchSize,
+      importConfig.llmBatchSize,
+      importConfig.batchSize,
+      options.llmBatchSize,
+      12,
+      llmConfig.batchSize,
+      ollamaConfig.batchSize
+    ),
+    llmMaxTokens: firstNumber(options.llmMaxTokens, llmConfig.maxTokens)
+  }, buildLlmFallbackWorkerOptions(options, llmConfig));
 
   return {
     ...options,
@@ -917,15 +1002,7 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       analyzeConfig.pdfParseTimeoutMs,
       watchConfig.pdfParseTimeoutMs
     ),
-    llmProvider: firstDefined(options.llmProvider, llmConfig.provider),
-    llmModel: firstDefined(options.llmModel, llmConfig.model),
-    llmBaseUrl: firstDefined(options.llmBaseUrl, llmConfig.baseUrl),
-    llmApiKey: firstDefined(options.llmApiKey, llmConfig.apiKey),
-    llmApiKeyEnv: firstDefined(options.llmApiKeyEnv, llmConfig.apiKeyEnv),
-    llmApiKeySource: firstDefined(options.llmApiKeySource, llmConfig.apiKeySource),
-    llmApiKeyService: firstDefined(options.llmApiKeyService, llmConfig.apiKeyService),
-    llmApiKeyAccount: firstDefined(options.llmApiKeyAccount, llmConfig.apiKeyAccount),
-    llmSshHost,
+    ...llmWorkerOptions,
     llmRelations: firstDefined(
       options.importLlmRelations,
       importsConfig.llmRelations,
@@ -934,18 +1011,6 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       importConfig.relations,
       options.llmRelations,
       false
-    ),
-    llmTimeoutMs: firstNumber(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
-    llmBatchSize: firstNumber(
-      options.importLlmBatchSize,
-      importsConfig.llmBatchSize,
-      importsConfig.batchSize,
-      importConfig.llmBatchSize,
-      importConfig.batchSize,
-      options.llmBatchSize,
-      12,
-      llmConfig.batchSize,
-      ollamaConfig.batchSize
     ),
     llmBatchConcurrency: firstNumber(
       options.importLlmBatchConcurrency,
@@ -1012,8 +1077,6 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       llmConfig.longContextStructuralFallbackMinObjects,
       llmConfig.structuralSemanticFallbackMinObjects
     ),
-    llmMaxTokens: firstNumber(options.llmMaxTokens, llmConfig.maxTokens),
-    ...buildLlmFallbackWorkerOptions(options, llmConfig),
     ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),
     ollamaUrl: firstDefined(options.ollamaUrl, ollamaConfig.url),
     ollamaSshHost: firstDefined(options.ollamaSshHost, llmSshHost),
@@ -1056,6 +1119,19 @@ function buildEnhancementWorkerOptions(options = {}, rootPaths, logger = console
   const analyzeConfig = getConfigSection(options, 'analyze');
   const llmConfig = getConfigSection(options, 'llm');
   const ollamaConfig = getConfigSection(options, 'ollama');
+  const llmWorkerOptions = promoteDeepSeekFallbackWorkerOptions({
+    llmProvider: firstDefined(options.llmProvider, llmConfig.provider),
+    llmModel: firstDefined(options.llmModel, llmConfig.model, ollamaConfig.model),
+    llmBaseUrl: firstDefined(options.llmBaseUrl, llmConfig.baseUrl, llmConfig.url, ollamaConfig.url),
+    llmApiKey: firstDefined(options.llmApiKey, llmConfig.apiKey, process.env[llmConfig.apiKeyEnv || '']),
+    llmApiKeyEnv: firstDefined(options.llmApiKeyEnv, llmConfig.apiKeyEnv),
+    llmApiKeySource: firstDefined(options.llmApiKeySource, llmConfig.apiKeySource),
+    llmApiKeyService: firstDefined(options.llmApiKeyService, options.llmKeychainService, llmConfig.apiKeyService, llmConfig.keychainService),
+    llmApiKeyAccount: firstDefined(options.llmApiKeyAccount, options.llmKeychainAccount, llmConfig.apiKeyAccount, llmConfig.keychainAccount),
+    llmSshHost: firstDefined(options.llmSshHost, llmConfig.sshHost, ollamaConfig.sshHost),
+    llmTimeoutMs: firstDefined(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
+    llmBatchSize: firstDefined(options.llmBatchSize, llmConfig.batchSize, ollamaConfig.batchSize)
+  }, buildLlmFallbackWorkerOptions(options, llmConfig));
 
   return {
     ...options,
@@ -1071,18 +1147,10 @@ function buildEnhancementWorkerOptions(options = {}, rootPaths, logger = console
       analyzeConfig.semanticExtraction,
       'llm-assisted'
     ),
-    llmProvider: firstDefined(options.llmProvider, llmConfig.provider),
-    llmModel: firstDefined(options.llmModel, llmConfig.model, ollamaConfig.model),
-    llmBaseUrl: firstDefined(options.llmBaseUrl, llmConfig.baseUrl, llmConfig.url, ollamaConfig.url),
-    llmApiKey: firstDefined(options.llmApiKey, llmConfig.apiKey, process.env[llmConfig.apiKeyEnv || '']),
-    llmApiKeyEnv: firstDefined(options.llmApiKeyEnv, llmConfig.apiKeyEnv),
-    llmKeychainService: firstDefined(options.llmKeychainService, llmConfig.keychainService),
-    llmKeychainAccount: firstDefined(options.llmKeychainAccount, llmConfig.keychainAccount),
-    llmSshHost: firstDefined(options.llmSshHost, llmConfig.sshHost, ollamaConfig.sshHost),
+    ...llmWorkerOptions,
+    llmKeychainService: llmWorkerOptions.llmApiKeyService,
+    llmKeychainAccount: llmWorkerOptions.llmApiKeyAccount,
     llmRelations: firstDefined(options.llmRelations, llmConfig.relations, ollamaConfig.relations),
-    llmTimeoutMs: firstDefined(options.llmTimeoutMs, llmConfig.timeoutMs, ollamaConfig.timeoutMs),
-    llmBatchSize: firstDefined(options.llmBatchSize, llmConfig.batchSize, ollamaConfig.batchSize),
-    ...buildLlmFallbackWorkerOptions(options, llmConfig),
     ollamaModel: firstDefined(options.ollamaModel, ollamaConfig.model),
     ollamaUrl: firstDefined(options.ollamaUrl, ollamaConfig.url),
     ollamaSshHost: firstDefined(options.ollamaSshHost, ollamaConfig.sshHost),

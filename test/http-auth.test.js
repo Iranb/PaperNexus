@@ -637,6 +637,85 @@ test('serveCommand forwards configured LLM fallback into background workers', as
   }
 });
 
+test('serveCommand promotes DeepSeek fallback ahead of Qwen primary for background workers', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-llm-deepseek-first-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const port = await pickAvailablePort(53200);
+  const calls = {
+    enhancement: [],
+    import: []
+  };
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableAuthoritativeSync: false,
+      enableLiteratureDiscoveryRecovery: false,
+      enableRegistryReconcile: false,
+      enableMineruWarmup: false,
+      config: {
+        llm: {
+          provider: 'openai',
+          model: 'qwen3.5-plus',
+          baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+          apiKeyEnv: 'DASHSCOPE_API_KEY',
+          fallback: {
+            provider: 'deepseek',
+            model: 'deepseek-v4-flash',
+            baseUrl: 'https://api.deepseek.com',
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            timeoutMs: 120000,
+            batchSize: 4,
+            maxTokens: 4096
+          }
+        },
+        serve: {
+          apiToken: 'test'
+        }
+      },
+      startEnhancementWorker(workerOptions) {
+        calls.enhancement.push(workerOptions);
+        return {
+          stop() {}
+        };
+      },
+      startImportWorker(workerOptions) {
+        calls.import.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.enhancement.length, 1);
+      assert.equal(calls.import.length, 1);
+      for (const workerOptions of [calls.enhancement[0], calls.import[0]]) {
+        assert.equal(workerOptions.llmProvider, 'deepseek');
+        assert.equal(workerOptions.llmModel, 'deepseek-v4-flash');
+        assert.equal(workerOptions.llmBaseUrl, 'https://api.deepseek.com');
+        assert.equal(workerOptions.llmApiKeyEnv, 'DEEPSEEK_API_KEY');
+        assert.equal(workerOptions.llmFallbackProvider, 'openai');
+        assert.equal(workerOptions.llmFallbackModel, 'qwen3.5-plus');
+        assert.equal(workerOptions.llmFallbackBaseUrl, 'https://coding.dashscope.aliyuncs.com/v1');
+        assert.equal(workerOptions.llmFallbackApiKeyEnv, 'DASHSCOPE_API_KEY');
+      }
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('serveCommand enables import batching by default for MCP serve workers', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-import-worker-batch-default-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;

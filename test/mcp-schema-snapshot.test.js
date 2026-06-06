@@ -125,6 +125,8 @@ test('import_workflow schema exposes handler aliases and queue diagnostics', () 
     'queued',
     'queue'
   ]);
+  assert.ok(properties.operation?.enum.includes('status_batch'));
+  assert.ok(properties.operation?.enum.includes('batch_status'));
   assert.deepEqual(properties.runMode?.enum, properties.executionMode.enum);
   assert.deepEqual(properties.execution_mode?.enum, properties.executionMode.enum);
   assert.equal(properties.asynchronous?.type, 'boolean');
@@ -186,7 +188,7 @@ test('import_workflow schema exposes handler aliases and queue diagnostics', () 
   assert.equal(properties.eventTail?.default, 5);
   assert.equal(properties.dagTail?.default, 5);
   assert.equal(properties.includeDagComparison?.type, 'boolean');
-  for (const name of ['taskIds', 'task_ids']) {
+  for (const name of ['taskId', 'task_id', 'taskIds', 'task_ids']) {
     const unionTypes = (properties[name]?.oneOf || []).map((entry) => entry.type);
     assert.deepEqual(unionTypes, ['string', 'array']);
     assert.equal(properties[name].oneOf[1].items.type, 'string');

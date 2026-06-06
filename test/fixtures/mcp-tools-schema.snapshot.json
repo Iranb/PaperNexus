@@ -1446,11 +1446,13 @@
           "enum": [
             "async_status",
             "async_wait",
+            "batch_status",
             "list",
             "log",
             "progress",
             "queue_progress",
             "status",
+            "status_batch",
             "submit",
             "submit_async",
             "wait"
@@ -1588,7 +1590,17 @@
           ]
         },
         "task_id": {
-          "type": "string"
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         },
         "task_ids": {
           "oneOf": [
@@ -1604,7 +1616,17 @@
           ]
         },
         "taskId": {
-          "type": "string"
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         },
         "taskIds": {
           "oneOf": [

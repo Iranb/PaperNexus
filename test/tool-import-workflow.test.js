@@ -1129,6 +1129,25 @@ test('import_workflow status can return a requested task id batch', async () => 
     assert.equal(stringPayload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
     assert.deepEqual(stringPayload.requestedTaskIds, [pendingTask.id, completedTask.id]);
     assert.deepEqual(stringPayload.tasks.map((task) => task.id), [pendingTask.id, completedTask.id]);
+
+    const singularBatchPayload = await executeImportWorkflowTool({
+      operation: 'status',
+      corpus: rootPath,
+      taskId: `${pendingTask.id}, ${completedTask.id}`
+    });
+
+    assert.equal(singularBatchPayload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.deepEqual(singularBatchPayload.requestedTaskIds, [pendingTask.id, completedTask.id]);
+
+    const aliasPayload = await executeImportWorkflowTool({
+      operation: 'status_batch',
+      corpus: rootPath,
+      task_id: pendingTask.id
+    });
+
+    assert.equal(aliasPayload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
+    assert.deepEqual(aliasPayload.requestedTaskIds, [pendingTask.id]);
+    assert.equal(aliasPayload.operation, 'status');
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }
