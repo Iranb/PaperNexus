@@ -15,7 +15,7 @@ const DEFAULT_PROCESSING_PROFILE = 'fast-md-background-semantic';
 const DEFAULT_COMPLETION_POLICY = 'graph-visible';
 const DEFAULT_LLM_CONTEXT_WINDOW_TOKENS = 1_000_000;
 const DEFAULT_LLM_EXTRACTION_STRATEGY = 'long-context-first';
-const DEFAULT_LLM_LONG_CONTEXT_MAX_PAPERS_PER_CALL = 2;
+const DEFAULT_LLM_LONG_CONTEXT_MAX_PAPERS_PER_CALL = 10;
 const DEFAULT_LLM_BATCH_CONCURRENCY = 1;
 
 function markdownFixture(index) {
@@ -481,7 +481,7 @@ test('fast-md graph-visible throughput benchmark for ten markdown papers', {
     assert.equal(report.contractVersion, 'papernexus-fast-md-throughput-report-v1');
     assert.equal(report.effectiveConfig.llmContextWindowTokens, 1_000_000);
     assert.equal(report.effectiveConfig.llmExtractionStrategy, 'long-context-first');
-    assert.equal(report.effectiveConfig.llmLongContextMaxPapersPerCall, 2);
+    assert.equal(report.effectiveConfig.llmLongContextMaxPapersPerCall, 10);
     assert.equal(report.effectiveConfig.llmBatchConcurrency, 1);
     assert.equal(report.effectiveConfig.deviatesFromDefault1mContext, false);
     assert.deepEqual(report.effectiveConfig.deviationReasons, []);

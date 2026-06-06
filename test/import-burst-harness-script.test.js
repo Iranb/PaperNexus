@@ -429,7 +429,7 @@ test('live import burst harness writes a dry-run report without a token', async 
     assert.equal(report.options.transport, 'http');
     assert.equal(report.effectiveConfig.llmContextWindowTokens, 1_000_000);
     assert.equal(report.effectiveConfig.llmExtractionStrategy, 'long-context-first');
-    assert.equal(report.effectiveConfig.llmLongContextMaxPapersPerCall, 2);
+    assert.equal(report.effectiveConfig.llmLongContextMaxPapersPerCall, 10);
     assert.equal(report.effectiveConfig.llmBatchConcurrency, 1);
     assert.equal(report.effectiveConfig.deviatesFromDefault1mContext, false);
     assert.equal(report.acceptance.reason, 'dry-run');
@@ -480,7 +480,7 @@ test('live import burst harness submits tasks and polls graph-visible status ove
     assert.equal(report.options.completionPolicy, 'graph-visible');
     assert.equal(report.options.llmContextWindowTokens, 1_000_000);
     assert.equal(report.options.llmExtractionStrategy, 'long-context-first');
-    assert.equal(report.options.llmLongContextMaxPapersPerCall, 2);
+    assert.equal(report.options.llmLongContextMaxPapersPerCall, 10);
     assert.equal(report.options.llmBatchConcurrency, 1);
     assert.equal(report.effectiveConfig.llmConfigScope, 'task-request');
     assert.equal(report.effectiveConfig.taskLevelLlmOverride, true);
@@ -496,7 +496,7 @@ test('live import burst harness submits tasks and polls graph-visible status ove
     assert.ok(posts.every((entry) => entry.body.completionPolicy === 'graph-visible'));
     assert.ok(posts.every((entry) => entry.body.llmContextWindowTokens === 1_000_000));
     assert.ok(posts.every((entry) => entry.body.llmExtractionStrategy === 'long-context-first'));
-    assert.ok(posts.every((entry) => entry.body.llmLongContextMaxPapersPerCall === 2));
+    assert.ok(posts.every((entry) => entry.body.llmLongContextMaxPapersPerCall === 10));
     assert.ok(posts.every((entry) => entry.body.llmBatchConcurrency === 1));
     assert.ok(posts.every((entry) => entry.body.files[0].paperMetadata.identifiers.doi.startsWith('10.48550/papernexus.live-burst.fake-run.')));
     const decodedUpload = Buffer.from(posts[0].body.files[0].contentBase64, 'base64').toString('utf8');
@@ -550,7 +550,7 @@ test('live import burst harness submits and waits through MCP import_workflow', 
     assert.equal(report.acceptance.passedMaxLatency, true);
     assert.equal(report.effectiveConfig.llmContextWindowTokens, 1_000_000);
     assert.equal(report.effectiveConfig.llmExtractionStrategy, 'long-context-first');
-    assert.equal(report.effectiveConfig.llmLongContextMaxPapersPerCall, 2);
+    assert.equal(report.effectiveConfig.llmLongContextMaxPapersPerCall, 10);
     assert.equal(report.effectiveConfig.llmBatchConcurrency, 1);
     assert.deepEqual(report.effectiveConfig.deviationReasons, []);
     assert.ok(report.tasks.every((task) => task.semanticStatus === 'completed'));
@@ -567,7 +567,7 @@ test('live import burst harness submits and waits through MCP import_workflow', 
     assert.ok(submitCalls.every((entry) => entry.completionPolicy === 'graph-visible'));
     assert.ok(submitCalls.every((entry) => entry.llmContextWindowTokens === 1_000_000));
     assert.ok(submitCalls.every((entry) => entry.llmExtractionStrategy === 'long-context-first'));
-    assert.ok(submitCalls.every((entry) => entry.llmLongContextMaxPapersPerCall === 2));
+    assert.ok(submitCalls.every((entry) => entry.llmLongContextMaxPapersPerCall === 10));
     assert.ok(submitCalls.every((entry) => entry.llmBatchConcurrency === 1));
     assert.ok(submitCalls.every((entry) => entry.files[0].paperMetadata.identifiers.doi.startsWith('10.48550/papernexus.live-burst.fake-mcp-run.')));
     assert.ok(graphWaitCalls.every((entry) => entry.waitForAuthoritativeSync === false));

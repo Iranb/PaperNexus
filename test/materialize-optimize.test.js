@@ -425,26 +425,18 @@ test('llmOptimizeCorpus defaults to long-context paper-level extraction for 1M c
     process.env.PAPERNEXUS_HOME = tempHome;
     process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
 
-    await fs.writeFile(path.join(tempCorpusRoot, 'long-a.md'), `# Long Context Paper A
+    for (let index = 1; index <= 10; index += 1) {
+      await fs.writeFile(path.join(tempCorpusRoot, `long-${index}.md`), `# Long Context Paper ${index}
 
 ## Abstract
 
-Paper A studies graph-grounded markdown ingestion with long context semantic extraction.
+Paper ${index} studies graph-grounded markdown ingestion with long context semantic extraction.
 
 ## Method
 
 We process the whole markdown paper in one provider call.
 `, 'utf8');
-    await fs.writeFile(path.join(tempCorpusRoot, 'long-b.md'), `# Long Context Paper B
-
-## Abstract
-
-Paper B studies safe semantic enrichment after structural graph visibility.
-
-## Method
-
-We preserve graph quality with schema-bound extraction.
-`, 'utf8');
+    }
 
     globalThis.fetch = async (_url, options) => {
       const request = JSON.parse(options.body);
@@ -506,7 +498,7 @@ We preserve graph quality with schema-bound extraction.
 
     assert.equal(prompts.length, 1);
     assert.ok(prompts.every((prompt) => !prompt.includes('paper chunks')));
-    assert.equal(extractPromptPapers(prompts[0]).length, 2);
+    assert.equal(extractPromptPapers(prompts[0]).length, 10);
 
     const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
     const snapshots = await Promise.all(
@@ -520,7 +512,7 @@ We preserve graph quality with schema-bound extraction.
       assert.equal(snapshot.llm.longContext.enabled, true);
       assert.equal(snapshot.llm.longContext.strategy, 'long-context-first');
       assert.equal(snapshot.llm.longContext.contextWindowTokens, 1_000_000);
-      assert.equal(snapshot.llm.longContext.maxPapersPerCall, 2);
+      assert.equal(snapshot.llm.longContext.maxPapersPerCall, 10);
       assert.equal(snapshot.llmSemanticObjects.longContext.enabled, true);
       const semanticArtifact = snapshot.llm.longContext.artifacts?.semantic;
       assert.equal(semanticArtifact?.contractVersion, 'papernexus-long-context-llm-artifact-v1');
