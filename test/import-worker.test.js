@@ -1236,6 +1236,73 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
       [firstTask.id, secondTask.id].sort()
     );
 
+    const firstSemanticJobId = loadedFirstTask.result.semanticEnrichment.jobIds[0];
+    const semanticQueuePath = importSemanticStore.getImportSemanticEnrichmentPaths(indexRoot).queuePath;
+    const retryQueueFixture = JSON.parse(await fs.readFile(semanticQueuePath, 'utf8'));
+    const retryFixtureJob = retryQueueFixture.jobs.find((job) => job.id === firstSemanticJobId);
+    assert.ok(retryFixtureJob);
+    const retryFixtureChangedSourceKeys = [...retryFixtureJob.changedSourceKeys];
+    retryFixtureJob.changedSourceKeys = {
+      length: 1,
+      malformed: true
+    };
+    await fs.writeFile(semanticQueuePath, `${JSON.stringify(retryQueueFixture, null, 2)}\n`);
+
+    const preRetryDagEvents = await importStore.tailImportTaskDagEvents(indexRoot, firstTask.id);
+    const preRetryStructuralEventCount = preRetryDagEvents.events.filter((event) => (
+      event.event === 'dag.node.completed'
+      && ['source.materialize', 'chunk.normalize', 'paper.structural_snapshot'].includes(event.nodeId)
+    )).length;
+    const retryableFailure = await importWorker.runImportSemanticEnrichmentQueueOnce(indexRoot, {
+      semanticExtraction: 'heuristic-only',
+      importSemanticEnrichmentBatchMaxJobs: 1
+    });
+    assert.equal(retryableFailure.processed, true);
+    assert.equal(retryableFailure.failed, true);
+    assert.equal(retryableFailure.retryable, true);
+    assert.deepEqual(retryableFailure.jobIds, [firstSemanticJobId]);
+    assert.match(retryableFailure.error, /has no changed source keys/i);
+
+    const retryScheduledTask = await importStore.loadImportTask(indexRoot, firstTask.id);
+    assert.equal(retryScheduledTask.status, 'completed');
+    assert.equal(retryScheduledTask.graphVisibilityStatus, 'completed');
+    assert.equal(retryScheduledTask.semanticStatus, 'queued');
+    assert.equal(retryScheduledTask.result.semanticEnrichment.status, 'queued');
+
+    const retryScheduledJobs = await importSemanticStore.listImportSemanticEnrichmentJobs(indexRoot);
+    const retryScheduledFirstJob = retryScheduledJobs.jobs.find((job) => job.id === firstSemanticJobId);
+    assert.equal(retryScheduledFirstJob.status, 'pending');
+    assert.equal(retryScheduledFirstJob.stage, 'queued');
+    assert.equal(retryScheduledFirstJob.attempts, 1);
+    assert.equal(retryScheduledFirstJob.progress.currentStep, 'retry scheduled');
+
+    const retryScheduledDag = await importStore.loadImportTaskDag(indexRoot, firstTask.id);
+    assert.equal(retryScheduledDag.nodes['paper.long_context_llm'].status, 'pending');
+    assert.equal(retryScheduledDag.nodes['paper.long_context_llm'].attempts, 0);
+    assert.equal(retryScheduledDag.nodes['source.materialize'].status, 'completed');
+    assert.equal(retryScheduledDag.nodes['paper.structural_snapshot'].status, 'completed');
+
+    const retryScheduledDagEvents = await importStore.tailImportTaskDagEvents(indexRoot, firstTask.id);
+    assert.equal(
+      retryScheduledDagEvents.events.filter((event) => (
+        event.event === 'dag.node.completed'
+        && ['source.materialize', 'chunk.normalize', 'paper.structural_snapshot'].includes(event.nodeId)
+      )).length,
+      preRetryStructuralEventCount
+    );
+    assert.ok(retryScheduledDagEvents.events.some((event) => (
+      event.event === 'dag.node.retry_scheduled'
+      && event.nodeId === 'paper.long_context_llm'
+      && event.data?.semanticEnrichmentJobId === firstSemanticJobId
+      && event.data?.semanticJobRetryable === true
+      && event.data?.semanticJobAttempt === 1
+    )));
+
+    const repairedQueueFixture = JSON.parse(await fs.readFile(semanticQueuePath, 'utf8'));
+    const repairedFixtureJob = repairedQueueFixture.jobs.find((job) => job.id === firstSemanticJobId);
+    repairedFixtureJob.changedSourceKeys = retryFixtureChangedSourceKeys;
+    await fs.writeFile(semanticQueuePath, `${JSON.stringify(repairedQueueFixture, null, 2)}\n`);
+
     const firstLog = await importStore.loadImportTaskLog(indexRoot, firstTask.id);
     assert.match(firstLog, /stage materialize batch/i);
     assert.match(firstLog, /stage fast-commit batch/i);
@@ -1248,13 +1315,13 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
     assert.equal(semanticResult.failedCount, 0);
     assert.equal(semanticResult.completedJobIds.length, 2);
 
-    const firstSemanticJobId = loadedFirstTask.result.semanticEnrichment.jobIds[0];
     const completedSemanticJobs = await importSemanticStore.listImportSemanticEnrichmentJobs(indexRoot);
     const completedFirstSemanticJob = completedSemanticJobs.jobs.find((job) => job.id === firstSemanticJobId);
     assert.equal(completedFirstSemanticJob.progress.contractVersion, 'import-semantic-enrichment-progress-v1');
     assert.equal(completedFirstSemanticJob.progress.status, 'completed');
     assert.equal(completedFirstSemanticJob.progress.stage, 'completed');
     assert.equal(completedFirstSemanticJob.progress.currentStep, 'semantic enrichment complete');
+    assert.equal(completedFirstSemanticJob.attempts, 2);
     assert.equal(completedFirstSemanticJob.result.fastCommitted.directDeltaCommit, true);
     assert.equal(completedFirstSemanticJob.result.metrics.importPerformance.mode, 'semantic-enrichment-batch');
     assert.equal(completedFirstSemanticJob.result.metrics.importPerformance.batchTaskCount, 2);
@@ -1279,8 +1346,7 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
     assert.equal(enrichedFirstDag.importExecutionMode, 'dag');
     assert.equal(enrichedFirstDag.executionMode, 'dag');
     assert.equal(enrichedFirstDag.nodes['paper.long_context_llm'].status, 'completed');
-    assert.equal(enrichedFirstDag.nodes['paper.long_context_llm'].attempts >= 1, true);
-    const semanticQueuePath = importSemanticStore.getImportSemanticEnrichmentPaths(indexRoot).queuePath;
+    assert.equal(enrichedFirstDag.nodes['paper.long_context_llm'].attempts, 1);
     assert.ok(enrichedFirstDag.nodes['paper.long_context_llm'].inputArtifacts.some((artifact) => (
       artifact.kind === 'import-semantic-enrichment-job'
       && artifact.id === firstSemanticJobId
@@ -1304,8 +1370,9 @@ test('import worker fast-md batch skips blocking LLM and commits direct lite del
     ));
     assert.ok(runningSemanticNodeEvent);
     assert.equal(runningSemanticNodeEvent.data.changedSourceKeyCount, 1);
-    assert.equal(runningSemanticNodeEvent.data.semanticJobAttempt >= 1, true);
+    assert.equal(runningSemanticNodeEvent.data.semanticJobAttempt, 2);
     assert.ok(completedSemanticNodeEvent);
+    assert.equal(completedSemanticNodeEvent.data.semanticJobAttempt, 2);
     assert.equal(completedSemanticNodeEvent.data.semanticEnrichmentStageTimingsMs.llmOptimize >= 0, true);
     assert.ok(completedSemanticNodeEvent.artifactRefs.outputArtifacts.some((artifact) => (
       artifact.kind === 'import-semantic-enrichment-result'
