@@ -1968,6 +1968,97 @@ test('inferPaperSemanticObjectsBatch retries empty provider batch output with sm
   assert.match(retryEvents[0].error, /empty content/i);
 });
 
+test('inferPaperSemanticObjectsBatch retries long-context DeepSeek empty output before structural fallback', async () => {
+  let fetchCount = 0;
+  const retryEvents = [];
+  const batchEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    if (fetchCount === 1) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: ''
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  papers: papers.map((paper) => ({
+                    id: paper.id,
+                    problems: [
+                      {
+                        name: `problem for ${paper.id}`,
+                        text: `Recovered long-context DeepSeek result for ${paper.id}.`
+                      }
+                    ],
+                    methods: [],
+                    claims: [],
+                    findings: []
+                  }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'deepseek-long-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'deepseek-long-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} }
+  ];
+
+  const results = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'deepseek',
+    llmModel: 'deepseek-v4-flash',
+    llmApiKey: 'deepseek-test-key',
+    llmBatchSize: 2,
+    llmContextWindowTokens: 1_000_000,
+    llmExtractionStrategy: 'long-context-first',
+    llmLongContextStructuralFallback: true,
+    onBatchRetry(event) {
+      retryEvents.push(event);
+    },
+    onBatchComplete(event) {
+      batchEvents.push(event);
+    }
+  });
+
+  assert.equal(fetchCount, 3);
+  assert.equal(results.length, 2);
+  assert.equal(results.every((result) => result.provider === 'deepseek' && result.participated), true);
+  assert.equal(results.every((result) => result.problems.length === 1), true);
+  assert.equal(retryEvents.length, 1);
+  assert.equal(retryEvents[0].batchSize, 2);
+  assert.equal(retryEvents[0].retryBatchSize, 1);
+  assert.equal(batchEvents.length, 1);
+  assert.equal(batchEvents[0].failureCount, 0);
+});
+
 test('inferPaperResearchSemanticsBatch retries transient per-paper batch failures with smaller batches', async () => {
   let fetchCount = 0;
   const retryEvents = [];

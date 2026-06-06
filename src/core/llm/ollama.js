@@ -1741,7 +1741,7 @@ function shouldBoundLongContextSplitRetry(options = {}) {
     process.env.PAPERNEXUS_LLM_LONG_CONTEXT_SPLIT_RETRY_ENABLED
   );
   if (explicit !== undefined) return isExplicitlyDisabledFlag(explicit);
-  return isLongContextFirstBatchMode(options) && isLongContextStructuralFallbackEnabledForBatch(options);
+  return false;
 }
 
 function resolveBatchFailureSplitRetryCount(options = {}) {
