@@ -299,7 +299,10 @@ test('inferPaperSemanticObjects sends DeepSeek JSON-mode chat requests', async (
 });
 
 test('inferPaperSemanticObjects reports empty DeepSeek JSON-mode content as empty response', async () => {
-  globalThis.fetch = async () => ({
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return {
     ok: true,
     async json() {
       return {
@@ -312,7 +315,8 @@ test('inferPaperSemanticObjects reports empty DeepSeek JSON-mode content as empt
         ]
       };
     }
-  });
+  };
+  };
 
   const result = await inferPaperSemanticObjects(
     {
@@ -339,6 +343,92 @@ test('inferPaperSemanticObjects reports empty DeepSeek JSON-mode content as empt
   assert.equal(result.participated, false);
   assert.equal(result.reason, 'empty-response');
   assert.match(result.error, /empty content/i);
+  assert.equal(fetchCount, 2);
+});
+
+test('inferPaperSemanticObjects retries empty DeepSeek JSON-mode content with a stricter JSON prompt', async () => {
+  let fetchCount = 0;
+  const requestBodies = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    requestBodies.push(JSON.parse(options.body));
+    if (fetchCount === 1) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: ''
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  problems: [
+                    {
+                      name: 'deepseek retry recovered json',
+                      type: 'Problem',
+                      evidenceText: 'The retry recovered a JSON response.',
+                      sectionHeading: 'Abstract',
+                      sectionRole: 'abstract',
+                      confidence: 0.86
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const result = await inferPaperSemanticObjects(
+    {
+      title: 'DeepSeek Empty Retry',
+      sections: [
+        { heading: 'Abstract', role: 'abstract', text: 'The retry recovered a JSON response.' }
+      ]
+    },
+    {
+      abstract: 'A DeepSeek empty retry test paper.',
+      problems: [],
+      methods: [],
+      claims: []
+    },
+    {
+      semanticExtraction: 'llm-assisted',
+      llmProvider: 'deepseek',
+      llmModel: 'deepseek-chat',
+      llmApiKey: 'deepseek-test-key'
+    }
+  );
+
+  assert.equal(fetchCount, 2);
+  assert.equal(result.provider, 'deepseek');
+  assert.equal(result.participated, true);
+  assert.equal(result.problems[0].name, 'deepseek retry recovered json');
+  assert.equal(requestBodies[0].messages.length, 1);
+  assert.equal(requestBodies[0].messages[0].role, 'user');
+  assert.equal(requestBodies[1].messages[0].role, 'system');
+  assert.match(requestBodies[1].messages[0].content, /JSON API/i);
+  assert.equal(requestBodies[1].messages[1].role, 'user');
+  assert.match(requestBodies[1].messages[1].content, /previous DeepSeek JSON-mode response was empty/i);
+  assert.deepEqual(requestBodies[1].response_format, { type: 'json_object' });
+  assert.equal(requestBodies[1].temperature, 0);
 });
 
 test('inferPaperSemanticObjectsBatch classifies provider HTTP failures', async () => {
@@ -1968,7 +2058,7 @@ test('inferPaperSemanticObjectsBatch retries empty provider batch output with sm
   assert.match(retryEvents[0].error, /empty content/i);
 });
 
-test('inferPaperSemanticObjectsBatch retries long-context DeepSeek empty output before structural fallback', async () => {
+test('inferPaperSemanticObjectsBatch retries long-context DeepSeek empty output with the same batch before split retry', async () => {
   let fetchCount = 0;
   const retryEvents = [];
   const batchEvents = [];
@@ -1992,7 +2082,7 @@ test('inferPaperSemanticObjectsBatch retries long-context DeepSeek empty output 
     }
 
     const request = JSON.parse(options.body);
-    const prompt = request.messages?.[0]?.content || '';
+    const prompt = request.messages?.find((message) => message?.role === 'user')?.content || request.messages?.[0]?.content || '';
     const marker = 'Papers:\n';
     const markerIndex = String(prompt).lastIndexOf(marker);
     const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
@@ -2039,7 +2129,7 @@ test('inferPaperSemanticObjectsBatch retries long-context DeepSeek empty output 
     llmBatchSize: 2,
     llmContextWindowTokens: 1_000_000,
     llmExtractionStrategy: 'long-context-first',
-    llmLongContextStructuralFallback: true,
+    llmLongContextStructuralFallback: false,
     onBatchRetry(event) {
       retryEvents.push(event);
     },
@@ -2048,15 +2138,100 @@ test('inferPaperSemanticObjectsBatch retries long-context DeepSeek empty output 
     }
   });
 
-  assert.equal(fetchCount, 3);
+  assert.equal(fetchCount, 2);
   assert.equal(results.length, 2);
   assert.equal(results.every((result) => result.provider === 'deepseek' && result.participated), true);
   assert.equal(results.every((result) => result.problems.length === 1), true);
+  assert.equal(retryEvents.length, 0);
+  assert.equal(batchEvents.length, 1);
+  assert.equal(batchEvents[0].failureCount, 0);
+});
+
+test('inferPaperSemanticObjectsBatch falls back to split retry when DeepSeek empty JSON retry also fails', async () => {
+  let fetchCount = 0;
+  const retryEvents = [];
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    if (fetchCount <= 2) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: ''
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+
+    const request = JSON.parse(options.body);
+    const prompt = request.messages?.find((message) => message?.role === 'user')?.content || request.messages?.[0]?.content || '';
+    const marker = 'Papers:\n';
+    const markerIndex = String(prompt).lastIndexOf(marker);
+    const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  papers: papers.map((paper) => ({
+                    id: paper.id,
+                    problems: [
+                      {
+                        name: `split retry recovered ${paper.id}`,
+                        text: `Split retry recovered ${paper.id}.`
+                      }
+                    ],
+                    methods: [],
+                    claims: [],
+                    findings: []
+                  }))
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const entries = [
+    { id: 'deepseek-split-1', parsedPaper: { title: 'A', sections: [] }, semanticPaper: {} },
+    { id: 'deepseek-split-2', parsedPaper: { title: 'B', sections: [] }, semanticPaper: {} }
+  ];
+
+  const results = await inferPaperSemanticObjectsBatch(entries, {
+    semanticExtraction: 'llm-assisted',
+    llmProvider: 'deepseek',
+    llmModel: 'deepseek-v4-flash',
+    llmApiKey: 'deepseek-test-key',
+    llmBatchSize: 2,
+    llmContextWindowTokens: 1_000_000,
+    llmExtractionStrategy: 'long-context-first',
+    llmLongContextStructuralFallback: false,
+    onBatchRetry(event) {
+      retryEvents.push(event);
+    }
+  });
+
+  assert.equal(fetchCount, 4);
+  assert.equal(results.length, 2);
+  assert.equal(results.every((result) => result.provider === 'deepseek' && result.participated), true);
+  assert.equal(results[0].problems[0].name, 'split retry recovered deepseek-split-1');
+  assert.equal(results[1].problems[0].name, 'split retry recovered deepseek-split-2');
   assert.equal(retryEvents.length, 1);
   assert.equal(retryEvents[0].batchSize, 2);
   assert.equal(retryEvents[0].retryBatchSize, 1);
-  assert.equal(batchEvents.length, 1);
-  assert.equal(batchEvents[0].failureCount, 0);
+  assert.match(retryEvents[0].error, /empty content/i);
 });
 
 test('inferPaperResearchSemanticsBatch retries transient per-paper batch failures with smaller batches', async () => {

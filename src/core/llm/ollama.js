@@ -1797,7 +1797,14 @@ function isBatchOutputParseError(error) {
   return /(?:valid json|json parse|unexpected token|unexpected end|empty content|empty response)/i.test(String(error?.message || ''));
 }
 
-function shouldRetryBatchBySplitting(error, batch = [], retryCount = 0) {
+function shouldRetryBatchBySplitting(error, batch = [], retryCount = 0, options = {}) {
+  if (
+    error?.deepSeekJsonRetryExhausted
+    && isLongContextFirstBatchMode(options)
+    && isLongContextStructuralFallbackEnabledForBatch(options)
+  ) {
+    return false;
+  }
   return Boolean(
     retryCount > 0
     && batch.length > 1
@@ -2331,6 +2338,18 @@ function shouldDisableThinkingForJsonMode(config = {}) {
   return /^qwen3/i.test(String(config.model || '').trim());
 }
 
+function buildDeepSeekEmptyJsonRetryPrompt(prompt) {
+  return [
+    'The previous DeepSeek JSON-mode response was empty.',
+    'Return exactly one valid JSON object for the request below.',
+    'Do not return markdown, prose, code fences, or an empty message.',
+    'The response must start with "{" and end with "}".',
+    'For unsupported fields, return the requested field with an empty array or empty object instead of omitting the top-level JSON object.',
+    '',
+    prompt
+  ].join('\n');
+}
+
 function tryJsonRepair(candidate) {
   const text = String(candidate || '');
   if (!text) return text;
@@ -2385,23 +2404,42 @@ async function requestOpenAiGenerate(config, prompt) {
     requestBody.enable_thinking = false;
   }
 
-  const response = await fetchLlmJsonWithRetry(
-    providerLabel,
-    `${config.baseUrl}/chat/completions`,
-    {
+  const requestJson = async (body) => {
+    return fetchLlmJsonWithRetry(providerLabel, `${config.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey}`,
         'content-type': 'application/json'
       },
-      body: JSON.stringify(requestBody)
-    },
-    config
-  );
+      body: JSON.stringify(body)
+    }, config);
+  };
 
-  const text = extractOpenAiText(response);
+  let response = await requestJson(requestBody);
+
+  let text = extractOpenAiText(response);
   if (isDeepSeekProvider(config) && !String(text || '').trim()) {
-    throw new Error('DeepSeek JSON mode returned empty content; retry with a shorter prompt or a larger max_tokens value.');
+    const retryBody = {
+      ...requestBody,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a JSON API. Always return exactly one valid JSON object and no other text.'
+        },
+        {
+          role: 'user',
+          content: buildDeepSeekEmptyJsonRetryPrompt(prompt)
+        }
+      ],
+      temperature: 0
+    };
+    response = await requestJson(retryBody);
+    text = extractOpenAiText(response);
+    if (!String(text || '').trim()) {
+      const emptyJsonError = new Error('DeepSeek JSON mode returned empty content; retry with a shorter prompt or a larger max_tokens value.');
+      emptyJsonError.deepSeekJsonRetryExhausted = true;
+      throw emptyJsonError;
+    }
   }
 
   return { text };
@@ -3068,7 +3106,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
       }
     } catch (error) {
       let recoveredBySplitRetry = false;
-      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount, options)) {
         options.onBatchRetry?.({
           phase: 'semantic-extraction',
           batchNumber: batchIndex + 1,
@@ -3563,7 +3601,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
       }
     } catch (error) {
       let recoveredBySplitRetry = false;
-      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount, options)) {
         options.onBatchRetry?.({
           phase: 'chunk-semantic-extraction',
           batchNumber: batchIndex + 1,
@@ -4023,7 +4061,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
       }
     } catch (error) {
       let recoveredBySplitRetry = false;
-      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount, options)) {
         options.onBatchRetry?.({
           phase: 'chunk-relation-extraction',
           batchNumber: batchIndex + 1,
@@ -4502,7 +4540,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
       }
     } catch (error) {
       let recoveredBySplitRetry = false;
-      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount)) {
+      if (shouldRetryBatchBySplitting(error, batch, splitRetryCount, options)) {
         options.onBatchRetry?.({
           phase: 'relation-extraction',
           batchNumber: batchIndex + 1,

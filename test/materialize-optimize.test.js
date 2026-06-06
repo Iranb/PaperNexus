@@ -137,7 +137,7 @@ We use a batched llm optimizer.
       }
       fetchCount += 1;
       const request = JSON.parse(options.body);
-      const prompt = request.messages?.[0]?.content || '';
+      const prompt = request.messages?.find((message) => message?.role === 'user')?.content || request.messages?.[0]?.content || '';
       const marker = 'Papers:\n';
       const markerIndex = String(prompt).lastIndexOf(marker);
       const papers = markerIndex === -1 ? [] : JSON.parse(String(prompt).slice(markerIndex + marker.length).trim());
@@ -1824,7 +1824,7 @@ We keep structured semantic nodes and still ask the model to judge paper-level l
 
     globalThis.fetch = async (_url, options) => {
       const request = JSON.parse(options.body);
-      const prompt = request.messages?.[0]?.content || '';
+      const prompt = request.messages?.find((message) => message?.role === 'user')?.content || request.messages?.[0]?.content || '';
       prompts.push(prompt);
       const papers = extractPromptPapers(prompt);
       const isChunkPrompt = prompt.includes('paper chunks');
@@ -1907,7 +1907,7 @@ We keep structured semantic nodes and still ask the model to judge paper-level l
 
     await ingestion.llmOptimizeCorpus(tempCorpusRoot, optimizeOptions);
 
-    assert.equal(paperSemanticPromptCount, 1);
+    assert.equal(paperSemanticPromptCount, 2);
     assert.equal(chunkSemanticPromptCount, 0);
     assert.equal(paperRelationPromptCount, 1);
     assert.equal(chunkRelationPromptCount, 0);
@@ -1927,7 +1927,7 @@ We keep structured semantic nodes and still ask the model to judge paper-level l
     assert.ok(snapshot.findings.some((finding) => finding.name === 'paper-level relation after structural fallback'));
 
     await ingestion.llmOptimizeCorpus(tempCorpusRoot, optimizeOptions);
-    assert.equal(paperSemanticPromptCount, 1);
+    assert.equal(paperSemanticPromptCount, 2);
     assert.equal(chunkSemanticPromptCount, 0);
     assert.equal(paperRelationPromptCount, 1);
     assert.equal(chunkRelationPromptCount, 0);
@@ -1975,7 +1975,7 @@ The semantic fallback keeps structural nodes, while paper-level relation extract
 
     globalThis.fetch = async (_url, options) => {
       const request = JSON.parse(options.body);
-      const prompt = request.messages?.[0]?.content || '';
+      const prompt = request.messages?.find((message) => message?.role === 'user')?.content || request.messages?.[0]?.content || '';
       const papers = extractPromptPapers(prompt);
       const isChunkPrompt = prompt.includes('paper chunks');
       const isRelationPrompt = prompt.includes('Key relations to capture') || prompt.includes('Allowed relation types:');
@@ -2056,7 +2056,7 @@ The semantic fallback keeps structural nodes, while paper-level relation extract
       identifierResolutionEnabled: false
     });
 
-    assert.equal(paperSemanticPromptCount, 1);
+    assert.equal(paperSemanticPromptCount, 2);
     assert.equal(chunkSemanticPromptCount, 0);
     assert.equal(paperRelationPromptCount, 1);
     assert.equal(chunkRelationPromptCount, 0);
