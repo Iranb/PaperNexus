@@ -1950,6 +1950,151 @@ We keep structured semantic nodes and still ask the model to judge paper-level l
   }
 });
 
+test('llmOptimizeCorpus bounds split retry for structural long-context semantic fallback batches', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-bounded-fallback-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-bounded-fallback-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const previousBackend = process.env.PAPERNEXUS_GRAPH_BACKEND;
+  let paperSemanticPromptCount = 0;
+  let chunkSemanticPromptCount = 0;
+  let paperRelationPromptCount = 0;
+  let chunkRelationPromptCount = 0;
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    process.env.PAPERNEXUS_GRAPH_BACKEND = 'json';
+
+    for (let index = 0; index < 5; index += 1) {
+      await fs.writeFile(path.join(tempCorpusRoot, `bounded-fallback-${index + 1}.md`), `# Bounded Fallback Paper ${index + 1}
+
+## Abstract
+
+This markdown paper has enough structured evidence for bounded structural semantic fallback.
+
+## Problem
+
+The import path must avoid recursive split retry after empty long-context provider output.
+
+## Method
+
+The semantic fallback keeps structural nodes, while paper-level relation extraction judges links.
+`, 'utf8');
+    }
+
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const prompt = request.messages?.[0]?.content || '';
+      const papers = extractPromptPapers(prompt);
+      const isChunkPrompt = prompt.includes('paper chunks');
+      const isRelationPrompt = prompt.includes('Key relations to capture') || prompt.includes('Allowed relation types:');
+
+      if (isChunkPrompt && isRelationPrompt) {
+        chunkRelationPromptCount += 1;
+      } else if (isChunkPrompt) {
+        chunkSemanticPromptCount += 1;
+      } else if (isRelationPrompt) {
+        paperRelationPromptCount += 1;
+      } else {
+        paperSemanticPromptCount += 1;
+      }
+
+      return {
+        ok: true,
+        async json() {
+          if (isRelationPrompt) {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      papers: papers.map((paper) => ({
+                        id: paper.id,
+                        findings: [{
+                          name: `bounded fallback relation for ${paper.title}`,
+                          type: 'Finding',
+                          evidenceText: 'Paper-level relation extraction judges links after structural fallback.',
+                          sectionHeading: 'Method',
+                          sectionRole: 'method',
+                          confidence: 0.88
+                        }],
+                        benchmarks: [],
+                        researchGoals: [],
+                        relations: []
+                      }))
+                    })
+                  }
+                }
+              ]
+            };
+          }
+
+          return {
+            choices: [
+              { message: { content: '' } }
+            ]
+          };
+        }
+      };
+    };
+
+    const [ingestion, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.materializeCorpus(tempCorpusRoot, {
+      name: 'long-context-bounded-fallback-test',
+      force: true,
+      identifierResolutionEnabled: false
+    });
+
+    await ingestion.llmOptimizeCorpus(tempCorpusRoot, {
+      name: 'long-context-bounded-fallback-test',
+      semanticExtraction: 'llm-primary',
+      llmRelations: true,
+      llmProvider: 'deepseek',
+      llmModel: 'deepseek-v4-flash',
+      llmBaseUrl: 'https://api.deepseek.com',
+      llmApiKey: 'test-key',
+      llmContextWindowTokens: 1_000_000,
+      llmBatchSize: 5,
+      llmBatchPromptMaxChars: 1_000_000,
+      llmLongContextStructuralFallback: true,
+      llmLongContextStructuralFallbackMinObjects: 1,
+      identifierResolutionEnabled: false
+    });
+
+    assert.equal(paperSemanticPromptCount, 1);
+    assert.equal(chunkSemanticPromptCount, 0);
+    assert.equal(paperRelationPromptCount, 1);
+    assert.equal(chunkRelationPromptCount, 0);
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshots = await Promise.all(
+      manifest.sources.map((entry) => corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, entry.sourceKey))
+    );
+    assert.equal(snapshots.length, 5);
+    for (const snapshot of snapshots) {
+      assert.equal(snapshot.llm.semanticExtractionParticipated, false);
+      assert.equal(snapshot.llm.semanticExtractionParticipationReason, 'structural-fallback');
+      assert.equal(snapshot.llm.longContext.fallbackUsed, true);
+      assert.equal(snapshot.llm.longContext.fallbackReason, 'empty-response');
+      assert.equal(snapshot.llm.longContext.fallbackMode, 'structural-semantic');
+      assert.equal(snapshot.llm.chunkPipeline.enabled, false);
+      assert.equal(snapshot.llm.chunkPipeline.reason, 'long-context-structural-fallback');
+      assert.ok(snapshot.findings.some((finding) => finding.name.startsWith('bounded fallback relation for ')));
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    if (previousBackend === undefined) delete process.env.PAPERNEXUS_GRAPH_BACKEND;
+    else process.env.PAPERNEXUS_GRAPH_BACKEND = previousBackend;
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('llmOptimizeCorpus records schema-validation fallback for malformed long-context paper fields', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-home-'));
   const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-long-context-schema-corpus-'));

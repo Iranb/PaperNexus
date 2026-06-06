@@ -45,6 +45,7 @@ const DEFAULT_TIMEOUT_MS = 45000;
 const DEFAULT_BATCH_SIZE = 8;
 const DEFAULT_BATCH_PROMPT_MAX_CHARS = 24000;
 const DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT = 3;
+const LONG_CONTEXT_SPLIT_RETRY_MIN_WINDOW_TOKENS = 1_000_000;
 const DEFAULT_MAX_TOKENS = 2048;
 const DEFAULT_RATE_LIMIT_RETRY_COUNT = 3;
 const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 1000;
@@ -958,7 +959,11 @@ function resolveProviderDefaultBaseUrl(provider) {
 }
 
 function resolveEffectiveLlmBatchSize(config = {}, fallback = DEFAULT_BATCH_SIZE) {
-  if (isDeepSeekProvider(config) || isDeepSeekProvider(config.fallback)) return 1;
+  if (isDeepSeekProvider(config) || isDeepSeekProvider(config.fallback)) {
+    return config.providerBatchingEnabled
+      ? Math.max(1, Number(config.batchSize || fallback))
+      : 1;
+  }
   return Math.max(1, Number(config.batchSize || fallback));
 }
 
@@ -1207,6 +1212,22 @@ function resolveLlmFallbackConfig(options = {}, primaryConfig = {}) {
   };
 }
 
+function resolveProviderBatchingEnabled(provider, options = {}) {
+  const normalized = normalizeProviderName(provider);
+  const explicit = pickDefined(
+    normalized === 'deepseek' ? options.llmDeepSeekBatchingEnabled : undefined,
+    normalized === 'deepseek' ? options.deepSeekBatchingEnabled : undefined,
+    options.llmProviderBatchingEnabled,
+    options.providerBatchingEnabled,
+    normalized === 'deepseek' ? process.env.PAPERNEXUS_LLM_DEEPSEEK_BATCHING_ENABLED : undefined,
+    process.env.PAPERNEXUS_LLM_PROVIDER_BATCHING_ENABLED
+  );
+  if (explicit !== undefined) return !isExplicitlyDisabledFlag(explicit);
+  if (normalized !== 'deepseek') return true;
+  return isLongContextFirstBatchMode(options)
+    && resolveLongContextWindowTokensForBatch(options) >= LONG_CONTEXT_SPLIT_RETRY_MIN_WINDOW_TOKENS;
+}
+
 export function resolveLlmConfig(options = {}) {
   const provider = normalizeProviderName(
     pickDefined(
@@ -1256,6 +1277,15 @@ export function resolveLlmConfig(options = {}) {
       : ''
   ) || '').trim();
 
+  const requestedBatchSize = Number(pickDefined(
+    options.llmBatchSize,
+    process.env.PAPERNEXUS_LLM_BATCH_SIZE,
+    options.ollamaBatchSize,
+    process.env.PAPERNEXUS_OLLAMA_BATCH_SIZE,
+    DEFAULT_BATCH_SIZE
+  ));
+  const providerBatchingEnabled = resolveProviderBatchingEnabled(provider, options);
+
   const config = {
     enabled,
     provider,
@@ -1268,15 +1298,8 @@ export function resolveLlmConfig(options = {}) {
       process.env.PAPERNEXUS_OLLAMA_TIMEOUT_MS,
       DEFAULT_TIMEOUT_MS
     )),
-    batchSize: provider === 'deepseek'
-      ? 1
-      : Number(pickDefined(
-          options.llmBatchSize,
-          process.env.PAPERNEXUS_LLM_BATCH_SIZE,
-          options.ollamaBatchSize,
-          process.env.PAPERNEXUS_OLLAMA_BATCH_SIZE,
-          DEFAULT_BATCH_SIZE
-        )),
+    batchSize: provider === 'deepseek' && !providerBatchingEnabled ? 1 : requestedBatchSize,
+    providerBatchingEnabled,
     maxTokens: Number(pickDefined(
       options.llmMaxTokens,
       process.env.PAPERNEXUS_LLM_MAX_TOKENS,
@@ -1677,14 +1700,62 @@ function resolveBatchPromptMaxChars(options = {}) {
   );
 }
 
+function resolveLongContextWindowTokensForBatch(options = {}) {
+  const parsed = Number(pickDefined(
+    options.llmContextWindowTokens,
+    options.contextWindowTokens,
+    options.llmContextTokens,
+    process.env.PAPERNEXUS_LLM_CONTEXT_WINDOW_TOKENS
+  ));
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function isLongContextFirstBatchMode(options = {}) {
+  if (options.longContextFallbackActive) return true;
+  const strategy = String(pickDefined(
+    options.llmExtractionStrategy,
+    options.extractionStrategy,
+    options.importLlmExtractionStrategy,
+    process.env.PAPERNEXUS_LLM_EXTRACTION_STRATEGY,
+    'auto'
+  ) || 'auto').trim().toLowerCase().replace(/_/g, '-');
+  if (['chunk', 'chunks', 'chunk-first', 'chunk-first-map-reduce'].includes(strategy)) return false;
+  if (['paper', 'paper-level', 'whole-paper', 'long-context', 'long-context-first'].includes(strategy)) return true;
+  return resolveLongContextWindowTokensForBatch(options) >= LONG_CONTEXT_SPLIT_RETRY_MIN_WINDOW_TOKENS;
+}
+
+function isLongContextStructuralFallbackEnabledForBatch(options = {}) {
+  const explicit = pickDefined(
+    options.llmLongContextStructuralFallback,
+    options.longContextStructuralFallback,
+    options.structuralSemanticFallback,
+    process.env.PAPERNEXUS_LLM_LONG_CONTEXT_STRUCTURAL_FALLBACK
+  );
+  return explicit !== undefined && !isExplicitlyDisabledFlag(explicit);
+}
+
+function shouldBoundLongContextSplitRetry(options = {}) {
+  const explicit = pickDefined(
+    options.llmLongContextSplitRetryEnabled,
+    options.longContextSplitRetryEnabled,
+    process.env.PAPERNEXUS_LLM_LONG_CONTEXT_SPLIT_RETRY_ENABLED
+  );
+  if (explicit !== undefined) return isExplicitlyDisabledFlag(explicit);
+  return isLongContextFirstBatchMode(options) && isLongContextStructuralFallbackEnabledForBatch(options);
+}
+
 function resolveBatchFailureSplitRetryCount(options = {}) {
+  const explicit = pickDefined(
+    options.llmBatchFailureSplitRetryCount,
+    options.batchFailureSplitRetryCount,
+    process.env.PAPERNEXUS_LLM_BATCH_FAILURE_SPLIT_RETRY_COUNT
+  );
+  if (explicit !== undefined) {
+    return toNonNegativeInteger(explicit, DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT);
+  }
+  if (shouldBoundLongContextSplitRetry(options)) return 0;
   return toNonNegativeInteger(
-    pickDefined(
-      options.llmBatchFailureSplitRetryCount,
-      options.batchFailureSplitRetryCount,
-      process.env.PAPERNEXUS_LLM_BATCH_FAILURE_SPLIT_RETRY_COUNT,
-      DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT
-    ),
+    DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT,
     DEFAULT_BATCH_FAILURE_SPLIT_RETRY_COUNT
   );
 }

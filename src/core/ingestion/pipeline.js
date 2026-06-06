@@ -2672,9 +2672,15 @@ function getLongContextFallbackReason(result = null, summary = null, options = {
 
 const LONG_CONTEXT_FALLBACK_REASONS_ALLOWING_PAPER_LEVEL_RELATIONS = new Set([
   'empty-response',
+  'invalid-json',
   'missing-result',
+  'output-truncated',
+  'provider-network',
+  'provider-timeout',
+  'request-failed',
   'schema-validation-failed',
-  'semantic-quality-guard'
+  'semantic-quality-guard',
+  'timeout'
 ]);
 
 const LONG_CONTEXT_STRUCTURAL_FALLBACK_REASONS = new Set([
