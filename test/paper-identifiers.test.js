@@ -159,6 +159,7 @@ test('paper identity helpers discard invalid title aliases during create and mer
     identityAliases: [
       'title:undefined',
       ' title:null ',
+      'title:This CVPR paper is the open access version provided by the Computer Vision Foundation',
       'title:Learning a Fix and Explore Framework for Continuous Generalized Category Discovery',
       'title:Legacy Discovery Title'
     ]
@@ -170,6 +171,10 @@ test('paper identity helpers discard invalid title aliases during create and mer
   assert.ok(identity.identityAliases.includes('title:legacy discovery title'));
   assert.equal(identity.identityAliases.includes('title:undefined'), false);
   assert.equal(identity.identityAliases.includes('title:null'), false);
+  assert.equal(
+    identity.identityAliases.includes('title:this cvpr paper is the open access version provided by the computer vision foundation'),
+    false
+  );
 
   const merged = mergePaperIdentity(
     {

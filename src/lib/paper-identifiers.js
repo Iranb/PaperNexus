@@ -316,7 +316,17 @@ export function createPaperTitleAlias(value = '') {
   return normalizedTitle ? `title:${normalizedTitle}` : '';
 }
 
-const INVALID_TITLE_ALIAS_VALUES = new Set(['undefined', 'null', 'nan', 'none', 'unknown', 'untitled', 'n/a', 'na']);
+const INVALID_TITLE_ALIAS_VALUES = new Set([
+  'undefined',
+  'null',
+  'nan',
+  'none',
+  'unknown',
+  'untitled',
+  'n/a',
+  'na',
+  'this cvpr paper is the open access version provided by the computer vision foundation'
+]);
 
 function normalizePaperIdentityAlias(alias = '') {
   const raw = String(alias || '').trim();
