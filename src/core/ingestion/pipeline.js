@@ -7731,9 +7731,22 @@ async function resolveCorpusInputContext(inputPath, options = {}) {
 }
 
 function buildManifestEntry(rootPath, sourceState, semanticPaper, markerCommand, extra = {}) {
-  const paperMetadata = normalizePaperMetadataPayload(
-    sourceState.paperMetadata || semanticPaper.identifiers || semanticPaper || {}
-  );
+  const sourcePaperMetadata = sourceState.paperMetadata || {};
+  const metadataOverrideTitle = getTrustedPaperMetadataTitle(sourcePaperMetadata)
+    || (semanticPaper?.titleValidation?.metadataTitleOverride
+      ? String(semanticPaper.paperTitle || semanticPaper.title || '').trim()
+      : '');
+  const paperMetadata = normalizePaperMetadataPayload({
+    ...(semanticPaper || {}),
+    ...sourcePaperMetadata,
+    identifiers: mergePaperIdentifiers(semanticPaper?.identifiers || {}, sourcePaperMetadata).identifiers,
+    sourceProvider: sourcePaperMetadata.sourceProvider || semanticPaper.sourceProvider || sourceState.sourceProvider,
+    ...(metadataOverrideTitle ? {
+      title: metadataOverrideTitle,
+      paperTitle: metadataOverrideTitle,
+      metadataTitleTrusted: true
+    } : {})
+  }, { trustTitle: Boolean(metadataOverrideTitle) });
   return upgradeManifestEntryIdentityRecord({
     sourceKey: sourceState.sourceKey,
     inputPath: sourceState.inputPath,
@@ -9155,7 +9168,25 @@ async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = 
 
   const stats = await fs.stat(inputPath);
   const fingerprint = createSourceFingerprint(stats);
-  const contentSha256 = await computeSourceContentSha256(inputPath, entry, fingerprint);
+  const importTaskFileMetadata = await loadImportTaskFileMetadata(rootPath, inputPath);
+  const importTaskPaperMetadata = importTaskFileMetadata?.file?.paperMetadata || null;
+  const importTaskTitle = String(
+    importTaskPaperMetadata?.paperTitle || importTaskPaperMetadata?.title || ''
+  ).trim();
+  const paperMetadata = normalizePaperMetadataPayload(
+    importTaskPaperMetadata
+      ? {
+          ...entry,
+          ...(entry.paperMetadata || {}),
+          ...importTaskPaperMetadata,
+          identifiers: mergePaperIdentifiers(entry, entry.paperMetadata || {}, importTaskPaperMetadata).identifiers,
+          ...(importTaskTitle ? { title: importTaskTitle, paperTitle: importTaskTitle } : {})
+        }
+      : (entry.paperMetadata || entry || {}),
+    { trustTitle: Boolean(importTaskTitle) }
+  );
+  const contentSha256 = String(importTaskFileMetadata?.file?.contentSha256 || '').trim()
+    || await computeSourceContentSha256(inputPath, entry, fingerprint);
   const expectedMarkdownCachePath = resolveExpectedMarkdownCachePath(rootPath, {
     sourceKey: entry.sourceKey,
     inputPath,
@@ -9169,7 +9200,10 @@ async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = 
     sourceKey: entry.sourceKey,
     inputPath,
     kind: inputSpec.kind,
-    sourceProvider: entry.sourceProvider || 'filesystem',
+    sourceProvider: importTaskPaperMetadata?.sourceProvider
+      || entry.sourceProvider
+      || entry.paperMetadata?.sourceProvider
+      || 'filesystem',
     contentSha256,
     fingerprint,
     sourceMtimeMs: Number(stats.mtimeMs || 0),
@@ -9182,6 +9216,7 @@ async function createPaperRefreshSourceState(rootPath, entry, analysisOptions = 
       ? true
       : Boolean(analysisOptions.rebuildPdfMarkdown !== false && inputSpec.kind === 'pdf'),
     cachedPaper: null,
+    paperMetadata,
     llmRefreshState: {
       semanticRequired: llmSemanticRequired,
       relationRequired: llmRelationRequired,

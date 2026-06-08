@@ -549,6 +549,122 @@ The method includes decoupled discovery and memory components, prototype updates
   }
 });
 
+test('paper refresh applies import task metadata over a stale manifest title', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-refresh-title-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-refresh-title-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const fakeMarkerPath = path.join(tempCorpusRoot, 'fake-marker.mjs');
+  const staleTitle = 'This CVPR paper is the Open Access version, provided by the Computer Vision Foundation.';
+  const trustedTitle = 'Decouple Your Discovery and Memory in Continual Generalized Category Discovery';
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    const [ingestion, corpusStore, importStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js')
+    ]);
+    const taskId = 'imp:metadata-title-refresh-test';
+    const taskPaths = importStore.getImportTaskPaths(tempCorpusRoot, taskId);
+    const pdfPath = path.join(taskPaths.sourcesDir, 'dydm-cvpr2026.pdf');
+
+    await fs.mkdir(taskPaths.sourcesDir, { recursive: true });
+    await fs.writeFile(pdfPath, 'fake pdf payload\n', 'utf8');
+    await fs.writeFile(
+      fakeMarkerPath,
+      `#!/usr/bin/env node
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+const args = process.argv.slice(2);
+const pdfArg = args[0];
+const outputDir = args[args.indexOf('--output_dir') + 1];
+const basename = path.basename(pdfArg, path.extname(pdfArg));
+await fs.mkdir(outputDir, { recursive: true });
+await fs.writeFile(path.join(outputDir, \`\${basename}.md\`), \`# ${staleTitle}
+
+## Abstract
+
+The actual paper studies continual generalized category discovery by decoupling discovery and memory. It proposes separate mechanisms for discovering novel categories and preserving memory of seen categories in class-incremental generalized category discovery. The abstract text is intentionally long enough to be treated as a usable parser result even though the first heading is a publisher header rather than the scientific title.
+
+## Introduction
+
+Continual generalized category discovery requires recognizing labeled known categories while discovering unlabeled novel categories across stages.
+\`);
+`,
+      'utf8'
+    );
+    await fs.chmod(fakeMarkerPath, 0o755);
+
+    await ingestion.analyzeCorpus(taskPaths.sourcesDir, {
+      name: 'refresh-title-override-test',
+      rootPath: tempCorpusRoot,
+      force: true,
+      pdfParser: 'marker',
+      markerCommand: fakeMarkerPath,
+      includeActiveImportSources: false,
+      includePersistentImportSources: false,
+      enableLlmEnrichment: false
+    });
+    const manifestBefore = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    assert.equal(manifestBefore.sources[0].paperTitle, staleTitle);
+
+    await fs.writeFile(taskPaths.taskPath, JSON.stringify({
+      id: taskId,
+      files: [
+        {
+          storedPath: pdfPath,
+          kind: 'pdf',
+          contentSha256: 'sha256:test-dydm-refresh-title',
+          paperMetadata: {
+            sourceProvider: 'cvf_openaccess',
+            title: trustedTitle
+          }
+        }
+      ]
+    }), 'utf8');
+
+    await ingestion.refreshPaperGraphContent(tempCorpusRoot, {
+      rootPath: tempCorpusRoot,
+      sourceKey: manifestBefore.sources[0].sourceKey,
+      rebuildPdfMarkdown: false,
+      semanticExtraction: 'heuristic-only',
+      llmRelations: false,
+      ollamaRelations: false,
+      enqueueEnhancements: false,
+      pdfParser: 'marker',
+      markerCommand: fakeMarkerPath
+    });
+
+    const manifestAfter = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifestAfter.sources[0].sourceKey);
+    const liteCorpus = await corpusStore.loadCorpusLite(tempCorpusRoot);
+    const paperNode = liteCorpus.graph.getNode(manifestAfter.sources[0].paperId);
+
+    assert.equal(manifestAfter.sources[0].paperTitle, trustedTitle);
+    assert.equal(manifestAfter.sources[0].canonicalId, 'title:decouple your discovery and memory in continual generalized category discovery');
+    assert.equal(manifestAfter.sources[0].sourceProvider, 'cvf_openaccess');
+    assert.equal(manifestAfter.sources[0].paperMetadata.title, trustedTitle);
+    assert.equal(manifestAfter.sources[0].paperMetadata.metadataTitleTrusted, true);
+    assert.equal(snapshot.paperTitle, trustedTitle);
+    assert.equal(snapshot.titleValidation.metadataTitleOverride, true);
+    assert.equal(snapshot.titleValidation.originalParsedTitle, staleTitle);
+    assert.ok(paperNode);
+    assert.equal(paperNode.name, trustedTitle);
+    assert.equal(paperNode.properties.paperTitle, trustedTitle);
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('paper refresh prefers an explicitly selected PDF server path and reruns the PDF input flow', async () => {
   const { __pipelineTestables } = await import('../src/core/ingestion/pipeline.js');
   const entry = {
