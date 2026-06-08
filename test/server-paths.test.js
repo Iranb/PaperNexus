@@ -90,3 +90,64 @@ test('API payload helpers expose portable home-relative corpus paths and accept 
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
+
+test('API import tasks resolve configured source inputs relative to configBaseDir', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-server-path-config-inputs-'));
+  const inputRoot = path.join(tempHome, 'configured-papers');
+  const indexRoot = path.join(tempHome, 'index-store');
+  const uploadRoot = path.join(tempHome, 'uploads');
+  const uploadPath = path.join(uploadRoot, 'server-side-upload.md');
+  const previousHome = process.env.HOME;
+  const previousPapernexusHome = process.env.PAPERNEXUS_HOME;
+
+  try {
+    process.env.HOME = tempHome;
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.mkdir(uploadRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+    await fs.writeFile(uploadPath, '# Configured Input Upload\n\n## Abstract\n\nLoaded from a server-side path.\n', 'utf8');
+
+    const [ingestion, api, corpusStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/server/api.js'),
+      import('../src/storage/corpus-store.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'configured-inputs-path-test',
+      force: true
+    });
+    await fs.rm(corpusStore.getCorpusPaths(indexRoot).manifestPath, { force: true });
+
+    const created = await api.createImportTaskPayload(undefined, {
+      serverFilePath: uploadPath,
+      identifiers: {
+        doi: '10.48550/papernexus.configured-input-path'
+      }
+    }, {
+      config: {
+        storage: {
+          indexDir: './index-store'
+        },
+        sources: {
+          inputs: ['./configured-papers']
+        }
+      },
+      configBaseDir: tempHome
+    });
+
+    assert.equal(created.rootPath, indexRoot);
+    assert.deepEqual(created.task.inputPaths, [inputRoot]);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousPapernexusHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousPapernexusHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});

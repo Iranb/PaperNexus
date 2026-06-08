@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 
 import {
   createLlmBatchSlices,
@@ -94,4 +95,47 @@ test('runLlmBatchWorkerPool converts stuck slices to timeout results and continu
   assert.equal(results[0].reason, 'provider-timeout');
   assert.equal(results[0].timeoutMs, 10);
   assert.deepEqual(results[1], { item: 2, completed: true });
+});
+
+test('runLlmBatchWorkerPool clears slice deadline timers when work fails before timeout', async () => {
+  const startedAt = Date.now();
+  const script = `
+    const { runLlmBatchWorkerPool } = await import('./src/core/llm/batch-worker-pool.js');
+    try {
+      await runLlmBatchWorkerPool([1], {
+        concurrency: 1,
+        llmBatchSliceTimeoutMs: 1000,
+        async iteratee() {
+          throw new Error('provider failed before deadline');
+        },
+        async createSkippedResult(item) {
+          return { item, skippedProviderCall: true };
+        }
+      });
+      process.exitCode = 2;
+    } catch (error) {
+      if (!/provider failed before deadline/.test(String(error?.message || error))) {
+        console.error(error);
+        process.exitCode = 3;
+      }
+    }
+  `;
+
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: process.cwd(),
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+
+  const result = await new Promise((resolve) => {
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('close', (code) => {
+      resolve({ code, stderr, durationMs: Date.now() - startedAt });
+    });
+  });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.durationMs < 500, `child process waited ${result.durationMs}ms for an uncleared timeout`);
 });

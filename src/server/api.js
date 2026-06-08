@@ -2401,7 +2401,11 @@ async function resolveImportInputPaths(rootPath, options = {}) {
   const configuredInputs = Array.isArray(options.config?.sources?.inputs)
     ? options.config.sources.inputs
     : [];
-  return configuredInputs.map((item) => String(item || '').trim()).filter(Boolean);
+  const baseDir = options.configBaseDir || process.cwd();
+  return configuredInputs
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .map((item) => resolvePathWithHome(item, baseDir));
 }
 
 async function notifyImportTaskCreated(rootPath, task, payload, options = {}) {

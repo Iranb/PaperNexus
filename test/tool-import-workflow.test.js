@@ -86,6 +86,8 @@ test('import_workflow submit persists processing profile and completion policy',
 
 test('import_workflow wait includes downstream authoritative sync readiness', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-'));
+  let completion = null;
+  let completionWrite = Promise.resolve();
 
   try {
     const { corpusDir, metaPath } = getCorpusPaths(rootPath);
@@ -120,8 +122,8 @@ test('import_workflow wait includes downstream authoritative sync readiness', as
       }
     });
 
-    const completion = setTimeout(() => {
-      completeAuthoritativeSyncJob(rootPath, syncJob.jobId, {
+    completion = setTimeout(() => {
+      completionWrite = completeAuthoritativeSyncJob(rootPath, syncJob.jobId, {
         appliedAt: new Date().toISOString()
       }).catch(() => {});
     }, 120);
@@ -135,19 +137,21 @@ test('import_workflow wait includes downstream authoritative sync readiness', as
       interval: 0.05
     });
 
-    clearTimeout(completion);
-
     assert.equal(payload.task.status, 'completed');
     assert.equal(payload.authoritativeSync.jobId, syncJob.jobId);
     assert.equal(payload.authoritativeSync.status, 'completed');
     assert.ok(Date.now() - startedAt >= 100);
   } finally {
+    if (completion) clearTimeout(completion);
+    await completionWrite;
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
 
 test('import_workflow wait batch includes downstream authoritative sync readiness', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-batch-sync-'));
+  let completion = null;
+  let completionWrite = Promise.resolve();
 
   try {
     const { corpusDir, metaPath } = getCorpusPaths(rootPath);
@@ -182,8 +186,8 @@ test('import_workflow wait batch includes downstream authoritative sync readines
       }
     });
 
-    const completion = setTimeout(() => {
-      completeAuthoritativeSyncJob(rootPath, syncJob.jobId, {
+    completion = setTimeout(() => {
+      completionWrite = completeAuthoritativeSyncJob(rootPath, syncJob.jobId, {
         appliedAt: new Date().toISOString()
       }).catch(() => {});
     }, 120);
@@ -197,8 +201,6 @@ test('import_workflow wait batch includes downstream authoritative sync readines
       interval: 0.05
     });
 
-    clearTimeout(completion);
-
     assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
     assert.equal(payload.waitTarget, 'task-completed');
     assert.equal(payload.waitForAuthoritativeSync, true);
@@ -209,6 +211,8 @@ test('import_workflow wait batch includes downstream authoritative sync readines
     assert.equal(payload.tasks[0].result.authoritativeSync.status, 'completed');
     assert.ok(Date.now() - startedAt >= 100);
   } finally {
+    if (completion) clearTimeout(completion);
+    await completionWrite;
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
@@ -276,6 +280,8 @@ test('import_workflow wait can return at graph-visible without waiting for autho
 
 test('import_workflow wait can target semantic-complete for background enrichment', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-semantic-'));
+  let completion = null;
+  let completionWrite = Promise.resolve();
 
   try {
     const { corpusDir, metaPath } = getCorpusPaths(rootPath);
@@ -305,8 +311,8 @@ test('import_workflow wait can target semantic-complete for background enrichmen
       semanticStatus: 'queued'
     });
 
-    const completion = setTimeout(() => {
-      updateImportTaskSemanticLifecycle(rootPath, task.id, 'completed', {
+    completion = setTimeout(() => {
+      completionWrite = updateImportTaskSemanticLifecycle(rootPath, task.id, 'completed', {
         message: 'semantic enrichment completed'
       }).catch(() => {});
     }, 120);
@@ -321,8 +327,6 @@ test('import_workflow wait can target semantic-complete for background enrichmen
       interval: 0.05
     });
 
-    clearTimeout(completion);
-
     assert.equal(payload.waitTarget, 'semantic-complete');
     assert.equal(payload.waitForAuthoritativeSync, false);
     assert.equal(payload.waitStatus.reason, 'semantic-completed');
@@ -331,12 +335,16 @@ test('import_workflow wait can target semantic-complete for background enrichmen
     assert.equal(payload.task.semanticStatus, 'completed');
     assert.ok(Date.now() - startedAt >= 100);
   } finally {
+    if (completion) clearTimeout(completion);
+    await completionWrite;
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
 
 test('import_workflow wait can return a requested task id batch at graph-visible', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-wait-batch-graph-'));
+  let completion = null;
+  let completionWrite = Promise.resolve();
 
   try {
     const { corpusDir, metaPath } = getCorpusPaths(rootPath);
@@ -376,8 +384,8 @@ test('import_workflow wait can return a requested task id batch at graph-visible
       semanticStatus: 'queued'
     });
 
-    const completion = setTimeout(() => {
-      completeImportTask(rootPath, pendingTask.id, {
+    completion = setTimeout(() => {
+      completionWrite = completeImportTask(rootPath, pendingTask.id, {
         semanticStatus: 'queued'
       }).catch(() => {});
     }, 120);
@@ -392,8 +400,6 @@ test('import_workflow wait can return a requested task id batch at graph-visible
       interval: 0.05
     });
 
-    clearTimeout(completion);
-
     assert.equal(payload.contractVersion, 'papernexus-import-workflow-task-batch-v1');
     assert.equal(payload.operation, 'wait');
     assert.equal(payload.waitTarget, 'graph-visible');
@@ -407,6 +413,8 @@ test('import_workflow wait can return a requested task id batch at graph-visible
     assert.equal(payload.queueSummary.source, 'requested-tasks');
     assert.ok(Date.now() - startedAt >= 100);
   } finally {
+    if (completion) clearTimeout(completion);
+    await completionWrite;
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });

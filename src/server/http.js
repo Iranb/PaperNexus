@@ -371,6 +371,16 @@ async function readJsonBody(request, options = {}) {
   }
 }
 
+function decodeRouteParam(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    const error = new Error('Invalid URL encoding in route parameter.');
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
 function buildWebRoot() {
   const thisFile = fileURLToPath(import.meta.url);
   return path.resolve(path.dirname(thisFile), '../../web');
@@ -1584,7 +1594,7 @@ export async function serveCommand(options = {}) {
         : null;
       if (evalRunMatch) {
         const name = url.searchParams.get('name') || undefined;
-        const runId = decodeURIComponent(evalRunMatch[1]);
+        const runId = decodeRouteParam(evalRunMatch[1]);
         sendJson(response, 200, await evalRunPayload(name, runId, apiOptions));
         return;
       }
@@ -1594,7 +1604,7 @@ export async function serveCommand(options = {}) {
         : null;
       if (importTaskMatch) {
         const name = url.searchParams.get('name') || undefined;
-        const taskId = decodeURIComponent(importTaskMatch[1]);
+        const taskId = decodeRouteParam(importTaskMatch[1]);
         if (url.pathname.endsWith('/log')) {
           sendJson(response, 200, await importTaskLogPayload(name, taskId, apiOptions));
           return;

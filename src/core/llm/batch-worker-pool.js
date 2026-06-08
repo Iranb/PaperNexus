@@ -112,7 +112,13 @@ async function runWithOptionalSliceDeadline(work, options = {}, item = null, ind
   const timeout = new Promise((resolve) => {
     timeoutHandle = setTimeout(() => resolve(timeoutMarker), timeoutMs);
   });
-  const result = await Promise.race([pending, timeout]);
+  let result;
+  try {
+    result = await Promise.race([pending, timeout]);
+  } catch (error) {
+    clearTimeout(timeoutHandle);
+    throw error;
+  }
   if (result !== timeoutMarker) {
     clearTimeout(timeoutHandle);
     return result;

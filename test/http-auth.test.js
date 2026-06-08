@@ -126,6 +126,12 @@ test('serveCommand returns client errors for malformed and oversized JSON API bo
       });
       assert.equal(oversized.status, 413);
       assert.match((await oversized.json()).error, /exceeds the configured limit/);
+
+      const invalidRouteEncoding = await fetch(`http://127.0.0.1:${port}/api/imports/%E0%A4%A`, {
+        headers
+      });
+      assert.equal(invalidRouteEncoding.status, 400);
+      assert.match((await invalidRouteEncoding.json()).error, /Invalid URL encoding/);
     } finally {
       await serverHandle.stop();
     }
