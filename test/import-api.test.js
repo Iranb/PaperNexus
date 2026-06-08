@@ -431,6 +431,64 @@ test('import API payload helpers can create tasks from a server-side single file
   }
 });
 
+test('import API payload helpers accept trusted title-only metadata for a server-side file path', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-title-only-home-'));
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-title-only-workspace-'));
+  const inputRoot = path.join(workspaceRoot, 'papers');
+  const indexRoot = path.join(workspaceRoot, 'index-store');
+  const uploadRoot = path.join(workspaceRoot, 'uploads');
+  const uploadPath = path.join(uploadRoot, 'cvf-title-only-upload.md');
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const title = 'Decouple Your Discovery and Memory in Continual Generalized Category Discovery';
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    await fs.mkdir(inputRoot, { recursive: true });
+    await fs.mkdir(uploadRoot, { recursive: true });
+    await fs.copyFile(
+      path.join(examplesRoot, 'retrieval-augmented-experiment-planning.md'),
+      path.join(inputRoot, 'retrieval-augmented-experiment-planning.md')
+    );
+    await fs.writeFile(uploadPath, `# ${title}\n\n## Abstract\n\nA trusted CVF full-text source.\n`, 'utf8');
+
+    const [ingestion, api] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/server/api.js')
+    ]);
+
+    await ingestion.analyzeCorpus(inputRoot, {
+      rootPath: indexRoot,
+      name: 'import-api-title-only-test',
+      force: true
+    });
+
+    const created = await api.createImportTaskPayload(indexRoot, {
+      serverFilePath: uploadPath,
+      paperMetadata: {
+        title,
+        sourceProvider: 'cvf_openaccess',
+        year: 2026
+      }
+    });
+
+    assert.equal(created.task.status, 'pending');
+    assert.equal(created.deduped, false);
+    const metadata = created.task.files[0].paperMetadata;
+    assert.equal(metadata.sourceProvider, 'cvf_openaccess');
+    assert.equal(metadata.title, title);
+    assert.equal(metadata.canonicalIdSource, 'title');
+    assert.equal(metadata.identityConfidence, 'provisional');
+    assert.match(metadata.canonicalId, /^title:/);
+    assert.ok(metadata.identityAliases.includes(metadata.canonicalId));
+    assert.equal(metadata.identifiers, undefined);
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('import API payload helpers reject invalid server-side file path requests', async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-invalid-home-'));
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-api-server-path-invalid-workspace-'));

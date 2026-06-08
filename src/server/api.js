@@ -2282,21 +2282,67 @@ export async function backupCorpusPayload(candidate, options = {}) {
   }, options);
 }
 
-function normalizeImportPaperMetadata(input = {}) {
-  const paperIdentity = createPaperIdentity(input);
-  const explicitSourceProvider = String(
+function pickImportPaperTitle(input = {}) {
+  return String(
+    input?.title
+    || input?.paperTitle
+    || input?.paper_title
+    || input?.paperMetadata?.title
+    || input?.paperMetadata?.paperTitle
+    || input?.paperMetadata?.paper_title
+    || ''
+  ).trim();
+}
+
+function pickImportSourceProvider(input = {}) {
+  return String(
     input?.sourceProvider
     || input?.provider
     || input?.paperMetadata?.sourceProvider
+    || input?.paperMetadata?.provider
     || ''
   ).trim();
-  if (!Object.keys(paperIdentity.identifiers).length && !explicitSourceProvider) {
+}
+
+function createImportPaperIdentityInput(input = {}) {
+  const title = pickImportPaperTitle(input);
+  return {
+    ...(input?.paperMetadata || {}),
+    ...(input || {}),
+    ...(title ? { title } : {})
+  };
+}
+
+function normalizeImportPaperMetadata(input = {}) {
+  const identityInput = createImportPaperIdentityInput(input);
+  const paperIdentity = createPaperIdentity(identityInput);
+  const explicitSourceProvider = pickImportSourceProvider(input);
+  const titleDerivedIdentity = paperIdentity.canonicalIdSource === 'title' && explicitSourceProvider;
+  if (!Object.keys(paperIdentity.identifiers).length && !explicitSourceProvider && !titleDerivedIdentity) {
     return null;
   }
   return {
     ...(Object.keys(paperIdentity.identifiers).length ? { identifiers: paperIdentity.identifiers } : {}),
-    ...(explicitSourceProvider ? { sourceProvider: explicitSourceProvider } : {})
+    ...(explicitSourceProvider ? { sourceProvider: explicitSourceProvider } : {}),
+    ...(titleDerivedIdentity
+      ? {
+          title: pickImportPaperTitle(input),
+          normalizedTitle: paperIdentity.normalizedTitle,
+          titleSignature: paperIdentity.titleSignature,
+          canonicalId: paperIdentity.canonicalId,
+          canonicalIdSource: paperIdentity.canonicalIdSource,
+          identityConfidence: paperIdentity.identityConfidence,
+          identityAliases: paperIdentity.identityAliases
+        }
+      : {})
   };
+}
+
+function hasImportPaperIdentity(input = {}) {
+  if (hasAnyPaperIdentifiers(input)) return true;
+  const paperIdentity = createPaperIdentity(createImportPaperIdentityInput(input));
+  const sourceProvider = pickImportSourceProvider(input);
+  return Boolean(sourceProvider && paperIdentity.canonicalIdSource === 'title');
 }
 
 function normalizeImportFiles(files = [], defaultPaperMetadata = null) {
@@ -2370,18 +2416,18 @@ async function normalizeImportRequest(body = {}) {
 
   if (serverFilePath) {
     const serverFiles = await normalizeServerImportFile(serverFilePath, topLevelPaperMetadata);
-    if (!hasAnyPaperIdentifiers(topLevelPaperMetadata || {})) {
+    if (!hasImportPaperIdentity(topLevelPaperMetadata || {})) {
       throw createApiRequestError(formatRequiredPaperIdentifierMessage());
     }
     return serverFiles;
   }
 
-  if (rawFiles.length > 1 && hasAnyPaperIdentifiers(topLevelPaperMetadata || {})) {
+  if (rawFiles.length > 1 && hasImportPaperIdentity(topLevelPaperMetadata || {})) {
     throw createApiRequestError('When uploading multiple files, attach per-file paper identity metadata instead of one top-level identifier block.');
   }
 
   for (const file of uploadedFiles) {
-    if (!hasAnyPaperIdentifiers(file.paperMetadata || {})) {
+    if (!hasImportPaperIdentity(file.paperMetadata || {})) {
       throw createApiRequestError(`Uploaded file "${file.name}" is missing a precise identifier. ${formatRequiredPaperIdentifierMessage()}`);
     }
   }

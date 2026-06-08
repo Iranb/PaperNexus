@@ -12,6 +12,7 @@ import {
   writeJson
 } from '../lib/fs.js';
 import {
+  createPaperIdentity,
   mergePaperIdentifiers,
   normalizePaperIdentifiers
 } from '../lib/paper-identifiers.js';
@@ -789,36 +790,92 @@ function createImportFileSignature(file = {}) {
   return `${kind}:${size}:${contentFingerprint}`;
 }
 
-function normalizeStoredPaperMetadata(input = {}) {
-  const identifiers = normalizePaperIdentifiers(input);
-  const sourceProvider = String(
+function pickStoredPaperTitle(input = {}) {
+  return String(
+    input?.title
+    || input?.paperTitle
+    || input?.paper_title
+    || input?.paperMetadata?.title
+    || input?.paperMetadata?.paperTitle
+    || input?.paperMetadata?.paper_title
+    || ''
+  ).trim();
+}
+
+function pickStoredSourceProvider(input = {}) {
+  return String(
     input?.sourceProvider
     || input?.provider
     || input?.paperMetadata?.sourceProvider
+    || input?.paperMetadata?.provider
     || ''
   ).trim();
+}
+
+function createStoredPaperIdentityInput(input = {}) {
+  const title = pickStoredPaperTitle(input);
+  return {
+    ...(input?.paperMetadata || {}),
+    ...(input || {}),
+    ...(title ? { title } : {})
+  };
+}
+
+function hasStoredTitleIdentityInput(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+  return Boolean(
+    pickStoredPaperTitle(input)
+    || input.normalizedTitle
+    || input.paperMetadata?.normalizedTitle
+    || input.canonicalIdSource === 'title'
+    || input.paperMetadata?.canonicalIdSource === 'title'
+  );
+}
+
+function createStoredTitleIdentity(input = {}, sourceProvider = '') {
+  if (!sourceProvider) return {};
+  const identityInput = createStoredPaperIdentityInput(input);
+  const paperIdentity = createPaperIdentity(identityInput);
+  if (paperIdentity.canonicalIdSource !== 'title') {
+    return {};
+  }
+  return {
+    title: pickStoredPaperTitle(input) || identityInput.normalizedTitle || '',
+    normalizedTitle: paperIdentity.normalizedTitle,
+    titleSignature: paperIdentity.titleSignature,
+    canonicalId: paperIdentity.canonicalId,
+    canonicalIdSource: paperIdentity.canonicalIdSource,
+    identityConfidence: paperIdentity.identityConfidence,
+    identityAliases: paperIdentity.identityAliases
+  };
+}
+
+function normalizeStoredPaperMetadata(input = {}) {
+  const identifiers = normalizePaperIdentifiers(input);
+  const sourceProvider = pickStoredSourceProvider(input);
+  const titleIdentity = createStoredTitleIdentity(input, sourceProvider);
   if (!Object.keys(identifiers).length && !sourceProvider) {
     return null;
   }
   return {
     ...(Object.keys(identifiers).length ? { identifiers } : {}),
-    ...(sourceProvider ? { sourceProvider } : {})
+    ...(sourceProvider ? { sourceProvider } : {}),
+    ...(!Object.keys(identifiers).length ? titleIdentity : {})
   };
 }
 
 function mergeStoredPaperMetadata(existingMetadata = null, incomingMetadata = null) {
   const merged = mergePaperIdentifiers(existingMetadata || {}, incomingMetadata || {});
-  const sourceProvider = String(
-    incomingMetadata?.sourceProvider
-    || existingMetadata?.sourceProvider
-    || ''
-  ).trim();
+  const sourceProvider = pickStoredSourceProvider(incomingMetadata) || pickStoredSourceProvider(existingMetadata);
+  const titleIdentityInput = [incomingMetadata, existingMetadata].find(hasStoredTitleIdentityInput) || {};
+  const titleIdentity = createStoredTitleIdentity(titleIdentityInput, sourceProvider);
   if (!Object.keys(merged.identifiers).length && !sourceProvider) {
     return null;
   }
   return {
     ...(Object.keys(merged.identifiers).length ? { identifiers: merged.identifiers } : {}),
-    ...(sourceProvider ? { sourceProvider } : {})
+    ...(sourceProvider ? { sourceProvider } : {}),
+    ...(!Object.keys(merged.identifiers).length ? titleIdentity : {})
   };
 }
 
