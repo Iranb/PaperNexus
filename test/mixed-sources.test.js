@@ -446,6 +446,109 @@ We evaluate parser quality with body length and section structure before decidin
   }
 });
 
+test('import task metadata title overrides a misleading PDF parser title', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-title-home-'));
+  const tempCorpusRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-title-corpus-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const fakeMarkerPath = path.join(tempCorpusRoot, 'fake-marker.mjs');
+  const trustedTitle = 'Decouple Your Discovery and Memory in Continual Generalized Category Discovery';
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+
+    const [ingestion, corpusStore, importStore] = await Promise.all([
+      import('../src/core/ingestion/pipeline.js'),
+      import('../src/storage/corpus-store.js'),
+      import('../src/storage/import-store.js')
+    ]);
+    const taskId = 'imp:metadata-title-override-test';
+    const taskPaths = importStore.getImportTaskPaths(tempCorpusRoot, taskId);
+    const pdfPath = path.join(taskPaths.sourcesDir, 'dydm-cvpr2026.pdf');
+
+    await fs.mkdir(taskPaths.sourcesDir, { recursive: true });
+    await fs.writeFile(pdfPath, 'fake pdf payload\n', 'utf8');
+    await fs.writeFile(taskPaths.taskPath, JSON.stringify({
+      id: taskId,
+      files: [
+        {
+          storedPath: pdfPath,
+          kind: 'pdf',
+          contentSha256: 'sha256:test-dydm-title',
+          paperMetadata: {
+            sourceProvider: 'cvf_openaccess',
+            title: trustedTitle
+          }
+        }
+      ]
+    }), 'utf8');
+    await fs.writeFile(
+      fakeMarkerPath,
+      `#!/usr/bin/env node
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+const args = process.argv.slice(2);
+const pdfArg = args[0];
+const outputDir = args[args.indexOf('--output_dir') + 1];
+const basename = path.basename(pdfArg, path.extname(pdfArg));
+await fs.mkdir(outputDir, { recursive: true });
+await fs.writeFile(path.join(outputDir, \`\${basename}.md\`), \`# This CVPR paper is the Open Access version, provided by the Computer Vision Foundation.
+
+## Abstract
+
+The actual paper studies continual generalized category discovery by decoupling discovery and memory. It proposes separate mechanisms for discovering novel categories and preserving memory of seen categories in class-incremental generalized category discovery. The abstract text is intentionally long enough to be treated as a usable parser result even though the first heading is a publisher header rather than the scientific title.
+
+## Introduction
+
+Continual generalized category discovery requires recognizing labeled known categories while discovering unlabeled novel categories across stages. The method balances stability and plasticity by maintaining memory while allowing discovery of new classes under distribution shift. This paragraph provides enough body content for the normal materialization path.
+
+## Method
+
+The method includes decoupled discovery and memory components, prototype updates, and learning objectives that preserve old knowledge while separating novel class structure.
+\`);
+`,
+      'utf8'
+    );
+    await fs.chmod(fakeMarkerPath, 0o755);
+
+    const result = await ingestion.analyzeCorpus(taskPaths.sourcesDir, {
+      name: 'import-title-override-test',
+      rootPath: tempCorpusRoot,
+      force: true,
+      pdfParser: 'marker',
+      markerCommand: fakeMarkerPath,
+      includeActiveImportSources: false,
+      includePersistentImportSources: false,
+      enableLlmEnrichment: false
+    });
+
+    const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
+    const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, manifest.sources[0].sourceKey);
+    const corpus = await corpusStore.loadCorpus(tempCorpusRoot);
+    const paperNode = corpus.graph.nodes.find((node) => node.type === 'Paper');
+
+    assert.equal(result.meta.paperCount, 1);
+    assert.equal(manifest.sources[0].paperTitle, trustedTitle);
+    assert.equal(manifest.sources[0].canonicalId, 'title:decouple your discovery and memory in continual generalized category discovery');
+    assert.equal(manifest.sources[0].paperMetadata.title, trustedTitle);
+    assert.equal(manifest.sources[0].paperMetadata.metadataTitleTrusted, true);
+    assert.equal(snapshot.paperTitle, trustedTitle);
+    assert.equal(snapshot.titleValidation.metadataTitleOverride, true);
+    assert.equal(snapshot.titleValidation.originalParsedTitle, 'This CVPR paper is the Open Access version, provided by the Computer Vision Foundation.');
+    assert.equal(paperNode.name, trustedTitle);
+    assert.equal(paperNode.properties.paperTitle, trustedTitle);
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.PAPERNEXUS_HOME;
+    } else {
+      process.env.PAPERNEXUS_HOME = previousHome;
+    }
+
+    await fs.rm(tempCorpusRoot, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test('paper refresh prefers an explicitly selected PDF server path and reruns the PDF input flow', async () => {
   const { __pipelineTestables } = await import('../src/core/ingestion/pipeline.js');
   const entry = {

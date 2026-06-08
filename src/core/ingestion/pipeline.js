@@ -1417,16 +1417,59 @@ function buildSemanticPaperView(paper) {
   };
 }
 
-function normalizePaperMetadataPayload(input = {}) {
+function normalizePaperMetadataPayload(input = {}, options = {}) {
   const identifiers = normalizePaperIdentifiers(input);
-  const sourceProvider = String(input?.sourceProvider || input?.provider || input?.paperMetadata?.sourceProvider || '').trim();
-  if (!Object.keys(identifiers).length && !sourceProvider) {
+  const nestedMetadata = input?.paperMetadata && typeof input.paperMetadata === 'object' ? input.paperMetadata : {};
+  const sourceProvider = String(input?.sourceProvider || input?.provider || nestedMetadata.sourceProvider || '').trim();
+  const metadataTitle = String(
+    firstDefinedValue(input?.paperTitle, input?.title, nestedMetadata.paperTitle, nestedMetadata.title, '')
+  ).trim();
+  const trustTitle = Boolean(options.trustTitle || input?.metadataTitleTrusted || nestedMetadata.metadataTitleTrusted);
+  if (!Object.keys(identifiers).length && !sourceProvider && !(trustTitle && metadataTitle)) {
     return null;
   }
   return {
     ...(Object.keys(identifiers).length ? { identifiers } : {}),
-    ...(sourceProvider ? { sourceProvider } : {})
+    ...(sourceProvider ? { sourceProvider } : {}),
+    ...(trustTitle && metadataTitle ? {
+      title: metadataTitle,
+      paperTitle: metadataTitle,
+      metadataTitleTrusted: true
+    } : {})
   };
+}
+
+function getTrustedPaperMetadataTitle(paperMetadata = {}) {
+  if (!paperMetadata?.metadataTitleTrusted) {
+    return '';
+  }
+  return String(paperMetadata.paperTitle || paperMetadata.title || '').trim();
+}
+
+function applyTrustedPaperMetadataTitle(paper, paperMetadata = {}) {
+  if (!paper || typeof paper !== 'object') {
+    return paper;
+  }
+  const metadataTitle = getTrustedPaperMetadataTitle(paperMetadata);
+  if (!metadataTitle) {
+    return paper;
+  }
+
+  const parsedTitle = String(paper.paperTitle || paper.title || '').trim();
+  paper.title = metadataTitle;
+  paper.paperTitle = metadataTitle;
+  paper.titleValidation = {
+    ...(paper.titleValidation || assessPaperTitleCandidate(parsedTitle || metadataTitle, paper.sourcePath)),
+    displayTitle: metadataTitle,
+    fallbackTitle: metadataTitle,
+    isValid: true,
+    needsReparse: false,
+    metadataTitleOverride: true,
+    originalParsedTitle: parsedTitle || null,
+    normalizedMetadataTitle: normalizeExactPaperTitle(metadataTitle),
+    reason: 'metadata-title-override'
+  };
+  return paper;
 }
 
 function mergeSemanticPaperIdentity(semanticPaper, ...inputs) {
@@ -8127,6 +8170,7 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
     }
 
     await maybeEnrichParsedPaperIdentifiers(rootPath, sourceState, parsed, options);
+    applyTrustedPaperMetadataTitle(parsed, sourceState.paperMetadata || {});
 
     const semanticSnapshotStartedAt = Date.now();
     const semanticPaper = buildSemanticPaperView(parsed);
@@ -8156,6 +8200,7 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
 
   const parsed = await readAndParseMarkdown(markdownPath, sourcePdfPath);
   await maybeEnrichParsedPaperIdentifiers(rootPath, sourceState, parsed, options);
+  applyTrustedPaperMetadataTitle(parsed, sourceState.paperMetadata || {});
 
   const semanticSnapshotStartedAt = Date.now();
   const semanticPaper = buildSemanticPaperView(parsed);
@@ -9691,13 +9736,14 @@ export async function analyzeCorpus(inputPath, options = {}) {
         || 'filesystem';
       const contentSha256 = String(importTaskFileMetadata?.file?.contentSha256 || '').trim()
         || await computeSourceContentSha256(source.inputPath, previous, fingerprint);
+      const trustedPaperMetadata = source.paperMetadata || importTaskFileMetadata?.file?.paperMetadata || null;
       const paperMetadata = normalizePaperMetadataPayload(
-        source.paperMetadata
-        || importTaskFileMetadata?.file?.paperMetadata
+        trustedPaperMetadata
         || previous?.paperMetadata
         || previous
         || cachedPaper
-        || {}
+        || {},
+        { trustTitle: Boolean(trustedPaperMetadata) }
       );
 
       return {
