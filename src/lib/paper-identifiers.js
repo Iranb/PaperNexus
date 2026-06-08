@@ -316,6 +316,20 @@ export function createPaperTitleAlias(value = '') {
   return normalizedTitle ? `title:${normalizedTitle}` : '';
 }
 
+const INVALID_TITLE_ALIAS_VALUES = new Set(['undefined', 'null', 'nan', 'none', 'unknown', 'untitled', 'n/a', 'na']);
+
+function normalizePaperIdentityAlias(alias = '') {
+  const raw = String(alias || '').trim();
+  if (!raw) return '';
+  const titleMatch = raw.match(/^title:(.*)$/i);
+  if (!titleMatch) return raw;
+  const normalizedTitle = normalizeExactPaperTitle(titleMatch[1]);
+  if (!normalizedTitle || INVALID_TITLE_ALIAS_VALUES.has(normalizedTitle)) {
+    return '';
+  }
+  return `title:${normalizedTitle}`;
+}
+
 export function createPaperIdentityAliases(input = {}) {
   const identifiers = normalizePaperIdentifiers(input);
   const aliases = [];
@@ -334,10 +348,11 @@ export function createPaperIdentityAliases(input = {}) {
     ? input.identityAliases
     : (Array.isArray(input.canonicalAliases) ? input.canonicalAliases : []);
   for (const alias of explicitAliases) {
-    if (String(alias || '').trim()) aliases.push(String(alias).trim());
+    const normalizedAlias = normalizePaperIdentityAlias(alias);
+    if (normalizedAlias) aliases.push(normalizedAlias);
   }
 
-  return unique(aliases).sort();
+  return unique(aliases.map(normalizePaperIdentityAlias).filter(Boolean)).sort();
 }
 
 export function selectCanonicalPaperIdentity(input = {}) {
@@ -439,7 +454,7 @@ export function mergePaperIdentity(...inputs) {
     Array.isArray(input?.identityAliases)
       ? input.identityAliases
       : (Array.isArray(input?.canonicalAliases) ? input.canonicalAliases : [])
-  ))).sort();
+  )).map(normalizePaperIdentityAlias).filter(Boolean)).sort();
   const canonicalSelection = selectCanonicalPaperIdentity({
     identifiers: mergedIdentifiers.identifiers,
     normalizedTitle

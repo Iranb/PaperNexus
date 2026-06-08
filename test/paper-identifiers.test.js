@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   createPaperIdentity,
   createSourceIdentity,
+  mergePaperIdentity,
   mergePaperIdentifiers,
   normalizePaperIdentifierQuery,
   normalizePaperIdentifiers,
@@ -149,4 +150,38 @@ test('paper identity helpers derive canonicalId and sourceId separately', () => 
   });
   assert.equal(sourceIdentity.sourceId, 'arxiv:2410.11206#markdown#arxiv2md-api#sha256:abcd');
   assert.equal(sourceIdentity.resolutionStatus, 'fulltext_ready');
+});
+
+test('paper identity helpers discard invalid title aliases during create and merge', () => {
+  const identity = createPaperIdentity({
+    title: 'Learning a Fix and Explore Framework for Continuous Generalized Category Discovery',
+    doi: '10.1609/aaai.v40i8.37530',
+    identityAliases: [
+      'title:undefined',
+      ' title:null ',
+      'title:Learning a Fix and Explore Framework for Continuous Generalized Category Discovery',
+      'title:Legacy Discovery Title'
+    ]
+  });
+
+  assert.equal(identity.canonicalId, 'doi:10.1609/aaai.v40i8.37530');
+  assert.ok(identity.identityAliases.includes('doi:10.1609/aaai.v40i8.37530'));
+  assert.ok(identity.identityAliases.includes('title:learning a fix and explore framework for continuous generalized category discovery'));
+  assert.ok(identity.identityAliases.includes('title:legacy discovery title'));
+  assert.equal(identity.identityAliases.includes('title:undefined'), false);
+  assert.equal(identity.identityAliases.includes('title:null'), false);
+
+  const merged = mergePaperIdentity(
+    {
+      doi: '10.1609/aaai.v40i8.37530',
+      identityAliases: ['title:undefined', 'title:Legacy Discovery Title']
+    },
+    {
+      title: 'Learning a Fix and Explore Framework for Continuous Generalized Category Discovery'
+    }
+  );
+
+  assert.ok(merged.identityAliases.includes('title:learning a fix and explore framework for continuous generalized category discovery'));
+  assert.ok(merged.identityAliases.includes('title:legacy discovery title'));
+  assert.equal(merged.identityAliases.includes('title:undefined'), false);
 });
