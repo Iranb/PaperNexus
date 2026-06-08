@@ -16,6 +16,7 @@ import {
   mergePaperIdentifiers,
   normalizePaperIdentifiers
 } from '../lib/paper-identifiers.js';
+import { isServerPathReference, resolveServerPathReference } from '../lib/server-paths.js';
 import { slugify, stableHash } from '../lib/utils.js';
 
 const IMPORT_SCHEMA_VERSION = 1;
@@ -1037,8 +1038,14 @@ export function getImportTaskPaths(rootPath, taskId) {
   };
 }
 
+function normalizeImportTaskStoredPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return path.resolve(isServerPathReference(raw) ? resolveServerPathReference(raw) : raw);
+}
+
 export async function loadImportTaskFileMetadata(rootPath, storedPath) {
-  const normalizedPath = path.resolve(String(storedPath || '').trim());
+  const normalizedPath = normalizeImportTaskStoredPath(storedPath);
   if (!normalizedPath) return null;
 
   const { tasksDir } = getImportPaths(rootPath);
@@ -1058,7 +1065,7 @@ export async function loadImportTaskFileMetadata(rootPath, storedPath) {
     return null;
   }
 
-  const file = (task.files || []).find((entry) => path.resolve(String(entry?.storedPath || '')) === normalizedPath) || null;
+  const file = (task.files || []).find((entry) => normalizeImportTaskStoredPath(entry?.storedPath) === normalizedPath) || null;
   if (!file) {
     return null;
   }

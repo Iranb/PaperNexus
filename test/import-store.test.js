@@ -700,6 +700,53 @@ test('createImportTask stores per-file paper identifiers and merges them on dedu
   }
 });
 
+test('loadImportTaskFileMetadata resolves home-relative stored task file paths', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-home-paths-'));
+  const previousServerHome = process.env.PAPERNEXUS_SERVER_HOME;
+
+  try {
+    process.env.PAPERNEXUS_SERVER_HOME = rootPath;
+
+    const {
+      getImportTaskPaths,
+      loadImportTaskFileMetadata
+    } = await import('../src/storage/import-store.js');
+    const taskId = 'imp:home-relative-metadata';
+    const taskPaths = getImportTaskPaths(rootPath, taskId);
+    const storedPath = path.join(taskPaths.sourcesDir, 'home-relative.pdf');
+    const homeRelativeStoredPath = `~/${path.relative(rootPath, storedPath).split(path.sep).join('/')}`;
+
+    await fs.mkdir(taskPaths.sourcesDir, { recursive: true });
+    await fs.writeFile(storedPath, 'fake pdf\n', 'utf8');
+    await fs.writeFile(taskPaths.taskPath, JSON.stringify({
+      id: taskId,
+      files: [
+        {
+          storedPath: homeRelativeStoredPath,
+          kind: 'pdf',
+          paperMetadata: {
+            sourceProvider: 'cvf_openaccess',
+            title: 'Home Relative Metadata Paper'
+          }
+        }
+      ]
+    }), 'utf8');
+
+    const metadata = await loadImportTaskFileMetadata(rootPath, storedPath);
+    assert.equal(metadata.task.id, taskId);
+    assert.equal(metadata.file.storedPath, homeRelativeStoredPath);
+    assert.equal(metadata.file.paperMetadata.title, 'Home Relative Metadata Paper');
+  } finally {
+    if (previousServerHome === undefined) {
+      delete process.env.PAPERNEXUS_SERVER_HOME;
+    } else {
+      process.env.PAPERNEXUS_SERVER_HOME = previousServerHome;
+    }
+
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('createImportTask reuses an existing task for identical uploaded content', async () => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-store-dedupe-'));
 
