@@ -2317,6 +2317,7 @@ function normalizeImportPaperMetadata(input = {}) {
   const identityInput = createImportPaperIdentityInput(input);
   const paperIdentity = createPaperIdentity(identityInput);
   const explicitSourceProvider = pickImportSourceProvider(input);
+  const explicitTitle = pickImportPaperTitle(input);
   const titleDerivedIdentity = paperIdentity.canonicalIdSource === 'title' && explicitSourceProvider;
   if (!Object.keys(paperIdentity.identifiers).length && !explicitSourceProvider && !titleDerivedIdentity) {
     return null;
@@ -2324,9 +2325,13 @@ function normalizeImportPaperMetadata(input = {}) {
   return {
     ...(Object.keys(paperIdentity.identifiers).length ? { identifiers: paperIdentity.identifiers } : {}),
     ...(explicitSourceProvider ? { sourceProvider: explicitSourceProvider } : {}),
+    ...(explicitTitle ? {
+      title: explicitTitle,
+      paperTitle: explicitTitle,
+      metadataTitleTrusted: true
+    } : {}),
     ...(titleDerivedIdentity
       ? {
-          title: pickImportPaperTitle(input),
           normalizedTitle: paperIdentity.normalizedTitle,
           titleSignature: paperIdentity.titleSignature,
           canonicalId: paperIdentity.canonicalId,

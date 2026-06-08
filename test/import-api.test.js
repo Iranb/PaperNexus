@@ -481,6 +481,29 @@ test('import API payload helpers accept trusted title-only metadata for a server
     assert.match(metadata.canonicalId, /^title:/);
     assert.ok(metadata.identityAliases.includes(metadata.canonicalId));
     assert.equal(metadata.identifiers, undefined);
+
+    const doiTitle = 'Learning a Fix and Explore Framework for Continuous Generalized Category Discovery';
+    const doiUploadPath = path.join(uploadRoot, 'aaai-doi-upload.md');
+    await fs.writeFile(doiUploadPath, `# ${doiTitle}\n\n## Abstract\n\nA trusted AAAI full-text source.\n`, 'utf8');
+
+    const createdWithDoi = await api.createImportTaskPayload(indexRoot, {
+      serverFilePath: doiUploadPath,
+      paperMetadata: {
+        title: doiTitle,
+        sourceProvider: 'aaai',
+        identifiers: {
+          doi: '10.1609/aaai.v40i8.37530'
+        }
+      }
+    });
+
+    assert.equal(createdWithDoi.deduped, false);
+    const doiMetadata = createdWithDoi.task.files[0].paperMetadata;
+    assert.equal(doiMetadata.identifiers.doi, '10.1609/aaai.v40i8.37530');
+    assert.equal(doiMetadata.sourceProvider, 'aaai');
+    assert.equal(doiMetadata.title, doiTitle);
+    assert.equal(doiMetadata.paperTitle, doiTitle);
+    assert.equal(doiMetadata.metadataTitleTrusted, true);
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;

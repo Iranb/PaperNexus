@@ -854,6 +854,7 @@ function createStoredTitleIdentity(input = {}, sourceProvider = '') {
 function normalizeStoredPaperMetadata(input = {}) {
   const identifiers = normalizePaperIdentifiers(input);
   const sourceProvider = pickStoredSourceProvider(input);
+  const explicitTitle = pickStoredPaperTitle(input);
   const titleIdentity = createStoredTitleIdentity(input, sourceProvider);
   if (!Object.keys(identifiers).length && !sourceProvider) {
     return null;
@@ -861,6 +862,11 @@ function normalizeStoredPaperMetadata(input = {}) {
   return {
     ...(Object.keys(identifiers).length ? { identifiers } : {}),
     ...(sourceProvider ? { sourceProvider } : {}),
+    ...(explicitTitle ? {
+      title: explicitTitle,
+      paperTitle: explicitTitle,
+      metadataTitleTrusted: true
+    } : {}),
     ...(!Object.keys(identifiers).length ? titleIdentity : {})
   };
 }
@@ -869,6 +875,7 @@ function mergeStoredPaperMetadata(existingMetadata = null, incomingMetadata = nu
   const merged = mergePaperIdentifiers(existingMetadata || {}, incomingMetadata || {});
   const sourceProvider = pickStoredSourceProvider(incomingMetadata) || pickStoredSourceProvider(existingMetadata);
   const titleIdentityInput = [incomingMetadata, existingMetadata].find(hasStoredTitleIdentityInput) || {};
+  const explicitTitle = pickStoredPaperTitle(titleIdentityInput);
   const titleIdentity = createStoredTitleIdentity(titleIdentityInput, sourceProvider);
   if (!Object.keys(merged.identifiers).length && !sourceProvider) {
     return null;
@@ -876,6 +883,11 @@ function mergeStoredPaperMetadata(existingMetadata = null, incomingMetadata = nu
   return {
     ...(Object.keys(merged.identifiers).length ? { identifiers: merged.identifiers } : {}),
     ...(sourceProvider ? { sourceProvider } : {}),
+    ...(explicitTitle ? {
+      title: explicitTitle,
+      paperTitle: explicitTitle,
+      metadataTitleTrusted: true
+    } : {}),
     ...(!Object.keys(merged.identifiers).length ? titleIdentity : {})
   };
 }

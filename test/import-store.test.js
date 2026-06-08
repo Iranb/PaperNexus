@@ -668,6 +668,8 @@ test('createImportTask stores per-file paper identifiers and merges them on dedu
           name: 'identifier-paper.md',
           contentBase64,
           mimeType: 'text/markdown',
+          title: 'Learning a Fix and Explore Framework for Continuous Generalized Category Discovery',
+          sourceProvider: 'aaai',
           identifiers: {
             doi: '10.48550/papernexus.identifier-paper'
           }
@@ -675,6 +677,9 @@ test('createImportTask stores per-file paper identifiers and merges them on dedu
       ]
     });
     assert.equal(firstTask.files[0].paperMetadata.identifiers.doi, '10.48550/papernexus.identifier-paper');
+    assert.equal(firstTask.files[0].paperMetadata.title, 'Learning a Fix and Explore Framework for Continuous Generalized Category Discovery');
+    assert.equal(firstTask.files[0].paperMetadata.paperTitle, 'Learning a Fix and Explore Framework for Continuous Generalized Category Discovery');
+    assert.equal(firstTask.files[0].paperMetadata.metadataTitleTrusted, true);
 
     const dedupedTask = await createImportTask(rootPath, {
       trigger: 'api',
@@ -695,6 +700,8 @@ test('createImportTask stores per-file paper identifiers and merges them on dedu
     const loaded = await loadImportTask(rootPath, firstTask.id);
     assert.equal(loaded.files[0].paperMetadata.identifiers.doi, '10.48550/papernexus.identifier-paper');
     assert.equal(loaded.files[0].paperMetadata.identifiers.arxivId, '2401.12345');
+    assert.equal(loaded.files[0].paperMetadata.title, 'Learning a Fix and Explore Framework for Continuous Generalized Category Discovery');
+    assert.equal(loaded.files[0].paperMetadata.metadataTitleTrusted, true);
   } finally {
     await fs.rm(rootPath, { recursive: true, force: true });
   }
