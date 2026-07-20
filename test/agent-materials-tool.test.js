@@ -2421,6 +2421,49 @@ test('agent_materials builds innovation evidence cards and storyline chains for 
   }
 });
 
+test('agent_materials research_controller run_round advances through durable one-step checkpoints', async () => {
+  const rootPath = await createMaterialCorpus();
+  try {
+    let payload = null;
+    const nextActions = [];
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      payload = await executeAgentMaterialsTool({
+        operation: 'research_controller',
+        action: 'run_round',
+        corpus: rootPath,
+        project: 'Bounded Controller',
+        targetDomain: 'Generalized Category Discovery',
+        targetProblem: 'domain-shift robust generalized category discovery',
+        maxControllerSteps: 1
+      });
+
+      assert.equal(payload.round_progress.contractVersion, 'papernexus-research-controller-progress-v1');
+      assert.equal(payload.round_progress.stepsExecuted, 1);
+      assert.equal(payload.round_progress.stepLimit, 1);
+      if (payload.round_progress.complete) break;
+
+      assert.equal(payload.status, 'in_progress');
+      assert.equal(payload.action_completed, 'run_round_checkpoint');
+      assert.equal(payload.round_progress.executedActions.length, 1);
+      assert.ok(payload.round_progress.nextAction);
+      assert.equal(payload.round_progress.resume.tool, 'agent_materials');
+      assert.equal(payload.round_progress.resume.arguments.maxControllerSteps, 1);
+      nextActions.push(payload.round_progress.nextAction);
+    }
+
+    assert.ok(payload);
+    assert.equal(payload.round_progress.complete, true);
+    assert.equal(payload.action, 'run_round');
+    assert.equal(payload.action_completed, 'run_round_planning_full_design_packet');
+    assert.equal(payload.export.record_type, 'controller_export');
+    assert.ok(nextActions.includes('generate_decomposition'));
+    assert.ok(nextActions.includes('generate_candidates'));
+    assert.ok(nextActions.includes('export'));
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('MCP exposes agent_materials and dispatches read-only material operations', async () => {
   const rootPath = await createMaterialCorpus();
   try {

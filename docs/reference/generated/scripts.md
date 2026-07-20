@@ -37,6 +37,8 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/audit-graph-provenance.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/audit-graph-provenance.mjs) | Audit Graph Provenance implementation. |
 | [`scripts/benchmark-graph-ranking-ablation.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/benchmark-graph-ranking-ablation.mjs) | Benchmark Graph Ranking Ablation implementation. |
 | [`scripts/benchmark-graph-v2-delta.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/benchmark-graph-v2-delta.mjs) | Benchmark Graph V2 Delta implementation. |
+| [`scripts/build_papernexus_autoreskill_memo.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/build_papernexus_autoreskill_memo.py) | Build Papernexus Autoreskill Memo implementation. |
+| [`scripts/build_resume_yiqing.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/build_resume_yiqing.py) | Build Resume Yiqing implementation. |
 | [`scripts/diagnose-graph-identity.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/diagnose-graph-identity.mjs) | Diagnose Graph Identity implementation. |
 | [`scripts/docling_to_markdown.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/docling_to_markdown.py) | Docling To Markdown implementation. |
 | [`scripts/evaluate-graph-link-prediction.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/evaluate-graph-link-prediction.mjs) | Evaluate Graph Link Prediction implementation. |
@@ -90,6 +92,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/run-idea-catalyst-ablation-suite.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-idea-catalyst-ablation-suite.mjs) | Run Idea Catalyst Ablation Suite implementation. |
 | [`scripts/run-idea-catalyst-historical-replay.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-idea-catalyst-historical-replay.mjs) | Run Idea Catalyst Historical Replay implementation. |
 | [`scripts/run-idea-catalyst-replay-suite.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-idea-catalyst-replay-suite.mjs) | Run Idea Catalyst Replay Suite implementation. |
+| [`scripts/run-import-burst-harness.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-import-burst-harness.mjs) | Run Import Burst Harness implementation. |
 | [`scripts/run-ingestion-orchestrator.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-ingestion-orchestrator.mjs) | Run Ingestion Orchestrator implementation. |
 | [`scripts/run-litsearch-retrieval-pipeline.mjs`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-litsearch-retrieval-pipeline.mjs) | Run Litsearch Retrieval Pipeline implementation. |
 | [`scripts/run-small-public-benchmarks.sh`](https://github.com/papernexus/PaperNexus/blob/main/scripts/run-small-public-benchmarks.sh) | Run Small Public Benchmarks implementation. |

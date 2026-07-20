@@ -22,6 +22,12 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "pdfParser": "markitdown",
     "pythonCommand": "python3",
     "mineruHttpUrl": "http://127.0.0.1:30000",
+    "firecrawlApiBaseUrl": "https://api.firecrawl.dev",
+    "firecrawlApiKeyEnv": "FIRECRAWL_API_KEY",
+    "firecrawlMode": "auto",
+    "firecrawlSourceMode": "auto",
+    "firecrawlMaxPages": null,
+    "firecrawlTimeoutMs": 100000,
     "markitdownPython": "python3",
     "doclingCommand": "docling",
     "doclingDevice": "cuda",
@@ -64,8 +70,28 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "fastMdBurstTargetTasks": 10,
     "batchCoalesceMs": 0,
     "batchCoalescePollMs": 250,
+    "workerRootConcurrency": 3,
+    "fastMdImportLaneEnabled": false,
+    "fastMdImportLaneIntervalMs": 1500,
     "batchMaxFiles": 16,
-    "batchMaxBytes": 104857600
+    "batchMaxBytes": 104857600,
+    "llmBatchSliceTimeoutMs": 90000,
+    "llmPersistenceTimeoutMs": 30000,
+    "llmJobStateTimeoutMs": 30000,
+    "llmRelationCircuitBreakerEnabled": true,
+    "llmRelationCircuitBreakerMinBatches": 4,
+    "llmRelationCircuitBreakerMinFailedBatches": 2,
+    "llmRelationCircuitBreakerFailureRate": 0.5,
+    "llmRelationCircuitBreakerConsecutiveFailedBatches": 3,
+    "importTaskTimeoutMs": 600000,
+    "importWorkerLockTimeoutMs": 20000,
+    "importWorkerLockStaleMs": 600000,
+    "importQueueLockTimeoutMs": 30000,
+    "importQueueLockStaleMs": 30000,
+    "importQueueLockHeartbeatIntervalMs": 5000,
+    "semanticEnrichmentRunningStaleMs": 600000,
+    "semanticEnrichmentDirectDeltaCommit": true,
+    "backgroundSemanticEnrichment": true
   },
   "serve": {
     "host": "0.0.0.0",
@@ -73,6 +99,9 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "apiToken": "replace-with-your-api-token",
     "enableRegistryReconcile": true,
     "registryReconcileIntervalMs": 300000,
+    "enableImportWorkflowRecovery": true,
+    "importWorkflowRecoveryIntervalMs": 30000,
+    "importWorkflowRecoveryStaleMs": 30000,
     "mcp": {
       "enabled": true,
       "path": "/mcp",
@@ -88,7 +117,13 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "relations": true,
     "batchPromptMaxChars": 24000,
     "batchFailureSplitRetryCount": 3,
-    "apiKeyEnv": "DEEPSEEK_API_KEY"
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "fallback": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    }
   },
   "literatureDiscovery": {
     "providers": [
@@ -141,6 +176,12 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `analyze.pdfParser` | string | `markitdown` |
 | `analyze.pythonCommand` | string | `python3` |
 | `analyze.mineruHttpUrl` | string | `http://127.0.0.1:30000` |
+| `analyze.firecrawlApiBaseUrl` | string | `https://api.firecrawl.dev` |
+| `analyze.firecrawlApiKeyEnv` | string | `FIRECRAWL_API_KEY` |
+| `analyze.firecrawlMode` | string | `auto` |
+| `analyze.firecrawlSourceMode` | string | `auto` |
+| `analyze.firecrawlMaxPages` | object | `null` |
+| `analyze.firecrawlTimeoutMs` | number | `100000` |
 | `analyze.markitdownPython` | string | `python3` |
 | `analyze.doclingCommand` | string | `docling` |
 | `analyze.doclingDevice` | string | `cuda` |
@@ -176,14 +217,37 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `imports.fastMdBurstTargetTasks` | number | `10` |
 | `imports.batchCoalesceMs` | number | `0` |
 | `imports.batchCoalescePollMs` | number | `250` |
+| `imports.workerRootConcurrency` | number | `3` |
+| `imports.fastMdImportLaneEnabled` | boolean | `false` |
+| `imports.fastMdImportLaneIntervalMs` | number | `1500` |
 | `imports.batchMaxFiles` | number | `16` |
 | `imports.batchMaxBytes` | number | `104857600` |
+| `imports.llmBatchSliceTimeoutMs` | number | `90000` |
+| `imports.llmPersistenceTimeoutMs` | number | `30000` |
+| `imports.llmJobStateTimeoutMs` | number | `30000` |
+| `imports.llmRelationCircuitBreakerEnabled` | boolean | `true` |
+| `imports.llmRelationCircuitBreakerMinBatches` | number | `4` |
+| `imports.llmRelationCircuitBreakerMinFailedBatches` | number | `2` |
+| `imports.llmRelationCircuitBreakerFailureRate` | number | `0.5` |
+| `imports.llmRelationCircuitBreakerConsecutiveFailedBatches` | number | `3` |
+| `imports.importTaskTimeoutMs` | number | `600000` |
+| `imports.importWorkerLockTimeoutMs` | number | `20000` |
+| `imports.importWorkerLockStaleMs` | number | `600000` |
+| `imports.importQueueLockTimeoutMs` | number | `30000` |
+| `imports.importQueueLockStaleMs` | number | `30000` |
+| `imports.importQueueLockHeartbeatIntervalMs` | number | `5000` |
+| `imports.semanticEnrichmentRunningStaleMs` | number | `600000` |
+| `imports.semanticEnrichmentDirectDeltaCommit` | boolean | `true` |
+| `imports.backgroundSemanticEnrichment` | boolean | `true` |
 | `serve` | object | section |
 | `serve.host` | string | `0.0.0.0` |
 | `serve.port` | number | `4821` |
 | `serve.apiToken` | string | `replace-with-your-api-token` |
 | `serve.enableRegistryReconcile` | boolean | `true` |
 | `serve.registryReconcileIntervalMs` | number | `300000` |
+| `serve.enableImportWorkflowRecovery` | boolean | `true` |
+| `serve.importWorkflowRecoveryIntervalMs` | number | `30000` |
+| `serve.importWorkflowRecoveryStaleMs` | number | `30000` |
 | `serve.mcp` | object | section |
 | `serve.mcp.enabled` | boolean | `true` |
 | `serve.mcp.path` | string | `/mcp` |
@@ -198,6 +262,11 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `llm.batchPromptMaxChars` | number | `24000` |
 | `llm.batchFailureSplitRetryCount` | number | `3` |
 | `llm.apiKeyEnv` | string | `DEEPSEEK_API_KEY` |
+| `llm.fallback` | object | section |
+| `llm.fallback.provider` | string | `openai` |
+| `llm.fallback.model` | string | `gpt-4o-mini` |
+| `llm.fallback.baseUrl` | string | `https://api.openai.com/v1` |
+| `llm.fallback.apiKeyEnv` | string | `OPENAI_API_KEY` |
 | `literatureDiscovery` | object | section |
 | `literatureDiscovery.providers` | array | `["openalex","semantic_scholar","crossref","arxiv"]` |
 | `literatureDiscovery.mailto` | string | `` |

@@ -6,7 +6,9 @@ This page is generated from route declarations in [`src/server/http.js`](https:/
 
 | Method | Path |
 | --- | --- |
+| `GET` | `/livez` |
 | `GET` | `/api/health` |
+| `GET` | `/api/readyz` |
 | `GET` | `/api/corpora` |
 | `GET` | `/api/corpus` |
 | `GET` | `/api/corpus-meta` |

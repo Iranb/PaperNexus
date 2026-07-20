@@ -10995,11 +10995,70 @@ async function executeValidateGcdMvp(paths, args = {}, context = {}) {
 }
 
 async function executeRunRound(paths, args = {}, context = {}) {
-  const existing = await readJson(paths.controllerStatePath, null);
-  if (!existing) {
-    await executeInitTask(paths, args);
-  }
   let overlay = await loadControllerOverlay(paths);
+  const rawStepLimit = args.maxControllerSteps ?? args.max_controller_steps;
+  const stepLimit = rawStepLimit === undefined || rawStepLimit === null
+    ? null
+    : Number(rawStepLimit);
+  if (stepLimit !== null && (!Number.isInteger(stepLimit) || stepLimit < 1)) {
+    throw new Error('research_controller run_round maxControllerSteps must be a positive integer.');
+  }
+  let stepsExecuted = 0;
+  const executedActions = [];
+  const canExecuteNextStep = () => stepLimit === null || stepsExecuted < stepLimit;
+  const runStep = async (action, execute) => {
+    if (!canExecuteNextStep()) return false;
+    await execute();
+    stepsExecuted += 1;
+    executedActions.push(action);
+    overlay = await loadControllerOverlay(paths);
+    return true;
+  };
+  const checkpoint = (nextAction) => {
+    const state = overlay.controllerState;
+    const resumeArguments = Object.fromEntries(Object.entries({
+      operation: 'research_controller',
+      action: 'run_round',
+      corpus: args.corpus,
+      project: args.project || paths.project,
+      mode: args.mode,
+      reviewDecomposition: args.reviewDecomposition ?? args.review_decomposition,
+      maxControllerSteps: stepLimit
+    }).filter(([, value]) => value !== undefined && value !== null));
+    return {
+      ...baseResponse('run_round', paths, overlay, state, {
+        status: 'in_progress',
+        action_completed: 'run_round_checkpoint',
+        summary: {
+          selected_subgraphs: overlay.selectedSubgraphs?.subgraphs || [],
+          top_risks: overlay.riskNotes || [],
+          missing_evidence: overlay.methodCardPack?.missing_evidence || [],
+          next_actions: [nextAction]
+        },
+        warnings: [
+          `run_round reached maxControllerSteps=${stepLimit}; committed artifacts are preserved and the next missing action is ${nextAction}.`
+        ]
+      }),
+      round_progress: {
+        contractVersion: 'papernexus-research-controller-progress-v1',
+        complete: false,
+        stepsExecuted,
+        stepLimit,
+        executedActions,
+        nextAction,
+        resume: {
+          tool: 'agent_materials',
+          arguments: resumeArguments
+        }
+      }
+    };
+  };
+
+  if (!overlay.controllerState) {
+    if (!await runStep('init_task', () => executeInitTask(paths, args))) {
+      return checkpoint('init_task');
+    }
+  }
   const shouldRegenerateDecomposition = booleanFlag(args.regenerateDecomposition || args.regenerate_decomposition, false);
   const needsDecompositionGeneration = shouldRegenerateDecomposition
     || overlay.controllerState?.llm_assistance?.task_spec_generation === 'pending'
@@ -11007,8 +11066,9 @@ async function executeRunRound(paths, args = {}, context = {}) {
     || !overlay.taskSpecVariants
     || !overlay.subproblemGraph;
   if (needsDecompositionGeneration) {
-    await executeGenerateDecomposition(paths, args, context);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('generate_decomposition', () => executeGenerateDecomposition(paths, args, context))) {
+      return checkpoint('generate_decomposition');
+    }
   }
   const shouldReviewDecomposition = booleanFlag(args.reviewDecomposition || args.review_decomposition, true);
   const needsDecompositionReview = shouldReviewDecomposition && (
@@ -11017,42 +11077,55 @@ async function executeRunRound(paths, args = {}, context = {}) {
     || !overlay.decompositionReview
   );
   if (needsDecompositionReview) {
-    await executeReviewDecomposition(paths, args, context);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('review_decomposition', () => executeReviewDecomposition(paths, args, context))) {
+      return checkpoint('review_decomposition');
+    }
   }
   if (!overlay.candidateGraph?.nodes?.length) {
-    await executeGenerateCandidates(paths, args, context);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('generate_candidates', () => executeGenerateCandidates(paths, args, context))) {
+      return checkpoint('generate_candidates');
+    }
   }
   if (!overlay.candidateGraph?.edges?.length && (overlay.candidateGraph?.nodes?.length || 0) > 1) {
-    await executeProposeEdges(paths, args);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('propose_edges', () => executeProposeEdges(paths, args))) {
+      return checkpoint('propose_edges');
+    }
   }
   const mode = normalizeMode(args.mode || overlay.controllerState?.mode);
   if (mode !== 'quick' && !overlay.judgeDecisions?.length && (overlay.candidateGraph?.nodes?.length || 0) > 0) {
-    await executeJudgeBatch(paths, args, context);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('judge_batch', () => executeJudgeBatch(paths, args, context))) {
+      return checkpoint('judge_batch');
+    }
   }
   if (mode !== 'quick' && !overlay.selectedSubgraphs?.subgraphs?.length && overlay.judgeDecisions?.length) {
-    await executeSelectBatch(paths, args);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('select_batch', () => executeSelectBatch(paths, args))) {
+      return checkpoint('select_batch');
+    }
   }
   if (mode !== 'quick' && overlay.selectedSubgraphs?.subgraphs?.length && !overlay.methodCardPackText) {
-    await executeExpandEvidence(paths, args);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('expand_evidence', () => executeExpandEvidence(paths, args))) {
+      return checkpoint('expand_evidence');
+    }
   }
   if (mode !== 'quick' && !overlay.solutionSketches?.length && overlay.selectedSubgraphs?.subgraphs?.length) {
-    await executeComposeSolutions(paths, args, context);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('compose_solutions', () => executeComposeSolutions(paths, args, context))) {
+      return checkpoint('compose_solutions');
+    }
   }
   if (mode !== 'quick' && !overlay.designReview?.reviews?.length && overlay.solutionSketches?.length) {
-    await executeDesignReview(paths, args, context);
-    overlay = await loadControllerOverlay(paths);
+    if (!await runStep('design_review', () => executeDesignReview(paths, args, context))) {
+      return checkpoint('design_review');
+    }
   }
   if (mode !== 'quick' && !overlay.innovationBriefs?.briefs?.length && overlay.solutionSketches?.length) {
-    await executeComposeInnovationBriefs(paths, args);
+    if (!await runStep('compose_innovation_briefs', () => executeComposeInnovationBriefs(paths, args))) {
+      return checkpoint('compose_innovation_briefs');
+    }
   }
+  if (!canExecuteNextStep()) return checkpoint('export');
   const exportResult = await executeExport(paths);
+  stepsExecuted += 1;
+  executedActions.push('export');
   return {
     ...exportResult,
     action: 'run_round',
@@ -11062,7 +11135,20 @@ async function executeRunRound(paths, args = {}, context = {}) {
       mode === 'quick'
         ? 'run_round quick mode initializes or refreshes task/decomposition artifacts, reviews decomposition when enabled, generates graph-only candidates, proposes heuristic candidate edges, and exports them.'
         : 'run_round planning mode initializes or refreshes task/decomposition artifacts, reviews decomposition when enabled, generates graph-only candidates, proposes heuristic edges, records judge evidence, selects a batch, expands selected method cards, composes solution sketches, runs design review, composes bounded innovation briefs, and exports them as user decision artifacts.'
-    ]
+    ],
+    ...(stepLimit === null
+      ? {}
+      : {
+          round_progress: {
+            contractVersion: 'papernexus-research-controller-progress-v1',
+            complete: true,
+            stepsExecuted,
+            stepLimit,
+            executedActions,
+            nextAction: null,
+            resume: null
+          }
+        })
   };
 }
 

@@ -20,6 +20,7 @@ import { runLiteratureDiscovery } from '../discovery/workflow.js';
 import { submitDiscoveryImports } from '../discovery/import-bridge.js';
 import { runImportQueueUntilIdle } from '../imports/worker.js';
 import { runLiveIdeaCatalyst } from '../graph/idea-catalyst-live.js';
+import { buildMethodEvolutionGapAnalysis } from '../graph/research-intelligence.js';
 import { runProposalGraphSession } from '../graph/proposal-controller.js';
 import { loadChunkText, loadPaperChunks } from '../../storage/chunk-store.js';
 import { loadImportTask } from '../../storage/import-store.js';
@@ -35,6 +36,13 @@ import {
   overlayRolesForPaper
 } from './project-overlay.js';
 import { executeResearchController } from './research-controller.js';
+import {
+  attachResearchStudioTrace,
+  buildProposalGraphHandoff,
+  compileInnovationPatternAnalysis,
+  compileMechanismCollisionAudit,
+  compileStructuralGapAnalysis
+} from './researchstudio-innovation.js';
 import {
   loadCorpusLite,
   loadCorpusMeta,
@@ -4588,6 +4596,124 @@ function renderNoveltyAuditPackMarkdown(payload = {}) {
   return `${lines.join('\n')}\n`;
 }
 
+function unavailableMethodLineage(method = '', reason = 'graph_unavailable') {
+  return {
+    path: 'method_evolution_bottleneck_gap',
+    query: compactText(method),
+    matchedMethod: null,
+    candidates: [],
+    direction: 'both',
+    lineages: [],
+    bottleneckTrajectory: [],
+    tradeoffTrajectory: [],
+    nextGapCandidates: [],
+    dataStarvation: {
+      status: 'starved',
+      missing: [reason]
+    },
+    diagnostics: {
+      queryTimeLlmCalls: 0,
+      source: 'graph-only',
+      ambiguity: reason
+    }
+  };
+}
+
+async function compileResearchStudioAnalyses(materialPack = {}, gapMap = [], args = {}, options = {}) {
+  const context = await loadMaterialContext({
+    ...args,
+    corpus: materialPack.rootPath || args.corpus
+  }, options);
+  const method = compactText(args.method || args.methodName || args.method_name);
+  const methodLineage = context.graph
+    ? buildMethodEvolutionGapAnalysis(context.graph, {
+        method,
+        direction: 'both',
+        maxDepth: args.maxDepth || args.max_depth,
+        limit: args.lineageLimit || args.lineage_limit || args.limit,
+        branchLimit: args.branchLimit || args.branch_limit
+      })
+    : unavailableMethodLineage(method, context.graphLoadError ? 'graph_load_failed' : 'graph_unavailable');
+  const structuralGapAnalysis = compileStructuralGapAnalysis({
+    materialPack,
+    gapMap,
+    methodLineage,
+    args
+  });
+  const innovationPatternAnalysis = compileInnovationPatternAnalysis({
+    structuralGapAnalysis,
+    args
+  });
+  return {
+    structuralGapAnalysis,
+    innovationPatternAnalysis
+  };
+}
+
+export async function buildStructuralGapPack(args = {}, options = {}) {
+  const roles = normalizeRoles(args.roles || args.role || DEFAULT_ROLES);
+  const materialPack = await buildResearchMaterialPack({
+    ...args,
+    roles: unique([...roles, 'target_prior', 'near_source_method', 'far_source_story', 'novelty_risk', 'baseline_candidate']),
+    outputDir: ''
+  }, options);
+  const gapMap = buildGapMap(materialPack);
+  const { structuralGapAnalysis } = await compileResearchStudioAnalyses(materialPack, gapMap, args, options);
+  const {
+    contractVersion: analysisContractVersion,
+    ...analysis
+  } = structuralGapAnalysis;
+  return maybeExportPayload({
+    contractVersion: AGENT_MATERIALS_CONTRACT_VERSION,
+    analysisContractVersion,
+    operation: 'structural_gap_pack',
+    run_id: `agent-materials-structural-gap:${stableHash(`${materialPack.target_domain}:${materialPack.target_problem}:${nowIso()}`, 16)}`,
+    rootPath: materialPack.rootPath,
+    corpus: materialPack.corpus,
+    project: materialPack.project,
+    target_domain: materialPack.target_domain,
+    target_problem: materialPack.target_problem,
+    constraints: materialPack.constraints || [],
+    ...analysis,
+    source_materials: {
+      material_pack_run_id: materialPack.run_id,
+      gap_map: gapMap,
+      import_requisitions: materialPack.import_requisitions || []
+    },
+    generatedAt: nowIso()
+  }, args);
+}
+
+export async function buildInnovationPatternPack(args = {}, options = {}) {
+  const structuralGapPack = await buildStructuralGapPack({
+    ...args,
+    outputDir: ''
+  }, options);
+  const patternAnalysis = compileInnovationPatternAnalysis({
+    structuralGapAnalysis: structuralGapPack,
+    args
+  });
+  const {
+    contractVersion: analysisContractVersion,
+    ...analysis
+  } = patternAnalysis;
+  return maybeExportPayload({
+    contractVersion: AGENT_MATERIALS_CONTRACT_VERSION,
+    analysisContractVersion,
+    operation: 'innovation_pattern_pack',
+    run_id: `agent-materials-innovation-pattern:${stableHash(`${structuralGapPack.target_domain}:${structuralGapPack.target_problem}:${nowIso()}`, 16)}`,
+    rootPath: structuralGapPack.rootPath,
+    corpus: structuralGapPack.corpus,
+    project: structuralGapPack.project,
+    target_domain: structuralGapPack.target_domain,
+    target_problem: structuralGapPack.target_problem,
+    constraints: structuralGapPack.constraints || [],
+    structural_gap_analysis: structuralGapPack,
+    ...analysis,
+    generatedAt: nowIso()
+  }, args);
+}
+
 function renderInnovationEvidencePackMarkdown(payload = {}) {
   const lines = [
     '# PaperNexus Innovation Evidence Pack',
@@ -4605,6 +4731,28 @@ function renderInnovationEvidencePackMarkdown(payload = {}) {
     `- Novelty claim allowed: ${payload.evidence_sufficiency?.novelty_claim_allowed === true ? 'true' : 'false'}`,
     `- Experiment planning allowed: ${payload.evidence_sufficiency?.experiment_planning_allowed === true ? 'true' : 'false'}`,
     `- Reason codes: ${(payload.evidence_sufficiency?.reason_codes || []).join(', ') || 'none'}`,
+    '',
+    '## Structural Gap Analysis',
+    '',
+    `- Status: ${payload.structural_gap_analysis?.status || 'not_run'}`,
+    `- Additive gaps: ${payload.structural_gap_analysis?.additive_gaps?.length || 0}`,
+    `- Subtractive gaps: ${payload.structural_gap_analysis?.subtractive_gaps?.length || 0}`,
+    `- Persistent assumptions: ${payload.structural_gap_analysis?.persistent_assumptions?.length || 0}`,
+    `- Frontier status: ${payload.structural_gap_analysis?.frontier_leaf_status?.status || 'not_run'}`,
+    `- Historical regression watch items: ${payload.structural_gap_analysis?.historical_regression_watchlist?.length || 0}`,
+    '',
+    '## Innovation Pattern Analysis',
+    '',
+    `- Status: ${payload.innovation_pattern_analysis?.status || 'not_run'}`,
+    `- Outcome evidence status: ${payload.innovation_pattern_analysis?.outcome_evidence_status || 'not_run'}`,
+    `- Pattern matches: ${payload.innovation_pattern_analysis?.matches?.length || 0}`,
+    '- Built-in ResearchStudio-style cards are seed taxonomy, not empirical Oral/Reject outcome evidence.',
+    '',
+    '## Mechanism Collision Audit',
+    '',
+    `- Status: ${payload.mechanism_collision_audit?.overall_status || 'not_run'}`,
+    `- Semantic equivalence checked: ${payload.mechanism_collision_audit?.semantic_equivalence_checked === true ? 'true' : 'false'}`,
+    '- Lexical absence is not novelty evidence; decomposed queries require source-backed collision closure.',
     '',
     '## Coverage Matrix',
     '',
@@ -4684,18 +4832,39 @@ export async function buildInnovationEvidencePack(args = {}, options = {}) {
     roles: ['negative_evidence', 'novelty_risk']
   }, options);
   const gapMap = buildGapMap(materialPack);
+  const {
+    structuralGapAnalysis,
+    innovationPatternAnalysis
+  } = await compileResearchStudioAnalyses(materialPack, gapMap, args, options);
   const noveltyBaseline = buildNoveltyBaseline(materialPack, gapMap);
   const closestPriorMap = buildClosestPriorMap(materialPack, negativeEvidence);
   const experimentAnchors = buildExperimentAnchors(materialPack);
   const mechanismToInterventionMap = buildMechanismToInterventionMap(materialPack, gapMap);
-  const ideaEvidenceCards = buildIdeaEvidenceCards(
+  const baseIdeaEvidenceCards = buildIdeaEvidenceCards(
     materialPack,
     gapMap,
     closestPriorMap,
     mechanismToInterventionMap,
     experimentAnchors
   );
+  const ideaEvidenceCards = attachResearchStudioTrace(
+    baseIdeaEvidenceCards,
+    structuralGapAnalysis,
+    innovationPatternAnalysis
+  );
   const storylineChains = buildStorylineChains(materialPack, ideaEvidenceCards, noveltyBaseline);
+  const mechanismCollisionAudit = compileMechanismCollisionAudit({
+    materialPack,
+    ideaCards: ideaEvidenceCards,
+    structuralGapAnalysis,
+    args
+  });
+  const proposalGraphHandoff = buildProposalGraphHandoff({
+    structuralGapAnalysis,
+    innovationPatternAnalysis,
+    mechanismCollisionAudit,
+    ideaCards: ideaEvidenceCards
+  });
   const evidenceBoundaries = buildInnovationEvidenceBoundaries(ideaEvidenceCards);
   const missingMaterials = innovationMissingMaterials(materialPack, ideaEvidenceCards, storylineChains);
   const coverageMatrix = buildCoverageMatrix(materialPack, args);
@@ -4735,17 +4904,22 @@ export async function buildInnovationEvidencePack(args = {}, options = {}) {
       final_idea_judge: false,
       novelty_proof: false,
       experiment_execution: false,
+      researchstudio_order_enforced: true,
+      seed_taxonomy_is_empirical_outcome_evidence: false,
       provider_evidence_opt_in: booleanFlag(args.includeProviderEvidence ?? args.include_provider_evidence, false),
       live_discovery_opt_in: booleanFlag(args.includeLiveDiscoveryEvidence ?? args.include_live_discovery_evidence, false),
       literature_discovery_opt_in: booleanFlag(args.includeLiteratureDiscoveryEvidence ?? args.include_literature_discovery_evidence, false)
     },
     novelty_baseline: noveltyBaseline,
     gap_map: gapMap,
+    structural_gap_analysis: structuralGapAnalysis,
+    innovation_pattern_analysis: innovationPatternAnalysis,
     closest_prior_map: closestPriorMap,
     mechanism_to_intervention_map: mechanismToInterventionMap,
     evidence_sufficiency: evidenceSufficiency,
     coverage_matrix: coverageMatrix,
     composition_collision_matrix: compositionCollisionMatrix,
+    mechanism_collision_audit: mechanismCollisionAudit,
     negative_evidence_assessment: negativeEvidenceAudit,
     required_followup: requiredFollowup,
     provider_to_import_priority: providerToImportPriority,
@@ -4753,6 +4927,7 @@ export async function buildInnovationEvidencePack(args = {}, options = {}) {
     experiment_anchors: experimentAnchors,
     idea_evidence_cards: ideaEvidenceCards,
     storyline_chains: storylineChains,
+    proposal_graph_handoff: proposalGraphHandoff,
     missing_materials: missingMaterials,
     evidence_boundaries: evidenceBoundaries,
     source_materials: {
@@ -4771,6 +4946,9 @@ export async function buildInnovationEvidencePack(args = {}, options = {}) {
         'If evidence_sufficiency.status is insufficient or inconclusive, run required_followup actions when approved or report the blocker.',
         'Resolve missing materials and provider-only priors before experiment planning.',
         'Do not treat closest-prior or negative-evidence signals as novelty proof.',
+        'Treat built-in pattern cards as seed action vocabulary, not empirical acceptance/rejection evidence.',
+        'Close decomposed mechanism-collision queries with source-backed literature evidence; lexical absence is not novelty proof.',
+        'Preserve structural-gap, pattern, and historical-regression refs in episode-local proposal graph evidence export.',
         'Do not write a final novelty claim when novelty_claim_allowed=false.',
         'Use falsifiers and experiment anchors to design bounded validation.'
       ],
@@ -4891,8 +5069,12 @@ async function maybeExportPayload(payload = {}, args = {}) {
     const canonicalJsonPath = path.join(resolvedDir, 'innovation-evidence-pack.json');
     const canonicalMarkdownPath = path.join(resolvedDir, 'innovation-evidence-pack.md');
     const evidenceSufficiencyPath = path.join(resolvedDir, 'evidence_sufficiency.json');
+    const structuralGapAnalysisPath = path.join(resolvedDir, 'structural_gap_analysis.json');
+    const innovationPatternAnalysisPath = path.join(resolvedDir, 'innovation_pattern_analysis.json');
     const coverageMatrixPath = path.join(resolvedDir, 'coverage_matrix.json');
     const compositionCollisionPath = path.join(resolvedDir, 'composition_collision_matrix.json');
+    const mechanismCollisionAuditPath = path.join(resolvedDir, 'mechanism_collision_audit.json');
+    const proposalGraphHandoffPath = path.join(resolvedDir, 'proposal_graph_handoff.json');
     const requiredFollowupPath = path.join(resolvedDir, 'required_followup.json');
     const providerImportPriorityPath = path.join(resolvedDir, 'provider_to_import_priority.json');
     const noveltyAuditPath = path.join(resolvedDir, 'novelty_audit_pack.json');
@@ -4910,8 +5092,12 @@ async function maybeExportPayload(payload = {}, args = {}) {
     await writeText(markdownPath, renderInnovationEvidencePackMarkdown(payload));
     await writeText(canonicalMarkdownPath, renderInnovationEvidencePackMarkdown(payload));
     await writeJson(evidenceSufficiencyPath, namedExportPayload(payload, 'evidence_sufficiency', 'evidence_sufficiency', null));
+    await writeJson(structuralGapAnalysisPath, namedExportPayload(payload, 'structural_gap_analysis', 'structural_gap_analysis', null));
+    await writeJson(innovationPatternAnalysisPath, namedExportPayload(payload, 'innovation_pattern_analysis', 'innovation_pattern_analysis', null));
     await writeJson(coverageMatrixPath, namedExportPayload(payload, 'coverage_matrix', 'coverage_matrix', []));
     await writeJson(compositionCollisionPath, namedExportPayload(payload, 'composition_collision_matrix', 'composition_collision_matrix', null));
+    await writeJson(mechanismCollisionAuditPath, namedExportPayload(payload, 'mechanism_collision_audit', 'mechanism_collision_audit', null));
+    await writeJson(proposalGraphHandoffPath, namedExportPayload(payload, 'proposal_graph_handoff', 'proposal_graph_handoff', null));
     await writeJson(requiredFollowupPath, namedExportPayload(payload, 'required_followup', 'required_followup', []));
     await writeJson(providerImportPriorityPath, namedExportPayload(payload, 'provider_to_import_priority', 'provider_to_import_priority', []));
     await writeJson(noveltyAuditPath, {
@@ -4924,8 +5110,11 @@ async function maybeExportPayload(payload = {}, args = {}) {
       target_domain: payload.target_domain,
       target_problem: payload.target_problem,
       evidence_sufficiency: payload.evidence_sufficiency,
+      structural_gap_analysis: payload.structural_gap_analysis || null,
+      innovation_pattern_analysis: payload.innovation_pattern_analysis || null,
       coverage_matrix: payload.coverage_matrix || [],
       composition_collision_matrix: payload.composition_collision_matrix || null,
+      mechanism_collision_audit: payload.mechanism_collision_audit || null,
       negative_evidence_assessment: payload.negative_evidence_assessment || null,
       required_followup: payload.required_followup || [],
       provider_to_import_priority: payload.provider_to_import_priority || [],
@@ -4945,8 +5134,12 @@ async function maybeExportPayload(payload = {}, args = {}) {
     exports.canonical_json_path = canonicalJsonPath;
     exports.canonical_markdown_path = canonicalMarkdownPath;
     exports.evidence_sufficiency_path = evidenceSufficiencyPath;
+    exports.structural_gap_analysis_path = structuralGapAnalysisPath;
+    exports.innovation_pattern_analysis_path = innovationPatternAnalysisPath;
     exports.coverage_matrix_path = coverageMatrixPath;
     exports.composition_collision_matrix_path = compositionCollisionPath;
+    exports.mechanism_collision_audit_path = mechanismCollisionAuditPath;
+    exports.proposal_graph_handoff_path = proposalGraphHandoffPath;
     exports.required_followup_path = requiredFollowupPath;
     exports.provider_to_import_priority_path = providerImportPriorityPath;
     exports.novelty_audit_pack_path = noveltyAuditPath;
@@ -5019,6 +5212,8 @@ export async function executeAgentMaterialsOperation(args = {}, options = {}) {
   if (operation === 'paper_material_view') return buildPaperMaterialView(args, options);
   if (operation === 'source_discovery_plan') return maybeExportPayload(await buildSourceDiscoveryPlan(args, options), args);
   if (operation === 'research_material_pack') return buildResearchMaterialPack(args, options);
+  if (operation === 'structural_gap_pack') return buildStructuralGapPack(args, options);
+  if (operation === 'innovation_pattern_pack') return buildInnovationPatternPack(args, options);
   if (operation === 'innovation_evidence_pack') return buildInnovationEvidencePack(args, options);
   if (operation === 'import_requisition_pack') return buildImportRequisitionPack(args, options);
   if (operation === 'negative_evidence_pack') return buildNegativeEvidencePack(args, options);

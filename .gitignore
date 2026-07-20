@@ -16,6 +16,9 @@ __pycache__/
 !docs/**
 !manual/
 !manual/**
+!.agent/
+!.agent/plans/
+!.agent/plans/*.md
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 .omx/

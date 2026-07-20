@@ -89,6 +89,9 @@
           "type": "object",
           "additionalProperties": true
         },
+        "candidateMechanism": {
+          "type": "string"
+        },
         "chunkLimit": {
           "type": "number",
           "default": 8
@@ -263,6 +266,11 @@
           "type": "number",
           "default": 5
         },
+        "lineageLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
         "literatureDiscoveryAllowDownloads": {
           "type": "boolean",
           "default": true
@@ -367,6 +375,19 @@
           "type": "object",
           "additionalProperties": true
         },
+        "max_controller_steps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxControllerSteps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
         "maxExperimentPlans": {
           "type": "integer",
           "minimum": 1
@@ -391,6 +412,12 @@
           "type": "integer",
           "minimum": 1,
           "default": 3
+        },
+        "method": {
+          "type": "string"
+        },
+        "methodName": {
+          "type": "string"
         },
         "minDomainDistance": {
           "type": "number",
@@ -444,6 +471,7 @@
             "experiment_cost_materials",
             "import_requisition_pack",
             "innovation_evidence_pack",
+            "innovation_pattern_pack",
             "negative_evidence_pack",
             "paper_material_view",
             "paper_role_overlay",
@@ -451,6 +479,7 @@
             "research_controller",
             "research_material_pack",
             "source_discovery_plan",
+            "structural_gap_pack",
             "workflow_state"
           ]
         },
@@ -466,6 +495,25 @@
         },
         "paperTitle": {
           "type": "string"
+        },
+        "patternCards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "patternLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 2
+        },
+        "persistentAssumptionMinPapers": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10,
+          "default": 2
         },
         "persistLiveDiscoveryEvidence": {
           "type": "boolean",
@@ -568,6 +616,19 @@
           "items": {
             "type": "string"
           }
+        },
+        "removedComponents": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         },
         "role": {
           "type": "string"
@@ -810,6 +871,36 @@
             "sync"
           ]
         },
+        "firecrawlApiBaseUrl": {
+          "type": "string"
+        },
+        "firecrawlApiKeyEnv": {
+          "type": "string"
+        },
+        "firecrawlMaxPages": {
+          "type": "number"
+        },
+        "firecrawlMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "fast",
+            "ocr"
+          ]
+        },
+        "firecrawlSourceMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "upload",
+            "url"
+          ]
+        },
+        "firecrawlTimeoutMs": {
+          "type": "number"
+        },
         "force": {
           "type": "boolean",
           "default": false
@@ -843,6 +934,7 @@
           "type": "string",
           "enum": [
             "docling",
+            "firecrawl",
             "marker",
             "markitdown",
             "markpdfdown",
@@ -1320,6 +1412,14 @@
             "additionalProperties": true
           }
         },
+        "idempotency_key": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "maxLength": 200
+        },
         "identifiers": {
           "type": "object",
           "additionalProperties": true
@@ -1496,6 +1596,12 @@
             "long-context-full-md"
           ]
         },
+        "project_id": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
         "recent_dag_event_limit": {
           "type": "number",
           "default": 5
@@ -1541,6 +1647,12 @@
             "queued",
             "sync"
           ]
+        },
+        "selection_revision": {
+          "type": "string"
+        },
+        "selectionRevision": {
+          "type": "string"
         },
         "semantic_job_limit": {
           "type": "number",
@@ -1716,6 +1828,12 @@
             "semantic-complete",
             "task-completed"
           ]
+        },
+        "workflow_run_id": {
+          "type": "string"
+        },
+        "workflowRunId": {
+          "type": "string"
         }
       }
     }
@@ -1835,6 +1953,22 @@
         "candidateId": {
           "type": "string"
         },
+        "candidateLimit": {
+          "type": "number",
+          "default": 100
+        },
+        "candidateOffset": {
+          "type": "number",
+          "default": 0
+        },
+        "candidateView": {
+          "type": "string",
+          "default": "screening",
+          "enum": [
+            "full",
+            "screening"
+          ]
+        },
         "canonicalId": {
           "type": "string"
         },
@@ -1923,6 +2057,36 @@
             }
           }
         },
+        "firecrawlApiBaseUrl": {
+          "type": "string"
+        },
+        "firecrawlApiKeyEnv": {
+          "type": "string"
+        },
+        "firecrawlMaxPages": {
+          "type": "number"
+        },
+        "firecrawlMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "fast",
+            "ocr"
+          ]
+        },
+        "firecrawlSourceMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "upload",
+            "url"
+          ]
+        },
+        "firecrawlTimeoutMs": {
+          "type": "number"
+        },
         "generateArxivMarkdownSources": {
           "type": "boolean",
           "default": false
@@ -1955,6 +2119,10 @@
           "default": 20
         },
         "importResolved": {
+          "type": "boolean",
+          "default": false
+        },
+        "includeCandidates": {
           "type": "boolean",
           "default": false
         },
@@ -2134,6 +2302,7 @@
           "type": "string",
           "enum": [
             "docling",
+            "firecrawl",
             "marker",
             "markitdown",
             "markpdfdown",
@@ -2844,6 +3013,36 @@
         "corpusName": {
           "type": "string"
         },
+        "firecrawlApiBaseUrl": {
+          "type": "string"
+        },
+        "firecrawlApiKeyEnv": {
+          "type": "string"
+        },
+        "firecrawlMaxPages": {
+          "type": "number"
+        },
+        "firecrawlMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "fast",
+            "ocr"
+          ]
+        },
+        "firecrawlSourceMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "upload",
+            "url"
+          ]
+        },
+        "firecrawlTimeoutMs": {
+          "type": "number"
+        },
         "indexDir": {
           "type": [
             "string",
@@ -2915,6 +3114,7 @@
           "default": "markitdown",
           "enum": [
             "docling",
+            "firecrawl",
             "marker",
             "markitdown",
             "markpdfdown",

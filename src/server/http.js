@@ -48,6 +48,7 @@ import { startAuthoritativeSyncWorker } from '../core/authoritative-sync/worker.
 import { startImportWorker } from '../core/imports/worker.js';
 import { startIsolatedFastMdImportWorker } from '../core/imports/fast-md-lane-worker.js';
 import { startLiteratureDiscoveryRecoveryWorker } from '../mcp/tool-literature-discovery.js';
+import { startImportWorkflowRecoveryWorker } from '../mcp/tool-import-workflow.js';
 import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 import { startRegistryReconcileWorker } from '../storage/registry-reconcile.js';
 
@@ -982,6 +983,42 @@ function buildImportWorkerOptions(options = {}, rootPaths, logger = console) {
       analyzeConfig.mineruRemoteFailureMode,
       watchConfig.mineruRemoteFailureMode
     ),
+    firecrawlApiBaseUrl: firstDefined(
+      options.firecrawlApiBaseUrl,
+      materializeConfig.firecrawlApiBaseUrl,
+      analyzeConfig.firecrawlApiBaseUrl,
+      watchConfig.firecrawlApiBaseUrl
+    ),
+    firecrawlApiKeyEnv: firstDefined(
+      options.firecrawlApiKeyEnv,
+      materializeConfig.firecrawlApiKeyEnv,
+      analyzeConfig.firecrawlApiKeyEnv,
+      watchConfig.firecrawlApiKeyEnv
+    ),
+    firecrawlMode: firstDefined(
+      options.firecrawlMode,
+      materializeConfig.firecrawlMode,
+      analyzeConfig.firecrawlMode,
+      watchConfig.firecrawlMode
+    ),
+    firecrawlSourceMode: firstDefined(
+      options.firecrawlSourceMode,
+      materializeConfig.firecrawlSourceMode,
+      analyzeConfig.firecrawlSourceMode,
+      watchConfig.firecrawlSourceMode
+    ),
+    firecrawlMaxPages: firstNumber(
+      options.firecrawlMaxPages,
+      materializeConfig.firecrawlMaxPages,
+      analyzeConfig.firecrawlMaxPages,
+      watchConfig.firecrawlMaxPages
+    ),
+    firecrawlTimeoutMs: firstNumber(
+      options.firecrawlTimeoutMs,
+      materializeConfig.firecrawlTimeoutMs,
+      analyzeConfig.firecrawlTimeoutMs,
+      watchConfig.firecrawlTimeoutMs
+    ),
     paddleocrVlPython: firstDefined(
       options.paddleocrVlPython,
       materializeConfig.paddleocrVlPython,
@@ -1213,6 +1250,7 @@ export async function serveCommand(options = {}) {
   const host = options.host || '127.0.0.1';
   const apiToken = resolveApiToken(options);
   const mcpConfig = getMcpHttpConfig(options);
+  const serveConfig = getServeConfig(options);
   const rootResolution = await getConfiguredRootPaths(options);
   const rootPaths = rootResolution.rootPaths.length ? rootResolution.rootPaths : undefined;
   const webRoot = buildWebRoot();
@@ -1224,6 +1262,7 @@ export async function serveCommand(options = {}) {
   const importWorkerStarter = options.startImportWorker || startImportWorker;
   const fastMdImportWorkerStarter = options.startFastMdImportWorker || startIsolatedFastMdImportWorker;
   const literatureDiscoveryRecoveryWorkerStarter = options.startLiteratureDiscoveryRecoveryWorker || startLiteratureDiscoveryRecoveryWorker;
+  const importWorkflowRecoveryWorkerStarter = options.startImportWorkflowRecoveryWorker || startImportWorkflowRecoveryWorker;
   const registryReconcileWorkerStarter = options.startRegistryReconcileWorker || startRegistryReconcileWorker;
   const baseImportWorkerOptions = buildImportWorkerOptions(options, rootPaths, workerLogger);
   const fastMdImportLaneEnabled = resolveFastMdImportLaneEnabled(options);
@@ -1274,6 +1313,27 @@ export async function serveCommand(options = {}) {
       ...options,
       rootPaths,
       intervalMs: options.literatureDiscoveryRecoveryIntervalMs,
+      logger: workerLogger
+    },
+    workerLogger
+  );
+  const importWorkflowRecoveryWorker = startNamedWorker(
+    'import workflow recovery worker',
+    mcpConfig.enabled && !isFalseLike(firstDefined(
+      options.enableImportWorkflowRecovery,
+      serveConfig.enableImportWorkflowRecovery
+    )),
+    importWorkflowRecoveryWorkerStarter,
+    {
+      ...options,
+      importWorkflowRecoveryIntervalMs: firstNumber(
+        options.importWorkflowRecoveryIntervalMs,
+        serveConfig.importWorkflowRecoveryIntervalMs
+      ),
+      importWorkflowRecoveryStaleMs: firstNumber(
+        options.importWorkflowRecoveryStaleMs,
+        serveConfig.importWorkflowRecoveryStaleMs
+      ),
       logger: workerLogger
     },
     workerLogger
@@ -1351,6 +1411,17 @@ export async function serveCommand(options = {}) {
         }
       };
 
+      if (request.method === 'GET' && url.pathname === '/livez') {
+        sendJson(response, 200, {
+          ok: true,
+          service: 'papernexus',
+          status: 'live',
+          now: new Date().toISOString(),
+          uptimeSeconds: Math.floor(process.uptime())
+        });
+        return;
+      }
+
       if (url.pathname === mcpConfig.path) {
         if (!mcpConfig.enabled) {
           sendJson(response, 404, { error: 'Not Found' });
@@ -1397,6 +1468,38 @@ export async function serveCommand(options = {}) {
 
       if (request.method === 'GET' && url.pathname === '/api/health') {
         sendJson(response, 200, { ok: true, service: 'papernexus-web' });
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/readyz') {
+        const recoverySnapshot = importWorkflowRecoveryWorker?.snapshot?.() || {
+          enabled: false,
+          running: false,
+          lastScanAt: null,
+          lastError: null
+        };
+        const mcpReady = mcpConfig.enabled && Boolean(apiToken);
+        const ready = mcpReady && !recoverySnapshot.lastError;
+        sendJson(response, ready ? 200 : 503, {
+          ok: ready,
+          service: 'papernexus',
+          status: ready ? 'ready' : 'not_ready',
+          mcp: {
+            enabled: mcpConfig.enabled,
+            ready: mcpReady,
+            path: mcpConfig.path,
+            transport: mcpConfig.transport
+          },
+          workers: {
+            importWorkflowRecovery: recoverySnapshot
+          },
+          rootScope: {
+            configured: Boolean(rootResolution.configured),
+            count: rootResolution.rootPaths.length,
+            invalidCount: rootResolution.invalidRootPaths?.length || 0
+          },
+          generatedAt: new Date().toISOString()
+        });
         return;
       }
 
@@ -1715,6 +1818,7 @@ export async function serveCommand(options = {}) {
       importWorker?.stop?.(),
       fastMdImportWorker?.stop?.(),
       literatureDiscoveryRecoveryWorker?.stop?.(),
+      importWorkflowRecoveryWorker?.stop?.(),
       registryReconcileWorker?.stop?.()
     ]);
     await new Promise((resolve) => {

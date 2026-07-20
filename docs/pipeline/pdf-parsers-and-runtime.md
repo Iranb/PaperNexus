@@ -7,6 +7,7 @@ It focuses on:
 - which parser is used by default
 - how fallback works
 - how parser-local LLM assistance works
+- how the optional Firecrawl network parser fits into academic-paper ingestion
 - how GPU scheduling works for Docling
 - where parser state and logs are persisted
 - how to debug parser stalls without reverse-engineering the code
@@ -37,6 +38,7 @@ The supported parser families are:
 - `docling`
 - `mineru`
 - `paddleocr-vl`
+- `firecrawl`
 
 GROBID TEI is also supported as an offline citation-context adapter, not yet as the default PDF parser orchestrator. When you already have a GROBID TEI XML file, convert it into PaperNexus citation-context IR with:
 
@@ -234,6 +236,7 @@ Current fallback behavior:
 | `marker` | `docling` |
 | `mineru` | `docling` |
 | `paddleocr-vl` | `docling` |
+| `firecrawl` | `docling` |
 | `docling` | none |
 
 For `docling`, remote SSH fallback to `pdftotext` / `pypdf` is still available in the parser-specific code path when the configured remote host exists and the direct Docling parse fails.
@@ -263,6 +266,53 @@ The repaired snapshot records:
 ```
 
 This protects throughput while still preserving an audit signal that the parser did not recover a canonical title.
+
+## Firecrawl Runtime
+
+Firecrawl is an optional network-backed parser for teams that want a fast PDF-to-Markdown path without provisioning another local parser runtime. It is not the default parser. PaperNexus continues to default to `markitdown` with `docling` fallback, because academic-paper ingestion needs reproducibility, local cacheability, and careful validation of tables, formulas, citations, references, and figure evidence.
+
+Firecrawl is best treated as a convenience parser for:
+
+- quick paper import and triage
+- public or locally staged PDFs where sending the file to Firecrawl is acceptable
+- scanned PDFs when `firecrawlMode` is set to `ocr`
+- throughput-sensitive queues where a remote parser is operationally simpler than local GPU scheduling
+
+It should not be treated as the authoritative academic parser by itself. For submission-grade extraction, audit the generated markdown against the PDF, especially reference sections, mathematical notation, multi-column tables, algorithm blocks, figure captions, and citation anchors. If Firecrawl output is weak or the request fails, PaperNexus can still fall back to Docling unless fallback is explicitly disabled.
+
+PaperNexus supports both Firecrawl document routes:
+
+- local/private PDF upload through Firecrawl `/v2/parse`
+- public PDF URL parsing through Firecrawl `/v2/scrape`
+
+The default `firecrawlSourceMode` is `auto`: PaperNexus uses `/v2/scrape` only when a HTTP(S) PDF URL is available, otherwise it uploads the local PDF to `/v2/parse`. Set `firecrawlSourceMode` to `upload` or `url` when you need deterministic behavior.
+
+Configuration uses environment-variable indirection for credentials. Do not put a raw Firecrawl API key in MCP arguments.
+
+```json
+{
+  "analyze": {
+    "pdfParser": "firecrawl",
+    "firecrawlApiBaseUrl": "https://api.firecrawl.dev",
+    "firecrawlApiKeyEnv": "FIRECRAWL_API_KEY",
+    "firecrawlMode": "auto",
+    "firecrawlSourceMode": "auto",
+    "firecrawlMaxPages": null,
+    "firecrawlTimeoutMs": 100000
+  }
+}
+```
+
+CLI example:
+
+```bash
+papernexus analyze ./papers \
+  --pdf-parser firecrawl \
+  --firecrawl-api-key-env FIRECRAWL_API_KEY \
+  --firecrawl-mode auto
+```
+
+`firecrawlMode` accepts `fast`, `auto`, and `ocr`. `firecrawlMaxPages` can bound cost and latency for triage runs. Parser state and events record the endpoint, mode, and source mode, but never the resolved API key.
 
 ## MarkItDown Runtime
 
@@ -554,6 +604,21 @@ If a task is `completed` with `recovery.status = superseded`, it is also safe to
   "analyze": {
     "pdfParser": "markitdown",
     "markitdownUseLlm": false
+  }
+}
+```
+
+### Firecrawl network parser
+
+```json
+{
+  "analyze": {
+    "pdfParser": "firecrawl",
+    "firecrawlApiBaseUrl": "https://api.firecrawl.dev",
+    "firecrawlApiKeyEnv": "FIRECRAWL_API_KEY",
+    "firecrawlMode": "auto",
+    "firecrawlSourceMode": "auto",
+    "firecrawlTimeoutMs": 100000
   }
 }
 ```

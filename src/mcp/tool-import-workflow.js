@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   listAuthoritativeSyncHistory,
@@ -21,13 +22,20 @@ import {
 } from '../storage/import-store.js';
 import { createImportDagComparisonReport } from '../storage/import-dag-comparison.js';
 import { getDefaultRuntimeConfigRoot } from '../lib/config.js';
-import { ensureDir, readJson, writeJson } from '../lib/fs.js';
+import { ensureDir, readJson, withFileLock, writeJson } from '../lib/fs.js';
 import { collapseHomePath } from '../lib/server-paths.js';
+import { stableHash } from '../lib/utils.js';
 
 const IMPORT_WORKFLOW_ASYNC_JOB_CONTRACT_VERSION = 'papernexus-import-workflow-job-v1';
+const IMPORT_WORKFLOW_STATUS_CONTRACT_VERSION = 'papernexus-operation-status-v1';
 const DEFAULT_ASYNC_WAIT_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_ASYNC_POLL_INTERVAL_MS = 500;
+const DEFAULT_ASYNC_RECOVERY_INTERVAL_MS = 30 * 1000;
+const DEFAULT_ASYNC_RECOVERY_STALE_MS = 30 * 1000;
+const DEFAULT_ASYNC_JOB_LOCK_TIMEOUT_MS = 500;
+const DEFAULT_ASYNC_JOB_LOCK_STALE_MS = 30 * 1000;
 const IMPORT_WORKFLOW_OPERATIONS = new Set(['submit', 'list', 'status', 'progress', 'queue_progress', 'log', 'wait']);
+const REPLAY_SAFE_IMPORT_WORKFLOW_OPERATIONS = new Set(['list', 'status', 'progress', 'queue_progress', 'log', 'wait']);
 const ASYNC_JOB_OPERATIONS = new Set(['submit_async', 'async_status', 'async_wait']);
 const IMPORT_WORKFLOW_OPERATION_ALIASES = new Map([
   ['status_batch', 'status'],
@@ -158,6 +166,14 @@ function getAsyncImportWorkflowJobPath(jobId, options = {}) {
   return path.join(getAsyncImportWorkflowJobsDir(options), `${normalizeAsyncImportWorkflowJobId(jobId)}.json`);
 }
 
+function getAsyncImportWorkflowJobLockPath(jobId, options = {}) {
+  return `${getAsyncImportWorkflowJobPath(jobId, options)}.lock`;
+}
+
+function getAsyncImportWorkflowJobSubmitLockPath(jobId, options = {}) {
+  return `${getAsyncImportWorkflowJobPath(jobId, options)}.submit.lock`;
+}
+
 function nowIsoString() {
   return new Date().toISOString();
 }
@@ -181,6 +197,111 @@ function isAsyncImportWorkflowJobInProgress(job = {}) {
   return status === 'queued' || status === 'running';
 }
 
+function canonicalizeAsyncJobValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeAsyncJobValue(item));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .filter((key) => value[key] !== undefined)
+        .map((key) => [key, canonicalizeAsyncJobValue(value[key])])
+    );
+  }
+  if (typeof value === 'number' && !Number.isFinite(value)) return null;
+  return value;
+}
+
+function asyncJobRequestFingerprint(requestedOperation, executionArgs) {
+  return stableHash(JSON.stringify(canonicalizeAsyncJobValue({
+    requestedOperation,
+    arguments: executionArgs
+  })), 40);
+}
+
+function normalizeAsyncImportWorkflowIdempotencyKey(value) {
+  const key = String(value || '').trim();
+  if (!key) return null;
+  if (key.length > 200) {
+    throw new Error('import_workflow idempotencyKey must be 200 characters or fewer.');
+  }
+  if (!/^[A-Za-z0-9._:@/-]+$/.test(key)) {
+    throw new Error('import_workflow idempotencyKey may contain only letters, numbers, dot, underscore, colon, at, slash, and hyphen.');
+  }
+  return key;
+}
+
+function asyncImportWorkflowJobId(idempotencyKey) {
+  return idempotencyKey
+    ? `idem-${stableHash(idempotencyKey, 40)}`
+    : randomUUID();
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    const normalized = String(value || '').trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function collectAsyncJobTaskIds(job = {}) {
+  const taskIds = new Set(collectRequestedTaskIds(job.arguments || {}));
+  const directResultTaskId = firstNonEmptyString(job.result?.task?.id, job.result?.taskId, job.result?.task_id);
+  if (directResultTaskId) taskIds.add(directResultTaskId);
+  for (const task of Array.isArray(job.result?.tasks) ? job.result.tasks : []) {
+    const taskId = firstNonEmptyString(task?.id, task?.taskId, task?.task_id);
+    if (taskId) taskIds.add(taskId);
+  }
+  return [...taskIds];
+}
+
+function asyncJobStateClass(job = {}) {
+  const status = String(job.status || '').trim().toLowerCase();
+  if (status === 'completed') return 'complete';
+  if (status === 'failed') return 'failed';
+  if (status === 'manual_recovery_required') return 'manual_recovery_required';
+  return 'active_wait';
+}
+
+function buildAsyncImportWorkflowStatusEnvelope(job = {}) {
+  const capturedAt = nowIsoString();
+  const stateClass = asyncJobStateClass(job);
+  const active = stateClass === 'active_wait';
+  const executionArgs = job.arguments || {};
+  const blockerCode = stateClass === 'manual_recovery_required'
+    ? 'unsafe_replay_requires_manual_recovery'
+    : stateClass === 'failed'
+      ? 'papernexus_operation_failed'
+      : active
+        ? 'papernexus_operation_in_progress'
+        : null;
+  return {
+    contractVersion: IMPORT_WORKFLOW_STATUS_CONTRACT_VERSION,
+    operationId: job.jobId || null,
+    projectId: firstNonEmptyString(executionArgs.projectId, executionArgs.project_id, executionArgs.project),
+    corpusId: job.corpus || firstNonEmptyString(executionArgs.corpus),
+    workflowRunId: firstNonEmptyString(executionArgs.workflowRunId, executionArgs.workflow_run_id, executionArgs.runId, executionArgs.run_id),
+    selectionRevision: firstNonEmptyString(executionArgs.selectionRevision, executionArgs.selection_revision),
+    stateClass,
+    blockingScope: stateClass === 'complete'
+      ? 'none'
+      : stateClass === 'manual_recovery_required'
+        ? 'operator_decision'
+        : 'papernexus_operation',
+    status: job.status || 'unknown',
+    stage: job.stage || null,
+    retryable: (active || stateClass === 'failed') && job.replaySafe === true,
+    blockerCode,
+    taskIds: collectAsyncJobTaskIds(job),
+    capturedAt,
+    expiresAt: active
+      ? new Date(Date.parse(capturedAt) + DEFAULT_ASYNC_RECOVERY_STALE_MS).toISOString()
+      : null
+  };
+}
+
 function renderAsyncImportWorkflowJob(job, extra = {}) {
   const inProgress = isAsyncImportWorkflowJobInProgress(job);
   return {
@@ -197,6 +318,7 @@ function renderAsyncImportWorkflowJob(job, extra = {}) {
     arguments: job.arguments || {},
     result: job.result || null,
     error: job.error || null,
+    statusEnvelope: buildAsyncImportWorkflowStatusEnvelope(job),
     next: inProgress
       ? {
           tool: 'import_workflow',
@@ -233,41 +355,99 @@ function buildAsyncImportWorkflowExecutionArgs(args = {}, requestedOperation = '
   delete executionArgs.timeout_ms;
   delete executionArgs.pollIntervalMs;
   delete executionArgs.poll_interval_ms;
+  delete executionArgs.idempotencyKey;
+  delete executionArgs.idempotency_key;
   return executionArgs;
 }
 
-async function runAsyncImportWorkflowJob(job, options = {}) {
-  const runningJob = {
-    ...job,
-    status: 'running',
-    stage: 'running',
-    startedAt: nowIsoString(),
-    updatedAt: nowIsoString()
+function asyncJobLockOptions(options = {}) {
+  return {
+    timeoutMs: Math.max(250, Number(options.importWorkflowJobLockTimeoutMs || DEFAULT_ASYNC_JOB_LOCK_TIMEOUT_MS)),
+    staleMs: Math.max(250, Number(options.importWorkflowJobLockStaleMs || DEFAULT_ASYNC_JOB_LOCK_STALE_MS))
   };
-  await writeAsyncImportWorkflowJob(runningJob, options);
+}
 
+function asyncJobRecoveryBlockedPayload(job) {
+  const now = nowIsoString();
+  return {
+    ...job,
+    status: 'manual_recovery_required',
+    stage: 'manual_recovery_required',
+    updatedAt: now,
+    completedAt: now,
+    blockerCode: 'unsafe_replay_requires_manual_recovery',
+    recoveryCount: Math.max(0, Number(job.recoveryCount || 0)) + 1,
+    lastRecoveredAt: now,
+    recovery: {
+      status: 'blocked',
+      detectedAt: now,
+      reason: `Automatic recovery is disabled for mutating import_workflow operation=${job.requestedOperation || 'unknown'}. Inspect the import task authority before retrying.`
+    }
+  };
+}
+
+async function runAsyncImportWorkflowJob(jobOrId, options = {}, runOptions = {}) {
+  const jobId = normalizeAsyncImportWorkflowJobId(jobOrId?.jobId || jobOrId);
+  const logger = options.logger || console;
   try {
-    const result = await executeImportWorkflowTool(job.arguments, options);
-    await writeAsyncImportWorkflowJob({
-      ...runningJob,
-      status: 'completed',
-      stage: 'completed',
-      completedAt: nowIsoString(),
-      updatedAt: nowIsoString(),
-      result
-    }, options);
-  } catch (error) {
-    await writeAsyncImportWorkflowJob({
-      ...runningJob,
-      status: 'failed',
-      stage: 'failed',
-      completedAt: nowIsoString(),
-      updatedAt: nowIsoString(),
-      error: {
-        name: error?.name || 'Error',
-        message: error?.message || String(error)
+    return await withFileLock(getAsyncImportWorkflowJobLockPath(jobId, options), async () => {
+      const job = await readAsyncImportWorkflowJob(jobId, options);
+      if (!isAsyncImportWorkflowJobInProgress(job)) return job;
+
+      const replaySafe = REPLAY_SAFE_IMPORT_WORKFLOW_OPERATIONS.has(job.requestedOperation);
+      if (runOptions.recovery === true && !replaySafe) {
+        const blockedJob = asyncJobRecoveryBlockedPayload(job);
+        await writeAsyncImportWorkflowJob(blockedJob, options);
+        return blockedJob;
       }
-    }, options);
+
+      const now = nowIsoString();
+      const runningJob = {
+        ...job,
+        status: 'running',
+        stage: 'running',
+        replaySafe,
+        attempts: Math.max(0, Number(job.attempts || 0)) + 1,
+        recoveryCount: Math.max(0, Number(job.recoveryCount || 0)) + (runOptions.recovery === true ? 1 : 0),
+        startedAt: job.startedAt || now,
+        lastAttemptAt: now,
+        lastRecoveredAt: runOptions.recovery === true ? now : job.lastRecoveredAt || null,
+        updatedAt: now,
+        error: null
+      };
+      await writeAsyncImportWorkflowJob(runningJob, options);
+
+      try {
+        const result = await executeImportWorkflowTool(runningJob.arguments, options);
+        const completedJob = {
+          ...runningJob,
+          status: 'completed',
+          stage: 'completed',
+          completedAt: nowIsoString(),
+          updatedAt: nowIsoString(),
+          result
+        };
+        await writeAsyncImportWorkflowJob(completedJob, options);
+        return completedJob;
+      } catch (error) {
+        const failedJob = {
+          ...runningJob,
+          status: 'failed',
+          stage: 'failed',
+          completedAt: nowIsoString(),
+          updatedAt: nowIsoString(),
+          error: {
+            name: error?.name || 'Error',
+            message: error?.message || String(error)
+          }
+        };
+        await writeAsyncImportWorkflowJob(failedJob, options);
+        return failedJob;
+      }
+    }, asyncJobLockOptions(options));
+  } catch (error) {
+    logger.warn?.(`[import-workflow-recovery] job ${jobId} ownership deferred (${error?.message || error})`);
+    return readAsyncImportWorkflowJob(jobId, options);
   }
 }
 
@@ -277,14 +457,22 @@ async function submitAsyncImportWorkflowJob(args = {}, options = {}) {
     throw new Error('import_workflow submit_async requires asyncOperation to be a normal import_workflow operation.');
   }
   const executionArgs = buildAsyncImportWorkflowExecutionArgs(args, requestedOperation);
+  const idempotencyKey = normalizeAsyncImportWorkflowIdempotencyKey(args.idempotencyKey || args.idempotency_key);
+  const requestFingerprint = asyncJobRequestFingerprint(requestedOperation, executionArgs);
+  const jobId = asyncImportWorkflowJobId(idempotencyKey);
   const now = nowIsoString();
   const job = {
     version: 1,
     type: 'import_workflow',
-    jobId: randomUUID(),
+    jobId,
     status: 'queued',
     stage: 'queued',
     requestedOperation,
+    idempotencyKey,
+    requestFingerprint,
+    replaySafe: REPLAY_SAFE_IMPORT_WORKFLOW_OPERATIONS.has(requestedOperation),
+    attempts: 0,
+    recoveryCount: 0,
     createdAt: now,
     updatedAt: now,
     corpus: typeof executionArgs.corpus === 'string' && executionArgs.corpus.trim() ? executionArgs.corpus.trim() : null,
@@ -293,11 +481,136 @@ async function submitAsyncImportWorkflowJob(args = {}, options = {}) {
     error: null
   };
 
-  await writeAsyncImportWorkflowJob(job, options);
-  setImmediate(() => {
-    void runAsyncImportWorkflowJob(job, options);
+  const submission = await withFileLock(getAsyncImportWorkflowJobSubmitLockPath(jobId, options), async () => {
+    const existing = await readJson(getAsyncImportWorkflowJobPath(jobId, options), null);
+    if (existing) {
+      if (!idempotencyKey || existing.requestFingerprint !== requestFingerprint) {
+        throw new Error(`import_workflow idempotency key conflict for job ${jobId}: the existing request fingerprint does not match.`);
+      }
+      return { job: existing, created: false };
+    }
+    await writeAsyncImportWorkflowJob(job, options);
+    return { job, created: true };
+  }, asyncJobLockOptions(options));
+
+  if (submission.created) {
+    setImmediate(() => {
+      void runAsyncImportWorkflowJob(jobId, options);
+    });
+  }
+  return renderAsyncImportWorkflowJob(submission.job, {
+    deduplicated: !submission.created
   });
-  return renderAsyncImportWorkflowJob(job);
+}
+
+async function listAsyncImportWorkflowJobs(options = {}) {
+  try {
+    const entries = await fs.readdir(getAsyncImportWorkflowJobsDir(options), { withFileTypes: true });
+    const jobs = await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => readJson(path.join(getAsyncImportWorkflowJobsDir(options), entry.name), null)));
+    return jobs.filter(Boolean);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function isAsyncImportWorkflowJobStale(job, staleMs) {
+  const updatedAtMs = Date.parse(job.updatedAt || job.createdAt || '');
+  return !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs >= staleMs;
+}
+
+async function recoverAsyncImportWorkflowJobs(options = {}) {
+  const staleMs = Math.max(0, Number(options.importWorkflowRecoveryStaleMs ?? DEFAULT_ASYNC_RECOVERY_STALE_MS));
+  const jobs = await listAsyncImportWorkflowJobs(options);
+  const candidates = jobs.filter((job) => (
+    isAsyncImportWorkflowJobInProgress(job)
+    && isAsyncImportWorkflowJobStale(job, staleMs)
+  ));
+  const summary = {
+    scanned: jobs.length,
+    candidates: candidates.length,
+    recovered: 0,
+    manualRecoveryRequired: 0
+  };
+
+  for (const job of candidates) {
+    const recoveredJob = await runAsyncImportWorkflowJob(job.jobId, options, { recovery: true });
+    if (recoveredJob.status === 'manual_recovery_required') {
+      summary.manualRecoveryRequired += 1;
+    } else if (!isAsyncImportWorkflowJobInProgress(recoveredJob)) {
+      summary.recovered += 1;
+    }
+  }
+  return summary;
+}
+
+export function startImportWorkflowRecoveryWorker(options = {}) {
+  const logger = options.logger || console;
+  const intervalMs = Math.max(250, Number(options.importWorkflowRecoveryIntervalMs || DEFAULT_ASYNC_RECOVERY_INTERVAL_MS));
+  const state = {
+    enabled: true,
+    running: false,
+    intervalMs,
+    staleAfterMs: Math.max(0, Number(options.importWorkflowRecoveryStaleMs ?? DEFAULT_ASYNC_RECOVERY_STALE_MS)),
+    lastScanAt: null,
+    lastError: null,
+    scanned: 0,
+    candidates: 0,
+    recovered: 0,
+    manualRecoveryRequired: 0
+  };
+  let stopped = false;
+  let timer = null;
+  let inFlight = null;
+
+  const snapshot = () => ({ ...state });
+  const scan = async () => {
+    if (stopped) return snapshot();
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      state.running = true;
+      try {
+        const summary = await recoverAsyncImportWorkflowJobs(options);
+        Object.assign(state, summary, {
+          lastScanAt: nowIsoString(),
+          lastError: null
+        });
+      } catch (error) {
+        state.lastScanAt = nowIsoString();
+        state.lastError = error?.message || String(error);
+        logger.warn?.(`[import-workflow-recovery] scan failed (${state.lastError})`);
+      } finally {
+        state.running = false;
+        inFlight = null;
+      }
+      return snapshot();
+    })();
+    return inFlight;
+  };
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      void scan().finally(schedule);
+    }, intervalMs);
+    timer.unref?.();
+  };
+
+  timer = setTimeout(() => {
+    void scan().finally(schedule);
+  }, Math.min(1000, intervalMs));
+  timer.unref?.();
+
+  return {
+    async stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      await inFlight;
+    },
+    pollNow: scan,
+    snapshot
+  };
 }
 
 async function waitForAsyncImportWorkflowJob(jobId, args = {}, options = {}) {

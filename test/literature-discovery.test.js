@@ -3652,6 +3652,84 @@ test('literature_discovery submit writes progress snapshots for polling', async 
   }
 });
 
+test('literature_discovery report returns paginated candidate rows for screening', async () => {
+  const rootPath = await createTempCorpus();
+  const runId = 'candidate-page-run';
+
+  try {
+    await saveDiscoveryRun(rootPath, {
+      runId,
+      contractVersion: 'literature-discovery-v1',
+      topic: 'candidate page discovery',
+      generatedAt: new Date().toISOString(),
+      coverage: {
+        candidateCount: 3
+      },
+      candidates: [
+        createDiscoveryCandidate({
+          id: 'cand:a',
+          title: 'Candidate A',
+          abstract: 'First candidate abstract.',
+          rawSummary: 'raw-a'
+        }),
+        createDiscoveryCandidate({
+          id: 'cand:b',
+          title: 'Candidate B',
+          abstract: 'Second candidate abstract.',
+          rawSummary: 'raw-b',
+          retrievalEvidence: [{ provider: 'mock', query: 'candidate page' }]
+        }),
+        createDiscoveryCandidate({
+          id: 'cand:c',
+          title: 'Candidate C',
+          abstract: 'Third candidate abstract.',
+          rawSummary: 'raw-c'
+        })
+      ]
+    });
+
+    const report = JSON.parse(await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'report',
+      runId,
+      includeCandidates: true,
+      candidateOffset: 1,
+      candidateLimit: 2,
+      candidateView: 'screening'
+    }, { rootPaths: [rootPath] }));
+
+    assert.equal(report.contractVersion, 'literature-discovery-candidates-v1');
+    assert.deepEqual(report.candidatePage, {
+      total: 3,
+      offset: 1,
+      limit: 2,
+      returned: 2,
+      hasMore: false,
+      nextOffset: null,
+      view: 'screening'
+    });
+    assert.deepEqual(report.candidates.map((candidate) => candidate.id), ['cand:b', 'cand:c']);
+    assert.equal(report.candidates[0].title, 'Candidate B');
+    assert.equal(report.candidates[0].abstract, 'Second candidate abstract.');
+    assert.equal(Object.hasOwn(report.candidates[0], 'rawSummary'), false);
+
+    const full = JSON.parse(await executeLiteratureDiscoveryTool({
+      corpus: rootPath,
+      operation: 'report',
+      runId,
+      includeCandidates: true,
+      candidateLimit: 1,
+      candidateView: 'full'
+    }, { rootPaths: [rootPath] }));
+    assert.equal(full.candidatePage.total, 3);
+    assert.equal(full.candidatePage.hasMore, true);
+    assert.equal(full.candidatePage.nextOffset, 1);
+    assert.equal(full.candidates[0].rawSummary, 'raw-a');
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('literature_discovery progress, report, and list include recovery diagnostics', async () => {
   const rootPath = await createTempCorpus();
   const runId = 'diagnostic-run';

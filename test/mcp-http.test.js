@@ -62,6 +62,7 @@ async function startHttpServer(port, serveConfig = {}, options = {}) {
     enableEnhancements: false,
     enableImports: false,
     enableAuthoritativeSync: false,
+    enableImportWorkflowRecovery: false,
     config: {
       serve: serveConfig
     },
