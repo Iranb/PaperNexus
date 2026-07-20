@@ -605,6 +605,40 @@ export const PAPERNEXUS_TOOLS = [
           type: 'boolean',
           description: 'Boolean alias for async.'
         },
+        idempotencyKey: {
+          type: 'string',
+          maxLength: 200,
+          description: 'Optional stable retry identity for asynchronous execution. A matching request returns the existing job; reusing the key with different execution arguments is rejected.'
+        },
+        idempotency_key: {
+          type: 'string',
+          maxLength: 200,
+          description: 'Snake_case alias for idempotencyKey.'
+        },
+        projectId: {
+          type: 'string',
+          description: 'Optional AutoResearch project identity copied into the asynchronous status envelope.'
+        },
+        project_id: {
+          type: 'string',
+          description: 'Snake_case alias for projectId.'
+        },
+        workflowRunId: {
+          type: 'string',
+          description: 'Optional workflow run identity copied into the asynchronous status envelope.'
+        },
+        workflow_run_id: {
+          type: 'string',
+          description: 'Snake_case alias for workflowRunId.'
+        },
+        selectionRevision: {
+          type: 'string',
+          description: 'Optional selected-idea revision copied into the asynchronous status envelope so stale projections can be detected by the caller.'
+        },
+        selection_revision: {
+          type: 'string',
+          description: 'Snake_case alias for selectionRevision.'
+        },
         corpus: {
           type: 'string',
           description: 'Corpus name or indexed root path. Optional if only one corpus is indexed.'
@@ -1338,6 +1372,27 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Candidate id to supplement in a persisted discovery run.'
         },
+        includeCandidates: {
+          type: 'boolean',
+          description: 'For operation=status/report, return a paginated candidate-row response instead of the full run payload. Use candidateOffset/candidateLimit to page through large discovery reports without MCP truncation.',
+          default: false
+        },
+        candidateOffset: {
+          type: 'number',
+          description: 'For operation=status/report with includeCandidates=true, zero-based candidate page offset.',
+          default: 0
+        },
+        candidateLimit: {
+          type: 'number',
+          description: 'For operation=status/report with includeCandidates=true, maximum candidates returned in this page. Defaults to 100 and is capped at 500 unless server options override maxCandidatePageLimit.',
+          default: 100
+        },
+        candidateView: {
+          type: 'string',
+          enum: ['screening', 'full'],
+          description: 'For operation=status/report with includeCandidates=true, screening returns title/abstract/provenance fields for evidence gates; full returns raw persisted candidate objects.',
+          default: 'screening'
+        },
         canonicalId: {
           type: 'string',
           description: 'Canonical paper id to supplement in a persisted discovery run, such as arxiv:2501.00001 or doi:10.xxxx/example.'
@@ -1448,12 +1503,40 @@ export const PAPERNEXUS_TOOLS = [
         },
         pdfParser: {
           type: 'string',
-          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl'],
+          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl', 'firecrawl'],
           description: 'Optional PDF parser override for inline import processing.'
         },
         pdfCommand: {
           type: 'string',
           description: 'Optional generic PDF parser command override for inline import processing.'
+        },
+        firecrawlApiBaseUrl: {
+          type: 'string',
+          description: 'Optional Firecrawl API base URL for inline PDF import parsing. Defaults to https://api.firecrawl.dev.'
+        },
+        firecrawlApiKeyEnv: {
+          type: 'string',
+          description: 'Environment variable name containing the Firecrawl API key for inline import parsing. Raw API keys are not accepted here.'
+        },
+        firecrawlMode: {
+          type: 'string',
+          enum: ['fast', 'auto', 'ocr'],
+          description: 'Firecrawl PDF parsing mode for inline import processing.',
+          default: 'auto'
+        },
+        firecrawlSourceMode: {
+          type: 'string',
+          enum: ['auto', 'upload', 'url'],
+          description: 'Firecrawl source mode for inline import processing. upload sends local PDFs; url uses public PDF URLs when available; auto prefers trusted URLs.',
+          default: 'auto'
+        },
+        firecrawlMaxPages: {
+          type: 'number',
+          description: 'Optional maximum number of pages Firecrawl should parse.'
+        },
+        firecrawlTimeoutMs: {
+          type: 'number',
+          description: 'Optional Firecrawl request timeout in milliseconds.'
         },
         doclingCommand: {
           type: 'string',
@@ -1805,13 +1888,13 @@ export const PAPERNEXUS_TOOLS = [
   },
   {
     name: 'agent_materials',
-    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.',
+    description: 'Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, structural-gap and innovation-pattern audits, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['research_material_pack', 'innovation_evidence_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack', 'research_controller', 'proposal_graph_session'],
+          enum: ['research_material_pack', 'structural_gap_pack', 'innovation_pattern_pack', 'innovation_evidence_pack', 'source_discovery_plan', 'paper_material_view', 'paper_role_overlay', 'evidence_cart', 'workflow_state', 'negative_evidence_pack', 'experiment_cost_materials', 'import_requisition_pack', 'research_controller', 'proposal_graph_session'],
           description: 'Material backend operation to run. Overlay operations write only project overlay files, never the raw corpus graph.'
         },
         action: {
@@ -1840,6 +1923,62 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           description: 'Research problem statement used to generate target, near-source, and far-source material queries.'
         },
+        method: {
+          type: 'string',
+          description: 'Optional method-lineage anchor for structural_gap_pack, innovation_pattern_pack, and innovation_evidence_pack. The structural audit traverses validated quoted lineage edges in both directions.'
+        },
+        methodName: {
+          type: 'string',
+          description: 'Alias for method when requesting ResearchStudio-style structural-gap analysis.'
+        },
+        maxDepth: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 12,
+          description: 'Maximum validated method-lineage depth for structural-gap analysis. Traversal endpoints remain bounded frontier candidates, not corpus-global leaf proof.'
+        },
+        lineageLimit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 30,
+          description: 'Maximum number of validated method lineages retained for structural-gap analysis.'
+        },
+        persistentAssumptionMinPapers: {
+          type: 'integer',
+          minimum: 2,
+          maximum: 10,
+          default: 2,
+          description: 'Distinct graph-backed paper count required before an assumption becomes a subtractive persistent-assumption gap. Repeated material roles for one paper count once.'
+        },
+        patternLimit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 5,
+          default: 2,
+          description: 'Maximum ResearchStudio-style research-action matches per structural gap. Pattern matching occurs only after a structural gap is compiled.'
+        },
+        patternCards: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: true
+          },
+          description: 'Optional caller-supplied research-action cards. Empirical outcome backing is retained only when the card explicitly opts in and supplies outcome evidence refs; built-in cards remain seed taxonomy.'
+        },
+        candidateMechanism: {
+          type: 'string',
+          description: 'Optional concrete mechanism text used to focus historical-regression watch items and decomposed collision queries. It is not written into the raw graph.'
+        },
+        removedComponents: {
+          oneOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              items: { type: 'string' }
+            }
+          ],
+          description: 'Optional assumptions or components that a candidate removes or replaces, used only for regression/collision audit context.'
+        },
         problem: {
           type: 'string',
           description: 'Research problem statement for proposal_graph_session; aliases targetProblem and query.'
@@ -1853,6 +1992,16 @@ export const PAPERNEXUS_TOOLS = [
           minimum: 1,
           description: 'Maximum proposal graph controller rounds for proposal_graph_session.',
           default: 3
+        },
+        maxControllerSteps: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Optional stage budget for research_controller action=run_round. When exhausted, the tool returns a durable checkpoint with the next missing action; omitted preserves one-shot behavior.'
+        },
+        max_controller_steps: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Snake_case alias for maxControllerSteps.'
         },
         temporalCutoff: {
           type: 'string',
@@ -2681,9 +2830,37 @@ export const PAPERNEXUS_TOOLS = [
         },
         pdfParser: {
           type: 'string',
-          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl'],
+          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl', 'firecrawl'],
           description: 'Default PDF parser to write into analyze.pdfParser.',
           default: 'markitdown'
+        },
+        firecrawlApiBaseUrl: {
+          type: 'string',
+          description: 'Firecrawl API base URL to write into analyze.firecrawlApiBaseUrl. Defaults to https://api.firecrawl.dev when omitted.'
+        },
+        firecrawlApiKeyEnv: {
+          type: 'string',
+          description: 'Environment variable name containing the Firecrawl API key. Raw Firecrawl API keys are intentionally rejected by runtime_init.'
+        },
+        firecrawlMode: {
+          type: 'string',
+          enum: ['fast', 'auto', 'ocr'],
+          description: 'Firecrawl PDF parsing mode to write into analyze.firecrawlMode.',
+          default: 'auto'
+        },
+        firecrawlSourceMode: {
+          type: 'string',
+          enum: ['auto', 'upload', 'url'],
+          description: 'Firecrawl source mode to write into analyze.firecrawlSourceMode. upload is safest for local/private PDFs; url requires a public PDF URL.',
+          default: 'auto'
+        },
+        firecrawlMaxPages: {
+          type: 'number',
+          description: 'Optional maximum PDF pages for Firecrawl to parse.'
+        },
+        firecrawlTimeoutMs: {
+          type: 'number',
+          description: 'Optional Firecrawl request timeout in milliseconds.'
         },
         serveHost: {
           type: 'string',
@@ -2825,12 +3002,40 @@ export const PAPERNEXUS_TOOLS = [
         },
         pdfParser: {
           type: 'string',
-          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl'],
+          enum: ['markitdown', 'markpdfdown', 'opendataloader', 'docling', 'marker', 'mineru', 'paddleocr-vl', 'firecrawl'],
           description: 'Optional PDF parser override for the first build.'
         },
         pdfCommand: {
           type: 'string',
           description: 'Optional generic PDF parser command override for the first build.'
+        },
+        firecrawlApiBaseUrl: {
+          type: 'string',
+          description: 'Optional Firecrawl API base URL for the first build.'
+        },
+        firecrawlApiKeyEnv: {
+          type: 'string',
+          description: 'Environment variable name containing the Firecrawl API key. Raw Firecrawl API keys are not accepted.'
+        },
+        firecrawlMode: {
+          type: 'string',
+          enum: ['fast', 'auto', 'ocr'],
+          description: 'Firecrawl PDF parsing mode for the first build.',
+          default: 'auto'
+        },
+        firecrawlSourceMode: {
+          type: 'string',
+          enum: ['auto', 'upload', 'url'],
+          description: 'Firecrawl source mode for the first build.',
+          default: 'auto'
+        },
+        firecrawlMaxPages: {
+          type: 'number',
+          description: 'Optional maximum PDF pages for Firecrawl to parse.'
+        },
+        firecrawlTimeoutMs: {
+          type: 'number',
+          description: 'Optional Firecrawl request timeout in milliseconds.'
         },
         concurrency: {
           type: 'number',

@@ -184,6 +184,43 @@ function sanitizeMcpLlmConfig(value) {
   return sanitized;
 }
 
+function assertNoMcpFirecrawlApiKey(args = {}, toolName = 'runtime_init') {
+  const nested = normalizeMcpObject(args.firecrawl);
+  if (
+    Object.prototype.hasOwnProperty.call(args, 'firecrawlApiKey')
+    || Object.prototype.hasOwnProperty.call(args, 'firecrawl_api_key')
+    || Object.prototype.hasOwnProperty.call(nested, 'apiKey')
+    || Object.prototype.hasOwnProperty.call(nested, 'api_key')
+  ) {
+    throw new Error(`${toolName} does not accept Firecrawl raw API keys. Use firecrawlApiKeyEnv or FIRECRAWL_API_KEY instead.`);
+  }
+}
+
+function buildMcpFirecrawlAnalyzeOptions(args = {}, currentAnalyze = {}, toolName = 'runtime_init') {
+  assertNoMcpFirecrawlApiKey(args, toolName);
+  const nested = normalizeMcpObject(args.firecrawl);
+  const firecrawlMaxPages = normalizeMcpPositiveInteger(firstMcpValue(
+    args.firecrawlMaxPages,
+    args.firecrawl_max_pages,
+    nested.maxPages,
+    currentAnalyze.firecrawlMaxPages
+  ));
+  const firecrawlTimeoutMs = normalizeMcpPositiveInteger(firstMcpValue(
+    args.firecrawlTimeoutMs,
+    args.firecrawl_timeout_ms,
+    nested.timeoutMs,
+    currentAnalyze.firecrawlTimeoutMs
+  ));
+  return compactMcpOptions({
+    firecrawlApiBaseUrl: firstMcpString(args.firecrawlApiBaseUrl, args.firecrawl_api_base_url, nested.apiBaseUrl, currentAnalyze.firecrawlApiBaseUrl) || undefined,
+    firecrawlApiKeyEnv: firstMcpString(args.firecrawlApiKeyEnv, args.firecrawl_api_key_env, nested.apiKeyEnv, currentAnalyze.firecrawlApiKeyEnv) || undefined,
+    firecrawlMode: firstMcpString(args.firecrawlMode, args.firecrawl_mode, nested.mode, currentAnalyze.firecrawlMode) || undefined,
+    firecrawlSourceMode: firstMcpString(args.firecrawlSourceMode, args.firecrawl_source_mode, nested.sourceMode, currentAnalyze.firecrawlSourceMode) || undefined,
+    firecrawlMaxPages,
+    firecrawlTimeoutMs
+  });
+}
+
 function redactMcpLlmConfig(value) {
   const llm = normalizeMcpObject(value);
   if (!Object.keys(llm).length) return null;
@@ -650,6 +687,7 @@ export async function executeTool(name, args, options = {}) {
     const pdfParser = firstMcpString(args.pdfParser, currentAnalyze.pdfParser, 'markitdown');
     const serveHost = firstMcpString(args.serveHost, args.host, currentServe.host, '127.0.0.1');
     const servePort = normalizeMcpNumber(firstMcpValue(args.servePort, args.port, currentServe.port), 4821);
+    const firecrawlAnalyzeOptions = buildMcpFirecrawlAnalyzeOptions(args, currentAnalyze, 'runtime_init');
 
     const nextServe = {
       ...currentServe,
@@ -679,7 +717,8 @@ export async function executeTool(name, args, options = {}) {
       analyze: {
         ...currentAnalyze,
         name: corpusName,
-        pdfParser
+        pdfParser,
+        ...firecrawlAnalyzeOptions
       },
       global: {
         ...currentGlobal,
@@ -724,6 +763,7 @@ export async function executeTool(name, args, options = {}) {
       resolvedIndexDir,
       resolvedIndexDirs,
       pdfParser,
+      firecrawl: firecrawlAnalyzeOptions,
       serve: {
         host: nextServe.host,
         port: nextServe.port,
@@ -809,6 +849,7 @@ export async function executeTool(name, args, options = {}) {
     );
     const pdfParser = firstMcpString(args.pdfParser, analyzeConfig.pdfParser);
     const pdfCommand = firstMcpString(args.pdfCommand, analyzeConfig.pdfCommand);
+    const firecrawlAnalyzeOptions = buildMcpFirecrawlAnalyzeOptions(args, analyzeConfig, 'create_corpus');
     const force = args.force === undefined ? Boolean(analyzeConfig.force) : args.force === true;
     const executionMode = normalizeMcpCreateCorpusExecutionMode(args, sourceInputs, operation);
 
@@ -823,6 +864,7 @@ export async function executeTool(name, args, options = {}) {
       rebuildPdfMarkdown: rebuildPdfMarkdown === undefined ? undefined : rebuildPdfMarkdown === true,
       pdfParser: pdfParser || undefined,
       pdfCommand: pdfCommand || undefined,
+      ...firecrawlAnalyzeOptions,
       analyzeConcurrency,
       llmBatchSize,
       batchSize: llmBatchSize
@@ -838,6 +880,7 @@ export async function executeTool(name, args, options = {}) {
         semanticExtraction: semanticExtraction || null,
         rebuildPdfMarkdown: rebuildPdfMarkdown === undefined ? null : rebuildPdfMarkdown === true,
         pdfParser: pdfParser || null,
+        firecrawl: firecrawlAnalyzeOptions,
         llmBatchSize: llmBatchSize ?? null,
         analyzeConcurrency: analyzeConcurrency ?? null
       }

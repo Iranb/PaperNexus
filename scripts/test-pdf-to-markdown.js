@@ -105,6 +105,13 @@ function buildPdfOptions(flags, config) {
     mineruCommand: firstDefined(flags['mineru-cmd'], materializeConfig.mineruCommand, analyzeConfig.mineruCommand),
     mineruHttpUrl: firstDefined(flags['mineru-http-url'], materializeConfig.mineruHttpUrl, analyzeConfig.mineruHttpUrl, materializeConfig.pdfCommand, analyzeConfig.pdfCommand),
     mineruRemoteFailureMode: firstDefined(flags['mineru-remote-failure'], materializeConfig.mineruRemoteFailureMode, analyzeConfig.mineruRemoteFailureMode, 'error'),
+    firecrawlApiBaseUrl: firstDefined(flags['firecrawl-api-base-url'], materializeConfig.firecrawlApiBaseUrl, analyzeConfig.firecrawlApiBaseUrl),
+    firecrawlApiKeyEnv: firstDefined(flags['firecrawl-api-key-env'], materializeConfig.firecrawlApiKeyEnv, analyzeConfig.firecrawlApiKeyEnv),
+    firecrawlMode: firstDefined(flags['firecrawl-mode'], materializeConfig.firecrawlMode, analyzeConfig.firecrawlMode, 'auto'),
+    firecrawlSourceMode: firstDefined(flags['firecrawl-source-mode'], materializeConfig.firecrawlSourceMode, analyzeConfig.firecrawlSourceMode, 'auto'),
+    firecrawlSourceUrl: firstDefined(flags['firecrawl-source-url'], materializeConfig.firecrawlSourceUrl, analyzeConfig.firecrawlSourceUrl),
+    firecrawlMaxPages: toNumber(firstDefined(flags['firecrawl-max-pages'], materializeConfig.firecrawlMaxPages, analyzeConfig.firecrawlMaxPages), undefined),
+    firecrawlTimeoutMs: toNumber(firstDefined(flags['firecrawl-timeout-ms'], materializeConfig.firecrawlTimeoutMs, analyzeConfig.firecrawlTimeoutMs), undefined),
     paddleocrVlPython: firstDefined(flags['paddleocr-vl-python'], materializeConfig.paddleocrVlPython, analyzeConfig.paddleocrVlPython, pythonCommand),
     paddleocrVlServerUrl: firstDefined(flags['paddleocr-vl-server-url'], materializeConfig.paddleocrVlServerUrl, analyzeConfig.paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1'),
     paddleocrVlLayoutModel: firstDefined(flags['paddleocr-vl-layout-model'], materializeConfig.paddleocrVlLayoutModel, analyzeConfig.paddleocrVlLayoutModel, 'PP-DocLayout-S'),
@@ -231,9 +238,20 @@ function buildFailingPrimaryProbeOptions(baseOptions, requestedParser) {
     };
   }
 
+  if (primaryParser === 'firecrawl') {
+    return {
+      primaryParser,
+      options: {
+        ...options,
+        firecrawlApiKeyEnv: '__PAPERNEXUS_MISSING_FIRECRAWL_KEY__',
+        firecrawlApiBaseUrl: 'http://127.0.0.1:9'
+      }
+    };
+  }
+
   throw new Error(
     `Cannot run a docling fallback probe with primary parser \`${primaryParser}\`. `
-    + 'Use one of: markitdown, markpdfdown, opendataloader, marker, mineru, paddleocr-vl.'
+    + 'Use one of: markitdown, markpdfdown, opendataloader, marker, mineru, paddleocr-vl, firecrawl.'
   );
 }
 
@@ -261,6 +279,7 @@ function printUsage() {
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--python-command <python>]
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--verify-docling-fallback] [--fallback-primary-parser <parser>]
   node ./scripts/test-pdf-to-markdown.js <pdf-path> [--docling-device cuda] [--docling-cuda-visible-devices 2]
+  node ./scripts/test-pdf-to-markdown.js <pdf-path> [--pdf-parser firecrawl] [--firecrawl-api-key-env FIRECRAWL_API_KEY]
 
 Behavior:
   - loads the same config resolution flow as PaperNexus CLI

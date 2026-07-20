@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { executeImportWorkflowTool } from '../src/mcp/tool-import-workflow.js';
+import {
+  executeImportWorkflowTool,
+  startImportWorkflowRecoveryWorker
+} from '../src/mcp/tool-import-workflow.js';
 import { getCorpusPaths } from '../src/storage/corpus-store.js';
 import {
   completeImportTask,
@@ -1639,6 +1642,9 @@ test('import_workflow can run queue_progress as an asynchronous MCP job', async 
     assert.equal(submitPayload.requestedOperation, 'queue_progress');
     assert.ok(submitPayload.jobId);
     assert.equal(submitPayload.result, null);
+    assert.equal(submitPayload.statusEnvelope.contractVersion, 'papernexus-operation-status-v1');
+    assert.equal(submitPayload.statusEnvelope.stateClass, 'active_wait');
+    assert.equal(submitPayload.statusEnvelope.blockingScope, 'papernexus_operation');
     assert.deepEqual(submitPayload.next.arguments, {
       operation: 'async_status',
       jobId: submitPayload.jobId
@@ -1668,7 +1674,162 @@ test('import_workflow can run queue_progress as an asynchronous MCP job', async 
 
     assert.equal(statusPayload.status, 'completed');
     assert.equal(statusPayload.result.summary.total, 1);
+    assert.equal(statusPayload.statusEnvelope.stateClass, 'complete');
+    assert.equal(statusPayload.statusEnvelope.blockingScope, 'none');
   } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow async idempotency keys deduplicate matching requests and reject conflicts', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-idempotency-'));
+  const jobRootPath = path.join(rootPath, '.test-mcp-jobs');
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-idempotency-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+
+    const argumentsPayload = {
+      operation: 'queue_progress',
+      corpus: rootPath,
+      async: true,
+      idempotencyKey: 'workflow:round-1:queue-progress',
+      projectId: 'project-1',
+      workflowRunId: 'round-1',
+      selectionRevision: 'selection-3'
+    };
+    const [first, duplicate] = await Promise.all([
+      executeImportWorkflowTool(argumentsPayload, { importWorkflowJobRootPath: jobRootPath }),
+      executeImportWorkflowTool(argumentsPayload, { importWorkflowJobRootPath: jobRootPath })
+    ]);
+
+    assert.equal(first.jobId, duplicate.jobId);
+    assert.equal([first.deduplicated, duplicate.deduplicated].filter(Boolean).length, 1);
+    assert.equal(first.statusEnvelope.projectId, 'project-1');
+    assert.equal(first.statusEnvelope.workflowRunId, 'round-1');
+    assert.equal(first.statusEnvelope.selectionRevision, 'selection-3');
+
+    await assert.rejects(
+      executeImportWorkflowTool({
+        ...argumentsPayload,
+        limit: 1
+      }, {
+        importWorkflowJobRootPath: jobRootPath
+      }),
+      /idempotency key conflict/
+    );
+
+    const completed = await executeImportWorkflowTool({
+      operation: 'async_wait',
+      jobId: first.jobId,
+      waitTimeoutMs: 5000,
+      pollIntervalMs: 25
+    }, {
+      importWorkflowJobRootPath: jobRootPath
+    });
+    assert.equal(completed.status, 'completed');
+
+    const jobFiles = (await fs.readdir(jobRootPath)).filter((name) => name.endsWith('.json'));
+    assert.deepEqual(jobFiles, [`${first.jobId}.json`]);
+  } finally {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('import_workflow recovery resumes replay-safe jobs and blocks ambiguous mutating jobs', async () => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-workflow-recovery-'));
+  const jobRootPath = path.join(rootPath, '.test-mcp-jobs');
+  let worker = null;
+
+  try {
+    const { corpusDir, metaPath } = getCorpusPaths(rootPath);
+    await fs.mkdir(corpusDir, { recursive: true });
+    await fs.writeFile(metaPath, JSON.stringify({
+      name: 'import-workflow-recovery-test',
+      indexedAt: new Date().toISOString(),
+      paperCount: 0,
+      nodeCount: 0,
+      relationshipCount: 0
+    }, null, 2));
+    await fs.mkdir(jobRootPath, { recursive: true });
+
+    const staleAt = '2000-01-01T00:00:00.000Z';
+    const safeJob = {
+      version: 1,
+      type: 'import_workflow',
+      jobId: 'stale-safe-job',
+      status: 'running',
+      stage: 'running',
+      requestedOperation: 'queue_progress',
+      replaySafe: true,
+      attempts: 1,
+      recoveryCount: 0,
+      createdAt: staleAt,
+      startedAt: staleAt,
+      updatedAt: staleAt,
+      corpus: rootPath,
+      arguments: {
+        operation: 'queue_progress',
+        corpus: rootPath
+      },
+      result: null,
+      error: null
+    };
+    const unsafeJob = {
+      ...safeJob,
+      jobId: 'stale-submit-job',
+      requestedOperation: 'submit',
+      replaySafe: false,
+      arguments: {
+        operation: 'submit',
+        corpus: rootPath,
+        files: []
+      }
+    };
+    await fs.writeFile(path.join(jobRootPath, `${safeJob.jobId}.json`), `${JSON.stringify(safeJob, null, 2)}\n`);
+    await fs.writeFile(path.join(jobRootPath, `${unsafeJob.jobId}.json`), `${JSON.stringify(unsafeJob, null, 2)}\n`);
+
+    worker = startImportWorkflowRecoveryWorker({
+      importWorkflowJobRootPath: jobRootPath,
+      importWorkflowRecoveryStaleMs: 0,
+      importWorkflowRecoveryIntervalMs: 60_000,
+      logger: { warn() {} }
+    });
+    const recovery = await worker.pollNow();
+    assert.equal(recovery.scanned, 2);
+    assert.equal(recovery.candidates, 2);
+    assert.equal(recovery.recovered, 1);
+    assert.equal(recovery.manualRecoveryRequired, 1);
+
+    const recoveredSafe = await executeImportWorkflowTool({
+      operation: 'async_status',
+      jobId: safeJob.jobId
+    }, {
+      importWorkflowJobRootPath: jobRootPath
+    });
+    assert.equal(recoveredSafe.status, 'completed');
+    assert.equal(recoveredSafe.result.summary.total, 0);
+    assert.equal(recoveredSafe.statusEnvelope.stateClass, 'complete');
+
+    const blockedUnsafe = await executeImportWorkflowTool({
+      operation: 'async_status',
+      jobId: unsafeJob.jobId
+    }, {
+      importWorkflowJobRootPath: jobRootPath
+    });
+    assert.equal(blockedUnsafe.status, 'manual_recovery_required');
+    assert.equal(blockedUnsafe.result, null);
+    assert.equal(blockedUnsafe.statusEnvelope.stateClass, 'manual_recovery_required');
+    assert.equal(blockedUnsafe.statusEnvelope.blockerCode, 'unsafe_replay_requires_manual_recovery');
+  } finally {
+    await worker?.stop?.();
     await fs.rm(rootPath, { recursive: true, force: true });
   }
 });

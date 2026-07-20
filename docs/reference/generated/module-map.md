@@ -43,11 +43,14 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/storage/chunk-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/chunk-store.js) | Chunk Store implementation. |
 | [`src/storage/corpus-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/corpus-store.js) | Persistent corpus graph, meta, manifest, and mutation write path. |
 | [`src/storage/enhancement-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/enhancement-store.js) | Persistent enhancement queue and overlay job state. |
+| [`src/storage/import-dag-comparison.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/import-dag-comparison.js) | Import Dag Comparison implementation. |
+| [`src/storage/import-semantic-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/import-semantic-store.js) | Import Semantic Store implementation. |
 | [`src/storage/import-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/import-store.js) | Queued import task persistence, logs, progress, and queue snapshots. |
 | [`src/storage/kuzu-commit-receipt-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/kuzu-commit-receipt-store.js) | Kuzu Commit Receipt Store implementation. |
 | [`src/storage/kuzu-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/kuzu-store.js) | Kuzu Store implementation. |
 | [`src/storage/lite-view.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/lite-view.js) | Incremental lite-graph materialized view and token index maintenance. |
 | [`src/storage/llm-rate-limit-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/llm-rate-limit-store.js) | LLM Rate Limit Store implementation. |
+| [`src/storage/long-context-artifact-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/long-context-artifact-store.js) | Long Context Artifact Store implementation. |
 | [`src/storage/pdf-parse-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/pdf-parse-store.js) | Pdf Parse Store implementation. |
 | [`src/storage/provenance-store.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/provenance-store.js) | Provenance Store implementation. |
 | [`src/storage/registry-reconcile.js`](https://github.com/papernexus/PaperNexus/blob/main/src/storage/registry-reconcile.js) | Registry Reconcile implementation. |
@@ -137,12 +140,14 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/takeaway-extraction.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/takeaway-extraction.js) | Takeaway Extraction implementation. |
 | [`src/core/graph/takeaways.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/takeaways.js) | Graph-native Takeaway and IdeaFragment normalization helpers. |
 | [`src/core/graph-v2/migration.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph-v2/migration.js) | Migration implementation. |
+| [`src/core/imports/fast-md-lane-worker.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/imports/fast-md-lane-worker.js) | Fast Md Lane Worker implementation. |
 | [`src/core/imports/worker.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/imports/worker.js) | Asynchronous upload/import queue worker. |
 | [`src/core/index/graph-link-prediction.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/index/graph-link-prediction.js) | Graph Link Prediction implementation. |
 | [`src/core/index/scientific-embeddings.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/index/scientific-embeddings.js) | Scientific Embeddings implementation. |
 | [`src/core/ingestion/citation-intent.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/citation-intent.js) | Citation Intent implementation. |
 | [`src/core/ingestion/claim-extraction.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/claim-extraction.js) | Claim Extraction implementation. |
 | [`src/core/ingestion/coci.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/coci.js) | Coci implementation. |
+| [`src/core/ingestion/firecrawl-client.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/firecrawl-client.js) | Firecrawl Client implementation. |
 | [`src/core/ingestion/graph-mutation-executor.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/graph-mutation-executor.js) | Graph Mutation Executor implementation. |
 | [`src/core/ingestion/graph-postprocess.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/graph-postprocess.js) | Graph Postprocess implementation. |
 | [`src/core/ingestion/graph-precompute.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/graph-precompute.js) | Graph Precompute implementation. |
@@ -155,12 +160,14 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/ingestion/pdf-parser.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js) | PDF-to-markdown parser integration layer for MarkItDown, Docling, Marker, MinerU, and related helpers. |
 | [`src/core/ingestion/pipeline.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/pipeline.js) | Main staged build pipeline from sources to graph commit. |
 | [`src/core/ingestion/s2orc.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/s2orc.js) | S2orc implementation. |
+| [`src/core/llm/batch-worker-pool.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/llm/batch-worker-pool.js) | Batch Worker Pool implementation. |
 | [`src/core/llm/ollama.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/llm/ollama.js) | Ollama implementation. |
 | [`src/core/llm/prompts/research-relations-v1.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/llm/prompts/research-relations-v1.js) | Research Relations V1 implementation. |
 | [`src/core/llm/prompts/semantic-objects-v2.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/llm/prompts/semantic-objects-v2.js) | Semantic Objects V2 implementation. |
 | [`src/core/materials/agent-materials.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/agent-materials.js) | Agent-facing material pack, paper material view, source discovery plan, and import requisition assembly. |
 | [`src/core/materials/project-overlay.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/project-overlay.js) | Project-level Agent overlay storage for paper roles, evidence carts, and workflow state. |
 | [`src/core/materials/research-controller.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/research-controller.js) | Research Controller implementation. |
+| [`src/core/materials/researchstudio-innovation.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/materials/researchstudio-innovation.js) | Researchstudio Innovation implementation. |
 | [`src/core/paper-date.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/paper-date.js) | Paper Date implementation. |
 | [`src/core/search/brainstorm-communities.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/search/brainstorm-communities.js) | Brainstorm Communities implementation. |
 | [`src/core/search/search.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/search/search.js) | Query, context, impact, idea, and brainstorming retrieval logic. |

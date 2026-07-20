@@ -323,6 +323,120 @@ async function decorateDiscoveryRunPayload(rootPath, run = {}, options = {}) {
   };
 }
 
+function toNonNegativeInteger(value, fallback = 0) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.floor(parsed));
+}
+
+function toPositiveInteger(value, fallback = 100) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
+function shouldReturnCandidatePage(args = {}) {
+  return enabledFlag(firstDefined(args.includeCandidates, args.include_candidates))
+    || args.candidateLimit !== undefined
+    || args.candidate_limit !== undefined
+    || args.candidateOffset !== undefined
+    || args.candidate_offset !== undefined
+    || args.candidateView !== undefined
+    || args.candidate_view !== undefined;
+}
+
+function sourceSummary(source = {}) {
+  const normalized = normalizeObject(source);
+  return {
+    resolutionStatus: normalized.resolutionStatus || normalized.resolution_status || '',
+    fullTextStatus: normalized.fullTextStatus || normalized.full_text_status || '',
+    sourceKind: normalized.sourceKind || normalized.source_kind || '',
+    sourceProvider: normalized.sourceProvider || normalized.source_provider || '',
+    sourceId: normalized.sourceId || normalized.source_id || '',
+    markdownUrl: normalized.markdownUrl || normalized.markdown_url || '',
+    pdfUrl: normalized.pdfUrl || normalized.pdf_url || '',
+    landingPageUrl: normalized.landingPageUrl || normalized.landing_page_url || ''
+  };
+}
+
+function screeningCandidateView(candidate = {}) {
+  const identifiers = identifiersOf(candidate);
+  return {
+    id: candidate.id || candidate.candidateId || candidate.candidate_id || '',
+    candidateId: candidate.candidateId || candidate.id || candidate.candidate_id || '',
+    candidate_id: candidate.candidate_id || candidate.candidateId || candidate.id || '',
+    canonicalId: candidate.canonicalId || candidate.canonical_id || identifiers.canonicalId || '',
+    canonical_id: candidate.canonical_id || candidate.canonicalId || identifiers.canonicalId || '',
+    provider: candidate.provider || '',
+    title: candidate.title || '',
+    authors: Array.isArray(candidate.authors) ? candidate.authors : [],
+    year: candidate.year ?? null,
+    publicationDate: candidate.publicationDate || candidate.publication_date || '',
+    venue: candidate.venue || '',
+    venueFamily: candidate.venueFamily || candidate.venue_family || '',
+    venueType: candidate.venueType || candidate.venue_type || '',
+    publicationType: candidate.publicationType || candidate.publication_type || '',
+    abstract: candidate.abstract || '',
+    citationCount: candidate.citationCount ?? candidate.citation_count ?? null,
+    openAccessStatus: candidate.openAccessStatus || candidate.open_access_status || '',
+    license: candidate.license || '',
+    identifiers,
+    doi: identifiers.doi || '',
+    arxivId: identifiers.arxivId || '',
+    pmid: identifiers.pmid || '',
+    pmcid: identifiers.pmcid || '',
+    sourceHints: Array.isArray(candidate.sourceHints) ? candidate.sourceHints : [],
+    fullTextUrls: Array.isArray(candidate.fullTextUrls) ? candidate.fullTextUrls : [],
+    markdownUrl: candidate.markdownUrl || candidate.markdown_url || '',
+    pdfUrl: candidate.pdfUrl || candidate.pdf_url || '',
+    bestOaUrl: candidate.bestOaUrl || candidate.best_oa_url || '',
+    landingPageUrl: candidate.landingPageUrl || candidate.landing_page_url || '',
+    retrievalEvidence: Array.isArray(candidate.retrievalEvidence) ? candidate.retrievalEvidence : [],
+    source: sourceSummary(candidate.source)
+  };
+}
+
+function projectCandidate(candidate = {}, view = 'screening') {
+  const normalizedView = String(view || 'screening').trim().toLowerCase();
+  if (normalizedView === 'full') return candidate;
+  return screeningCandidateView(candidate);
+}
+
+async function decorateDiscoveryCandidatePagePayload(rootPath, run = {}, args = {}, options = {}) {
+  const progress = run?.runId ? await loadDiscoveryProgress(rootPath, run.runId) : null;
+  const candidates = Array.isArray(run.candidates) ? run.candidates : [];
+  const offset = toNonNegativeInteger(firstDefined(args.candidateOffset, args.candidate_offset, args.offset), 0);
+  const requestedLimit = toPositiveInteger(firstDefined(args.candidateLimit, args.candidate_limit, args.limit), 100);
+  const maxLimit = toPositiveInteger(firstDefined(args.maxCandidatePageLimit, args.max_candidate_page_limit, options.maxCandidatePageLimit), 500);
+  const limit = Math.min(requestedLimit, maxLimit);
+  const view = String(firstDefined(args.candidateView, args.candidate_view, 'screening') || 'screening').trim().toLowerCase();
+  const page = candidates.slice(offset, offset + limit).map((candidate) => projectCandidate(candidate, view));
+  const diagnostics = await buildDiscoveryDiagnostics(rootPath, progress || {}, run, options);
+  return {
+    contractVersion: 'literature-discovery-candidates-v1',
+    runId: run.runId || '',
+    rootPath,
+    topic: run.topic || '',
+    status: progress?.status || run.status || '',
+    stage: progress?.stage || run.stage || '',
+    generatedAt: run.generatedAt || null,
+    coverage: run.coverage || null,
+    candidatePage: {
+      total: candidates.length,
+      offset,
+      limit,
+      returned: page.length,
+      hasMore: offset + page.length < candidates.length,
+      nextOffset: offset + page.length < candidates.length ? offset + page.length : null,
+      view
+    },
+    candidates: page,
+    ...diagnostics
+  };
+}
+
 function buildRecoveryDiscoveryArgs(progress = {}) {
   const recoveredArgs = sanitizeDiscoveryRecoveryArgs(progress.recovery?.args || progress.recoveryArgs || {});
   if (Object.keys(recoveredArgs).length) {
@@ -576,6 +690,12 @@ function buildImportProcessingOptions(args = {}, options = {}, importResult = {}
     doclingPython: firstDefined(args.doclingPython, args.docling_python, importConfig.doclingPython),
     markitdownPython: firstDefined(args.markitdownPython, args.markitdown_python, importConfig.markitdownPython),
     markpdfdownPython: firstDefined(args.markpdfdownPython, args.markpdfdown_python, importConfig.markpdfdownPython),
+    firecrawlApiBaseUrl: firstDefined(args.firecrawlApiBaseUrl, args.firecrawl_api_base_url, importConfig.firecrawlApiBaseUrl),
+    firecrawlApiKeyEnv: firstDefined(args.firecrawlApiKeyEnv, args.firecrawl_api_key_env, importConfig.firecrawlApiKeyEnv),
+    firecrawlMode: firstDefined(args.firecrawlMode, args.firecrawl_mode, importConfig.firecrawlMode),
+    firecrawlSourceMode: firstDefined(args.firecrawlSourceMode, args.firecrawl_source_mode, importConfig.firecrawlSourceMode),
+    firecrawlMaxPages: firstDefined(args.firecrawlMaxPages, args.firecrawl_max_pages, importConfig.firecrawlMaxPages),
+    firecrawlTimeoutMs: firstDefined(args.firecrawlTimeoutMs, args.firecrawl_timeout_ms, importConfig.firecrawlTimeoutMs),
     opendataloaderPdfPython: firstDefined(
       args.opendataloaderPdfPython,
       args.opendataloader_pdf_python,
@@ -1258,6 +1378,9 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
   if (operation === 'status' || operation === 'report') {
     const run = await loadDiscoveryRun(rootPath, args.runId || args.run_id);
     if (run) {
+      if (shouldReturnCandidatePage(args)) {
+        return JSON.stringify(await decorateDiscoveryCandidatePagePayload(rootPath, run, args, options), null, 2);
+      }
       return JSON.stringify(await decorateDiscoveryRunPayload(rootPath, run, options), null, 2);
     }
     const progress = await loadDiscoveryProgress(rootPath, args.runId || args.run_id);

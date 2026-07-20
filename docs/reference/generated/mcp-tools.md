@@ -27,7 +27,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 | [`literature_discovery`](#tool-literature_discovery) | Discovery & Imports | `operation` | Discover papers from keywords or a topic, merge multi-provider metadata, resolve legal open full text or institutional access hints, persist coverage artifacts, and optionally submit or process resolved files into the graph import queue. operation=search is a bounded metadata-only interactive path with a default deadline, query caps, partial results, and diagnostics; use operation=submit plus progress/report polling for broad or long-running searches so MCP client timeouts do not lose server-side state. Discovery artifacts are available before graph ingestion; use import_workflow status/wait before expecting research_lookup or other graph tools to see newly found papers. Inline import processing defaults to progressive logical batching with importBatchEnabled=true, importBatchInitialTasks=4, and importBatchMaxTasks=16. |
 | [`literature_discovery_progress`](#tool-literature_discovery_progress) | Discovery & Imports | None | Read persisted literature_discovery progress snapshots without starting provider search, materializing reports, or touching the import queue. Returns current stage/status, candidate counts, stale-progress detection, conservative ETA when the discovery budget is known, and a default 5-minute next-poll recommendation for agents that should schedule a wakeup instead of blocking. |
 | [`idea_catalyst`](#tool-idea_catalyst) | Ideation & Agent Materials | `problem`, `targetDomain` | Run a challenge-aware interdisciplinary ideation pass over the graph and return either idea fragments or a staged packet bundle with v2 innovation artifacts: must-cite set, novelty certificate, review packet, storyline DAG, and counterfactual falsification plans. |
-| [`agent_materials`](#tool-agent_materials) | Ideation & Agent Materials | `operation` | Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph. |
+| [`agent_materials`](#tool-agent_materials) | Ideation & Agent Materials | `operation` | Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, structural-gap and innovation-pattern audits, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph. |
 | [`mutate_graph`](#tool-mutate_graph) | Operations & Maintenance | `operations` | Apply an ordered batch of graph node and relationship mutations with schema-aware validation. Supports dry-run previews before writing to disk. |
 | [`runtime_init`](#tool-runtime_init) | Operations & Maintenance | `corpus` | Initialize or update the PaperNexus runtime config non-interactively over MCP, equivalent to papernexus init for server-side paths. This writes config only; call create_corpus for the first graph build. |
 | [`create_corpus`](#tool-create_corpus) | Operations & Maintenance | None | Create the first committed corpus graph over MCP from server-visible source files/directories or create an empty graph when no sources are provided, equivalent to the first papernexus analyze --name run. Source-backed builds default to a background job to avoid MCP client timeouts; use operation=status or operation=wait with the returned jobId. Use refresh_corpus for later maintenance. |
@@ -558,7 +558,7 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (submit, list, status, progress, queue_progress, log, wait, submit_async, async_status, async_wait) | Use queue_progress/status/wait to track graph-build latency after import submission. wait blocks until task completion by default, can target graph-visible or semantic-complete readiness, and submit_async starts a background import_workflow operation returning a jobId for async_status/async_wait. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`, `submit_async`, `async_status`, `async_wait`. |
+| `operation` | required | string (submit, list, status, status_batch, batch_status, progress, queue_progress, log, wait, submit_async, async_status, async_wait) | Use queue_progress/status/wait to track graph-build latency after import submission. status_batch and batch_status are aliases for status with taskIds/task_id batches. wait blocks until task completion by default, can target graph-visible or semantic-complete readiness, and submit_async starts a background import_workflow operation returning a jobId for async_status/async_wait. Allowed values: `submit`, `list`, `status`, `status_batch`, `batch_status`, `progress`, `queue_progress`, `log`, `wait`, `submit_async`, `async_status`, `async_wait`. |
 | `asyncOperation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Normal import_workflow operation to run in the background when operation=submit_async. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
 | `async_operation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Snake_case alias for asyncOperation. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
 | `targetOperation` | optional | string (submit, list, status, progress, queue_progress, log, wait) | Alias for asyncOperation when operation=submit_async. Allowed values: `submit`, `list`, `status`, `progress`, `queue_progress`, `log`, `wait`. |
@@ -571,9 +571,17 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 | `run_mode` | optional | string (sync, async, asynchronous, background, queued, queue) | Snake_case alias for runMode. Allowed values: `sync`, `async`, `asynchronous`, `background`, `queued`, `queue`. |
 | `async` | optional | boolean | Alias for executionMode=async on a normal import_workflow operation. |
 | `asynchronous` | optional | boolean | Boolean alias for async. |
+| `idempotencyKey` | optional | string | Optional stable retry identity for asynchronous execution. A matching request returns the existing job; reusing the key with different execution arguments is rejected. |
+| `idempotency_key` | optional | string | Snake_case alias for idempotencyKey. |
+| `projectId` | optional | string | Optional AutoResearch project identity copied into the asynchronous status envelope. |
+| `project_id` | optional | string | Snake_case alias for projectId. |
+| `workflowRunId` | optional | string | Optional workflow run identity copied into the asynchronous status envelope. |
+| `workflow_run_id` | optional | string | Snake_case alias for workflowRunId. |
+| `selectionRevision` | optional | string | Optional selected-idea revision copied into the asynchronous status envelope so stale projections can be detected by the caller. |
+| `selection_revision` | optional | string | Snake_case alias for selectionRevision. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
-| `taskId` | optional | string | Import task id for status, log, or wait. |
-| `task_id` | optional | string | Snake_case alias for taskId. |
+| `taskId` | optional | string \| array&lt;string&gt; | Import task id for single-task status, progress, log, or wait. For status/status_batch/progress, accepts an array or comma/space-separated string for batch lookup. |
+| `task_id` | optional | string \| array&lt;string&gt; | Snake_case alias for taskId. For status/status_batch/progress, accepts an array or comma/space-separated string for batch lookup. |
 | `paperId` | optional | string | Optional paper id used to resolve a task when taskId is omitted. |
 | `paper_id` | optional | string | Snake_case alias for paperId. |
 | `source` | optional | string | Optional source path used to resolve a task when taskId is omitted. |
@@ -614,7 +622,8 @@ Drive the remote import queue through a single MCP tool that can submit, list, i
 | `files` | optional | array&lt;object&gt; |  |
 | `trigger` | optional | string | Default: `"mcp"`. |
 | `limit` | optional | number |  |
-| `taskIds` | optional | array&lt;string&gt; | Optional task ids used to filter queue_progress snapshots. |
+| `taskIds` | optional | string \| array&lt;string&gt; | Optional task ids for batch status/progress/wait lookup or queue_progress filtering. Accepts an array or a comma/space-separated string. |
+| `task_ids` | optional | string \| array&lt;string&gt; | Snake_case alias for taskIds. Accepts an array or a comma/space-separated string. |
 | `includeSemanticQueue` | optional | boolean | When operation=queue_progress, include the background semantic-enrichment queue summary and recent jobs. Defaults to true. |
 | `include_semantic_queue` | optional | boolean | Snake_case alias for includeSemanticQueue. |
 | `semanticJobLimit` | optional | number | When operation=queue_progress and includeSemanticQueue is true, limit recent semantic-enrichment jobs returned. Default: `5`. |
@@ -784,6 +793,10 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `pdfStagingRoot` | optional | string | Optional local directory for downloaded discovery PDF fallback sources. Defaults to the corpus discovery PDF staging directory. |
 | `allowDownloads` | optional | boolean | When false, keep Markdown/PDF URLs and institutional access hints but do not download files. Default: `true`. |
 | `candidateId` | optional | string | Candidate id to supplement in a persisted discovery run. |
+| `includeCandidates` | optional | boolean | For operation=status/report, return a paginated candidate-row response instead of the full run payload. Use candidateOffset/candidateLimit to page through large discovery reports without MCP truncation. Default: `false`. |
+| `candidateOffset` | optional | number | For operation=status/report with includeCandidates=true, zero-based candidate page offset. Default: `0`. |
+| `candidateLimit` | optional | number | For operation=status/report with includeCandidates=true, maximum candidates returned in this page. Defaults to 100 and is capped at 500 unless server options override maxCandidatePageLimit. Default: `100`. |
+| `candidateView` | optional | string (screening, full) | For operation=status/report with includeCandidates=true, screening returns title/abstract/provenance fields for evidence gates; full returns raw persisted candidate objects. Default: `"screening"`. Allowed values: `screening`, `full`. |
 | `canonicalId` | optional | string | Canonical paper id to supplement in a persisted discovery run, such as arxiv:2501.00001 or doi:10.xxxx/example. |
 | `sourcePath` | optional | string | For operation=supplement, absolute local .md, .markdown, or .pdf path on the PaperNexus server. |
 | `sourceKind` | optional | string (markdown, pdf) | Optional explicit source kind for operation=supplement. Allowed values: `markdown`, `pdf`. |
@@ -807,8 +820,14 @@ Discover papers from keywords or a topic, merge multi-provider metadata, resolve
 | `importMaxPasses` | optional | number | Maximum import queue tasks to process inline when processImports is true. Defaults to the number of newly submitted tasks. Default: `20`. |
 | `maxImported` | optional | number | Maximum resolved full-text sources to submit when importResolved is true. Metadata-only candidates remain in discovery artifacts but are not graph-visible until materialized through import. Default: `20`. |
 | `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction mode for inline import processing. Allowed values: `auto`, `heuristic-only`, `llm-assisted`, `llm-primary`. |
-| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl) | Optional PDF parser override for inline import processing. Allowed values: `markitdown`, `markpdfdown`, `opendataloader`, `docling`, `marker`, `mineru`, `paddleocr-vl`. |
+| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl, firecrawl) | Optional PDF parser override for inline import processing. Allowed values: `markitdown`, `markpdfdown`, `opendataloader`, `docling`, `marker`, `mineru`, `paddleocr-vl`, `firecrawl`. |
 | `pdfCommand` | optional | string | Optional generic PDF parser command override for inline import processing. |
+| `firecrawlApiBaseUrl` | optional | string | Optional Firecrawl API base URL for inline PDF import parsing. Defaults to https://api.firecrawl.dev. |
+| `firecrawlApiKeyEnv` | optional | string | Environment variable name containing the Firecrawl API key for inline import parsing. Raw API keys are not accepted here. |
+| `firecrawlMode` | optional | string (fast, auto, ocr) | Firecrawl PDF parsing mode for inline import processing. Default: `"auto"`. Allowed values: `fast`, `auto`, `ocr`. |
+| `firecrawlSourceMode` | optional | string (auto, upload, url) | Firecrawl source mode for inline import processing. upload sends local PDFs; url uses public PDF URLs when available; auto prefers trusted URLs. Default: `"auto"`. Allowed values: `auto`, `upload`, `url`. |
+| `firecrawlMaxPages` | optional | number | Optional maximum number of pages Firecrawl should parse. |
+| `firecrawlTimeoutMs` | optional | number | Optional Firecrawl request timeout in milliseconds. |
 | `doclingCommand` | optional | string | Optional Docling command override for inline import processing. |
 | `pythonCommand` | optional | string | Optional Python command override for inline import processing. |
 | `mailto` | optional | string | Contact email used for polite API calls and Unpaywall. If omitted, literatureDiscovery.mailto, PAPERNEXUS_DISCOVERY_MAILTO, or PAPERNEXUS_IDENTIFIER_RESOLUTION_MAILTO is used when available. |
@@ -976,22 +995,33 @@ Run a challenge-aware interdisciplinary ideation pass over the graph and return 
 
 ### Function
 
-Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.
+Assemble Agent-facing research materials from committed graph/source state and manage project-level Agent overlay memory. Material operations return role-grouped packs, single-paper views, source discovery plans, structural-gap and innovation-pattern audits, negative evidence, experiment-cost snippets, innovation evidence/storyline packs, import requisitions, research-controller artifacts, and episode-local proposal graph sessions without making raw corpus graph mutations; overlay operations store paper roles, evidence carts, workflow state, and controller state outside the raw corpus graph.
 
 ### Parameters
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (research_material_pack, innovation_evidence_pack, source_discovery_plan, paper_material_view, paper_role_overlay, evidence_cart, workflow_state, negative_evidence_pack, experiment_cost_materials, import_requisition_pack, research_controller, proposal_graph_session) | Material backend operation to run. Overlay operations write only project overlay files, never the raw corpus graph. Allowed values: `research_material_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `paper_role_overlay`, `evidence_cart`, `workflow_state`, `negative_evidence_pack`, `experiment_cost_materials`, `import_requisition_pack`, `research_controller`, `proposal_graph_session`. |
+| `operation` | required | string (research_material_pack, structural_gap_pack, innovation_pattern_pack, innovation_evidence_pack, source_discovery_plan, paper_material_view, paper_role_overlay, evidence_cart, workflow_state, negative_evidence_pack, experiment_cost_materials, import_requisition_pack, research_controller, proposal_graph_session) | Material backend operation to run. Overlay operations write only project overlay files, never the raw corpus graph. Allowed values: `research_material_pack`, `structural_gap_pack`, `innovation_pattern_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `paper_role_overlay`, `evidence_cart`, `workflow_state`, `negative_evidence_pack`, `experiment_cost_materials`, `import_requisition_pack`, `research_controller`, `proposal_graph_session`. |
 | `action` | optional | string (add, update, list, remove, get, export, status, init_task, run_round, generate_decomposition, review_decomposition, generate_candidates, propose_edges, judge_batch, select_batch, expand_evidence, execute_material_requests, record_material_results, compose_solutions, design_review, compose_innovation_briefs, generate_experiment_plan, validate_gcd_mvp) | Sub-action for paper_role_overlay, evidence_cart, workflow_state, or research_controller. Defaults: list for role/evidence operations, get for workflow_state, status for research_controller. Allowed values: `add`, `update`, `list`, `remove`, `get`, `export`, `status`, `init_task`, `run_round`, `generate_decomposition`, `review_decomposition`, `generate_candidates`, `propose_edges`, `judge_batch`, `select_batch`, `expand_evidence`, `execute_material_requests`, `record_material_results`, `compose_solutions`, `design_review`, `compose_innovation_briefs`, `generate_experiment_plan`, `validate_gcd_mvp`. |
 | `dryRun` | optional | boolean | Preview write-capable overlay operations without writing files. Default: `false`. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `project` | optional | string | Research project id used to label material packs and isolate project overlay memory. For research_controller, omitted GCD tasks default to gcd-research-controller and other tasks default to research-controller. |
 | `targetDomain` | optional | string | Target research domain for source discovery and material pack grouping. |
 | `targetProblem` | optional | string | Research problem statement used to generate target, near-source, and far-source material queries. |
+| `method` | optional | string | Optional method-lineage anchor for structural_gap_pack, innovation_pattern_pack, and innovation_evidence_pack. The structural audit traverses validated quoted lineage edges in both directions. |
+| `methodName` | optional | string | Alias for method when requesting ResearchStudio-style structural-gap analysis. |
+| `maxDepth` | optional | integer | Maximum validated method-lineage depth for structural-gap analysis. Traversal endpoints remain bounded frontier candidates, not corpus-global leaf proof. |
+| `lineageLimit` | optional | integer | Maximum number of validated method lineages retained for structural-gap analysis. |
+| `persistentAssumptionMinPapers` | optional | integer | Distinct graph-backed paper count required before an assumption becomes a subtractive persistent-assumption gap. Repeated material roles for one paper count once. Default: `2`. |
+| `patternLimit` | optional | integer | Maximum ResearchStudio-style research-action matches per structural gap. Pattern matching occurs only after a structural gap is compiled. Default: `2`. |
+| `patternCards` | optional | array&lt;object&gt; | Optional caller-supplied research-action cards. Empirical outcome backing is retained only when the card explicitly opts in and supplies outcome evidence refs; built-in cards remain seed taxonomy. |
+| `candidateMechanism` | optional | string | Optional concrete mechanism text used to focus historical-regression watch items and decomposed collision queries. It is not written into the raw graph. |
+| `removedComponents` | optional | string \| array&lt;string&gt; | Optional assumptions or components that a candidate removes or replaces, used only for regression/collision audit context. |
 | `problem` | optional | string | Research problem statement for proposal_graph_session; aliases targetProblem and query. |
 | `runId` | optional | string | Optional stable run id for proposal_graph_session artifacts. |
 | `maxRounds` | optional | integer | Maximum proposal graph controller rounds for proposal_graph_session. Default: `3`. |
+| `maxControllerSteps` | optional | integer | Optional stage budget for research_controller action=run_round. When exhausted, the tool returns a durable checkpoint with the next missing action; omitted preserves one-shot behavior. |
+| `max_controller_steps` | optional | integer | Snake_case alias for maxControllerSteps. |
 | `temporalCutoff` | optional | string | Optional temporal cutoff recorded in proposal graph session input. |
 | `proposalActions` | optional | array&lt;object&gt; | Optional round-0 role actions for proposal_graph_session. Actions are validated against the initial frozen graph snapshot before merge. |
 | `proposalSlates` | optional | array&lt;object&gt; \| object | Optional proposal_graph_session role slates by round. Omitted round_id or snapshot_id fields are filled from the current frozen snapshot; explicit stale snapshot ids are rejected. |
@@ -1277,7 +1307,13 @@ Initialize or update the PaperNexus runtime config non-interactively over MCP, e
 | `indexDirs` | optional | array&lt;string&gt; | Multiple PaperNexus index roots to persist as storage.indexDirs so one serve worker can scan several corpora. |
 | `rootPath` | optional | string | Alias for indexDir. |
 | `configPath` | optional | string | Optional runtime config path to create or update. If omitted, the default PaperNexus runtime config is used. |
-| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl) | Default PDF parser to write into analyze.pdfParser. Default: `"markitdown"`. Allowed values: `markitdown`, `markpdfdown`, `opendataloader`, `docling`, `marker`, `mineru`, `paddleocr-vl`. |
+| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl, firecrawl) | Default PDF parser to write into analyze.pdfParser. Default: `"markitdown"`. Allowed values: `markitdown`, `markpdfdown`, `opendataloader`, `docling`, `marker`, `mineru`, `paddleocr-vl`, `firecrawl`. |
+| `firecrawlApiBaseUrl` | optional | string | Firecrawl API base URL to write into analyze.firecrawlApiBaseUrl. Defaults to https://api.firecrawl.dev when omitted. |
+| `firecrawlApiKeyEnv` | optional | string | Environment variable name containing the Firecrawl API key. Raw Firecrawl API keys are intentionally rejected by runtime_init. |
+| `firecrawlMode` | optional | string (fast, auto, ocr) | Firecrawl PDF parsing mode to write into analyze.firecrawlMode. Default: `"auto"`. Allowed values: `fast`, `auto`, `ocr`. |
+| `firecrawlSourceMode` | optional | string (auto, upload, url) | Firecrawl source mode to write into analyze.firecrawlSourceMode. upload is safest for local/private PDFs; url requires a public PDF URL. Default: `"auto"`. Allowed values: `auto`, `upload`, `url`. |
+| `firecrawlMaxPages` | optional | number | Optional maximum PDF pages for Firecrawl to parse. |
+| `firecrawlTimeoutMs` | optional | number | Optional Firecrawl request timeout in milliseconds. |
 | `serveHost` | optional | string | Default serve host to write into serve.host. Default: `"127.0.0.1"`. |
 | `servePort` | optional | number | Default serve port to write into serve.port. Default: `4821`. |
 | `serveMcpEnabled` | optional | boolean | When provided, write serve.mcp.enabled for HTTP MCP serving. |
@@ -1348,8 +1384,14 @@ Create the first committed corpus graph over MCP from server-visible source file
 | `force` | optional | boolean | Force a full build even if cached corpus state exists. Default: `false`. |
 | `semanticExtraction` | optional | string (auto, heuristic-only, llm-assisted, llm-primary) | Optional semantic extraction override for the first build. Allowed values: `auto`, `heuristic-only`, `llm-assisted`, `llm-primary`. |
 | `rebuildPdfMarkdown` | optional | boolean | When true, force PDF markdown regeneration during the first build. |
-| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl) | Optional PDF parser override for the first build. Allowed values: `markitdown`, `markpdfdown`, `opendataloader`, `docling`, `marker`, `mineru`, `paddleocr-vl`. |
+| `pdfParser` | optional | string (markitdown, markpdfdown, opendataloader, docling, marker, mineru, paddleocr-vl, firecrawl) | Optional PDF parser override for the first build. Allowed values: `markitdown`, `markpdfdown`, `opendataloader`, `docling`, `marker`, `mineru`, `paddleocr-vl`, `firecrawl`. |
 | `pdfCommand` | optional | string | Optional generic PDF parser command override for the first build. |
+| `firecrawlApiBaseUrl` | optional | string | Optional Firecrawl API base URL for the first build. |
+| `firecrawlApiKeyEnv` | optional | string | Environment variable name containing the Firecrawl API key. Raw Firecrawl API keys are not accepted. |
+| `firecrawlMode` | optional | string (fast, auto, ocr) | Firecrawl PDF parsing mode for the first build. Default: `"auto"`. Allowed values: `fast`, `auto`, `ocr`. |
+| `firecrawlSourceMode` | optional | string (auto, upload, url) | Firecrawl source mode for the first build. Default: `"auto"`. Allowed values: `auto`, `upload`, `url`. |
+| `firecrawlMaxPages` | optional | number | Optional maximum PDF pages for Firecrawl to parse. |
+| `firecrawlTimeoutMs` | optional | number | Optional Firecrawl request timeout in milliseconds. |
 | `concurrency` | optional | number | Optional source analysis concurrency override. |
 | `analyzeConcurrency` | optional | number | Alias for concurrency. |
 | `llmBatchSize` | optional | number | Optional LLM batch size override. |

@@ -7845,6 +7845,7 @@ function createEmptyMaterializeTimings() {
       probeHttpMs: 0,
       pdfReadMs: 0,
       mineruRequestMs: 0,
+      firecrawlRequestMs: 0,
       markdownWriteMs: 0
     }
   };
@@ -7870,7 +7871,7 @@ function mergeMaterializeTimings(target = createEmptyMaterializeTimings(), sourc
     }
   }
 
-  for (const key of ['probeHttpMs', 'pdfReadMs', 'mineruRequestMs', 'markdownWriteMs']) {
+  for (const key of ['probeHttpMs', 'pdfReadMs', 'mineruRequestMs', 'firecrawlRequestMs', 'markdownWriteMs']) {
     const value = Number(source?.parser?.[key] || 0);
     if (Number.isFinite(value) && value > 0) {
       target.parser[key] = Number(target.parser[key] || 0) + value;
@@ -7971,6 +7972,34 @@ function resolveExpectedMarkdownCachePath(rootPath, sourceState, options = {}) {
   return getMarkdownSourceCachePath(sourceState.inputPath, {
     markdownDir
   });
+}
+
+function resolveFirecrawlSourceUrlForSource(sourceState = {}, options = {}) {
+  const metadata = sourceState.paperMetadata || {};
+  const previous = sourceState.previous || {};
+  return firstDefinedValue(
+    options.firecrawlSourceUrl,
+    metadata.pdfUrl,
+    metadata.pdf_url,
+    metadata.sourcePdfUrl,
+    metadata.source_pdf_url,
+    metadata.bestPdfUrl,
+    metadata.best_pdf_url,
+    metadata.bestOaPdfUrl,
+    metadata.best_oa_pdf_url,
+    metadata.bestOaUrl,
+    metadata.best_oa_url,
+    previous.pdfUrl,
+    previous.pdf_url,
+    previous.sourcePdfUrl,
+    previous.source_pdf_url,
+    previous.bestPdfUrl,
+    previous.best_pdf_url,
+    previous.bestOaPdfUrl,
+    previous.best_oa_pdf_url,
+    previous.bestOaUrl,
+    previous.best_oa_url
+  );
 }
 
 function countParsedPaperBodyCharacters(parsed = {}) {
@@ -8120,6 +8149,13 @@ async function materializeSemanticPaper(rootPath, sourceState, options = {}) {
       markerBlockBlacklist: options.markerBlockBlacklist,
       mineruCommand: options.mineruCommand,
       mineruHttpUrl: options.mineruHttpUrl,
+      firecrawlApiBaseUrl: options.firecrawlApiBaseUrl,
+      firecrawlApiKeyEnv: options.firecrawlApiKeyEnv,
+      firecrawlMode: options.firecrawlMode,
+      firecrawlSourceMode: options.firecrawlSourceMode,
+      firecrawlSourceUrl: resolveFirecrawlSourceUrlForSource(sourceState, options),
+      firecrawlMaxPages: options.firecrawlMaxPages,
+      firecrawlTimeoutMs: options.firecrawlTimeoutMs,
       paddleocrVlPython: options.paddleocrVlPython,
       paddleocrVlServerUrl: options.paddleocrVlServerUrl,
       paddleocrVlLayoutModel: options.paddleocrVlLayoutModel,
@@ -8601,7 +8637,13 @@ function buildScrubRecoveryOptions(manifest = {}, options = {}) {
     doclingCommand: firstDefinedValue(
       options.doclingCommand,
       parser === 'docling' ? manifestPdfCommand : undefined
-    )
+    ),
+    firecrawlApiBaseUrl: firstDefinedValue(options.firecrawlApiBaseUrl, manifest.firecrawlApiBaseUrl),
+    firecrawlApiKeyEnv: firstDefinedValue(options.firecrawlApiKeyEnv, manifest.firecrawlApiKeyEnv),
+    firecrawlMode: firstDefinedValue(options.firecrawlMode, manifest.firecrawlMode),
+    firecrawlSourceMode: firstDefinedValue(options.firecrawlSourceMode, manifest.firecrawlSourceMode),
+    firecrawlMaxPages: firstDefinedValue(options.firecrawlMaxPages, manifest.firecrawlMaxPages),
+    firecrawlTimeoutMs: firstDefinedValue(options.firecrawlTimeoutMs, manifest.firecrawlTimeoutMs)
   };
 }
 
@@ -10017,6 +10059,12 @@ export async function analyzeCorpus(inputPath, options = {}) {
                   process.env.PAPERNEXUS_PADDLEOCR_VL_PYTHON,
                   process.env.PAPERNEXUS_PYTHON_COMMAND,
                   'python3'
+                )
+              : pdfParser === 'firecrawl'
+                ? firstDefinedValue(
+                  options.pdfCommand,
+                  previousManifest?.pdfCommand,
+                  ''
                 )
             : firstDefinedValue(
               options.pdfCommand,
