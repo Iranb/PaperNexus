@@ -7,6 +7,16 @@ import { ensureDir, fileExists, listFilesRecursive, readText, removePath, writeT
 import { stableHash } from '../../lib/utils.js';
 import { loadLlmApiKey, resolveLlmConfig } from '../llm/ollama.js';
 import { createPdfParseTracker } from '../../storage/pdf-parse-store.js';
+import {
+  DEFAULT_FIRECRAWL_API_BASE_URL,
+  DEFAULT_FIRECRAWL_API_KEY_ENV,
+  DEFAULT_FIRECRAWL_MODE,
+  DEFAULT_FIRECRAWL_SOURCE_MODE,
+  convertPdfWithFirecrawl,
+  normalizeFirecrawlMaxPages,
+  normalizeFirecrawlMode,
+  normalizeFirecrawlSourceMode
+} from './firecrawl-client.js';
 
 const PDF_PARSER_DOCLING = 'docling';
 const PDF_PARSER_MARKITDOWN = 'markitdown';
@@ -15,6 +25,7 @@ const PDF_PARSER_OPENDATALOADER = 'opendataloader';
 const PDF_PARSER_MARKER = 'marker';
 const PDF_PARSER_MINERU = 'mineru';
 const PDF_PARSER_PADDLEOCR_VL = 'paddleocr-vl';
+const PDF_PARSER_FIRECRAWL = 'firecrawl';
 const DEFAULT_PDF_PARSER = PDF_PARSER_MARKITDOWN;
 const DEFAULT_PDF_PARSE_TIMEOUT_MS = 100_000;
 const DEFAULT_MINERU_PROBE_CACHE_TTL_MS = 15_000;
@@ -81,6 +92,13 @@ const PDF_PARSER_PROFILES = {
     fallbackParser: PDF_PARSER_DOCLING,
     localConcurrency: 1,
     remoteConcurrency: 1,
+    allowLlmConcurrencyBoost: false,
+    leaseStrategy: 'none'
+  },
+  [PDF_PARSER_FIRECRAWL]: {
+    fallbackParser: PDF_PARSER_DOCLING,
+    localConcurrency: 2,
+    remoteConcurrency: 2,
     allowLlmConcurrencyBoost: false,
     leaseStrategy: 'none'
   }
@@ -269,6 +287,7 @@ export function normalizePdfParser(value) {
   if (normalized === PDF_PARSER_MARKER) return PDF_PARSER_MARKER;
   if (normalized === PDF_PARSER_MINERU) return PDF_PARSER_MINERU;
   if (normalized === PDF_PARSER_PADDLEOCR_VL) return PDF_PARSER_PADDLEOCR_VL;
+  if (normalized === PDF_PARSER_FIRECRAWL) return PDF_PARSER_FIRECRAWL;
   return PDF_PARSER_DOCLING;
 }
 
@@ -357,6 +376,9 @@ function resolvePdfParserCommandOption(parserName, options = {}) {
   }
   if (parser === PDF_PARSER_PADDLEOCR_VL) {
     return options.paddleocrVlPython || options.pdfCommand;
+  }
+  if (parser === PDF_PARSER_FIRECRAWL) {
+    return '';
   }
   return options.doclingCommand || options.pdfCommand;
 }
@@ -628,8 +650,76 @@ function resolvePaddleOcrVlLayoutModel(options = {}) {
   return String(
     options.paddleocrVlLayoutModel
     || process.env.PAPERNEXUS_PADDLEOCR_VL_LAYOUT_MODEL
-    || 'PP-DocLayout-S'
-  ).trim() || 'PP-DocLayout-S';
+    || ''
+  ).trim();
+}
+
+function resolveFirecrawlApiBaseUrl(options = {}) {
+  return String(
+    options.firecrawlApiBaseUrl
+    || process.env.PAPERNEXUS_FIRECRAWL_API_BASE_URL
+    || DEFAULT_FIRECRAWL_API_BASE_URL
+  ).trim() || DEFAULT_FIRECRAWL_API_BASE_URL;
+}
+
+function resolveFirecrawlApiKeyEnv(options = {}) {
+  return String(
+    options.firecrawlApiKeyEnv
+    || process.env.PAPERNEXUS_FIRECRAWL_API_KEY_ENV
+    || DEFAULT_FIRECRAWL_API_KEY_ENV
+  ).trim() || DEFAULT_FIRECRAWL_API_KEY_ENV;
+}
+
+function resolveFirecrawlMode(options = {}) {
+  return normalizeFirecrawlMode(
+    options.firecrawlMode
+    || process.env.PAPERNEXUS_FIRECRAWL_MODE
+    || DEFAULT_FIRECRAWL_MODE
+  );
+}
+
+function resolveFirecrawlSourceMode(options = {}) {
+  return normalizeFirecrawlSourceMode(
+    options.firecrawlSourceMode
+    || process.env.PAPERNEXUS_FIRECRAWL_SOURCE_MODE
+    || DEFAULT_FIRECRAWL_SOURCE_MODE
+  );
+}
+
+function resolveFirecrawlMaxPages(options = {}) {
+  return normalizeFirecrawlMaxPages(
+    options.firecrawlMaxPages
+    ?? process.env.PAPERNEXUS_FIRECRAWL_MAX_PAGES
+    ?? null
+  );
+}
+
+function resolveFirecrawlTimeoutMs(options = {}) {
+  const raw = Number(
+    options.firecrawlTimeoutMs
+    ?? process.env.PAPERNEXUS_FIRECRAWL_TIMEOUT_MS
+    ?? options.pdfParseTimeoutMs
+    ?? process.env.PAPERNEXUS_PDF_PARSE_TIMEOUT_MS
+    ?? DEFAULT_PDF_PARSE_TIMEOUT_MS
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PDF_PARSE_TIMEOUT_MS;
+  return Math.max(1, Math.round(raw));
+}
+
+function resolveFirecrawlSourceUrl(options = {}) {
+  return firstNonEmptyString(
+    options.firecrawlSourceUrl,
+    options.pdfUrl,
+    options.pdf_url,
+    options.sourcePdfUrl,
+    options.source_pdf_url,
+    options.bestPdfUrl,
+    options.best_pdf_url,
+    options.bestOaPdfUrl,
+    options.best_oa_pdf_url,
+    options.bestOaUrl,
+    options.best_oa_url
+  );
 }
 
 function resolveMarkPdfDownTemperature(options = {}) {
@@ -1290,6 +1380,7 @@ function createMineruParserTimings() {
     probeHttpMs: 0,
     pdfReadMs: 0,
     mineruRequestMs: 0,
+    firecrawlRequestMs: 0,
     markdownWriteMs: 0
   };
 }
@@ -1468,6 +1559,15 @@ function buildRemoteMarkerScript({ markerCommand, remotePdfPath, remoteRunDir, p
   ].join('\n');
 }
 
+function buildCompatibleDoclingShellCommand(command, argv) {
+  // Docling 2.126 uses subcommands; older releases accept the input directly.
+  // Probe the selected executable, including on SSH hosts, without loading a PDF.
+  const help = buildShellCommand(command, ['--help']);
+  const current = buildShellCommand(command, ['convert', ...argv]);
+  const legacy = buildShellCommand(command, argv);
+  return `if { ${help} 2>/dev/null || true; } | grep -q 'convert-remote'; then\n${current}\nelse\n${legacy}\nfi`;
+}
+
 function buildRemoteDoclingScript({
   doclingCommand,
   remotePdfPath,
@@ -1493,7 +1593,7 @@ function buildRemoteDoclingScript({
   hfHubDisableTelemetry,
   autoGpu = true
 }) {
-  const command = buildShellCommand(
+  const command = buildCompatibleDoclingShellCommand(
     doclingCommand,
     buildDoclingCliArgv({
       inputPath: remotePdfPath,
@@ -1989,7 +2089,7 @@ async function runLocalDoclingCli(pdfPath, runDir, options = {}, executionOption
     tracker
   );
   try {
-    return await runCommand('/bin/sh', ['-lc', buildShellCommand(options.doclingCommand, argv)], {
+    return await runCommand('/bin/sh', ['-lc', buildCompatibleDoclingShellCommand(options.doclingCommand, argv)], {
       ...executionOptions,
       env: {
         ...env,
@@ -2400,7 +2500,7 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   if (!quiet) {
     process.stderr.write(`[mineru:${basename}] Running local mineru with remote backend\n`);
   }
-  await measureDuration(timings, 'mineruRequestMs', () => runCommand('mineru', args, {
+  await measureDuration(timings, 'mineruRequestMs', () => runCommand(mineruCommand || 'mineru', args, {
     onStdout: quiet ? () => {} : undefined,
     onStderr: quiet ? () => {} : undefined,
     timeoutMs,
@@ -2412,7 +2512,7 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
 
   return {
     markdown,
-    parserCommand: `mineru -b vlm-http-client -u ${mineruHttpUrl || mineruCommand}`,
+    parserCommand: `${mineruCommand || 'mineru'} -b vlm-http-client -u ${mineruHttpUrl || mineruCommand}`,
     timings
   };
 }
@@ -2929,7 +3029,7 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
       currentStep: 'running local mineru',
       message: 'Running local MinerU'
     });
-    await runCommand('mineru', args, {
+    await runCommand(mineruCommand, args, {
       onStdout: quiet ? () => {} : undefined,
       onStderr: quiet ? () => {} : undefined,
       timeoutMs,
@@ -2954,6 +3054,101 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
     parser: PDF_PARSER_MINERU,
     parserCommand: mineruCommand,
     timings: parserTimings
+  };
+}
+
+async function convertPdfToMarkdownWithFirecrawl(pdfPath, options = {}) {
+  const {
+    markerDir,
+    markdownDir,
+    force = false,
+    pageRange
+  } = options;
+
+  if (pageRange) {
+    throw new Error('Firecrawl page-range forwarding is not supported. Use firecrawlMaxPages or a local parser that supports --page-range.');
+  }
+
+  const basename = path.basename(pdfPath, path.extname(pdfPath));
+  const tracker = options.pdfParseTracker || null;
+  const mode = resolveFirecrawlMode(options);
+  const sourceMode = resolveFirecrawlSourceMode(options);
+  const timeoutMs = resolveFirecrawlTimeoutMs(options);
+  const { cachedMarkdownPath, runDir } = getParserCachePaths(PDF_PARSER_FIRECRAWL, basename, {
+    markerDir,
+    markdownDir
+  });
+
+  if (!force && await fileExists(cachedMarkdownPath)) {
+    await tracker?.update?.({
+      status: 'cache-hit',
+      activeParser: PDF_PARSER_FIRECRAWL,
+      currentStep: 'reusing cached firecrawl markdown',
+      message: 'Reusing cached Firecrawl markdown',
+      parserCommand: `firecrawl:cache mode=${mode}`
+    });
+    return {
+      markdownPath: cachedMarkdownPath,
+      sourcePdfPath: pdfPath,
+      generated: false,
+      parser: PDF_PARSER_FIRECRAWL,
+      parserCommand: `firecrawl:cache mode=${mode}`
+    };
+  }
+
+  if (force) {
+    await removePath(runDir);
+  }
+
+  await ensureDir(runDir);
+  await ensureDir(path.dirname(cachedMarkdownPath));
+  await tracker?.update?.({
+    status: 'running',
+    activeParser: PDF_PARSER_FIRECRAWL,
+    currentStep: `running firecrawl in ${sourceMode} mode`,
+    message: `Running Firecrawl PDF parser in ${mode} mode`
+  });
+
+  const timings = createMineruParserTimings();
+  let firecrawlResult;
+  try {
+    process.stderr.write(`[firecrawl:${basename}] Running Firecrawl PDF parser in ${mode} mode\n`);
+    firecrawlResult = await measureDuration(timings, 'firecrawlRequestMs', () => convertPdfWithFirecrawl(pdfPath, {
+      apiBaseUrl: resolveFirecrawlApiBaseUrl(options),
+      apiKeyEnv: resolveFirecrawlApiKeyEnv(options),
+      mode,
+      sourceMode,
+      sourceUrl: resolveFirecrawlSourceUrl(options),
+      maxPages: resolveFirecrawlMaxPages(options),
+      timeoutMs
+    }));
+  } catch (error) {
+    throw new Error(
+      `Firecrawl failed for ${pdfPath}. ${error.message}\n` +
+      'Tip: set FIRECRAWL_API_KEY or firecrawlApiKeyEnv, verify the Firecrawl API is reachable, or switch to a local parser.'
+    );
+  }
+
+  if (!firecrawlResult.markdown.trim()) {
+    throw new Error(`Firecrawl produced empty markdown for ${pdfPath}.`);
+  }
+
+  await measureDuration(timings, 'markdownWriteMs', () => writeText(cachedMarkdownPath, firecrawlResult.markdown));
+  await tracker?.update?.({
+    status: 'running',
+    activeParser: PDF_PARSER_FIRECRAWL,
+    currentStep: `writing Firecrawl markdown from ${firecrawlResult.endpoint}`,
+    message: `Firecrawl returned markdown from ${firecrawlResult.endpoint}`,
+    parserCommand: firecrawlResult.parserCommand
+  });
+
+  return {
+    markdownPath: cachedMarkdownPath,
+    sourcePdfPath: pdfPath,
+    generated: true,
+    parser: PDF_PARSER_FIRECRAWL,
+    parserCommand: firecrawlResult.parserCommand,
+    timings
   };
 }
 
@@ -3148,6 +3343,14 @@ export async function convertPdfToMarkdown(pdfPath, options = {}) {
       });
     }
 
+    if (parser === PDF_PARSER_FIRECRAWL) {
+      return convertPdfToMarkdownWithFirecrawl(pdfPath, {
+        ...options,
+        pdfParseTracker: tracker,
+        pdfParseSelectedParser: selectedParser
+      });
+    }
+
     return convertPdfToMarkdownWithDocling(pdfPath, {
       ...options,
       pdfParseTracker: tracker,
@@ -3262,6 +3465,14 @@ export const __pdfParserTestables = {
   buildDoclingHuggingFaceEnv,
   resolvePaddleOcrVlPython,
   resolvePaddleOcrVlServerUrl,
+  resolvePaddleOcrVlLayoutModel,
+  resolveFirecrawlApiBaseUrl,
+  resolveFirecrawlApiKeyEnv,
+  resolveFirecrawlMode,
+  resolveFirecrawlSourceMode,
+  resolveFirecrawlMaxPages,
+  resolveFirecrawlTimeoutMs,
+  resolveFirecrawlSourceUrl,
   resolveRemoteMarkerHost,
   filterMarkerMarkdown,
   resolveMineruRemoteFailureMode,

@@ -9,7 +9,9 @@ Read-only material operations:
 - `paper_material_view`: returns one paper's source availability, graph context, chunks, source spans, lightweight markdown table/figure materials, and matching project overlay roles.
 - `source_discovery_plan`: generates target, near-source, and far-source queries, committed-graph candidates, optional provider snippet evidence, optional live-discovery evidence, optional literature-discovery resolve/import readiness, sparse-role negative evidence, and import requisitions.
 - `research_material_pack`: returns role-grouped materials plus source discovery metadata, source-domain item annotations, optional provider/live-discovery/literature-discovery materials, missing materials, import requisitions, and project overlay summary.
-- `innovation_evidence_pack`: compiles AutoResearch handoff materials from existing material packs into novelty baselines, gap maps, closest-prior risk signals, mechanism-to-intervention maps, experiment anchors, idea evidence cards, storyline chains, evidence sufficiency, coverage matrix, composition-collision matrix, provider-to-import priorities, and required follow-up actions. It is an evidence compiler and novelty auditor only: it does not prove novelty, choose the final idea, or run experiments.
+- `structural_gap_pack`: compiles evidence-first additive and subtractive gaps, persistent assumptions, bounded method-lineage frontier candidates, and historical-regression watch items. It reuses validated exact-quote method-evolution edges when a method anchor is supplied.
+- `innovation_pattern_pack`: matches ResearchStudio-style research-action cards only after structural gaps have been compiled. Built-in cards are a seed taxonomy, not empirical accepted/rejected outcome evidence.
+- `innovation_evidence_pack`: compiles AutoResearch handoff materials from existing material packs into novelty baselines, structural-gap and innovation-pattern analyses, closest-prior risk signals, mechanism-to-intervention maps, experiment anchors, idea evidence cards with ResearchStudio traceability, storyline chains, evidence sufficiency, coverage matrix, lexical composition-collision screening, mechanism-collision query plans, proposal-graph handoff, provider-to-import priorities, and required follow-up actions. It is an evidence compiler and novelty auditor only: it does not prove novelty, choose the final idea, or run experiments.
 - `import_requisition_pack`: returns missing-but-useful import requests, generated queries, and optional literature-discovery import readiness.
 - `negative_evidence_pack`: records searched queries, filters, direct hits, adjacent hits, absence confidence, and recommended next queries from committed graph state; with `includeProviderEvidence=true`, it also records bounded Semantic Scholar snippet query runs and direct/adjacent provider hit counts. Live-discovery evidence is exposed through `source_discovery_plan` and `research_material_pack`, not persisted by this negative-evidence operation.
 - `experiment_cost_materials`: extracts GPU/runtime/epoch/batch-size/dataset/backbone/code-availability snippets from chunks, source spans, markdown tables, table captions, and figure captions with provenance for Agent inspection.
@@ -31,6 +33,47 @@ Overlay state is stored under the selected corpus root:
 ```
 
 These files are project memory, not raw graph facts. They must not be merged into the corpus graph as paper truth.
+
+## ResearchStudio-Style Ordered Innovation Audit
+
+The structural and pattern operations enforce the order `committed evidence -> structural gap -> research action -> concrete mechanism -> collision/regression/falsification audit`. A topic string alone cannot select a pattern. Sparse evidence produces `partial` or `starved` status and reason codes instead of a manufactured gap.
+
+Request a structural audit with an optional method-lineage anchor:
+
+```json
+{
+  "operation": "structural_gap_pack",
+  "corpus": "<corpus>",
+  "targetProblem": "<problem without a preselected solution>",
+  "method": "<method name or Method node id>",
+  "maxDepth": 4,
+  "lineageLimit": 8,
+  "persistentAssumptionMinPapers": 2
+}
+```
+
+The result keeps four boundaries explicit:
+
+- `additive_gaps` describe missing capabilities or unresolved failures supported by current materials or bounded lineage endpoints.
+- `subtractive_gaps` are repeated assumptions or component dependencies that might be removed or replaced. A repeated role for the same paper counts once; the default persistence threshold is two distinct graph-backed papers.
+- `frontier_candidates` are terminal methods observed within bounded traversal. `global_leaf_proven=false` prevents a depth/limit boundary from being misreported as a corpus-global leaf.
+- `historical_regression_watchlist` records earlier lineage bottlenecks or capabilities that a candidate mechanism must not reintroduce.
+
+Match research actions after the gap audit:
+
+```json
+{
+  "operation": "innovation_pattern_pack",
+  "corpus": "<corpus>",
+  "targetProblem": "<problem>",
+  "method": "<method anchor>",
+  "patternLimit": 2
+}
+```
+
+Every match references a `structural_gap_id` and exposes its score, trigger terms, success recipe, failure recipe, required evidence, and evidence origin. The 15 built-in cards use `source_type=seed_taxonomy`, `empirical_outcome_backed=false`, and `outcome_evidence_status=seed_taxonomy_only`. Caller-supplied cards retain empirical-outcome status only when they explicitly opt in and provide outcome evidence references.
+
+The integrated `innovation_evidence_pack` adds `structural_gap_analysis`, `innovation_pattern_analysis`, `mechanism_collision_audit`, and `proposal_graph_handoff`. The collision audit emits a deterministic mechanism fingerprint, decomposed search queries, and lexical candidates, but always reports `semantic_equivalence_checked=false` and `novelty_claim_allowed=false`. The proposal handoff is `episode_local=true` and `raw_graph_mutation=false`; it is evidence input for `proposal_graph_session`, not a corpus fact or autonomously generated role-action slate.
 
 ## Source Router
 
@@ -195,6 +238,24 @@ negative_evidence.json
 overlay_summary.json
 ```
 
+Compile structural gaps and then match research-action patterns from the wrapper:
+
+```bash
+python SKILL/PaperNexus/scripts/pn_agent_materials.py structural-gap-pack \
+  --corpus <corpus> \
+  --target-problem "<research problem>" \
+  --method "<method anchor>" \
+  --max-depth 4 \
+  --lineage-limit 8 \
+  --persistent-assumption-min-papers 2
+
+python SKILL/PaperNexus/scripts/pn_agent_materials.py innovation-pattern-pack \
+  --corpus <corpus> \
+  --target-problem "<research problem>" \
+  --method "<method anchor>" \
+  --pattern-limit 2
+```
+
 Compile an AutoResearch innovation evidence handoff through MCP:
 
 ```json
@@ -217,6 +278,10 @@ Its output groups the same underlying materials into:
 - `required_followup`: executable next actions such as `literature_discovery`, `import_requisition_pack`, `import_workflow`, or rerunning `innovation_evidence_pack`.
 - `provider_to_import_priority`: P0/P1/P2 import priorities for provider-only or discovery-only priors that are not yet graph evidence.
 - `idea_evidence_cards`: candidate problem/gap/mechanism/intervention/falsifier cards for AutoResearch review.
+- `structural_gap_analysis`: evidence-first additive/subtractive gaps, persistent assumptions, bounded frontier candidates, and historical-regression references.
+- `innovation_pattern_analysis`: gap-linked research-action matches with seed-taxonomy versus caller-evidence provenance.
+- `mechanism_collision_audit`: decomposed mechanism search plan and lexical prefilter with an explicit semantic-equivalence boundary.
+- `proposal_graph_handoff`: episode-local evidence/provenance input for a later `proposal_graph_session`, with no raw graph mutation.
 - `storyline_chains`: status-quo, tension, gap, mechanism, intervention, validation, contribution-boundary, and risk beats.
 - `evidence_boundaries`: what is evidence-supported, Agent-inferred, and speculative.
 - `autoresearch_handoff`: required consumer checks before experiment planning.
@@ -237,6 +302,10 @@ innovation-evidence-pack.md
 evidence_sufficiency.json
 coverage_matrix.json
 composition_collision_matrix.json
+structural_gap_analysis.json
+innovation_pattern_analysis.json
+mechanism_collision_audit.json
+proposal_graph_handoff.json
 required_followup.json
 provider_to_import_priority.json
 novelty_audit_pack.json

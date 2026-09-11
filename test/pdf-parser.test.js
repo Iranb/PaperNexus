@@ -33,6 +33,7 @@ test('normalizePdfParser defaults to markitdown and accepts other parsers', () =
   assert.equal(__markerTestables.normalizePdfParser('docling'), 'docling');
   assert.equal(__markerTestables.normalizePdfParser('marker'), 'marker');
   assert.equal(__markerTestables.normalizePdfParser('paddleocr-vl'), 'paddleocr-vl');
+  assert.equal(__markerTestables.normalizePdfParser('firecrawl'), 'firecrawl');
   assert.equal(__markerTestables.normalizePdfParser('unexpected'), 'docling');
 });
 
@@ -89,6 +90,30 @@ test('getPdfParserProfile centralizes concurrency and lease behavior per parser'
   assert.equal(doclingProfile.recommendedConcurrency, 4);
   assert.equal(doclingProfile.fallbackParser, '');
   assert.equal(doclingProfile.leaseStrategy, 'docling-gpu');
+
+  const firecrawlProfile = __markerTestables.getPdfParserProfile('firecrawl', {});
+  assert.equal(firecrawlProfile.recommendedConcurrency, 2);
+  assert.equal(firecrawlProfile.fallbackParser, 'docling');
+  assert.equal(firecrawlProfile.leaseStrategy, 'none');
+});
+
+test('Firecrawl parser option helpers normalize mode, source mode, max pages, and env names', () => {
+  assert.equal(__markerTestables.resolveFirecrawlMode({ firecrawlMode: 'ocr' }), 'ocr');
+  assert.equal(__markerTestables.resolveFirecrawlMode({ firecrawlMode: 'invalid' }), 'auto');
+  assert.equal(__markerTestables.resolveFirecrawlSourceMode({ firecrawlSourceMode: 'url' }), 'url');
+  assert.equal(__markerTestables.resolveFirecrawlSourceMode({ firecrawlSourceMode: 'invalid' }), 'auto');
+  assert.equal(__markerTestables.resolveFirecrawlMaxPages({ firecrawlMaxPages: '7' }), 7);
+  assert.equal(__markerTestables.resolveFirecrawlMaxPages({ firecrawlMaxPages: '0' }), null);
+  assert.equal(__markerTestables.resolveFirecrawlApiKeyEnv({ firecrawlApiKeyEnv: 'CUSTOM_FIRECRAWL_KEY' }), 'CUSTOM_FIRECRAWL_KEY');
+  assert.equal(__markerTestables.resolveFirecrawlSourceUrl({
+    paperMetadata: { ignored: true },
+    pdfUrl: 'https://example.test/paper.pdf'
+  }), 'https://example.test/paper.pdf');
+  assert.equal(__markerTestables.resolveFirecrawlSourceUrl({
+    landingPageUrl: 'https://example.test/paper',
+    sourceUrl: 'https://example.test/source-page',
+    sourcePdfUrl: 'https://example.test/source.pdf'
+  }), 'https://example.test/source.pdf');
 });
 
 test('resolveMarkerBlockBlacklist normalizes configured marker block names', () => {

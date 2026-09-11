@@ -18,6 +18,14 @@ def add_project_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project")
     parser.add_argument("--target-domain")
     parser.add_argument("--target-problem")
+    parser.add_argument("--method", help="Optional validated method-lineage anchor for structural-gap and innovation-pattern analysis.")
+    parser.add_argument("--max-depth", type=int, help="Maximum validated method-lineage traversal depth.")
+    parser.add_argument("--lineage-limit", type=int, help="Maximum validated method lineages retained.")
+    parser.add_argument("--persistent-assumption-min-papers", type=int, help="Distinct-paper threshold for subtractive persistent-assumption gaps (default: 2).")
+    parser.add_argument("--pattern-limit", type=int, help="Maximum research-action pattern matches per structural gap (default: 2).")
+    parser.add_argument("--pattern-card-json", action="append", default=[], help="Optional caller-supplied research-action card as a JSON object.")
+    parser.add_argument("--candidate-mechanism", help="Optional concrete mechanism text for regression and collision query planning.")
+    parser.add_argument("--removed-component", action="append", default=[], help="Assumption or component removed/replaced by the candidate mechanism.")
     parser.add_argument("--idea-component", action="append", default=[], help="Idea component for innovation_evidence_pack composition-collision audit.")
     parser.add_argument("--coverage-area", action="append", default=[], help="Coverage area override for innovation_evidence_pack evidence-sufficiency audit.")
     parser.add_argument("--constraint", action="append", default=[])
@@ -123,6 +131,14 @@ def parse_args():
     add_project_args(pack)
     add_seed_args(pack)
 
+    structural = subparsers.add_parser("structural-gap-pack")
+    add_project_args(structural)
+    add_seed_args(structural)
+
+    patterns = subparsers.add_parser("innovation-pattern-pack")
+    add_project_args(patterns)
+    add_seed_args(patterns)
+
     innovation = subparsers.add_parser("innovation-evidence-pack")
     add_project_args(innovation)
     add_seed_args(innovation)
@@ -218,6 +234,14 @@ def common_payload(args, corpus: str) -> dict:
         "project": args.project,
         "targetDomain": args.target_domain,
         "targetProblem": args.target_problem,
+        "method": args.method,
+        "maxDepth": args.max_depth,
+        "lineageLimit": args.lineage_limit,
+        "persistentAssumptionMinPapers": args.persistent_assumption_min_papers,
+        "patternLimit": args.pattern_limit,
+        "patternCards": parse_json_values(args.pattern_card_json, "--pattern-card-json"),
+        "candidateMechanism": args.candidate_mechanism,
+        "removedComponents": args.removed_component,
         "ideaComponents": args.idea_component,
         "coverageAreas": args.coverage_area,
         "constraints": args.constraint,

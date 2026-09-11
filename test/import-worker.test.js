@@ -1,12 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const examplesRoot = path.join(__dirname, '..', 'examples');
+
+async function readRequestBody(request) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function writeJson(response, statusCode, payload) {
+  response.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify(payload));
+}
+
+async function startFirecrawlServer(handler) {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    try {
+      await handler(request, response, requests);
+    } catch (error) {
+      writeJson(response, 500, { success: false, error: error.message });
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () => new Promise((resolve) => server.close(resolve))
+  };
+}
 
 async function waitFor(check, { timeoutMs = 2000, intervalMs = 25 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -1718,6 +1750,72 @@ printf '# %s\\n\\n## Abstract\\n\\nPrepared by fake docling.\\n' "$base" > "$out
     else process.env.PAPERNEXUS_HOME = previousHome;
     await fs.rm(workspaceRoot, { recursive: true, force: true });
     await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('import worker can preparse PDF tasks through firecrawl without leaking tokens', async () => {
+  let workerTestables = null;
+  const importStore = await import('../src/storage/import-store.js');
+  ({ __importWorkerTestables: workerTestables } = await import('../src/core/imports/worker.js'));
+
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-import-firecrawl-preparse-'));
+  const pdfPath = path.join(rootPath, 'paper.pdf');
+  const server = await startFirecrawlServer(async (request, response, requests) => {
+    const body = await readRequestBody(request);
+    requests.push({
+      url: request.url,
+      headers: request.headers,
+      body: body.toString('utf8')
+    });
+    writeJson(response, 200, {
+      success: true,
+      data: {
+        markdown: '# Import Firecrawl\n\nFirecrawl import markdown body.'
+      }
+    });
+  });
+  const previousKey = process.env.PAPERNEXUS_TEST_IMPORT_FIRECRAWL_KEY;
+
+  try {
+    process.env.PAPERNEXUS_TEST_IMPORT_FIRECRAWL_KEY = 'test-import-firecrawl-key';
+    await fs.writeFile(pdfPath, 'fake-pdf', 'utf8');
+
+    const result = await workerTestables.preparseImportTaskSources(rootPath, {
+      id: 'imp:firecrawl',
+      files: [
+        {
+          kind: 'pdf',
+          storedPath: pdfPath,
+          originalName: 'paper.pdf'
+        }
+      ]
+    }, {
+      pdfParser: 'firecrawl',
+      firecrawlApiBaseUrl: server.baseUrl,
+      firecrawlApiKeyEnv: 'PAPERNEXUS_TEST_IMPORT_FIRECRAWL_KEY',
+      firecrawlMode: 'auto',
+      firecrawlSourceMode: 'upload',
+      disableDoclingFallback: true
+    });
+
+    assert.equal(result.generatedCount, 1);
+    assert.equal(server.requests.length, 1);
+    assert.equal(server.requests[0].url, '/v2/parse');
+    assert.equal(server.requests[0].headers.authorization, 'Bearer test-import-firecrawl-key');
+
+    const markdownPath = path.join(rootPath, '.papernexus', 'markdown', 'firecrawl', 'paper.md');
+    const markdown = await fs.readFile(markdownPath, 'utf8');
+    assert.match(markdown, /Firecrawl import markdown body/);
+
+    const { logPath } = importStore.getImportTaskPaths(rootPath, 'imp:firecrawl');
+    const taskLog = await fs.readFile(logPath, 'utf8');
+    assert.match(taskLog, /background preparse prepared PDF markdown cache/);
+    assert.doesNotMatch(taskLog, /test-import-firecrawl-key/);
+  } finally {
+    if (previousKey === undefined) delete process.env.PAPERNEXUS_TEST_IMPORT_FIRECRAWL_KEY;
+    else process.env.PAPERNEXUS_TEST_IMPORT_FIRECRAWL_KEY = previousKey;
+    await server.close();
+    await fs.rm(rootPath, { recursive: true, force: true });
   }
 });
 

@@ -4,6 +4,8 @@ This document records the public PaperNexus MCP/SKILL surface that should stay s
 
 ## Stability Rule
 
+The 2026-09-11 workflow migration changes the default **advertised list** to three tools: `literature_review`, `lineage_analysis`, and `idea_generation`. All 23 original names, schemas and direct-call result formats remain supported. `serve.mcp.toolProfile=legacy` or `PAPERNEXUS_MCP_TOOL_PROFILE=legacy` restores the old list; `all` exposes both. This is an intentional tool-discovery change with a compatibility switch, not removal of backend capabilities. Reconnect clients after changing profiles. See [the migration contract](./mcp-three-workflows.md).
+
 - Existing MCP tool names remain stable.
 - Existing required arguments remain required with the same meaning.
 - Existing response fields remain present when callers already depend on them.
@@ -12,7 +14,7 @@ This document records the public PaperNexus MCP/SKILL surface that should stay s
 
 ## Public MCP Tools
 
-The generated reference in `docs/reference/generated/mcp-tools.md` is the source of truth for tool names and argument descriptions. The current public high-level tools are:
+The generated reference in `docs/reference/generated/mcp-tools.md` documents the three default workflows first, then the legacy/advanced catalog below. `src/mcp/research-workflows.js` owns the new schemas and deterministic routing; `src/mcp/tools.js` remains the legacy schema authority. The original public high-level tools remain:
 
 | Tool | Contract status |
 |---|---|
@@ -33,7 +35,7 @@ The generated reference in `docs/reference/generated/mcp-tools.md` is the source
 | `literature_discovery` | Stable fresh literature discovery and optional import surface. |
 | `literature_discovery_progress` | Stable read-only literature-discovery progress and ETA inspection surface. |
 | `idea_catalyst` | Stable high-level idea-catalyst surface; optional `selectionMode=topk\|mmr\|submodular\|dpp` post-generation selection is additive and returns `selection_trace` only when requested. |
-| `agent_materials` | Additive Agent-facing material backend and project overlay surface. Material operations include `research_material_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `negative_evidence_pack`, `experiment_cost_materials`, `import_requisition_pack`, and `proposal_graph_session`; `innovation_evidence_pack` compiles novelty baselines, gap maps, closest-prior risk signals, mechanism-to-intervention maps, experiment anchors, idea evidence cards, storyline chains, evidence boundaries, evidence sufficiency, coverage matrix, composition-collision matrix, provider-to-import priorities, required follow-up actions, and AutoResearch handoff checks without proving novelty or selecting the final idea; `proposal_graph_session` runs episode-local typed proposal graph validation, deterministic action merge, commit gating, and committed proposal artifact synthesis without mutating the raw corpus graph; `evidence_sufficiency.novelty_claim_allowed=false` means consumers must continue approved follow-up research or report a blocker rather than emitting a final novelty claim; provider-only/discovery-only papers are not committed graph evidence until import completion and graph sync; `negative_inconclusive` marks provider 429/timeout/error weakened absence evidence; `ideaComponents` and `coverageAreas` are optional/additive audit inputs; `paper_material_view` and cost materials may expose optional markdown table/figure-caption provenance; `experiment_cost_materials` can explicitly opt in to bounded LLM structured extraction with `includeCostLlmExtraction`; `autoDiscoverSources`, source-router arguments, opt-in `includeProviderEvidence` provider-snippet evidence, opt-in `includeLiveDiscoveryEvidence` idea-catalyst live-discovery evidence, opt-in sparse live-discovery fallback with `runLiveIdeaCatalystIfNeeded`, opt-in `includeLiteratureDiscoveryEvidence` literature-discovery resolve/import readiness, opt-in `literatureDiscoverySeedProviderPapers` provider-to-literature exact seeding, opt-in `literatureDiscoverySeedLivePapers` live-to-literature exact seeding, explicit `submitLiteratureDiscoveryImports` / `processLiteratureDiscoveryImports`, and opt-in provider/live-discovery evidence-cart persistence are optional/additive; overlay operations include `paper_role_overlay`, `evidence_cart`, `workflow_state`, and `research_controller` actions such as configured-provider single-model JSON assistance, graph-only `search-trace.json` / `IdeaSearchState` persistence, top-k/MMR/greedy-submodular selector traces, offline random/fixed/UCB/Thompson source-domain/mechanism bandit proxy comparisons with cost-normalized proxy metrics, bounded innovation brief composition, approval-gated material-request execution with separate provider/live/literature/import opt-in flags, post-evidence decomposition drift surfacing, and `validate_gcd_mvp` validation/retrospective reports, stored outside the raw corpus graph. |
+| `agent_materials` | Additive Agent-facing material backend and project overlay surface. Material operations include `research_material_pack`, `structural_gap_pack`, `innovation_pattern_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `negative_evidence_pack`, `experiment_cost_materials`, `import_requisition_pack`, and `proposal_graph_session`; structural/pattern operations enforce committed evidence -> structural gap -> research action order, mark bounded lineage endpoints as frontier candidates, count persistent assumptions across distinct graph-backed papers, and keep built-in pattern cards labeled as non-empirical seed taxonomy; `innovation_evidence_pack` compiles novelty baselines, gap maps, closest-prior risk signals, mechanism-to-intervention maps, experiment anchors, ResearchStudio-traced idea cards, storyline chains, evidence boundaries, evidence sufficiency, coverage matrix, lexical composition-collision screening, a mechanism-collision query plan, episode-local proposal handoff, provider-to-import priorities, required follow-up actions, and AutoResearch checks without proving novelty or selecting the final idea; `proposal_graph_session` runs episode-local typed proposal graph validation, deterministic action merge, commit gating, and committed proposal artifact synthesis without mutating the raw corpus graph; `evidence_sufficiency.novelty_claim_allowed=false` means consumers must continue approved follow-up research or report a blocker rather than emitting a final novelty claim; provider-only/discovery-only papers are not committed graph evidence until import completion and graph sync; `negative_inconclusive` marks provider 429/timeout/error weakened absence evidence; `ideaComponents` and `coverageAreas` are optional/additive audit inputs; `paper_material_view` and cost materials may expose optional markdown table/figure-caption provenance; `experiment_cost_materials` can explicitly opt in to bounded LLM structured extraction with `includeCostLlmExtraction`; `autoDiscoverSources`, source-router arguments, opt-in `includeProviderEvidence` provider-snippet evidence, opt-in `includeLiveDiscoveryEvidence` idea-catalyst live-discovery evidence, opt-in sparse live-discovery fallback with `runLiveIdeaCatalystIfNeeded`, opt-in `includeLiteratureDiscoveryEvidence` literature-discovery resolve/import readiness, opt-in `literatureDiscoverySeedProviderPapers` provider-to-literature exact seeding, opt-in `literatureDiscoverySeedLivePapers` live-to-literature exact seeding, explicit `submitLiteratureDiscoveryImports` / `processLiteratureDiscoveryImports`, and opt-in provider/live-discovery evidence-cart persistence are optional/additive; overlay operations include `paper_role_overlay`, `evidence_cart`, `workflow_state`, and `research_controller` actions such as configured-provider single-model JSON assistance, graph-only `search-trace.json` / `IdeaSearchState` persistence, top-k/MMR/greedy-submodular selector traces, offline random/fixed/UCB/Thompson source-domain/mechanism bandit proxy comparisons with cost-normalized proxy metrics, bounded innovation brief composition, approval-gated material-request execution with separate provider/live/literature/import opt-in flags, post-evidence decomposition drift surfacing, and `validate_gcd_mvp` validation/retrospective reports, stored outside the raw corpus graph. |
 | `mutate_graph` | Write-capable graph mutation surface; keep dry-run semantics stable. |
 | `runtime_init` | Write-capable runtime config initialization/update surface. It writes server-side PaperNexus config only; use `create_corpus` for the first committed graph build. |
 | `create_corpus` | Write-capable first-corpus creation surface. Source-backed builds may run asynchronously and should be tracked through returned job ids. |
@@ -49,13 +51,23 @@ Stable wrapper expectations:
 - `pn_common.py` owns MCP URL/token handling and JSON-RPC transport.
 - `pn_graph_query.py` owns read-only graph query/context/idea workflows.
 - `pn_research_chains.py` owns chain and briefing workflows.
-- `pn_agent_materials.py` owns Agent material pack, innovation evidence pack, source discovery plan, paper material view, negative evidence, experiment-cost materials, explicit `--include-cost-llm-extraction`, import requisition, `--auto-discover-sources`, graph-native source-router hints, opt-in provider-evidence/live-discovery/literature-discovery evidence, sparse live/literature-discovery fallback, opt-in `--literature-discovery-seed-provider-papers` and `--literature-discovery-seed-live-papers`, explicit literature-discovery import submission/processing, persistence flags, proposal graph sessions, paper role overlay, evidence cart, and workflow state workflows.
+- `pn_agent_materials.py` owns Agent material pack, `structural-gap-pack`, `innovation-pattern-pack`, innovation evidence pack, source discovery plan, paper material view, negative evidence, experiment-cost materials, explicit `--include-cost-llm-extraction`, import requisition, `--auto-discover-sources`, graph-native source-router hints, opt-in provider-evidence/live-discovery/literature-discovery evidence, sparse live/literature-discovery fallback, opt-in `--literature-discovery-seed-provider-papers` and `--literature-discovery-seed-live-papers`, explicit literature-discovery import submission/processing, persistence flags, proposal graph sessions, paper role overlay, evidence cart, and workflow state workflows. Its ResearchStudio controls include `--method`, lineage bounds, distinct-paper persistence threshold, pattern limit/cards, candidate mechanism, and removed components.
 - `pn_resilient_discovery.py` owns timeout-resilient literature-discovery lane submission, polling, reconciliation, and import queue progress reads through `literature_discovery`, `literature_discovery_progress`, and `import_workflow`. It is additive and should use the read-only progress tool for timer-based wait decisions when available.
 - `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py` own remote import submission and tracking.
 - Skill wrappers should not call private `/api/*` routes for live graph control.
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.
 - MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true`, `batchProgressive=true`, `batchInitialTasks=4`, `batchMaxTasks=16`, and `batchCoalesceMs=0`; wrappers continue tracking per-task ids.
-- `import_workflow` also exposes a non-blocking MCP job wrapper: pass `async=true` on a normal operation or call `operation=submit_async` with `asyncOperation`, then poll `operation=async_status` by `jobId`. This is a client-timeout guard for slow queue reads and does not make discovered/imported papers graph-grounded before task completion and authoritative sync.
+- `import_workflow` also exposes a durable non-blocking MCP job wrapper: pass `async=true` on a normal operation or call `operation=submit_async` with `asyncOperation`, then poll `operation=async_status` by `jobId`. Optional `idempotencyKey`, project/run identity, a typed status envelope, per-job locking, and restart recovery are additive. Automatic recovery is limited to read/wait operations; ambiguous asynchronous `submit` jobs require manual authority inspection and are never replayed automatically. This remains a client-timeout guard and does not make discovered/imported papers graph-grounded before task completion and authoritative sync.
+- `agent_materials` `research_controller.run_round` accepts additive `maxControllerSteps` / `max_controller_steps`. A positive limit executes at most that many missing artifact stages and returns `round_progress` with the next action; omission preserves one-shot behavior.
+
+## Ordered Innovation Evidence Contract
+
+The ResearchStudio-style additions are conservative material-layer contracts:
+
+- `structural_gap_pack` separates additive gaps from subtractive persistent assumptions, labels limited traversal endpoints as `frontier_candidate` with `global_leaf_proven=false`, and emits historical-regression references when validated lineage evidence exists.
+- `innovation_pattern_pack` may match only compiled `structural_gap_id` values. Built-in cards always report `source_type=seed_taxonomy` and `empirical_outcome_backed=false`; caller cards need explicit outcome evidence references to claim a stronger origin.
+- `innovation_evidence_pack` adds `structural_gap_analysis`, `innovation_pattern_analysis`, `mechanism_collision_audit`, and `proposal_graph_handoff` without removing existing fields. Collision output keeps `semantic_equivalence_checked=false` and `novelty_claim_allowed=false` until a source-backed semantic comparison is performed.
+- Candidate mechanisms, pattern applications, threats, and planned experiments remain episode-local proposal evidence. They are not written into the raw corpus graph.
 
 ## AutoResearch Graph-of-Evidence Contract
 
@@ -90,6 +102,85 @@ The 2026-05-14 engineering-control work is also additive:
 - Live Idea-Catalyst LLM subtasks can write optional batch-ledger rows when `llmBatchLedgerDir` is supplied.
 
 These fields are not required for older clients. Callers that do not need provenance or trace observability can ignore them.
+
+## Topic workflow refinements (2026-09-11)
+
+This change adds three read-only operations to the existing research_lookup tool:
+topic_analysis, problem_evolution, and analysis_subgraph. Their HTTP equivalents
+are POST /api/topic-analysis, POST /api/problem-evolution, and
+POST /api/analysis-subgraph. All three return the same
+papernexus-topic-analysis-v1 bundle under result, including graph, objects,
+adaptations, gaps, problemEvolution, methodEvolution, scope, and diagnostics.
+Clients can consume the section needed by their selected operation.
+The HTTP response also exposes graph, summary, and corpus meta for the Web UI.
+
+Example MCP arguments:
+
+    {
+      "operation": "topic_analysis",
+      "query": "sparse feedback calibration",
+      "targetDomain": "Education",
+      "constraints": {"labelsAvailable": false, "maxLatencyMs": 40},
+      "maxDepth": 3,
+      "maxNodes": 180,
+      "maxEdges": 350
+    }
+
+Parameters are optional except the existing operation. The query selects lexical
+topic evidence; targetDomain restricts initial seeds to that domain or unknown
+domain metadata, then traversal may reach other domains. Domain names match the
+corpus metadata case-insensitively. The seedNodeIds array supplies explicit anchors.
+An empty query without seeds means bounded overview, with status=overview.
+No topic matches yields status=no_matches and an empty graph.
+Other statuses are ok and partial; neither means research or experiments completed.
+
+Default node/edge/depth budgets are 180/350/2; hard caps are 500/1000/4.
+The scope fields truncated, truncationReasons, missingSeeds, and neighborhoodLayers
+explain coverage. Optional fromYear/toYear are inclusive; undated evidence
+remains included and is marked. Observations are dated source reports, not inferred
+causal evolution. Method lineages reuse source-evidence validation within the
+returned projection.
+
+Adaptations use extracted tasks, shared mechanisms or lexical overlap and explicit
+conditions. Object constraint keys compare exact primitive values against method
+requirements; numeric maxX keys require the method value ≤ target value, and
+minX keys require ≥. Unknown fields and free-text constraints require source
+review. Incompatible methods appear in excluded, with their conflicts; they are
+not eligible candidates. The hypothesis and needs_evidence statuses never assert
+successful transfer. Gap categories distinguish corpus_gap, extraction_gap,
+evidence_gap, traversal_gap, and source-reported research_opportunity.
+Claims alone are evidence-verification tasks. The analysis performs no provider
+calls, persistent state transitions, or graph writes.
+
+The existing Python wrapper also accepts these operation names, coverage arguments,
+target domain and free-text constraints:
+
+    python3 SKILL/PaperNexus/scripts/pn_graph_query.py --corpus "<corpus>" \
+      topic_analysis "sparse feedback calibration" --target-domain Education \
+      --max-depth 3 --max-nodes 180 --constraints "limited labels"
+
+Use direct MCP JSON arguments for structured condition comparisons. The wrapper's
+query operation also accepts --sort-by relevance or --sort-by date.
+
+Compatible behavior refinements:
+
+- Graph query now requires a lexical match before type priors apply. Default
+  ordering is relevance first, with publication date as a tie-breaker. Clients
+  needing recency ordering can pass options.sortBy="date".
+- Material gap maps no longer label an ordinary Claim as a proven
+  claim_evidence_mismatch; they use evidence_verification_needed and explicit
+  category/status fields. Method mappings, experiment anchors, and story priors
+  use task/source associations instead of array position.
+- Markdown cleaning preserves named metrics, model names, equations, tables and
+  fenced code. The parsePaperMarkdown textQuality field and persisted semantic
+  snapshots include a papernexus-text-quality-v1 removal report with source hash
+  and UTF-16 offsets into the original Markdown. This is formatting cleanup,
+  not numerical or semantic OCR correction. Existing stored corpora are not
+  automatically rebuilt.
+- The Web UI loads a bounded overview and exposes topic analysis plus four
+  evidence views. The top search is local to the loaded subgraph. All loaded
+  schema types are initially visible; the old full /api/corpus endpoint remains
+  available to existing clients.
 
 ## Review Checklist For Future Changes
 

@@ -22,6 +22,14 @@ def configure_environment(args: argparse.Namespace) -> None:
         if base_url:
             os.environ["OPENAI_BASE_URL"] = base_url
             os.environ["OPENAI_API_BASE"] = base_url
+    elif provider == "deepseek":
+        # PaperNexus forwards the selected provider key through OPENAI_API_KEY;
+        # LiteLLM's deepseek/ model prefix reads DEEPSEEK_API_KEY instead.
+        selected_key = api_key or os.environ.get("OPENAI_API_KEY", "").strip()
+        if selected_key:
+            os.environ["DEEPSEEK_API_KEY"] = selected_key
+        if base_url:
+            os.environ["DEEPSEEK_API_BASE"] = base_url
     elif provider == "anthropic":
         if api_key:
             os.environ["ANTHROPIC_API_KEY"] = api_key
@@ -61,7 +69,7 @@ def main() -> int:
         from markpdfdown.main import convert_from_file
     except Exception as exc:  # pragma: no cover - exercised from Node wrapper tests
         raise RuntimeError(
-            "MarkPDFDown is not available. Install `markpdfdown` in the selected Python environment."
+            "MarkPDFDown is not available. Install the pinned official GitHub release with scripts/pdf-parser-runtime.py."
         ) from exc
 
     try:

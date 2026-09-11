@@ -16,6 +16,7 @@ import {
   methodRegistryPayload,
   paperIndexPayload,
   queryGraphPayload,
+  topicAnalysisPayload,
   resolveCorpusForApi
 } from '../server/api.js';
 
@@ -43,6 +44,10 @@ export async function executeResearchLookupTool(args = {}, options = {}) {
   const candidate = typeof args.corpus === 'string' && args.corpus.trim() ? args.corpus.trim() : undefined;
 
   switch (operation) {
+    case 'topic_analysis':
+    case 'problem_evolution':
+    case 'analysis_subgraph':
+      return topicAnalysisPayload(candidate, { ...asOptions(args.options), ...args }, options);
     case 'query':
       return queryGraphPayload(candidate, buildGraphRequestBody(args), options);
     case 'context':

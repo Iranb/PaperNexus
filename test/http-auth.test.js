@@ -30,6 +30,7 @@ test('serveCommand requires a token for all API routes while keeping static UI r
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-auth-home-'));
   const previousHome = process.env.PAPERNEXUS_HOME;
   const port = await pickAvailablePort(49000);
+  let importWorkflowRecoveryStopped = false;
 
   try {
     process.env.PAPERNEXUS_HOME = tempHome;
@@ -40,9 +41,30 @@ test('serveCommand requires a token for all API routes while keeping static UI r
       apiToken: 'test',
       enableEnhancements: false,
       enableImports: false,
+      startImportWorkflowRecoveryWorker() {
+        return {
+          snapshot() {
+            return {
+              enabled: true,
+              running: false,
+              lastScanAt: '2026-07-10T00:00:00.000Z',
+              lastError: null,
+              scanned: 2,
+              recovered: 1,
+              manualRecoveryRequired: 1
+            };
+          },
+          async stop() {
+            importWorkflowRecoveryStopped = true;
+          }
+        };
+      },
       config: {
         serve: {
-          apiToken: 'test'
+          apiToken: 'test',
+          mcp: {
+            enabled: true
+          }
         }
       }
     });
@@ -57,6 +79,29 @@ test('serveCommand requires a token for all API routes while keeping static UI r
         }
       });
       assert.equal(authorized.status, 200);
+
+      const liveness = await fetch(`http://127.0.0.1:${port}/livez`);
+      assert.equal(liveness.status, 200);
+      const livenessPayload = await liveness.json();
+      assert.equal(livenessPayload.ok, true);
+      assert.equal(livenessPayload.status, 'live');
+      assert.equal(livenessPayload.service, 'papernexus');
+      assert.equal(Object.hasOwn(livenessPayload, 'workers'), false);
+
+      const unauthorizedReadiness = await fetch(`http://127.0.0.1:${port}/api/readyz`);
+      assert.equal(unauthorizedReadiness.status, 401);
+      const readiness = await fetch(`http://127.0.0.1:${port}/api/readyz`, {
+        headers: {
+          Authorization: 'Bearer test'
+        }
+      });
+      assert.equal(readiness.status, 200);
+      const readinessPayload = await readiness.json();
+      assert.equal(readinessPayload.ok, true);
+      assert.equal(readinessPayload.status, 'ready');
+      assert.equal(readinessPayload.mcp.ready, true);
+      assert.equal(readinessPayload.workers.importWorkflowRecovery.enabled, true);
+      assert.equal(readinessPayload.workers.importWorkflowRecovery.recovered, 1);
 
       const wrongLengthToken = await fetch(`http://127.0.0.1:${port}/api/health`, {
         headers: {
@@ -77,6 +122,7 @@ test('serveCommand requires a token for all API routes while keeping static UI r
     } finally {
       await serverHandle.stop();
     }
+    assert.equal(importWorkflowRecoveryStopped, true);
   } finally {
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
     else process.env.PAPERNEXUS_HOME = previousHome;
@@ -989,6 +1035,65 @@ test('serveCommand forwards paddleocr-vl parser config into the import worker', 
       assert.equal(calls[0].pythonCommand, './shared-python');
       assert.equal(calls[0].paddleocrVlPython, './shared-python');
       assert.equal(calls[0].paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1');
+    } finally {
+      await serverHandle.stop();
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
+    else process.env.PAPERNEXUS_HOME = previousHome;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('serveCommand forwards firecrawl parser config into the import worker', async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-http-worker-firecrawl-home-'));
+  const previousHome = process.env.PAPERNEXUS_HOME;
+  const calls = [];
+  const port = await pickAvailablePort(55000);
+
+  try {
+    process.env.PAPERNEXUS_HOME = tempHome;
+    const { serveCommand } = await import('../src/server/http.js');
+    const serverHandle = await serveCommand({
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test',
+      enableEnhancements: false,
+      enableAuthoritativeSync: false,
+      enableImports: true,
+      config: {
+        analyze: {
+          pdfParser: 'firecrawl',
+          firecrawlApiBaseUrl: 'http://127.0.0.1:12345',
+          firecrawlApiKeyEnv: 'PAPERNEXUS_TEST_FIRECRAWL_KEY',
+          firecrawlMode: 'ocr',
+          firecrawlSourceMode: 'upload',
+          firecrawlMaxPages: 5,
+          firecrawlTimeoutMs: 1234
+        },
+        serve: {
+          apiToken: 'test'
+        }
+      },
+      startImportWorker(workerOptions) {
+        calls.push(workerOptions);
+        return {
+          stop() {},
+          pollNow() {}
+        };
+      }
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].pdfParser, 'firecrawl');
+      assert.equal(calls[0].firecrawlApiBaseUrl, 'http://127.0.0.1:12345');
+      assert.equal(calls[0].firecrawlApiKeyEnv, 'PAPERNEXUS_TEST_FIRECRAWL_KEY');
+      assert.equal(calls[0].firecrawlMode, 'ocr');
+      assert.equal(calls[0].firecrawlSourceMode, 'upload');
+      assert.equal(calls[0].firecrawlMaxPages, 5);
+      assert.equal(calls[0].firecrawlTimeoutMs, 1234);
     } finally {
       await serverHandle.stop();
     }

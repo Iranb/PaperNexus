@@ -172,7 +172,7 @@ export default {
       '/reference/': sidebarReference()
     },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/papernexus/PaperNexus' }
+      { icon: 'github', link: 'https://github.com/Iranb/PaperNexus' }
     ],
     search: {
       provider: 'local'

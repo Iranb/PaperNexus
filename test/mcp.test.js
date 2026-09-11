@@ -21,7 +21,7 @@ let previousGraphBackend;
 function startMcpClient(env) {
   const child = spawn('node', [cliPath, 'mcp'], {
     cwd: projectRoot,
-    env,
+    env: { ...env, PAPERNEXUS_MCP_TOOL_PROFILE: 'legacy' },
     stdio: ['pipe', 'pipe', 'pipe']
   });
 
@@ -652,6 +652,68 @@ test('runtime_init and create_corpus expose zero-to-first-build setup over MCP',
     }
     await fs.rm(localIndexRoot, { recursive: true, force: true });
     await fs.rm(localSourceRoot, { recursive: true, force: true });
+    await fs.rm(localHome, { recursive: true, force: true });
+  }
+});
+
+test('runtime_init and create_corpus reject raw Firecrawl API keys over MCP', async () => {
+  const localHome = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-firecrawl-key-home-'));
+  const localIndexRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-mcp-firecrawl-key-index-'));
+  const localConfigPath = path.join(localHome, 'config.json');
+  let localPending = null;
+
+  try {
+    localPending = startMcpClient({
+      ...process.env,
+      PAPERNEXUS_HOME: localHome,
+      PAPERNEXUS_GRAPH_BACKEND: 'json'
+    });
+    await localPending.request('initialize', {});
+
+    await assert.rejects(
+      () => localPending.request('tools/call', {
+        name: 'runtime_init',
+        arguments: {
+          configPath: localConfigPath,
+          corpus: 'mcp-firecrawl-key-check',
+          indexDir: localIndexRoot,
+          pdfParser: 'firecrawl',
+          firecrawlApiKey: 'raw-firecrawl-key'
+        }
+      }),
+      /runtime_init does not accept Firecrawl raw API keys/
+    );
+
+    await fs.writeFile(localConfigPath, JSON.stringify({
+      storage: {
+        indexDir: localIndexRoot
+      },
+      analyze: {
+        name: 'mcp-firecrawl-key-check',
+        pdfParser: 'firecrawl'
+      },
+      global: {
+        corpus: 'mcp-firecrawl-key-check'
+      }
+    }, null, 2));
+
+    await assert.rejects(
+      () => localPending.request('tools/call', {
+        name: 'create_corpus',
+        arguments: {
+          configPath: localConfigPath,
+          firecrawl: {
+            apiKey: 'raw-firecrawl-key'
+          }
+        }
+      }),
+      /create_corpus does not accept Firecrawl raw API keys/
+    );
+  } finally {
+    if (localPending) {
+      await localPending.close();
+    }
+    await fs.rm(localIndexRoot, { recursive: true, force: true });
     await fs.rm(localHome, { recursive: true, force: true });
   }
 });

@@ -2040,6 +2040,44 @@ async function waitForImportTaskPreparse(rootPath, taskId) {
   }
 }
 
+function resolveImportFileFirecrawlSourceUrl(file = {}, options = {}) {
+  const source = file.source && typeof file.source === 'object' ? file.source : {};
+  const metadata = file.paperMetadata && typeof file.paperMetadata === 'object' ? file.paperMetadata : {};
+  return firstNonEmptyOptionValue(
+    options.firecrawlSourceUrl,
+    file.pdfUrl,
+    file.pdf_url,
+    file.sourcePdfUrl,
+    file.source_pdf_url,
+    file.bestPdfUrl,
+    file.best_pdf_url,
+    file.bestOaPdfUrl,
+    file.best_oa_pdf_url,
+    file.bestOaUrl,
+    file.best_oa_url,
+    source.pdfUrl,
+    source.pdf_url,
+    source.sourcePdfUrl,
+    source.source_pdf_url,
+    source.bestPdfUrl,
+    source.best_pdf_url,
+    source.bestOaPdfUrl,
+    source.best_oa_pdf_url,
+    source.bestOaUrl,
+    source.best_oa_url,
+    metadata.pdfUrl,
+    metadata.pdf_url,
+    metadata.sourcePdfUrl,
+    metadata.source_pdf_url,
+    metadata.bestPdfUrl,
+    metadata.best_pdf_url,
+    metadata.bestOaPdfUrl,
+    metadata.best_oa_pdf_url,
+    metadata.bestOaUrl,
+    metadata.best_oa_url
+  );
+}
+
 async function preparseImportTaskSources(rootPath, task, options = {}) {
   const { markdownDir, markerDir } = getCorpusPaths(rootPath);
   const files = Array.isArray(task?.files) ? task.files : [];
@@ -2098,6 +2136,13 @@ async function preparseImportTaskSources(rootPath, task, options = {}) {
           mineruCommand: options.mineruCommand,
           mineruHttpUrl: options.mineruHttpUrl,
           mineruRemoteFailureMode: options.mineruRemoteFailureMode,
+          firecrawlApiBaseUrl: options.firecrawlApiBaseUrl,
+          firecrawlApiKeyEnv: options.firecrawlApiKeyEnv,
+          firecrawlMode: options.firecrawlMode,
+          firecrawlSourceMode: options.firecrawlSourceMode,
+          firecrawlSourceUrl: resolveImportFileFirecrawlSourceUrl(file, options),
+          firecrawlMaxPages: options.firecrawlMaxPages,
+          firecrawlTimeoutMs: options.firecrawlTimeoutMs,
           pageRange: options.pageRange,
           pdfSshHost: options.pdfSshHost,
           pdfParseTimeoutMs: options.pdfParseTimeoutMs,
@@ -4093,6 +4138,8 @@ export const __importWorkerTestables = {
   createLlmProgressDiagnosticsCollector,
   reportBatchProgressSerially,
   flushBatchProgressReportersSerially,
+  preparseImportTaskSources,
+  resolveImportFileFirecrawlSourceUrl,
   resolveImportWorkerRootConcurrency,
   resolveImportRootPriorityQueueLockTimeoutMs,
   getImportWorkerCorpusPriority,

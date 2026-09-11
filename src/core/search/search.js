@@ -2,7 +2,7 @@ import { EDGE_TYPES, IMPACT_RELATION_TYPES, NODE_TYPES } from '../graph/schema.j
 import { isBrainstormEligibleNode, isBrainstormSupportNode } from '../graph/brainstorm-view.js';
 import { normalizeFieldOfStudy } from '../graph/domain-taxonomy.js';
 import { buildBrainstormCommunityContext, deriveDomainCommunityProfile } from './brainstorm-communities.js';
-import { scoreTokenOverlap, tokenizeWithoutStopwords, truncate, jaccardSimilarity, unique } from '../../lib/utils.js';
+import { normalizeText, scoreTokenOverlap, tokenizeWithoutStopwords, truncate, jaccardSimilarity, unique } from '../../lib/utils.js';
 import {
   comparePaperPublicationDateDesc,
   pickLatestPublicationDateFields,
@@ -131,7 +131,12 @@ function compareSearchScoreFallback(left = {}, right = {}) {
     || String(left.title || '').localeCompare(String(right.title || ''));
 }
 
-function compareSearchGroups(left = {}, right = {}) {
+function compareSearchGroups(left = {}, right = {}, sortBy = 'relevance') {
+  const scoreDifference = Number(right.score || 0) - Number(left.score || 0);
+  if (sortBy !== 'date' && scoreDifference) return scoreDifference;
+  if (sortBy === 'date' && (left.scope === 'paper') !== (right.scope === 'paper')) {
+    return left.scope === 'paper' ? -1 : 1;
+  }
   if (left.scope === 'paper' && right.scope === 'paper') {
     return comparePaperPublicationDateDesc(left, right, compareSearchScoreFallback);
   }
@@ -180,9 +185,16 @@ function resolveNodeTypePriority(type) {
 
 function scoreNode(node, queryTokens, queryText) {
   const haystack = getSearchText(node).toLowerCase();
-  if (!haystack.trim()) return 0;
+  const normalizedQuery = normalizeText(queryText);
+  if (!haystack.trim() || !normalizedQuery) return 0;
 
-  let score = scoreTokenOverlap(queryTokens, tokenizeWithoutStopwords(haystack)) * 3;
+  const overlap = scoreTokenOverlap(queryTokens, tokenizeWithoutStopwords(haystack));
+  const normalizedHaystack = normalizeText(haystack);
+  const phraseMatch = (` ${normalizedHaystack} `).includes(` ${normalizedQuery} `)
+    || (/\p{Script=Han}/u.test(normalizedQuery) && normalizedHaystack.includes(normalizedQuery));
+  // Priors rank actual matches; they must never create a match.
+  if (!overlap && !phraseMatch) return 0;
+  let score = overlap * 3;
 
   if (node.name.toLowerCase() === queryText) score += 4;
   else if (node.name.toLowerCase().includes(queryText)) score += 2;
@@ -222,6 +234,7 @@ export function searchGraph(graph, query, options = {}) {
   const limit = boundedInteger(options.limit, 5, { max: MAX_SEARCH_RESULT_LIMIT });
   const queryText = String(query || '').trim().toLowerCase();
   const queryTokens = tokenizeWithoutStopwords(queryText);
+  const sortBy = options.sortBy === 'date' ? 'date' : 'relevance';
   const allowedLayers = normalizeLayerFilter(options.layers);
   const nodeView = options.nodeView || 'all';
   const candidateNodes = queryTokens.length && typeof graph.getSearchCandidates === 'function'
@@ -281,7 +294,7 @@ export function searchGraph(graph, query, options = {}) {
   return {
     query,
     groups: [...grouped.values()]
-      .sort(compareSearchGroups)
+      .sort((left, right) => compareSearchGroups(left, right, sortBy))
       .slice(0, limit)
   };
 }

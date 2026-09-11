@@ -61,13 +61,12 @@ def convert_vlm(args):
         headers["Authorization"] = f"Bearer {api_key}"
 
     engine_options = ApiVlmEngineOptions(
-        runtime_type=VlmEngineType.API,
+        engine_type=VlmEngineType.API,
         url=base_url,
-        headers=headers or None,
+        headers=headers,
         params={
             "model": args.model_name,
             "max_tokens": args.max_tokens,
-            "skip_special_tokens": True,
         },
         timeout=120,
     )

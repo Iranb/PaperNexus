@@ -194,3 +194,66 @@ test('import_workflow schema exposes handler aliases and queue diagnostics', () 
     assert.equal(properties[name].oneOf[1].items.type, 'string');
   }
 });
+
+test('MCP schemas expose durable async identity and bounded controller controls', () => {
+  const importWorkflow = PAPERNEXUS_TOOLS.find((entry) => entry.name === 'import_workflow');
+  const agentMaterials = PAPERNEXUS_TOOLS.find((entry) => entry.name === 'agent_materials');
+  assert.ok(importWorkflow);
+  assert.ok(agentMaterials);
+
+  const importProperties = importWorkflow.inputSchema?.properties || {};
+  assert.equal(importProperties.idempotencyKey?.type, 'string');
+  assert.equal(importProperties.idempotencyKey?.maxLength, 200);
+  for (const name of [
+    'idempotency_key',
+    'projectId',
+    'project_id',
+    'workflowRunId',
+    'workflow_run_id',
+    'selectionRevision',
+    'selection_revision'
+  ]) {
+    assert.ok(Object.hasOwn(importProperties, name), `missing import_workflow schema property ${name}`);
+  }
+
+  const materialProperties = agentMaterials.inputSchema?.properties || {};
+  assert.equal(materialProperties.maxControllerSteps?.type, 'integer');
+  assert.equal(materialProperties.maxControllerSteps?.minimum, 1);
+  assert.equal(materialProperties.max_controller_steps?.type, 'integer');
+  assert.equal(materialProperties.max_controller_steps?.minimum, 1);
+});
+
+test('agent_materials schema exposes ResearchStudio structural innovation controls', () => {
+  const tool = PAPERNEXUS_TOOLS.find((entry) => entry.name === 'agent_materials');
+  assert.ok(tool);
+
+  const properties = tool.inputSchema?.properties || {};
+  assert.ok(properties.operation?.enum.includes('structural_gap_pack'));
+  assert.ok(properties.operation?.enum.includes('innovation_pattern_pack'));
+
+  for (const name of [
+    'method',
+    'methodName',
+    'maxDepth',
+    'lineageLimit',
+    'persistentAssumptionMinPapers',
+    'patternLimit',
+    'patternCards',
+    'candidateMechanism',
+    'removedComponents'
+  ]) {
+    assert.ok(Object.hasOwn(properties, name), `missing agent_materials schema property ${name}`);
+  }
+
+  assert.equal(properties.maxDepth.type, 'integer');
+  assert.equal(properties.maxDepth.minimum, 1);
+  assert.equal(properties.lineageLimit.type, 'integer');
+  assert.equal(properties.lineageLimit.minimum, 1);
+  assert.equal(properties.persistentAssumptionMinPapers.default, 2);
+  assert.equal(properties.patternLimit.default, 2);
+  assert.equal(properties.patternCards.items.type, 'object');
+  assert.deepEqual(
+    properties.removedComponents.oneOf.map((entry) => entry.type),
+    ['string', 'array']
+  );
+});

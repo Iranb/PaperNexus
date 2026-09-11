@@ -64,7 +64,7 @@ def main() -> int:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--server-url", default="http://127.0.0.1:8080/v1")
-    parser.add_argument("--layout-model", default="PP-DocLayout-S")
+    parser.add_argument("--layout-model", default="", help="Leave empty to use the selected PaddleOCR pipeline's current layout model")
     args = parser.parse_args()
 
     input_path = Path(args.input).expanduser().resolve()

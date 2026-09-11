@@ -35,6 +35,38 @@ If `project` is omitted, GCD tasks default to `gcd-research-controller`; other
 research-controller tasks default to `research-controller`. Passing an explicit
 project is still recommended for repeatable cross-Agent handoff.
 
+## Bounded And Resumable Rounds
+
+For an Agent or transport with a short request budget, add
+`"maxControllerSteps": 1` (or another positive integer) to `action=run_round`.
+The limit counts only missing stages that the call actually invokes; artifacts
+that are already present are skipped without consuming the budget. When the
+budget is exhausted, the response has `status: "in_progress"`,
+`action_completed: "run_round_checkpoint"`, and a
+`papernexus-research-controller-progress-v1` `round_progress` object naming the
+next missing action and a minimal resume call.
+
+Repeat the resume call until `round_progress.complete` is true. Controller
+artifacts, not model context or the checkpoint text, remain authoritative. If
+`maxControllerSteps` is omitted, the existing one-shot behavior is preserved
+and `run_round` attempts all missing stages before export.
+
+Example bounded call:
+
+```json
+{
+  "operation": "research_controller",
+  "action": "run_round",
+  "corpus": "GCD",
+  "project": "gcd-research-controller",
+  "maxControllerSteps": 1
+}
+```
+
+An explicit regeneration request should be used for that intended call only;
+subsequent checkpoint resumes should use the returned minimal resume arguments
+so a completed decomposition is not regenerated repeatedly.
+
 ## Modes
 
 - `quick`: graph-only scouting and export. No provider calls or imports.
@@ -312,6 +344,8 @@ safe `run_round` path. In
 stops after graph candidates and relations; in default `planning` mode it also
 runs judge evidence, selection, selected method-card expansion, solution
 composition, design review, and innovation brief composition before export.
+An optional positive `maxControllerSteps` budget turns this same artifact-driven
+path into bounded checkpoint calls without changing the unlimited default.
 `generate_experiment_plan` is not called by `run_round`; it must be invoked
 separately after approval. Solution sketches, innovation briefs, and experiment
 plans remain user decision artifacts and are not final research directions or

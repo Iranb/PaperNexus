@@ -17,7 +17,45 @@ export const PAPERNEXUS_PROMPTS = [
   }
 ];
 
-export function getPrompt(name) {
+const RESEARCH_PROMPT_STEPS = {
+  survey_literature: [
+    '1. Call literature_review with operation=corpora when the corpus is unknown.',
+    '2. Call literature_review/search for committed papers, paper for source reading, and survey to group the evidence.',
+    '3. If coverage is insufficient, explicitly call literature_review/discover, then discovery_status and discovery_report with the returned runId.',
+    '4. Import only when requested, using literature_review/import; follow import_status by jobId/taskId and verify authoritative synchronization before treating discovered papers as graph evidence.',
+    '5. Summarize source-backed findings and coverage limits; use lineage_analysis for evolution.'
+  ],
+  trace_claim: [
+    '1. Call literature_review/search to find the claim and paper anchors.',
+    '2. Use lineage_analysis/context and impact to inspect supporting and downstream graph connections.',
+    '3. Use lineage_analysis/evidence for exact method-edge quotes or path for a connection between two anchors.',
+    '4. Distinguish source evidence from graph connectivity; a path alone is not causal support.'
+  ],
+  generate_research_ideas: [
+    '1. Use literature_review/survey and lineage_analysis/overview to inspect existing evidence.',
+    '2. Call idea_generation/gaps to identify bounded structural opportunities.',
+    '3. Call idea_generation/generate with query; add targetDomain for cross-domain catalyst candidates.',
+    '4. Call idea_generation/evaluate with query and a concrete candidateMechanism; inspect novelty and evidence sufficiency limits.',
+    '5. Use idea_generation/experiment_materials for experiment anchors and costs. Present hypotheses and required validation, not proven novelty or gains.'
+  ],
+  brainstorm_topic: [
+    '1. Inspect literature_review/search and lineage_analysis/overview for the target topic.',
+    '2. Call idea_generation with operation=diverge to explore graph-grounded possibilities.',
+    '3. Inspect lineage_analysis/context or evidence for the strongest anchors.',
+    '4. Call idea_generation with operation=converge, then evaluate a concrete candidateMechanism.',
+    '5. Report supporting papers, coverage limits, and validation gaps.'
+  ]
+};
+
+export function getPrompt(name, options = {}) {
+  if (options.toolProfile !== 'legacy' && Object.hasOwn(RESEARCH_PROMPT_STEPS, name)) {
+    return {
+      description: name === 'brainstorm_topic'
+        ? 'A workflow for divergent exploration followed by convergent topic selection.'
+        : PAPERNEXUS_PROMPTS.find((prompt) => prompt.name === name).description,
+      messages: [{ role: 'user', content: { type: 'text', text: RESEARCH_PROMPT_STEPS[name].join('\n') } }]
+    };
+  }
   if (name === 'survey_literature') {
     return {
       description: 'A lightweight workflow for corpus-level literature review.',

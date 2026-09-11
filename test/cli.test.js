@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -19,6 +20,37 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.join(__dirname, '..');
 const cliPath = path.join(projectRoot, 'src', 'cli', 'index.js');
 const examplesRoot = path.join(projectRoot, 'examples');
+
+async function readRequestBody(request) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function writeJson(response, statusCode, payload) {
+  response.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify(payload));
+}
+
+async function startFirecrawlServer(handler) {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    try {
+      await handler(request, response, requests);
+    } catch (error) {
+      writeJson(response, 500, { success: false, error: error.message });
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () => new Promise((resolve) => server.close(resolve))
+  };
+}
 
 async function spawnCli(args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -625,6 +657,57 @@ test('CLI test-pdf-config reuses the standalone PDF config probe script', async 
   }
 });
 
+test('CLI test-pdf-config can run firecrawl through config.json', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-firecrawl-pdf-config-'));
+  const fakePdfPath = path.join(workspaceRoot, 'paper.pdf');
+  const server = await startFirecrawlServer(async (request, response, requests) => {
+    const body = await readRequestBody(request);
+    requests.push({
+      url: request.url,
+      headers: request.headers,
+      body: body.toString('utf8')
+    });
+    writeJson(response, 200, {
+      success: true,
+      data: {
+        markdown: '# CLI Firecrawl\n\nFirecrawl markdown from CLI wrapper.'
+      }
+    });
+  });
+
+  try {
+    await fs.writeFile(fakePdfPath, 'fake-pdf', 'utf8');
+    await fs.writeFile(path.join(workspaceRoot, 'config.json'), `${JSON.stringify({
+      analyze: {
+        pdfParser: 'firecrawl',
+        firecrawlApiBaseUrl: server.baseUrl,
+        firecrawlApiKeyEnv: 'PAPERNEXUS_TEST_CLI_FIRECRAWL_KEY',
+        firecrawlMode: 'fast'
+      }
+    }, null, 2)}\n`);
+
+    const probeRun = await execFileAsync('node', [cliPath, 'test-pdf-config', 'paper.pdf', '--force', '--json'], {
+      cwd: workspaceRoot,
+      env: {
+        ...process.env,
+        PAPERNEXUS_TEST_CLI_FIRECRAWL_KEY: 'test-cli-firecrawl-key'
+      }
+    });
+
+    const payload = JSON.parse(probeRun.stdout);
+    assert.equal(payload.config.parser, 'firecrawl');
+    assert.equal(payload.result.parser, 'firecrawl');
+    assert.match(payload.result.markdownPath, /firecrawl/);
+    assert.equal(server.requests.length, 1);
+    assert.equal(server.requests[0].url, '/v2/parse');
+    assert.equal(server.requests[0].headers.authorization, 'Bearer test-cli-firecrawl-key');
+    assert.match(server.requests[0].body, /"mode":"fast"/);
+  } finally {
+    await server.close();
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('CLI scrub-degenerate-papers removes degenerate graph sources and purges missing backing files', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'papernexus-cli-scrub-degenerate-'));
   const badPdfPath = path.join(workspaceRoot, 'bad-paper.pdf');
@@ -668,7 +751,10 @@ test('CLI scrub-degenerate-papers removes degenerate graph sources and purges mi
       analyze: {
         name: 'degenerate-scrub-test',
         pdfParser: 'docling',
-        doclingCommand: './fake-docling.sh'
+        doclingCommand: './fake-docling.sh',
+        doclingDevice: 'cpu',
+        doclingAutoGpu: false,
+        doclingPreload: false
       }
     }, null, 2)}\n`);
 
@@ -1042,6 +1128,24 @@ if (command === 'delete-generic-password') {
 process.exit(0);
 `);
     await fs.chmod(path.join(binDir, 'security'), 0o755);
+
+    await fs.writeFile(path.join(binDir, 'secret-tool'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const command = args[0];
+const key = args[args.indexOf('service') + 1] + '|' + args[args.indexOf('account') + 1];
+const storePath = process.env.FAKE_SECURITY_STORE;
+const store = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : {};
+if (command === 'store') {
+  store[key] = fs.readFileSync(0, 'utf8');
+  fs.writeFileSync(storePath, JSON.stringify(store));
+} else if (command === 'lookup') {
+  process.stdout.write(store[key] || '');
+} else if (command === 'clear') {
+  delete store[key];
+  fs.writeFileSync(storePath, JSON.stringify(store));
+} else process.exit(1);
+`, { mode: 0o755 });
 
     const authRun = await spawnCli(['auth', 'llm', 'set', '--provider', 'deepseek', '--stdin'], {
       cwd: workspaceRoot,

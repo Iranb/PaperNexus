@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-09-11",
+  "releasePolicy": "latest non-yanked stable release; exclude prereleases",
+  "parsers": {
+    "markitdown": {
+      "release": "0.1.7",
+      "distribution": "markitdown",
+      "version": "0.1.7",
+      "requirements": ["markitdown[pdf]==0.1.7", "openai>=1,<3"],
+      "source": "https://pypi.org/project/markitdown/0.1.7/",
+      "configFields": {"markitdownPython": "bin/python"}
+    },
+    "markpdfdown": {
+      "release": "1.2.0",
+      "distribution": "markpdfdown",
+      "version": "1.1.2",
+      "revision": "2e34a1b0b0a1f4e60b53164bd85988a3b399f06b",
+      "requirements": ["markpdfdown @ https://github.com/MarkPDFdown/markpdfdown/archive/2e34a1b0b0a1f4e60b53164bd85988a3b399f06b.zip"],
+      "source": "https://github.com/MarkPDFdown/markpdfdown/releases/tag/1.2.0",
+      "note": "Official tag 1.2.0 still declares distribution version 1.1.2. Verify direct_url.json revision, not the version alone. There is no official PyPI project.",
+      "configFields": {"markpdfdownPython": "bin/python"}
+    },
+    "opendataloader": {
+      "release": "2.5.8",
+      "distribution": "opendataloader-pdf",
+      "version": "2.5.8",
+      "requirements": ["opendataloader-pdf==2.5.8", "jdk4py==25.0.2.1"],
+      "source": "https://pypi.org/project/opendataloader-pdf/2.5.8/",
+      "systemDependency": "Java 11 or newer; the wrapper uses the packaged jdk4py runtime when java is absent from PATH",
+      "configFields": {"opendataloaderPdfPython": "bin/python"}
+    },
+    "docling": {
+      "release": "2.126.0",
+      "distribution": "docling",
+      "version": "2.126.0",
+      "requirements": ["docling[remote-serving]==2.126.0"],
+      "source": "https://pypi.org/project/docling/2.126.0/",
+      "configFields": {"doclingPython": "bin/python", "doclingCommand": "bin/docling"}
+    },
+    "marker": {
+      "release": "2.0.0",
+      "distribution": "marker-pdf",
+      "version": "2.0.0",
+      "requirements": ["marker-pdf==2.0.0"],
+      "source": "https://pypi.org/project/marker-pdf/2.0.0/",
+      "configFields": {"markerCommand": "bin/marker_single"}
+    },
+    "mineru": {
+      "release": "3.4.5",
+      "distribution": "mineru",
+      "version": "3.4.5",
+      "requirements": ["mineru[core]==3.4.5"],
+      "source": "https://pypi.org/project/mineru/3.4.5/",
+      "configFields": {"mineruCommand": "bin/mineru"}
+    },
+    "paddleocr-vl": {
+      "release": "3.7.0",
+      "distribution": "paddleocr",
+      "version": "3.7.0",
+      "requirements": ["paddleocr[doc-parser]==3.7.0", "paddlepaddle==3.3.1"],
+      "modelRelease": "PaddleOCR-VL-1.6",
+      "source": "https://pypi.org/project/paddleocr/3.7.0/",
+      "note": "The Paddle inference backend and remote VLM model are separate dependencies. Installing the client does not upgrade a remote server's weights.",
+      "configFields": {"paddleocrVlPython": "bin/python"}
+    },
+    "firecrawl": {
+      "release": "v2",
+      "kind": "http-api",
+      "endpoints": ["/v2/parse", "/v2/scrape"],
+      "source": "https://docs.firecrawl.dev/features/parse",
+      "note": "PaperNexus calls the cloud HTTP API directly; no Firecrawl SDK package is used or needs upgrading. The provider controls its engine version."
+    }
+  },
+  "auxiliary": {
+    "pypdf": {
+      "version": "6.18.0",
+      "source": "https://pypi.org/project/pypdf/6.18.0/",
+      "note": "Optional SSH text fallback, not one of the eight parser families. Install on the explicitly selected fallback host/interpreter."
+    }
+  }
+}

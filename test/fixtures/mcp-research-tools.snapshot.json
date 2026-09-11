@@ -1,0 +1,1272 @@
+[
+  {
+    "name": "literature_review",
+    "description": "Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "corpora",
+            "status",
+            "sources",
+            "search",
+            "paper",
+            "survey",
+            "discover",
+            "discovery_status",
+            "discovery_report",
+            "import",
+            "import_status"
+          ],
+          "description": "corpora: corpus; status: corpus; sources: corpus; search: corpus, query, limit, layers, sortBy; paper: corpus, query, paperId, identifier, chunkLimit; survey: corpus, query, targetDomain, constraints, limit; discover: corpus, query, discoveryMode, providers, maxPapers; discovery_status: corpus, runId, limit; discovery_report: corpus, runId; import: corpus, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, jobId, taskId, taskIds"
+        },
+        "corpus": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Corpus name or indexed root. Use literature_review/corpora when unknown."
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Research topic, question, or exact node anchor."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Result budget, default 5."
+        },
+        "layers": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Comma-separated graph layer filter."
+        },
+        "sortBy": {
+          "type": "string",
+          "enum": [
+            "relevance",
+            "date"
+          ],
+          "description": "Committed search ranking; defaults to relevance."
+        },
+        "paperId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Exact committed paper id."
+        },
+        "identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Exact paper identifier such as DOI or arXiv id."
+        },
+        "chunkLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 40,
+          "description": "Maximum source chunks in a paper view."
+        },
+        "targetDomain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Target research domain; generate uses cross-domain catalyst when supplied."
+        },
+        "constraints": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000,
+              "description": "Conditions to respect"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000,
+                "description": "Value"
+              },
+              "maxItems": 30,
+              "description": "Conditions to respect"
+            }
+          ],
+          "description": "Free-text source-review conditions; structured method requirements belong to lineage_analysis/overview or problem."
+        },
+        "discoveryMode": {
+          "type": "string",
+          "enum": [
+            "search",
+            "resolve",
+            "run"
+          ],
+          "description": "search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically."
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "Value"
+          },
+          "maxItems": 30,
+          "description": "Optional discovery provider names."
+        },
+        "maxPapers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum discovery papers; default 20."
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Existing literature discovery run id.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "serverFilePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Already staged server-side PDF/Markdown file to import."
+        },
+        "doi": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Optional DOI for an imported source."
+        },
+        "arxivId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Optional arXiv id for an imported source."
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Stable id for an import submission; reuse to avoid duplicate async jobs."
+        },
+        "jobId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Durable asynchronous import submission job id."
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Import task id from the authoritative queue."
+        },
+        "taskIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "Value"
+          },
+          "maxItems": 100,
+          "description": "Import task ids from a saved discovery run.",
+          "minItems": 1
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "corpora"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "sources"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "search"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "paper"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "paperId"
+                ]
+              },
+              {
+                "required": [
+                  "identifier"
+                ]
+              }
+            ],
+            "properties": {
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "survey"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "discover"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "discovery_status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "discovery_report"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "runId"
+            ],
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "import"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "serverFilePath"
+                ]
+              },
+              {
+                "required": [
+                  "runId"
+                ]
+              }
+            ],
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "import_status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "lineage_analysis",
+    "description": "Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "overview",
+            "problem",
+            "method",
+            "evidence",
+            "path",
+            "context",
+            "impact"
+          ],
+          "description": "overview: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, query, method, direction, maxDepth, limit; evidence: corpus, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, from, to, maxDepth, limit, layers; context: corpus, query, layers; impact: corpus, query, direction, maxDepth, layers"
+        },
+        "corpus": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Corpus name or indexed root. Use literature_review/corpora when unknown."
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Research topic, question, or exact node anchor."
+        },
+        "targetDomain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Target research domain; generate uses cross-domain catalyst when supplied."
+        },
+        "constraints": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000,
+              "description": "Conditions to respect"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000,
+                "description": "Value"
+              },
+              "maxItems": 30,
+              "description": "Conditions to respect"
+            },
+            {
+              "type": "object",
+              "maxProperties": 30,
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000,
+                    "description": "Required condition value"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              }
+            }
+          ],
+          "description": "Source-review conditions. Lineage overview/problem also accept up to 30 primitive method requirements, such as labelsAvailable=false or maxLatencyMs=40."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Bounded graph traversal depth, default 2; never global frontier proof."
+        },
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Topic subgraph node budget, default 180."
+        },
+        "maxEdges": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Topic subgraph edge budget, default 350."
+        },
+        "seedNodeIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "Value"
+          },
+          "maxItems": 30,
+          "description": "Explicit graph node anchors for a topic overview."
+        },
+        "fromYear": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 9999,
+          "description": "Inclusive topic observation lower year."
+        },
+        "toYear": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 9999,
+          "description": "Inclusive topic observation upper year."
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Exact method id or method name."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "backward",
+            "forward",
+            "both"
+          ],
+          "description": "Method/evidence direction. Impact accepts backward or forward only."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Result budget, default 5."
+        },
+        "sourceMethod": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Source method for an exact evidence edge lookup."
+        },
+        "targetMethod": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Target method for an exact evidence edge lookup."
+        },
+        "edgeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Exact method evolution edge id."
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Starting graph node for path."
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Ending graph node for path."
+        },
+        "layers": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Comma-separated graph layer filter."
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "overview"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "method": false,
+              "direction": false,
+              "limit": false,
+              "sourceMethod": false,
+              "targetMethod": false,
+              "edgeId": false,
+              "from": false,
+              "to": false,
+              "layers": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "problem"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "method": false,
+              "direction": false,
+              "limit": false,
+              "sourceMethod": false,
+              "targetMethod": false,
+              "edgeId": false,
+              "from": false,
+              "to": false,
+              "layers": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "method"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "method"
+                ]
+              }
+            ],
+            "properties": {
+              "targetDomain": false,
+              "constraints": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "seedNodeIds": false,
+              "fromYear": false,
+              "toYear": false,
+              "sourceMethod": false,
+              "targetMethod": false,
+              "edgeId": false,
+              "from": false,
+              "to": false,
+              "layers": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "evidence"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "method"
+                ]
+              },
+              {
+                "required": [
+                  "sourceMethod"
+                ]
+              },
+              {
+                "required": [
+                  "targetMethod"
+                ]
+              },
+              {
+                "required": [
+                  "edgeId"
+                ]
+              }
+            ],
+            "properties": {
+              "targetDomain": false,
+              "constraints": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "seedNodeIds": false,
+              "fromYear": false,
+              "toYear": false,
+              "direction": false,
+              "from": false,
+              "to": false,
+              "layers": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "path"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "from",
+              "to"
+            ],
+            "properties": {
+              "query": false,
+              "targetDomain": false,
+              "constraints": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "seedNodeIds": false,
+              "fromYear": false,
+              "toYear": false,
+              "method": false,
+              "direction": false,
+              "sourceMethod": false,
+              "targetMethod": false,
+              "edgeId": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "context"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "targetDomain": false,
+              "constraints": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "seedNodeIds": false,
+              "fromYear": false,
+              "toYear": false,
+              "method": false,
+              "direction": false,
+              "limit": false,
+              "sourceMethod": false,
+              "targetMethod": false,
+              "edgeId": false,
+              "from": false,
+              "to": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "impact"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "targetDomain": false,
+              "constraints": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "seedNodeIds": false,
+              "fromYear": false,
+              "toYear": false,
+              "method": false,
+              "limit": false,
+              "sourceMethod": false,
+              "targetMethod": false,
+              "edgeId": false,
+              "from": false,
+              "to": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "idea_generation",
+    "description": "Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "generate",
+            "diverge",
+            "converge",
+            "gaps",
+            "evaluate",
+            "experiment_materials"
+          ],
+          "description": "generate: corpus, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, query, maxDepth, limit, layers; converge: corpus, query, maxDepth, limit, layers; gaps: corpus, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, query, targetDomain, constraints, limit"
+        },
+        "corpus": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Corpus name or indexed root. Use literature_review/corpora when unknown."
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Research topic, question, or exact node anchor."
+        },
+        "targetDomain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Target research domain; generate uses cross-domain catalyst when supplied."
+        },
+        "mechanisms": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "Value"
+          },
+          "maxItems": 30,
+          "description": "Candidate mechanism terms."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Result budget, default 5."
+        },
+        "selectionMode": {
+          "type": "string",
+          "enum": [
+            "topk",
+            "mmr",
+            "submodular",
+            "dpp"
+          ],
+          "description": "Cross-domain candidate selection when targetDomain is supplied."
+        },
+        "selectionK": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Number of cross-domain candidates retained."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Bounded graph traversal depth, default 2; never global frontier proof."
+        },
+        "layers": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Comma-separated graph layer filter."
+        },
+        "constraints": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000,
+              "description": "Conditions to respect"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000,
+                "description": "Value"
+              },
+              "maxItems": 30,
+              "description": "Conditions to respect"
+            }
+          ],
+          "description": "Free-text source-review conditions; structured method requirements belong to lineage_analysis/overview or problem."
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Exact method id or method name."
+        },
+        "candidateMechanism": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Concrete proposed mechanism for evidence and prior-art evaluation."
+        },
+        "removedComponents": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "Value"
+          },
+          "maxItems": 30,
+          "description": "Assumptions or components the proposal removes."
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "generate"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "maxDepth": false,
+              "layers": false,
+              "constraints": false,
+              "method": false,
+              "candidateMechanism": false,
+              "removedComponents": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "diverge"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "targetDomain": false,
+              "mechanisms": false,
+              "selectionMode": false,
+              "selectionK": false,
+              "constraints": false,
+              "method": false,
+              "candidateMechanism": false,
+              "removedComponents": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "converge"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "targetDomain": false,
+              "mechanisms": false,
+              "selectionMode": false,
+              "selectionK": false,
+              "constraints": false,
+              "method": false,
+              "candidateMechanism": false,
+              "removedComponents": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "gaps"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "mechanisms": false,
+              "selectionMode": false,
+              "selectionK": false,
+              "layers": false,
+              "candidateMechanism": false,
+              "removedComponents": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "evaluate"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query",
+              "candidateMechanism"
+            ],
+            "properties": {
+              "mechanisms": false,
+              "selectionMode": false,
+              "selectionK": false,
+              "layers": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "experiment_materials"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "mechanisms": false,
+              "selectionMode": false,
+              "selectionK": false,
+              "maxDepth": false,
+              "layers": false,
+              "method": false,
+              "candidateMechanism": false,
+              "removedComponents": false
+            }
+          }
+        }
+      ]
+    }
+  }
+]

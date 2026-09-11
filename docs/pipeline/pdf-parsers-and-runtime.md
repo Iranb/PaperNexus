@@ -1,5 +1,24 @@
 # PDF Parsers And Runtime
 
+## Verified stable versions (2026-09-11)
+
+The version contract is `config/pdf-parser-versions.json` in the repository. `scripts/pdf-parser-runtime.py` installs each Python parser into an independent versioned environment and audits its installed distribution/source. It prints an `analyze` config patch; installation alone does not change the running service or prove successful PDF conversion.
+
+| Parser | Stable target | Official release source | Runtime detail |
+| --- | --- | --- | --- |
+| MarkItDown | 0.1.7 | [PyPI](https://pypi.org/project/markitdown/0.1.7/) | Includes the `pdf` extra; 0.1.8b1 is excluded as a prerelease. |
+| MarkPDFDown | GitHub 1.2.0 | [Release](https://github.com/MarkPDFdown/markpdfdown/releases/tag/1.2.0) | Commit `2e34a1b0b0a1f4e60b53164bd85988a3b399f06b`; upstream package metadata still says 1.1.2. Audit the source URL as well as the package version. |
+| OpenDataLoader PDF | 2.5.8 | [PyPI](https://pypi.org/project/opendataloader-pdf/2.5.8/) | Published on the verification date; Java 11+ is required. The pinned environment includes jdk4py 25.0.2.1 for hosts without Java. |
+| Docling | 2.126.0 | [PyPI](https://pypi.org/project/docling/2.126.0/) | Current CLI uses `docling convert`; PaperNexus detects the CLI form on local and SSH runtimes. VLM requests use `engine_type` and dictionary headers. |
+| Marker | 2.0.0 | [PyPI](https://pypi.org/project/marker-pdf/2.0.0/) | `marker_single` flags remain supported. Needs model weights in addition to the Python package. |
+| MinerU | 3.4.5 | [PyPI](https://pypi.org/project/mineru/3.4.5/) | Uses the configured `mineruCommand` for both local and HTTP-client execution; 4.0.0 alpha releases are excluded. |
+| PaddleOCR-VL | PaddleOCR 3.7.0 / VL 1.6 pipeline | [PyPI](https://pypi.org/project/paddleocr/3.7.0/) | Default layout follows the upstream pipeline (currently PP-DocLayoutV3). The remote VLM server must separately serve compatible weights. CPU Paddle 3.3.1 is included in the pinned environment. |
+| Firecrawl | HTTP API v2 | [Parse API](https://docs.firecrawl.dev/features/parse) | `/v2/parse` for uploads and `/v2/scrape` for URLs; no Firecrawl SDK dependency. The provider controls the hosted engine version. |
+
+Do not install these families into one shared Python environment: Marker 2.0.0 requires Pillow <11 and Transformers >=5.12.1, while MinerU 3.4.5 requires Pillow >=11 and its local model extras require Transformers <5. The default installer chooses CPU PyTorch wheels and does not allocate GPUs or start VLM services. Use `--torch-backend` only when intentionally preparing another backend.
+
+The optional SSH text fallback uses `pdftotext` or [pypdf 6.18.0](https://pypi.org/project/pypdf/6.18.0/) on the selected fallback host. GROBID TEI, S2ORC, and COCI are separate offline evidence import adapters, not additional PDF parser runtimes. Keep package/version audits, CLI checks, real PDF conversion, and model/service checks separate in validation reports.
+
 This page documents the current PDF parsing layer as it exists in the repository today.
 
 It focuses on:
@@ -7,6 +26,7 @@ It focuses on:
 - which parser is used by default
 - how fallback works
 - how parser-local LLM assistance works
+- how the optional Firecrawl network parser fits into academic-paper ingestion
 - how GPU scheduling works for Docling
 - where parser state and logs are persisted
 - how to debug parser stalls without reverse-engineering the code
@@ -26,7 +46,7 @@ There is one important refinement: **a bad title alone no longer forces Docling 
 
 ## Supported Parser Families
 
-The current parser layer is implemented in [`src/core/ingestion/pdf-parser.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js).
+The current parser layer is implemented in [`src/core/ingestion/pdf-parser.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js).
 
 The supported parser families are:
 
@@ -37,6 +57,7 @@ The supported parser families are:
 - `docling`
 - `mineru`
 - `paddleocr-vl`
+- `firecrawl`
 
 GROBID TEI is also supported as an offline citation-context adapter, not yet as the default PDF parser orchestrator. When you already have a GROBID TEI XML file, convert it into PaperNexus citation-context IR with:
 
@@ -234,6 +255,7 @@ Current fallback behavior:
 | `marker` | `docling` |
 | `mineru` | `docling` |
 | `paddleocr-vl` | `docling` |
+| `firecrawl` | `docling` |
 | `docling` | none |
 
 For `docling`, remote SSH fallback to `pdftotext` / `pypdf` is still available in the parser-specific code path when the configured remote host exists and the direct Docling parse fails.
@@ -264,9 +286,56 @@ The repaired snapshot records:
 
 This protects throughput while still preserving an audit signal that the parser did not recover a canonical title.
 
+## Firecrawl Runtime
+
+Firecrawl is an optional network-backed parser for teams that want a fast PDF-to-Markdown path without provisioning another local parser runtime. It is not the default parser. PaperNexus continues to default to `markitdown` with `docling` fallback, because academic-paper ingestion needs reproducibility, local cacheability, and careful validation of tables, formulas, citations, references, and figure evidence.
+
+Firecrawl is best treated as a convenience parser for:
+
+- quick paper import and triage
+- public or locally staged PDFs where sending the file to Firecrawl is acceptable
+- scanned PDFs when `firecrawlMode` is set to `ocr`
+- throughput-sensitive queues where a remote parser is operationally simpler than local GPU scheduling
+
+It should not be treated as the authoritative academic parser by itself. For submission-grade extraction, audit the generated markdown against the PDF, especially reference sections, mathematical notation, multi-column tables, algorithm blocks, figure captions, and citation anchors. If Firecrawl output is weak or the request fails, PaperNexus can still fall back to Docling unless fallback is explicitly disabled.
+
+PaperNexus supports both Firecrawl document routes:
+
+- local/private PDF upload through Firecrawl `/v2/parse`
+- public PDF URL parsing through Firecrawl `/v2/scrape`
+
+The default `firecrawlSourceMode` is `auto`: PaperNexus uses `/v2/scrape` only when a HTTP(S) PDF URL is available, otherwise it uploads the local PDF to `/v2/parse`. Set `firecrawlSourceMode` to `upload` or `url` when you need deterministic behavior.
+
+Configuration uses environment-variable indirection for credentials. Do not put a raw Firecrawl API key in MCP arguments.
+
+```json
+{
+  "analyze": {
+    "pdfParser": "firecrawl",
+    "firecrawlApiBaseUrl": "https://api.firecrawl.dev",
+    "firecrawlApiKeyEnv": "FIRECRAWL_API_KEY",
+    "firecrawlMode": "auto",
+    "firecrawlSourceMode": "auto",
+    "firecrawlMaxPages": null,
+    "firecrawlTimeoutMs": 100000
+  }
+}
+```
+
+CLI example:
+
+```bash
+papernexus analyze ./papers \
+  --pdf-parser firecrawl \
+  --firecrawl-api-key-env FIRECRAWL_API_KEY \
+  --firecrawl-mode auto
+```
+
+`firecrawlMode` accepts `fast`, `auto`, and `ocr`. `firecrawlMaxPages` can bound cost and latency for triage runs. Parser state and events record the endpoint, mode, and source mode, but never the resolved API key.
+
 ## MarkItDown Runtime
 
-The PaperNexus wrapper for MarkItDown lives at [`scripts/markitdown_to_markdown.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/markitdown_to_markdown.py).
+The PaperNexus wrapper for MarkItDown lives at [`scripts/markitdown_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/markitdown_to_markdown.py).
 
 ### Default behavior
 
@@ -554,6 +623,21 @@ If a task is `completed` with `recovery.status = superseded`, it is also safe to
   "analyze": {
     "pdfParser": "markitdown",
     "markitdownUseLlm": false
+  }
+}
+```
+
+### Firecrawl network parser
+
+```json
+{
+  "analyze": {
+    "pdfParser": "firecrawl",
+    "firecrawlApiBaseUrl": "https://api.firecrawl.dev",
+    "firecrawlApiKeyEnv": "FIRECRAWL_API_KEY",
+    "firecrawlMode": "auto",
+    "firecrawlSourceMode": "auto",
+    "firecrawlTimeoutMs": 100000
   }
 }
 ```

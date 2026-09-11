@@ -289,9 +289,24 @@ That means you can answer questions like:
 
 - “is the task still queued or did parsing actually start?”
 - “did MarkItDown fail and Docling take over?”
+- “did Firecrawl use `/v2/parse` upload or `/v2/scrape` URL mode?”
 - “is Docling waiting for GPU or already converting?”
 
 without guessing from elapsed time.
+
+## Firecrawl In Import Queues
+
+`pdfParser: "firecrawl"` works in the same import worker path as the local parsers. The worker forwards the configured Firecrawl base URL, key environment variable name, mode, source mode, max-page limit, and timeout into the parser layer; the resolved API key is never written to task logs, parser state, or MCP tool responses.
+
+For uploaded PDFs, the normal import path uses local file upload to Firecrawl `/v2/parse`. If a task or source metadata carries a public PDF URL and `firecrawlSourceMode` is `auto` or `url`, PaperNexus can instead use `/v2/scrape`. Use `upload` for private server-side uploads when URL provenance is uncertain.
+
+Important queue behavior:
+
+- Firecrawl client calls are single parser attempts; PaperNexus does not add hidden provider retries inside one parser call.
+- Import task retry and failed-task recovery still happen at the queue layer, subject to the normal retry delay and max retry policy.
+- Parser state records `firecrawl:/v2/parse` or `firecrawl:/v2/scrape`, mode, source mode, timeout failures, and fallback transitions.
+- A failed Firecrawl parse can fall back to Docling unless fallback is disabled for a controlled test or deployment.
+- Because Firecrawl is an external service, do not use it for papers whose data-transfer policy requires local-only processing.
 
 ## Local Path Vs Server Path
 
@@ -321,6 +336,42 @@ The wrapper batch and the worker batch are different layers:
 Status and wait commands do not need new arguments for worker batching. They still read per-task queue state; tasks completed by one worker batch simply share `result.batch.batchId` and the same `result.authoritativeSync.jobId`.
 
 When coalescing is enabled, queue progress can show a worker lock held while the worker waits for additional fresh `pending / queued` tasks. This is expected only inside the configured `batchCoalesceMs` window. A task should not be called stuck unless it exceeds the normal running/pending timeout policies outside that bounded wait.
+
+## Non-Blocking MCP Import Control
+
+Agents should run slow queue inspection and wait operations through the durable
+asynchronous wrapper instead of holding one MCP request open. Set `async: true`
+on a normal `import_workflow` operation, or use `operation: "submit_async"` with
+an `asyncOperation`. PaperNexus immediately persists a job under
+`<runtime-root>/mcp-jobs/import-workflow/` and returns a `jobId` for
+`async_status` or bounded `async_wait` polling.
+
+Supply a stable `idempotencyKey` for a retryable workflow step. The same key
+and canonical arguments return the existing job; the same key with different
+arguments is rejected. Optional `projectId`, `workflowRunId`, and
+`selectionRevision` values are copied into the additive
+`papernexus-operation-status-v1` status envelope so a conductor can distinguish
+the current selection from a stale projection.
+
+The serve process runs an import-workflow recovery scanner whenever HTTP MCP is
+enabled. It can resume stale read/wait operations (`list`, `status`, `progress`,
+`queue_progress`, `log`, and `wait`) under a per-job file lock. It deliberately
+does not replay an ambiguous `asyncOperation: "submit"`: that job becomes
+`manual_recovery_required`, and an operator must inspect the underlying import
+task authority before deciding whether to submit again.
+
+Use the health routes for different questions:
+
+- `GET /livez` is public and minimal. It proves only that the current HTTP event
+  loop answered.
+- `GET /api/readyz` requires the normal API token and reports MCP configuration
+  plus import-workflow recovery state.
+- Neither route proves that a particular import completed. Task records and
+  their graph/semantic readiness fields remain authoritative.
+
+The workers still share the serve Node.js process. A CPU-bound event-loop stall
+can therefore hide both routes; liveness is not a substitute for supervised
+process isolation.
 
 ## CLI Queue Inspection
 

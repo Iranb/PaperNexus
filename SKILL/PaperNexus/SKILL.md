@@ -23,18 +23,13 @@ Default client assumption:
 - live graph reads should use that MCP server directly
 - literal IPs, MCP URLs, and bearer tokens do not belong in SKILL instructions
 
-Preferred MCP tools:
+Preferred MCP tools in the default research profile:
 
-- `list_corpora`
-- `agent_materials`
-- `literature_discovery`
-- `research_lookup`
-- `research_briefing`
-- `idea_catalyst`
-- `import_workflow`
-- `mutate_graph`
-- `refresh_corpus`
-- `refresh_paper_graph`
+- `literature_review`: `corpora`, `status`, `sources`, `search`, `paper`, `survey`; explicitly requested `discover`/`import` and their status/report operations.
+- `lineage_analysis`: `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`.
+- `idea_generation`: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`.
+
+Use these task-oriented tools when advertised. Existing servers may still advertise the legacy tools below; use those until deployment. Advanced maintenance, controller and overlay workflows remain on legacy tools. If a required advanced tool is not exposed, the server's `legacy` or `all` profile must be selected and the client reconnected; do not replace MCP with raw HTTP or local graph access.
 
 Shell fallback wrappers:
 
@@ -68,7 +63,15 @@ Rules:
 - if a wrapper accepts a server path, it accepts both absolute and `~/...` forms, but SKILL examples should use `~/...`
 - let the PaperNexus framework expand `~` on the server side
 
-## MCP Tool Mapping
+## Default Three-Workflow Mapping
+
+Start with `literature_review/corpora` when the target corpus is unknown. Use `search` for committed graph matches, `paper` for source-backed reading and `survey` for grouped research materials. Missing papers require an explicit `discover` operation followed by `discovery_status` and `discovery_report` using the returned runId. `import` accepts a resolved discovery runId or an already staged serverFilePath; follow `import_status` by jobId and then taskId. Async submission completion is not graph synchronization.
+
+Use `lineage_analysis/overview` for a bounded topic projection, `problem` for dated source observations, `method` for validated method evolution, and `evidence` for exact edge quotes. Paths and impact describe graph connectivity, not causal proof. Use `idea_generation/generate` for hypotheses, add targetDomain for cross-domain candidates, and use `evaluate` with a concrete candidateMechanism for evidence/novelty audit. `experiment_materials` supplies anchors and cost evidence, not a completed plan or experiment. Respect the original result's novelty and evidence-sufficiency restrictions.
+
+Do not add legacy options, provider flags, export paths or writeback controls to these three tools. Their operation-specific schemas reject hidden side effects. Existing Python wrapper entrypoints continue calling compatible legacy names.
+
+## Legacy And Advanced MCP Tool Mapping
 
 For OpenClaw-native use, call these tools on the configured `papernexus-remote` server directly:
 
@@ -91,7 +94,7 @@ For OpenClaw-native use, call these tools on the configured `papernexus-remote` 
 - `list_corpora`
   Use to resolve the current corpus when the active corpus is not explicit
 - `agent_materials`
-  Use for multi-domain Agent material workflows: `research_material_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `import_requisition_pack`, `negative_evidence_pack`, `paper_role_overlay`, `evidence_cart`, and `workflow_state`. Prefer graph-first packs, then explicitly opt into provider evidence, live discovery, literature-discovery source resolution, and import submission only when the task requires those phases. For `innovation_evidence_pack`, treat `evidence_sufficiency`, `coverage_matrix`, `composition_collision_matrix`, and `required_followup` as the novelty-audit control fields: if `novelty_claim_allowed=false`, continue approved follow-up research or report a blocker instead of giving a final novelty claim.
+  Use for multi-domain Agent material workflows: `research_material_pack`, `structural_gap_pack`, `innovation_pattern_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `import_requisition_pack`, `negative_evidence_pack`, `paper_role_overlay`, `evidence_cart`, and `workflow_state`. Prefer graph-first packs, then explicitly opt into provider evidence, live discovery, literature-discovery source resolution, and import submission only when the task requires those phases. ResearchStudio-style discovery must follow committed evidence -> structural gap -> research action; built-in pattern cards are seed taxonomy rather than empirical outcome evidence, and bounded lineage endpoints are only frontier candidates. For `innovation_evidence_pack`, treat `evidence_sufficiency`, `coverage_matrix`, `composition_collision_matrix`, `mechanism_collision_audit`, and `required_followup` as novelty-audit control fields: if `novelty_claim_allowed=false`, continue approved follow-up research or report a blocker instead of giving a final novelty claim.
 - `literature_discovery`
   Use for keyword/topic literature survey, provider search, legal full-text resolution, discovery reports, and optional import submission.
   Important operations: `plan`, `search`, `resolve`, `run`, `import`, `ingest`, `import_and_process`, `status`, `report`, `list`, `supplement`
@@ -100,7 +103,7 @@ For target-domain / near-source / far-source material workflows, read `SKILL/Pap
 
 ## Keyword Discovery And Graph-Lag Policy
 
-Use `literature_discovery` when the user asks for keyword-based literature research, missing-paper discovery, related-work expansion, citation expansion, or "find papers and add them to PaperNexus".
+In the default profile use `literature_review/discover`, followed by `discovery_status` and `discovery_report`, for keyword-based literature research or missing-paper discovery. Import is a separate explicit `literature_review/import` action. The detailed legacy workflow below applies when legacy tools are advertised or used by existing wrappers.
 
 Keep three states separate:
 
