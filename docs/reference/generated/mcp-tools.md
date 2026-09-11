@@ -1,12 +1,22 @@
 # MCP Tool Reference
 
-This page is generated from [`src/mcp/tools.js`](https://github.com/papernexus/PaperNexus/blob/main/src/mcp/tools.js). It documents the public MCP surface that remote and local clients should rely on.
+The default research profile advertises only literature_review, lineage_analysis, and idea_generation. Set PAPERNEXUS_MCP_TOOL_PROFILE=legacy or serve.mcp.toolProfile=legacy to restore the original 23-tool list; all lists both surfaces. Reconnect clients after a profile change. Old tool names remain callable in every profile. Profiles control discovery, not authorization. See [migration and task routing](../../interfaces/mcp-three-workflows).
+
+This page is generated from [`src/mcp/research-workflows.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/research-workflows.js) and [`src/mcp/tools.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tools.js). It documents the public MCP surface that remote and local clients should rely on.
 
 ## How To Read This Page
 
 Each tool section lists the tool purpose first, followed by every currently exposed input field from the JSON schema and one or more copyable JSON payload examples. Nested fields use dot notation, and array item fields use `[]`, for example `operations[].action` or `llm.provider`. Fields marked `required in parent` are required only when their containing object or array item is provided.
 
-## Tool Index
+## Default Research Tools
+
+| Tool | Description |
+| --- | --- |
+| [literature_review](#tool-literature_review) | Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
+| [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
+| [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains. |
+
+## Legacy And Advanced Tool Index
 
 | Tool | Area | Required Args | Description |
 | --- | --- | --- | --- |
@@ -33,6 +43,214 @@ Each tool section lists the tool purpose first, followed by every currently expo
 | [`create_corpus`](#tool-create_corpus) | Operations & Maintenance | None | Create the first committed corpus graph over MCP from server-visible source files/directories or create an empty graph when no sources are provided, equivalent to the first papernexus analyze --name run. Source-backed builds default to a background job to avoid MCP client timeouts; use operation=status or operation=wait with the returned jobId. Use refresh_corpus for later maintenance. |
 | [`refresh_corpus`](#tool-refresh_corpus) | Operations & Maintenance | None | Run corpus-scale maintenance over an indexed corpus: incremental/full analyze, Stage 1 snapshot materialization, Stage 2 batch LLM optimization, or Stage 2-5 optimize from cached snapshots. |
 | [`refresh_paper_graph`](#tool-refresh_paper_graph) | Operations & Maintenance | None | Force-refresh the graph content for one paper or one canonical duplicate group without rebuilding the whole corpus. |
+
+## Tool: literature_review
+
+<a id="tool-literature_review"></a>
+
+**Area:** Primary Research Workflow
+
+**Required top-level arguments:** `operation`
+
+### Function
+
+Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.
+
+### Operation Routing
+
+| Operation | Accepted fields | Required fields | Effect |
+| --- | --- | --- | --- |
+| corpora | corpus | None | committed_read |
+| status | corpus | None | committed_read |
+| sources | corpus | None | committed_read |
+| search | corpus, query, limit, layers, sortBy | query | committed_read |
+| paper | corpus, query, paperId, identifier, chunkLimit | one of: query, paperId, identifier | committed_read |
+| survey | corpus, query, targetDomain, constraints, limit | query | committed_read |
+| discover | corpus, query, discoveryMode, providers, maxPapers | query | discovery_submit |
+| discovery_status | corpus, runId, limit | None | discovery_read |
+| discovery_report | corpus, runId | runId | discovery_read |
+| import | corpus, serverFilePath, runId, doi, arxivId, idempotencyKey | one of: serverFilePath, runId | import_submit |
+| import_status | corpus, jobId, taskId, taskIds | None | import_read |
+
+### Parameters
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `operation` | required | string (corpora, status, sources, search, paper, survey, discover, discovery_status, discovery_report, import, import_status) | corpora: corpus; status: corpus; sources: corpus; search: corpus, query, limit, layers, sortBy; paper: corpus, query, paperId, identifier, chunkLimit; survey: corpus, query, targetDomain, constraints, limit; discover: corpus, query, discoveryMode, providers, maxPapers; discovery_status: corpus, runId, limit; discovery_report: corpus, runId; import: corpus, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, jobId, taskId, taskIds Allowed values: `corpora`, `status`, `sources`, `search`, `paper`, `survey`, `discover`, `discovery_status`, `discovery_report`, `import`, `import_status`. |
+| `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
+| `query` | optional | string | Research topic, question, or exact node anchor. |
+| `limit` | optional | integer | Result budget, default 5. |
+| `layers` | optional | string | Comma-separated graph layer filter. |
+| `sortBy` | optional | string (relevance, date) | Committed search ranking; defaults to relevance. Allowed values: `relevance`, `date`. |
+| `paperId` | optional | string | Exact committed paper id. |
+| `identifier` | optional | string | Exact paper identifier such as DOI or arXiv id. |
+| `chunkLimit` | optional | integer | Maximum source chunks in a paper view. |
+| `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
+| `constraints` | optional | string \| array&lt;string&gt; | Free-text source-review conditions; structured method requirements belong to lineage_analysis/overview or problem. |
+| `discoveryMode` | optional | string (search, resolve, run) | search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically. Allowed values: `search`, `resolve`, `run`. |
+| `providers` | optional | array&lt;string&gt; | Optional discovery provider names. |
+| `maxPapers` | optional | integer | Maximum discovery papers; default 20. |
+| `runId` | optional | string | Existing literature discovery run id. |
+| `serverFilePath` | optional | string | Already staged server-side PDF/Markdown file to import. |
+| `doi` | optional | string | Optional DOI for an imported source. |
+| `arxivId` | optional | string | Optional arXiv id for an imported source. |
+| `idempotencyKey` | optional | string | Stable id for an import submission; reuse to avoid duplicate async jobs. |
+| `jobId` | optional | string | Durable asynchronous import submission job id. |
+| `taskId` | optional | string | Import task id from the authoritative queue. |
+| `taskIds` | optional | array&lt;string&gt; | Import task ids from a saved discovery run. |
+
+### Examples
+
+**Search committed papers**
+
+```json
+{
+  "operation": "search",
+  "corpus": "demo-corpus",
+  "query": "feedback calibration",
+  "limit": 5
+}
+```
+
+**Explicitly discover missing papers**
+
+```json
+{
+  "operation": "discover",
+  "corpus": "demo-corpus",
+  "query": "feedback calibration",
+  "maxPapers": 20
+}
+```
+
+## Tool: lineage_analysis
+
+<a id="tool-lineage_analysis"></a>
+
+**Area:** Primary Research Workflow
+
+**Required top-level arguments:** `operation`
+
+### Function
+
+Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.
+
+### Operation Routing
+
+| Operation | Accepted fields | Required fields | Effect |
+| --- | --- | --- | --- |
+| overview | corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | None | committed_read |
+| problem | corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | query | committed_read |
+| method | corpus, query, method, direction, maxDepth, limit | one of: query, method | committed_read |
+| evidence | corpus, query, method, sourceMethod, targetMethod, edgeId, limit | one of: query, method, sourceMethod, targetMethod, edgeId | committed_read |
+| path | corpus, from, to, maxDepth, limit, layers | from; to | committed_read |
+| context | corpus, query, layers | query | committed_read |
+| impact | corpus, query, direction, maxDepth, layers | query | committed_read |
+
+### Parameters
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `operation` | required | string (overview, problem, method, evidence, path, context, impact) | overview: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, query, method, direction, maxDepth, limit; evidence: corpus, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, from, to, maxDepth, limit, layers; context: corpus, query, layers; impact: corpus, query, direction, maxDepth, layers Allowed values: `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`. |
+| `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
+| `query` | optional | string | Research topic, question, or exact node anchor. |
+| `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
+| `constraints` | optional | string \| array&lt;string&gt; \| object | Source-review conditions. Lineage overview/problem also accept up to 30 primitive method requirements, such as labelsAvailable=false or maxLatencyMs=40. |
+| `maxDepth` | optional | integer | Bounded graph traversal depth, default 2; never global frontier proof. |
+| `maxNodes` | optional | integer | Topic subgraph node budget, default 180. |
+| `maxEdges` | optional | integer | Topic subgraph edge budget, default 350. |
+| `seedNodeIds` | optional | array&lt;string&gt; | Explicit graph node anchors for a topic overview. |
+| `fromYear` | optional | integer | Inclusive topic observation lower year. |
+| `toYear` | optional | integer | Inclusive topic observation upper year. |
+| `method` | optional | string | Exact method id or method name. |
+| `direction` | optional | string (backward, forward, both) | Method/evidence direction. Impact accepts backward or forward only. Allowed values: `backward`, `forward`, `both`. |
+| `limit` | optional | integer | Result budget, default 5. |
+| `sourceMethod` | optional | string | Source method for an exact evidence edge lookup. |
+| `targetMethod` | optional | string | Target method for an exact evidence edge lookup. |
+| `edgeId` | optional | string | Exact method evolution edge id. |
+| `from` | optional | string | Starting graph node for path. |
+| `to` | optional | string | Ending graph node for path. |
+| `layers` | optional | string | Comma-separated graph layer filter. |
+
+### Examples
+
+**Trace validated method evolution**
+
+```json
+{
+  "operation": "method",
+  "corpus": "demo-corpus",
+  "method": "method:example",
+  "maxDepth": 3
+}
+```
+
+## Tool: idea_generation
+
+<a id="tool-idea_generation"></a>
+
+**Area:** Primary Research Workflow
+
+**Required top-level arguments:** `operation`
+
+### Function
+
+Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains.
+
+### Operation Routing
+
+| Operation | Accepted fields | Required fields | Effect |
+| --- | --- | --- | --- |
+| generate | corpus, query, targetDomain, mechanisms, limit, selectionMode, selectionK | query | committed_read |
+| diverge | corpus, query, maxDepth, limit, layers | query | committed_read |
+| converge | corpus, query, maxDepth, limit, layers | query | committed_read |
+| gaps | corpus, query, targetDomain, constraints, limit, method, maxDepth | query | committed_read |
+| evaluate | corpus, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents | query; candidateMechanism | committed_read |
+| experiment_materials | corpus, query, targetDomain, constraints, limit | query | committed_read |
+
+### Parameters
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `operation` | required | string (generate, diverge, converge, gaps, evaluate, experiment_materials) | generate: corpus, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, query, maxDepth, limit, layers; converge: corpus, query, maxDepth, limit, layers; gaps: corpus, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, query, targetDomain, constraints, limit Allowed values: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`. |
+| `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
+| `query` | optional | string | Research topic, question, or exact node anchor. |
+| `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
+| `mechanisms` | optional | array&lt;string&gt; | Candidate mechanism terms. |
+| `limit` | optional | integer | Result budget, default 5. |
+| `selectionMode` | optional | string (topk, mmr, submodular, dpp) | Cross-domain candidate selection when targetDomain is supplied. Allowed values: `topk`, `mmr`, `submodular`, `dpp`. |
+| `selectionK` | optional | integer | Number of cross-domain candidates retained. |
+| `maxDepth` | optional | integer | Bounded graph traversal depth, default 2; never global frontier proof. |
+| `layers` | optional | string | Comma-separated graph layer filter. |
+| `constraints` | optional | string \| array&lt;string&gt; | Free-text source-review conditions; structured method requirements belong to lineage_analysis/overview or problem. |
+| `method` | optional | string | Exact method id or method name. |
+| `candidateMechanism` | optional | string | Concrete proposed mechanism for evidence and prior-art evaluation. |
+| `removedComponents` | optional | array&lt;string&gt; | Assumptions or components the proposal removes. |
+
+### Examples
+
+**Generate source-grounded hypotheses**
+
+```json
+{
+  "operation": "generate",
+  "corpus": "demo-corpus",
+  "query": "feedback calibration",
+  "targetDomain": "Education",
+  "limit": 5
+}
+```
+
+**Audit a concrete candidate**
+
+```json
+{
+  "operation": "evaluate",
+  "corpus": "demo-corpus",
+  "query": "feedback calibration",
+  "candidateMechanism": "Calibrate feedback confidence before control updates"
+}
+```
 
 ## Tool: list_corpora
 
@@ -415,7 +633,7 @@ Run high-level lookup operations over already committed graph state using one re
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (query, context, impact, ideas, brainstorm, paper_index, domain_distance, extract_takeaways, interdisciplinary_potential, cross_domain_evidence, method_lineage, method_evidence, method_registry, research_answer) | Allowed values: `query`, `context`, `impact`, `ideas`, `brainstorm`, `paper_index`, `domain_distance`, `extract_takeaways`, `interdisciplinary_potential`, `cross_domain_evidence`, `method_lineage`, `method_evidence`, `method_registry`, `research_answer`. |
+| `operation` | required | string (topic_analysis, problem_evolution, analysis_subgraph, query, context, impact, ideas, brainstorm, paper_index, domain_distance, extract_takeaways, interdisciplinary_potential, cross_domain_evidence, method_lineage, method_evidence, method_registry, research_answer) | Allowed values: `topic_analysis`, `problem_evolution`, `analysis_subgraph`, `query`, `context`, `impact`, `ideas`, `brainstorm`, `paper_index`, `domain_distance`, `extract_takeaways`, `interdisciplinary_potential`, `cross_domain_evidence`, `method_lineage`, `method_evidence`, `method_registry`, `research_answer`. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `query` | optional | string | Topic, node anchor, or challenge text used by the selected lookup operation. |
 | `paperId` | optional | string | Exact internal paper id used by the paper_index operation. |
@@ -447,7 +665,13 @@ Run high-level lookup operations over already committed graph state using one re
 | `strictDirection` | optional | boolean | Require sourceMethod -&gt; targetMethod ordering for method_evidence pair lookup. Default: `false`. |
 | `mode` | optional | string (cross_domain_evidence, method_lineage, both) | Answer mode used by research_answer. Allowed values: `cross_domain_evidence`, `method_lineage`, `both`. |
 | `direction` | optional | string (backward, forward, both) | Lineage traversal direction for method_lineage. Default: `"backward"`. Allowed values: `backward`, `forward`, `both`. |
-| `maxDepth` | optional | number | Maximum method lineage traversal depth. Default: `3`. |
+| `constraints` | optional | object \| string | Transfer conditions. Object keys compare exact primitive values; numeric maxX/minX keys compare limits. Free text requires source review. |
+| `seedNodeIds` | optional | array&lt;string&gt; | Explicit seeds for a bounded analysis projection. |
+| `maxNodes` | optional | number | Analysis node budget; default 180, hard cap 500. |
+| `maxEdges` | optional | number | Analysis edge budget; default 350, hard cap 1000. |
+| `fromYear` | optional | number | Optional inclusive starting year; undated evidence remains marked. |
+| `toYear` | optional | number | Optional inclusive ending year. |
+| `maxDepth` | optional | number | Method lineage depth; bounded analysis defaults to 2 and caps depth at 4. Default: `3`. |
 | `numSourceDomains` | optional | number | Maximum source domains considered by cross_domain_evidence. Default: `3`. |
 | `relevanceThreshold` | optional | number | Evidence threshold used by cross_domain_evidence. Default: `3`. |
 | `includePacketBundle` | optional | boolean | Include the raw catalyst packet bundle in cross_domain_evidence output. Default: `false`. |

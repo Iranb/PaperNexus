@@ -55,9 +55,14 @@ PaperNexus turns paper sources into a reusable research knowledge graph. Its cor
 ```bash
 npm install
 npm link
-python -m pip install -U markitdown
+python scripts/pdf-parser-runtime.py install --parser markitdown,docling --root "$HOME/.papernexus/parser-runtimes" --python 3.12 --uv uv
 
 papernexus init
+```
+
+Merge the installer's printed `analyze` fields into `~/.papernexus/config.json` to select the versioned environments, then run:
+
+```bash
 papernexus analyze --force
 papernexus serve
 ```
@@ -159,20 +164,20 @@ npm install
 npm link
 ```
 
-Default parser dependency:
+Default parser and fallback, using the verified stable versions:
 
 ```bash
-python -m pip install -U markitdown
+python scripts/pdf-parser-runtime.py install --parser markitdown,docling --root "$HOME/.papernexus/parser-runtimes" --python 3.12 --uv uv
 ```
 
-Optional parser dependencies:
+All optional parser environments and an installation audit:
 
 ```bash
-python -m pip install -U markpdfdown
-python -m pip install -U opendataloader-pdf
-pip install docling marker-pdf
-python -m pip install -U "paddleocr[doc-parser]"
+python scripts/pdf-parser-runtime.py install --parser all --root "$HOME/.papernexus/parser-runtimes" --python 3.12 --uv uv
+python scripts/pdf-parser-runtime.py audit --root "$HOME/.papernexus/parser-runtimes"
 ```
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first. The installer creates separate environments because current Marker and MinerU have conflicting dependencies, records resolved requirements, and prints a config patch. Merge that patch after initializing your config; the default CPU installation includes matching Docling CPU settings. It does not change live config or start model services. MarkPDFDown comes from its official GitHub release commit, and Firecrawl uses the hosted v2 HTTP API without an SDK. See the [verified versions and runtime requirements](docs/pipeline/pdf-parsers-and-runtime.md#verified-stable-versions-2026-09-11).
 
 ## Configuration
 
@@ -325,18 +330,17 @@ http://<host>:4821/mcp
 Authorization: Bearer <token>
 ```
 
-Important MCP tools include:
+The default MCP profile exposes three research workflows:
 
 | Tool | Purpose |
 |------|---------|
-| `research_lookup` | Graph search, cross-domain evidence, method lineage, method evidence, method registry, research answers |
-| `literature_discovery` | Plan/search/resolve/run/import/ingest/status/report/list for bounded topic-level discovery |
-| `research_briefing` | Briefing-oriented research summaries over existing graph state |
-| `idea_catalyst` | Cross-domain idea generation and research packet support |
-| `import_workflow` | Import task submission and queue inspection |
-| `agent_materials` | Material packs, project overlays, evidence carts, and research-controller artifacts |
-| `runtime_init` / `create_corpus` | Server-side config initialization and first graph build over MCP |
-| `refresh_corpus` / `refresh_paper_graph` | Corpus-scale and per-paper maintenance jobs |
+| `literature_review` | Find and read papers, assemble surveys, explicitly discover/import sources, and track their status |
+| `lineage_analysis` | Topic and problem evolution, validated method lineage, source evidence, graph paths and impact |
+| `idea_generation` | Generate/diverge/converge hypotheses, inspect gaps, evaluate a mechanism, and collect experiment materials |
+
+For example, call `literature_review` with `operation=search` and a `query`, then `lineage_analysis` with `operation=overview`, and `idea_generation` with `operation=generate`. Source discovery and import require their explicit operations. Generated ideas remain hypotheses.
+
+All original 23 tool names remain callable. Set `serve.mcp.toolProfile` or `PAPERNEXUS_MCP_TOOL_PROFILE` to `legacy` to restore their original listing, or `all` to expose both sets and advanced maintenance/controller tools. Reconnect the client after changing the profile. Profiles organize discovery; they do not restrict permissions. See the [operation mapping and migration guide](docs/interfaces/mcp-three-workflows.md).
 
 ## Access And Full-Text Policy
 

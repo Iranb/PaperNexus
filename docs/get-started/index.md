@@ -14,23 +14,25 @@ npm link
 PaperNexus itself is a Node-based application, but PDF analysis depends on parser tooling. The default parser path uses MarkItDown. If the first parser run fails or produces weak markdown, PaperNexus automatically retries the PDF with Docling before indexing it:
 
 ```bash
-python -m pip install -U markitdown
+python scripts/pdf-parser-runtime.py install --parser markitdown,docling --root "$HOME/.papernexus/parser-runtimes" --python 3.12 --uv uv
 ```
 
-If you want one shared Python runtime setting for MarkItDown, MarkPDFDown, OpenDataLoader, Docling VLM, and PaddleOCR-VL, set `analyze.pythonCommand`. Parser-specific fields like `markitdownPython` and `markpdfdownPython` still work and override the shared default when needed.
+This uses the verified stable releases in `config/pdf-parser-versions.json`, creates separate virtual environments, and prints an `analyze` config patch with their absolute executable paths. Merge those fields into your runtime config. The installer defaults to CPU PyTorch wheels and includes matching Docling CPU settings in the patch; use an explicitly chosen `--torch-backend` for GPU environments. It records resolved dependencies but does not start model servers or rewrite your live config.
+
+Use parser-specific fields such as `markitdownPython`, `doclingCommand`, and `mineruCommand`. A shared `analyze.pythonCommand` remains supported, but current Marker and MinerU have incompatible Pillow and Transformers requirements and must use separate environments.
 
 Optional parser families can be installed separately:
 
 ```bash
-python -m pip install -U markpdfdown
-python -m pip install -U opendataloader-pdf
-pip install docling marker-pdf
-python -m pip install -U "paddleocr[doc-parser]"
+python scripts/pdf-parser-runtime.py install --parser all --root "$HOME/.papernexus/parser-runtimes" --python 3.12 --uv uv
+python scripts/pdf-parser-runtime.py audit --root "$HOME/.papernexus/parser-runtimes"
 ```
+
+The installer requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.10–3.13 (3.12 is the verified Linux runtime). MarkPDFDown is installed from its official GitHub release commit, because it is not published on PyPI. OpenDataLoader includes a Java runtime; PaddleOCR includes the CPU Paddle backend but still needs the configured VLM server. Firecrawl uses the hosted v2 HTTP API and needs an API key, with no SDK installation. See [verified versions and runtime boundaries](../pipeline/pdf-parsers-and-runtime.md#verified-stable-versions-2026-09-11).
 
 If you want Docling to use its VLM pipeline during fallback parsing, enable `analyze.doclingUseVlm` and reuse the normal PaperNexus `llm` config.
 
-For the default Docling CLI fallback path, PaperNexus now assumes a GPU-first profile:
+The legacy config template selects the following Docling GPU profile. When using the installer's default CPU environment, merge its `doclingDevice = "cpu"` and `doclingAutoGpu = false` settings instead:
 
 - `analyze.doclingDevice = "cuda"`
 - `analyze.doclingImageExportMode = "placeholder"`

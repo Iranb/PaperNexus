@@ -20,7 +20,7 @@
         <div class="topbar-center">
           <div class="search-shell" id="search-shell">
             <span class="search-icon">⌕</span>
-            <input id="global-search" type="text" placeholder="Search problems, methods, claims, limitations..." autocomplete="off" />
+            <input id="global-search" type="text" placeholder="Find a node in this subgraph..." autocomplete="off" />
             <kbd>⌘K</kbd>
             <div class="search-results hidden" id="search-results"></div>
           </div>
@@ -66,6 +66,20 @@
 
       <main class="workspace">
         <aside class="panel left-panel">
+          <section class="panel-section topic-section">
+            <div class="section-header"><h2>Topic analysis</h2></div>
+            <form id="topic-form" class="topic-form">
+              <label>Topic<input id="topic-query" required placeholder="e.g. sparse feedback calibration" /></label>
+              <label>Target domain <span class="analysis-muted">(optional)</span><input id="topic-domain" placeholder="e.g. Education" /></label>
+              <label>Transfer constraints<textarea id="topic-constraints" rows="2" placeholder="e.g. limited labels, low latency"></textarea></label>
+              <details><summary>Coverage</summary>
+                <label>Traversal depth<select id="topic-depth"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+                <label>Maximum nodes<input id="topic-budget" type="number" min="1" max="500" value="180" /></label>
+              </details>
+              <div class="topic-actions"><button class="action-button" id="topic-submit" type="submit">Analyze</button><button class="action-button" id="topic-overview" type="button">Overview</button></div>
+            </form>
+            <p id="topic-status" class="analysis-muted" role="status" aria-live="polite">Analysis uses the committed corpus.</p>
+          </section>
           <section class="panel-section">
             <div class="section-header">
               <h2>Overview</h2>
@@ -147,6 +161,17 @@
         </section>
 
         <aside class="panel right-panel">
+          <section class="panel-section analysis-section" id="analysis-section" hidden>
+            <div class="section-header"><h2>Analysis results</h2></div>
+            <p class="analysis-muted">Dashed edges denote candidate or rejected relations.</p>
+            <div class="tab-row analysis-tabs" id="analysis-tabs" role="tablist" aria-label="Topic analysis views">
+              <button class="tab-button active" data-analysis-view="objects" role="tab" aria-selected="true">Objects</button>
+              <button class="tab-button" data-analysis-view="adaptations" role="tab" aria-selected="false">Transfers</button>
+              <button class="tab-button" data-analysis-view="gaps" role="tab" aria-selected="false">Gaps</button>
+              <button class="tab-button" data-analysis-view="evolution" role="tab" aria-selected="false">Evolution</button>
+            </div>
+            <div id="analysis-results" role="tabpanel"></div>
+          </section>
           <div class="right-panel-header">
             <div class="tab-row" id="detail-tabs">
               <button class="tab-button active" data-tab="details">Details</button>

@@ -294,6 +294,9 @@ export const PAPERNEXUS_TOOLS = [
         operation: {
           type: 'string',
           enum: [
+            'topic_analysis',
+            'problem_evolution',
+            'analysis_subgraph',
             'query',
             'context',
             'impact',
@@ -447,9 +450,18 @@ export const PAPERNEXUS_TOOLS = [
           description: 'Lineage traversal direction for method_lineage.',
           default: 'backward'
         },
+        constraints: {
+          oneOf: [{ type: 'object', additionalProperties: true }, { type: 'string' }],
+          description: 'Transfer conditions. Object keys compare exact primitive values; numeric maxX/minX keys compare limits. Free text requires source review.'
+        },
+        seedNodeIds: { type: 'array', items: { type: 'string' }, description: 'Explicit seeds for a bounded analysis projection.' },
+        maxNodes: { type: 'number', description: 'Analysis node budget; default 180, hard cap 500.' },
+        maxEdges: { type: 'number', description: 'Analysis edge budget; default 350, hard cap 1000.' },
+        fromYear: { type: 'number', description: 'Optional inclusive starting year; undated evidence remains marked.' },
+        toYear: { type: 'number', description: 'Optional inclusive ending year.' },
         maxDepth: {
           type: 'number',
-          description: 'Maximum method lineage traversal depth.',
+          description: 'Method lineage depth; bounded analysis defaults to 2 and caps depth at 4.',
           default: 3
         },
         numSourceDomains: {

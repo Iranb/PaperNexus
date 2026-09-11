@@ -49,32 +49,63 @@ function isChartNoiseLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return false;
 
-  // 坐标轴刻度模式：0.50 0.45 0.40 0.35
-  if (/^[\d\s\.\-]+$/.test(trimmed)) return true;
-
-  // 图例模式：[SSR] [CLIP] + 数字
-  if (/^[\[\]\w\s]+\s+[\d\s\.\-]+$/.test(trimmed)) return true;
-
-  // 乱码模式：连续的问号、方括号等
-  if (/^[\[\]?'"]+$/.test(trimmed)) return true;
-
-  // 短行且包含大量特殊字符
-  if (trimmed.length < 20 && /[^A-Za-z0-9\u4e00-\u9fff\s]{3,}/.test(trimmed)) return true;
+  // Keep named metrics/models, equations, single values and integer data.
+  if (/^[+-]?\d+\.\d+(?:\s+[+-]?\d+\.\d+){2,}$/.test(trimmed)) {
+    const values = trimmed.split(/\s+/).map(Number);
+    const delta = values[1] - values[0];
+    if (delta !== 0 && values.every((value, index) => index < 2
+      || Math.abs(value - values[index - 1] - delta) < 1e-8)) return true;
+  }
+  if (/^(?:\[[A-Za-z][\w-]*\]\s*){2,}[+ ]*\d+(?:\.\d+)?(?:\s+\d+(?:\.\d+)?){2,}$/.test(trimmed)) return true;
+  if (/^[\[\]?'"]+$/.test(trimmed) && trimmed.includes('?')) return true;
 
   return false;
 }
 
 function cleanText(value) {
-  const text = String(value || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n');
+  return cleanMarkdownWithReport(value).text;
+}
 
-  // 过滤图表噪声行
-  const lines = text.split('\n')
-    .filter((line) => !isChartNoiseLine(line))
-    .join('\n');
+function trimBlankLines(value) {
+  return String(value || '').replace(/^(?:[ \t]*\n)+|(?:\n[ \t]*)+$/g, '');
+}
 
-  return lines.trim();
+export function cleanMarkdownWithReport(value) {
+  const source = String(value || '');
+  const kept = [];
+  const removed = [];
+  let offset = 0;
+  let fence = null;
+  let math = false;
+  const sourceLines = source.split('\n');
+  for (let index = 0; index < sourceLines.length; index += 1) {
+    const raw = sourceLines[index];
+    const line = raw.replace(/\r$/, '');
+    const trimmed = line.trim();
+    const marker = trimmed.match(/^(\x60{3,}|~{3,})/);
+    const protectedBefore = Boolean(fence || math);
+    if (marker) {
+      if (!fence) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+    }
+    if (!fence && (trimmed === '$$' || trimmed === '\\[' || trimmed === '\\]')) math = !math;
+    const protectedLine = protectedBefore || marker || math || trimmed.includes('|')
+      || /^\$\$|^\\\[|^\\\]/.test(trimmed) || /^(?: {4}|\t)/.test(line);
+    if (!protectedLine && isChartNoiseLine(line)) {
+      removed.push({ sourceLine: index + 1, startOffset: offset, endOffset: offset + raw.length,
+        text: raw, reason: trimmed.includes('?') ? 'punctuation_artifact' : 'chart_tick_or_legend' });
+    } else kept.push(line);
+    offset += raw.length + 1;
+  }
+  return {
+    text: trimBlankLines(kept.join('\n')),
+    report: {
+      contractVersion: 'papernexus-text-quality-v1', sourceHash: stableHash(source),
+      offsetUnit: 'utf16', sourceLineCount: sourceLines.length,
+      removedLineCount: removed.length, removedLines: removed, originalTextModified: false,
+      boundary: 'Formatting cleanup only; numeric accuracy and OCR semantics are not verified. Offsets refer to original Markdown.'
+    }
+  };
 }
 
 function normalizeTitleLine(value) {
@@ -153,11 +184,32 @@ function parseAuthors(lines) {
   );
 }
 
+function splitMarkdownBlocks(text) {
+  const blocks = [];
+  let lines = [];
+  let fence = null;
+  let math = false;
+  for (const line of String(text || '').split('\n')) {
+    const trimmed = line.trim();
+    const marker = trimmed.match(/^(\x60{3,}|~{3,})/);
+    if (marker) {
+      if (!fence) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+    }
+    if (!fence && (trimmed === '$$' || trimmed === '\\[' || trimmed === '\\]')) math = !math;
+    if (!trimmed && !fence && !math) {
+      if (lines.length) blocks.push(lines.join('\n'));
+      lines = [];
+    } else lines.push(line);
+  }
+  if (lines.length) blocks.push(lines.join('\n'));
+  return blocks.filter((block) => block.trim());
+}
+
 function buildChunks(text) {
-  const paragraphs = cleanText(text)
-    .split(/\n{2,}/)
-    .map((value) => value.trim())
-    .filter(Boolean);
+  // The original Markdown was already cleaned with source offsets. Do not
+  // reclassify fragments after their code/math context has been removed.
+  const paragraphs = splitMarkdownBlocks(text);
 
   if (!paragraphs.length) return [];
 
@@ -375,7 +427,8 @@ export function extractConceptCandidates(texts) {
 }
 
 export function parsePaperMarkdown(markdown, filePath) {
-  const lines = cleanText(markdown).split('\n');
+  const cleaned = cleanMarkdownWithReport(markdown);
+  const lines = cleaned.text.split('\n');
   let title = path.basename(filePath, path.extname(filePath));
   let titleIndex = -1;
   let titleValidation = assessPaperTitleCandidate('', filePath);
@@ -403,10 +456,21 @@ export function parsePaperMarkdown(markdown, filePath) {
 
   const sections = [];
   let currentSection = { heading: 'Front Matter', level: 1, lines: [] };
+  let sectionFence = null;
+  let sectionMath = false;
 
   for (let index = titleIndex + 1 + authorLines.length; index < lines.length; index += 1) {
     const line = lines[index];
-    const headingMatch = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+    const trimmed = line.trim();
+    const marker = trimmed.match(/^(\x60{3,}|~{3,})/);
+    const protectedBefore = Boolean(sectionFence || sectionMath);
+    if (marker) {
+      if (!sectionFence) sectionFence = marker[1];
+      else if (marker[1][0] === sectionFence[0] && marker[1].length >= sectionFence.length) sectionFence = null;
+    }
+    if (!sectionFence && (trimmed === '$$' || trimmed === '\\[' || trimmed === '\\]')) sectionMath = !sectionMath;
+    const headingMatch = !protectedBefore && !sectionFence && !sectionMath && !marker
+      ? line.match(/^(#{1,6})\s+(.+?)\s*$/) : null;
     if (headingMatch) {
       if (currentSection.lines.length || currentSection.heading !== 'Front Matter') {
         sections.push(currentSection);
@@ -428,7 +492,7 @@ export function parsePaperMarkdown(markdown, filePath) {
 
   const normalizedSections = sections
     .map((section, index) => {
-      const text = cleanText(section.lines.join('\n'));
+      const text = trimBlankLines(section.lines.join('\n'));
       return {
         id: `section:${stableHash(`${filePath}:${index}:${section.heading}`)}`,
         heading: section.heading,
@@ -465,6 +529,7 @@ export function parsePaperMarkdown(markdown, filePath) {
   return {
     title,
     titleValidation,
+    textQuality: cleaned.report,
     authors: parseAuthors(authorLines),
     sourcePath: filePath,
     sections: normalizedSections,

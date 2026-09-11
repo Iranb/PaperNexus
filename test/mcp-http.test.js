@@ -64,7 +64,7 @@ async function startHttpServer(port, serveConfig = {}, options = {}) {
     enableAuthoritativeSync: false,
     enableImportWorkflowRecovery: false,
     config: {
-      serve: serveConfig
+      serve: { ...serveConfig, mcp: { ...serveConfig.mcp, toolProfile: 'legacy' } }
     },
     ...options
   });

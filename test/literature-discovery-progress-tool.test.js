@@ -24,7 +24,7 @@ test('MCP tool list includes literature_discovery_progress', async () => {
     jsonrpc: '2.0',
     id: 1,
     method: 'tools/list'
-  });
+  }, { toolProfile: 'legacy' });
 
   const tool = response.tools.find((entry) => entry.name === 'literature_discovery_progress');
   assert.ok(tool);

@@ -1,6 +1,6 @@
 # HTTP Serve Reference
 
-This page is generated from route declarations in [`src/server/http.js`](https://github.com/papernexus/PaperNexus/blob/main/src/server/http.js). It focuses on the authenticated HTTP server rather than the preferred remote MCP control plane.
+This page is generated from route declarations in [`src/server/http.js`](https://github.com/Iranb/PaperNexus/blob/main/src/server/http.js). It focuses on the authenticated HTTP server rather than the preferred remote MCP control plane.
 
 ## Routes
 

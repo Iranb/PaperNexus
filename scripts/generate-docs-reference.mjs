@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { PAPERNEXUS_TOOLS } from '../src/mcp/tools.js';
+import { RESEARCH_TOOLS, RESEARCH_ROUTES } from '../src/mcp/research-workflows.js';
 import { EDGE_TYPES, GRAPH_LAYERS, NODE_TYPES, NODE_TYPE_TO_LAYER } from '../src/core/graph/schema.js';
 import { RELATION_COMPATIBILITY_RULES } from '../src/core/graph/rules.js';
 
@@ -14,7 +15,7 @@ const srcRoot = path.join(repoRoot, 'src');
 const scriptsRoot = path.join(repoRoot, 'scripts');
 const skillRoot = path.join(repoRoot, 'SKILL');
 const REPO_BLOB_BASE = process.env.PAPERNEXUS_REPO_BLOB_BASE
-  || 'https://github.com/papernexus/PaperNexus/blob/main/';
+  || 'https://github.com/Iranb/PaperNexus/blob/main/';
 
 function heading(text, level = 1) {
   return `${'#'.repeat(level)} ${text}\n`;
@@ -263,6 +264,7 @@ function renderSchemaProperties(properties = {}, required = []) {
 }
 
 function classifyMcpTool(toolName) {
+  if (Object.hasOwn(RESEARCH_ROUTES, toolName)) return 'Primary Research Workflow';
   if (['list_corpora', 'corpus_status', 'corpus_sources', 'query', 'context', 'impact', 'ideas', 'brainstorm', 'domain_distance', 'extract_takeaways', 'interdisciplinary_potential', 'research_lookup', 'research_briefing'].includes(toolName)) {
     return 'Graph & Research Lookup';
   }
@@ -285,6 +287,17 @@ function formatRequiredArgs(tool = {}) {
 }
 
 const MCP_TOOL_EXAMPLES = {
+  literature_review: [
+    { label: 'Search committed papers', value: { operation: 'search', corpus: 'demo-corpus', query: 'feedback calibration', limit: 5 } },
+    { label: 'Explicitly discover missing papers', value: { operation: 'discover', corpus: 'demo-corpus', query: 'feedback calibration', maxPapers: 20 } }
+  ],
+  lineage_analysis: [
+    { label: 'Trace validated method evolution', value: { operation: 'method', corpus: 'demo-corpus', method: 'method:example', maxDepth: 3 } }
+  ],
+  idea_generation: [
+    { label: 'Generate source-grounded hypotheses', value: { operation: 'generate', corpus: 'demo-corpus', query: 'feedback calibration', targetDomain: 'Education', limit: 5 } },
+    { label: 'Audit a concrete candidate', value: { operation: 'evaluate', corpus: 'demo-corpus', query: 'feedback calibration', candidateMechanism: 'Calibrate feedback confidence before control updates' } }
+  ],
   list_corpora: [
     { label: 'List all indexed corpora', value: {} }
   ],
@@ -669,12 +682,19 @@ const MCP_TOOL_EXAMPLES = {
 };
 
 function renderMcpReference() {
+  const catalog = [...RESEARCH_TOOLS, ...PAPERNEXUS_TOOLS];
   const sections = [
     heading('MCP Tool Reference'),
-    `This page is generated from ${repoFileLink('src/mcp/tools.js')}. It documents the public MCP surface that remote and local clients should rely on.\n`,
+    'The default research profile advertises only literature_review, lineage_analysis, and idea_generation. Set PAPERNEXUS_MCP_TOOL_PROFILE=legacy or serve.mcp.toolProfile=legacy to restore the original 23-tool list; all lists both surfaces. Reconnect clients after a profile change. Old tool names remain callable in every profile. Profiles control discovery, not authorization. See [migration and task routing](../../interfaces/mcp-three-workflows).\n',
+    `This page is generated from ${repoFileLink('src/mcp/research-workflows.js')} and ${repoFileLink('src/mcp/tools.js')}. It documents the public MCP surface that remote and local clients should rely on.\n`,
     heading('How To Read This Page', 2),
     'Each tool section lists the tool purpose first, followed by every currently exposed input field from the JSON schema and one or more copyable JSON payload examples. Nested fields use dot notation, and array item fields use `[]`, for example `operations[].action` or `llm.provider`. Fields marked `required in parent` are required only when their containing object or array item is provided.\n',
-    heading('Tool Index', 2),
+    heading('Default Research Tools', 2),
+    renderTable(
+      ['Tool', 'Description'],
+      RESEARCH_TOOLS.map((tool) => ['[' + tool.name + '](#tool-' + tool.name + ')', tool.description])
+    ),
+    heading('Legacy And Advanced Tool Index', 2),
     renderTable(
       ['Tool', 'Area', 'Required Args', 'Description'],
       PAPERNEXUS_TOOLS.map((tool) => [
@@ -686,13 +706,24 @@ function renderMcpReference() {
     )
   ];
 
-  for (const tool of PAPERNEXUS_TOOLS) {
+  for (const tool of catalog) {
     sections.push(heading(`Tool: ${tool.name}`, 2));
     sections.push(`<a id="tool-${tool.name}"></a>\n`);
     sections.push(`**Area:** ${classifyMcpTool(tool.name)}\n`);
     sections.push(`**Required top-level arguments:** ${formatRequiredArgs(tool)}\n`);
     sections.push(heading('Function', 3));
     sections.push(`${tool.description}\n`);
+    if (RESEARCH_ROUTES[tool.name]) {
+      sections.push(heading('Operation Routing', 3));
+      sections.push(renderTable(
+        ['Operation', 'Accepted fields', 'Required fields', 'Effect'],
+        Object.entries(RESEARCH_ROUTES[tool.name]).map(([operation, route]) => [
+          operation, route.fields.join(', '),
+          [...route.required, ...(route.anyRequired.length ? ['one of: ' + route.anyRequired.join(', ')] : [])].join('; ') || 'None',
+          route.effect
+        ])
+      ));
+    }
     sections.push(heading('Parameters', 3));
     sections.push(renderSchemaProperties(tool.inputSchema?.properties, tool.inputSchema?.required || []));
     sections.push(heading('Examples', 3));

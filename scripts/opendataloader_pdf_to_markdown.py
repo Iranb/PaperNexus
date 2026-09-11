@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -54,10 +56,18 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="papernexus-opendataloader-") as temp_dir:
             temp_root = Path(temp_dir)
+            if not shutil.which("java"):
+                try:
+                    from jdk4py import JAVA_HOME
+                except ImportError as exc:
+                    raise RuntimeError("OpenDataLoader requires Java 11+. Install the pinned parser runtime or put Java on PATH.") from exc
+                os.environ["JAVA_HOME"] = str(JAVA_HOME)
+                os.environ["PATH"] = str(JAVA_HOME / "bin") + os.pathsep + os.environ.get("PATH", "")
             opendataloader_pdf.convert(
                 input_path=[str(input_path)],
                 output_dir=str(temp_root),
                 format="markdown",
+                image_output="off",
             )
             output_path.write_text(ensure_markdown_output(temp_root, input_path), encoding="utf-8")
     except Exception as exc:  # pragma: no cover - exercised through Node integration

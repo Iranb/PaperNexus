@@ -20,7 +20,7 @@ import { executeLiteratureDiscoveryTool } from './tool-literature-discovery.js';
 import { executeLiteratureDiscoveryProgressTool } from './tool-literature-discovery-progress.js';
 import { executeResearchBriefingTool } from './tool-research-briefing.js';
 import { executeResearchLookupTool } from './tool-research-lookup.js';
-import { PAPERNEXUS_TOOLS } from './tools.js';
+import { RESEARCH_ROUTES, executeResearchWorkflow, listMcpTools, resolveMcpToolProfile } from './research-workflows.js';
 
 export const SERVER_INFO = {
   name: 'papernexus',
@@ -501,6 +501,10 @@ async function submitMcpCreateCorpusJob(context, executionArgs) {
 }
 
 export async function executeTool(name, args, options = {}) {
+  if (Object.hasOwn(RESEARCH_ROUTES, name)) {
+    return executeResearchWorkflow(name, args, options, executeTool);
+  }
+
   if (name === 'list_corpora') {
     const registry = await loadRegistry();
     return renderCorpusList(registry.corpora);
@@ -1061,7 +1065,7 @@ export async function handleMessage(message, options = {}) {
         serverInfo: SERVER_INFO
       };
     case 'tools/list':
-      return { tools: PAPERNEXUS_TOOLS };
+      return { tools: listMcpTools(options) };
     case 'tools/call':
       return {
         content: normalizeToolContent(await executeTool(message.params?.name, message.params?.arguments || {}, options))
@@ -1086,7 +1090,7 @@ export async function handleMessage(message, options = {}) {
     case 'prompts/list':
       return { prompts: PAPERNEXUS_PROMPTS };
     case 'prompts/get':
-      return getPrompt(message.params?.name);
+      return getPrompt(message.params?.name, { toolProfile: resolveMcpToolProfile(options) });
     default:
       throw new Error(`Method not found: ${message.method}`);
   }

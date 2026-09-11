@@ -1335,6 +1335,7 @@ function buildSemanticPaperView(paper) {
     paperId: paper.paperId,
     paperTitle: paper.title,
     titleValidation: paper.titleValidation || assessPaperTitleCandidate(paper.title, paper.sourcePath),
+    textQuality: paper.textQuality || null,
     authors: paper.authors || [],
     abstract: abstract?.text || '',
     identifiers: paperIdentity.identifiers,

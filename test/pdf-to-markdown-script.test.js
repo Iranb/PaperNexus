@@ -314,7 +314,10 @@ test('test-pdf-to-markdown can compare configured parser timing with docling fal
     await fs.writeFile(configPath, `${JSON.stringify({
       analyze: {
         markitdownPython: './fake-python.sh',
-        doclingCommand: './fake-docling.sh'
+        doclingCommand: './fake-docling.sh',
+        doclingDevice: 'cpu',
+        doclingAutoGpu: false,
+        doclingPreload: false
       },
       llm: {
         provider: 'openai',

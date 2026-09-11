@@ -33,6 +33,7 @@ import {
   paperEnhancementPayload,
   pathTraceGraphPayload,
   queryGraphPayload,
+  topicAnalysisPayload,
   reflectionChainPayload,
   researchBriefPayload,
   reviewerSimulatePayload,
@@ -1640,6 +1641,13 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request, options);
         sendJson(response, 200, await evidenceChainPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && ['/api/topic-analysis', '/api/problem-evolution', '/api/analysis-subgraph'].includes(url.pathname)) {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await topicAnalysisPayload(name, body, apiOptions));
         return;
       }
 

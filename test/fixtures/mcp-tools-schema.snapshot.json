@@ -2831,6 +2831,17 @@
         "citationRelationshipId": {
           "type": "string"
         },
+        "constraints": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": true
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
         "corpus": {
           "type": "string"
         },
@@ -2852,6 +2863,9 @@
         "excludeProximalDomains": {
           "type": "boolean",
           "default": true
+        },
+        "fromYear": {
+          "type": "number"
         },
         "identifier": {
           "type": "string"
@@ -2892,6 +2906,12 @@
           "type": "number",
           "default": 3
         },
+        "maxEdges": {
+          "type": "number"
+        },
+        "maxNodes": {
+          "type": "number"
+        },
         "mechanisms": {
           "oneOf": [
             {
@@ -2929,6 +2949,7 @@
         "operation": {
           "type": "string",
           "enum": [
+            "analysis_subgraph",
             "brainstorm",
             "context",
             "cross_domain_evidence",
@@ -2941,8 +2962,10 @@
             "method_lineage",
             "method_registry",
             "paper_index",
+            "problem_evolution",
             "query",
-            "research_answer"
+            "research_answer",
+            "topic_analysis"
           ]
         },
         "options": {
@@ -2971,6 +2994,12 @@
           "type": "number",
           "default": 3
         },
+        "seedNodeIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "source": {
           "type": "string"
         },
@@ -2992,6 +3021,9 @@
         },
         "targetMethod": {
           "type": "string"
+        },
+        "toYear": {
+          "type": "number"
         }
       }
     }

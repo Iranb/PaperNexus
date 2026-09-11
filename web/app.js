@@ -1,4 +1,10 @@
+import { renderAnalysisHtml, layoutAnalysisGraph } from './analysis-view.js';
 const NODE_COLORS = {
+  ResearchQuestion: '#f472b6',
+  Challenge: '#fb7185',
+  AbstractMechanism: '#a78bfa',
+  Domain: '#2dd4bf',
+  EvidenceSnippet: '#14b8a6',
   Corpus: '#8b5cf6',
   Paper: '#38bdf8',
   Problem: '#f43f5e',
@@ -27,6 +33,25 @@ const LAYER_COLORS = {
 };
 
 const TYPE_TO_LAYER = {
+  Domain: 'DomainLayer',
+  ResearchQuestion: 'QuestionLayer',
+  Challenge: 'ChallengeLayer',
+  AbstractMechanism: 'MechanismLayer',
+  ContributionClaim: 'ClaimLayer',
+  NoveltyClaim: 'ClaimLayer',
+  CitationContext: 'EvidenceLayer',
+  ReviewAspect: 'ReviewLayer',
+  ReviewConcern: 'ReviewLayer',
+  StoryBeat: 'StoryLayer',
+  Hypothesis: 'HypothesisLayer',
+  FalsificationPlan: 'HypothesisLayer',
+  MultimodalAsset: 'ArtifactLayer',
+  ProvenanceRecord: 'ArtifactLayer',
+  VersionedArtifact: 'ArtifactLayer',
+  EvidenceSnippet: 'EvidenceLayer',
+  Takeaway: 'TakeawayLayer',
+  IdeaFragment: 'IdeaLayer',
+  ResearchGoal: 'GoalLayer',
   Corpus: 'CorpusLayer',
   Paper: 'DocumentLayer',
   Problem: 'ProblemLayer',
@@ -76,10 +101,10 @@ const DEFAULT_NODE_TYPES = ['Corpus', 'Paper', 'Problem', 'Method', 'Claim', 'Fi
 const DEFAULT_RELATION_TYPES = ['CONTAINS', 'SOLVES', 'USES', 'EVALUATES_ON', 'BENCHMARKED_ON', 'REPORTS', 'REPORTS_FINDING', 'CLAIMS', 'HAS_LIMITATION', 'ASSUMES', 'SUGGESTS_FUTURE', 'SUPPORTED_BY', 'OBSERVED_ON', 'MEASURED_BY', 'APPLIES_TO', 'TRANSFERABLE_TO', 'REQUIRES', 'DEPENDS_ON', 'HAS_GAP', 'RELATED_TO', 'SIMILAR_TO', 'COMPATIBLE_WITH', 'COMBINES_WITH', 'MAY_BE_ADDRESSED_BY', 'CONTRADICTS', 'CITES'];
 const FILTER_PRESETS = {
   all: {
-    label: 'Full graph',
-    description: 'All layers and node types',
-    nodeTypes: DEFAULT_NODE_TYPES,
-    relationTypes: DEFAULT_RELATION_TYPES
+    label: 'All loaded types',
+    description: 'All layers and node types in this projection',
+    nodeTypes: [],
+    relationTypes: []
   },
   research: {
     label: 'Research core',
@@ -197,7 +222,11 @@ const state = {
   camera: { x: 0, y: 0, scale: 1 },
   drag: null,
   cameraInteracted: false,
-  navigatorPickerOpen: false
+  navigatorPickerOpen: false,
+  analysisResult: null,
+  analysisRequest: null,
+  analysisView: 'objects',
+  graphLoadSequence: 0
 };
 
 let corpusMetaPollHandle = null;
@@ -996,6 +1025,7 @@ function drawCanvas() {
 
     ctx.strokeStyle = (EDGE_COLORS[relationship.type] || 'rgba(148, 163, 184, 0.24)').replace(/[\d.]+\)$/g, `${alpha})`);
     ctx.lineWidth = relationship.type === 'RELATED_TO' ? 2 : 1.2;
+    ctx.setLineDash(['candidate', 'rejected', 'blocked'].includes(relationship.properties?.validationStatus) ? [5, 5] : []);
     ctx.beginPath();
     ctx.moveTo(source.x, source.y);
     const controlX = (source.x + target.x) / 2 + (target.y - source.y) * 0.05;
@@ -1003,6 +1033,7 @@ function drawCanvas() {
     ctx.quadraticCurveTo(controlX, controlY, target.x, target.y);
     ctx.stroke();
   });
+  ctx.setLineDash([]);
 
   visibleNodes.forEach((node) => {
     const world = state.runtime.positions.get(node.id);
@@ -1882,9 +1913,10 @@ function renderStatusbar() {
 
   const visibleNodes = getVisibleNodes();
   const visibleEdges = getVisibleRelationships(new Set(visibleNodes.map((node) => node.id))).length;
+  const projectionLabel = state.analysisResult?.scope?.truncated ? 'Bounded projection · ' : 'Local projection · ';
   const secondaryMessage = state.noticeMessage
     ? escapeHtml(state.noticeMessage)
-    : `${visibleNodes.length} visible nodes · ${visibleEdges} visible edges · ${state.visibleLayers.size} layers active · drag to pan · scroll to zoom`;
+    : `${projectionLabel}${visibleNodes.length} visible nodes · ${visibleEdges} visible edges · ${state.visibleLayers.size} layers active · drag to pan · scroll to zoom`;
   statusbar.innerHTML = `
     <span>${escapeHtml(state.meta.name)} · ${escapeHtml(state.meta.sourceMode)} · ${state.meta.paperCount} papers · ${getTypeCount('Problem')} problems · ${getTypeCount('Method')} methods${state.meta.buildMode ? ` · ${escapeHtml(state.meta.buildMode)}` : ''}</span>
     <span>${secondaryMessage}</span>
@@ -1987,7 +2019,7 @@ function stopCorpusAutoRefresh() {
 }
 
 async function checkForCorpusUpdates() {
-  if (!state.activeCorpusName || !state.meta || document.hidden) return;
+  if (!state.activeCorpusName || !state.meta || document.hidden || state.analysisRequest) return;
 
   try {
     const payload = await fetchJson(`/api/corpus-meta?name=${encodeURIComponent(state.activeCorpusName)}`);
@@ -2035,6 +2067,9 @@ function renderCorpusOptions() {
 function renderEmptyState() {
   stopCorpusAutoRefresh();
   state.activeCorpusName = '';
+  state.analysisResult = null;
+  state.analysisRequest = null;
+  renderTopicResults();
   state.noticeMessage = '';
   state.navigatorQuery = '';
   state.navigatorPickerOpen = false;
@@ -2071,12 +2106,18 @@ async function loadCorpus(name, options = {}) {
   const previousVisibleRelationTypes = options.preserveFilters ? new Set(state.visibleRelationTypes) : null;
   const previousViewMode = options.preserveFilters ? state.viewMode : 'all';
   const previousNavigatorQuery = options.preserveView ? state.navigatorQuery : '';
-  const payload = await fetchJson(`/api/corpus?name=${encodeURIComponent(name)}`);
+  const sequence = ++state.graphLoadSequence;
+  const request = options.analysisRequest || {};
+  const payload = await postJson('/api/analysis-subgraph?name=' + encodeURIComponent(name), request);
+  if (sequence !== state.graphLoadSequence) return;
+  state.analysisResult = payload.result;
+  state.analysisRequest = request.query || request.seedNodeIds?.length ? request : null;
   state.activeCorpusName = payload.meta.name;
   state.meta = payload.meta;
   state.graph = payload.graph;
   state.summary = payload.summary;
   state.runtime = createGraphRuntime(payload.graph);
+  state.runtime.positions = layoutAnalysisGraph(payload.graph);
   state.navigatorQuery = previousNavigatorQuery;
   state.navigatorPickerOpen = false;
 
@@ -2090,16 +2131,17 @@ async function loadCorpus(name, options = {}) {
 
   state.visibleNodeTypes = previousVisibleNodeTypes
     ? new Set([...previousVisibleNodeTypes].filter((type) => state.runtime.nodeTypes.includes(type)))
-    : new Set(DEFAULT_NODE_TYPES.filter((type) => state.runtime.nodeTypes.includes(type)));
+    : new Set(state.runtime.nodeTypes);
   state.visibleLayers = previousVisibleLayers
     ? new Set([...previousVisibleLayers].filter((layer) => state.runtime.layers.includes(layer)))
     : new Set(state.runtime.layers);
   state.visibleRelationTypes = previousVisibleRelationTypes
     ? new Set([...previousVisibleRelationTypes].filter((type) => state.runtime.relationTypes.includes(type)))
-    : new Set(DEFAULT_RELATION_TYPES.filter((type) => state.runtime.relationTypes.includes(type)));
+    : new Set(state.runtime.relationTypes);
   state.viewMode = previousViewMode;
 
   corpusSelect.value = payload.meta.name;
+  renderTopicResults();
   if (!options.preserveView) {
     state.cameraInteracted = false;
   }
@@ -2469,6 +2511,73 @@ function bindEvents() {
     scheduleCameraFit();
   });
 }
+
+function renderTopicResults() {
+  const result = state.analysisResult;
+  const section = document.getElementById('analysis-section');
+  section.hidden = !result || result.status === 'overview';
+  document.getElementById('analysis-results').innerHTML = renderAnalysisHtml(result, state.analysisView);
+  document.querySelectorAll('[data-analysis-view]').forEach((button) => {
+    const selected = button.dataset.analysisView === state.analysisView;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+  });
+  const status = document.getElementById('topic-status');
+  status.textContent = result ? (result.status === 'overview' ? 'Bounded overview' : result.status.replaceAll('_', ' '))
+    + ' · ' + result.graph.nodes.length + ' nodes · ' + result.graph.relationships.length + ' edges'
+    + (result.scope.truncated ? ' · coverage limited (' + result.scope.truncationReasons.join(', ') + ')' : '')
+    : 'Analysis uses the committed corpus.';
+}
+
+function bindTopicAnalysisEvents() {
+  const form = document.getElementById('topic-form');
+  const status = document.getElementById('topic-status');
+  const submit = document.getElementById('topic-submit');
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!state.activeCorpusName) { status.textContent = 'Load a corpus first.'; return; }
+    const query = document.getElementById('topic-query').value.trim();
+    if (!query) { status.textContent = 'Enter a topic.'; return; }
+    const constraintText = document.getElementById('topic-constraints').value.trim();
+    let constraints = constraintText;
+    if (constraintText.startsWith('{')) {
+      try { constraints = JSON.parse(constraintText); }
+      catch { status.textContent = 'The structured constraints could not be parsed. Correct them or use plain text.'; return; }
+    }
+    submit.disabled = true;
+    status.textContent = 'Analyzing the committed corpus…';
+    state.analysisView = 'objects';
+    try {
+      await loadCorpus(state.activeCorpusName, { analysisRequest: {
+        query, targetDomain: document.getElementById('topic-domain').value.trim(), constraints,
+        maxDepth: Number(document.getElementById('topic-depth').value),
+        maxNodes: Number(document.getElementById('topic-budget').value)
+      } });
+    } catch (error) { status.textContent = 'Analysis failed: ' + error.message + '. Retry or return to Overview.'; }
+    finally { submit.disabled = false; }
+  });
+  document.getElementById('topic-overview').addEventListener('click', async () => {
+    try { await loadCorpus(state.activeCorpusName); }
+    catch (error) { status.textContent = 'Overview failed: ' + error.message; }
+  });
+  document.getElementById('analysis-tabs').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-analysis-view]');
+    if (!button) return;
+    state.analysisView = button.dataset.analysisView;
+    renderTopicResults();
+  });
+  document.getElementById('analysis-results').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-analysis-node]');
+    if (!button) return;
+    const node = state.runtime?.nodeMap.get(button.dataset.analysisNode);
+    if (!node) { status.textContent = 'That source is outside this projection. Expand the coverage to inspect it.'; return; }
+    state.visibleNodeTypes.add(node.type);
+    state.visibleLayers.add(getNodeLayerName(node));
+    selectNode(node.id);
+  });
+}
+
+bindTopicAnalysisEvents();
 
 bindEvents();
 loadCorpora().catch((error) => {

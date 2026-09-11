@@ -3463,7 +3463,7 @@ test('MCP tool list includes literature_discovery', async () => {
     jsonrpc: '2.0',
     id: 1,
     method: 'tools/list'
-  });
+  }, { toolProfile: 'legacy' });
 
   const tool = response.tools.find((entry) => entry.name === 'literature_discovery');
   assert.ok(tool);

@@ -114,7 +114,7 @@ function buildPdfOptions(flags, config) {
     firecrawlTimeoutMs: toNumber(firstDefined(flags['firecrawl-timeout-ms'], materializeConfig.firecrawlTimeoutMs, analyzeConfig.firecrawlTimeoutMs), undefined),
     paddleocrVlPython: firstDefined(flags['paddleocr-vl-python'], materializeConfig.paddleocrVlPython, analyzeConfig.paddleocrVlPython, pythonCommand),
     paddleocrVlServerUrl: firstDefined(flags['paddleocr-vl-server-url'], materializeConfig.paddleocrVlServerUrl, analyzeConfig.paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1'),
-    paddleocrVlLayoutModel: firstDefined(flags['paddleocr-vl-layout-model'], materializeConfig.paddleocrVlLayoutModel, analyzeConfig.paddleocrVlLayoutModel, 'PP-DocLayout-S'),
+    paddleocrVlLayoutModel: firstDefined(flags['paddleocr-vl-layout-model'], materializeConfig.paddleocrVlLayoutModel, analyzeConfig.paddleocrVlLayoutModel, ''),
     pdfParseTimeoutMs: toNumber(firstDefined(flags['timeout-ms'], materializeConfig.pdfParseTimeoutMs, analyzeConfig.pdfParseTimeoutMs), undefined),
     pageRange: firstDefined(flags['page-range'], materializeConfig.pageRange, analyzeConfig.pageRange),
     force: Boolean(flags.force),

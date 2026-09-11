@@ -26,6 +26,19 @@ def parse_args():
 
     query_parser = subparsers.add_parser("query")
     add_shared_query_options(query_parser)
+    query_parser.add_argument("--sort-by", choices=["relevance", "date"])
+
+    for operation in ("topic_analysis", "problem_evolution", "analysis_subgraph"):
+        analysis_parser = subparsers.add_parser(operation)
+        analysis_parser.add_argument("query", nargs="?", default="")
+        analysis_parser.add_argument("--target-domain")
+        analysis_parser.add_argument("--constraints", help="Free-text transfer conditions requiring source review.")
+        analysis_parser.add_argument("--seed-node-ids", nargs="+")
+        analysis_parser.add_argument("--max-depth", type=int)
+        analysis_parser.add_argument("--max-nodes", type=int)
+        analysis_parser.add_argument("--max-edges", type=int)
+        analysis_parser.add_argument("--from-year", type=int)
+        analysis_parser.add_argument("--to-year", type=int)
 
     context_parser = subparsers.add_parser("context")
     add_shared_query_options(context_parser)
@@ -53,14 +66,23 @@ def parse_args():
 
 def build_options(args) -> dict:
     options = {}
-    for key in ("limit", "layers", "layer_mode", "node_view", "direction", "max_depth", "mode", "max_hops"):
+    for key in ("limit", "layers", "layer_mode", "node_view", "direction", "max_depth", "mode", "max_hops",
+                "sort_by", "target_domain", "constraints", "seed_node_ids", "max_nodes", "max_edges",
+                "from_year", "to_year"):
         value = getattr(args, key, None)
         if value is not None:
             option_key = {
                 "layer_mode": "layerMode",
                 "node_view": "nodeView",
                 "max_depth": "maxDepth",
-                "max_hops": "maxHops"
+                "max_hops": "maxHops",
+                "sort_by": "sortBy",
+                "target_domain": "targetDomain",
+                "seed_node_ids": "seedNodeIds",
+                "max_nodes": "maxNodes",
+                "max_edges": "maxEdges",
+                "from_year": "fromYear",
+                "to_year": "toYear"
             }.get(key, key)
             options[option_key] = value
     return options

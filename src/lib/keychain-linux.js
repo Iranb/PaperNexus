@@ -19,12 +19,12 @@ async function runCommand(cmd, args, runner = execFileAsync) {
   }
 }
 
-async function getAvailableTool() {
+async function getAvailableTool(deps = {}) {
   // Check which tools are available without requiring root
-  if (await runCommand('which', ['secret-tool'])) {
+  if (await runCommand('which', ['secret-tool'], deps.runner)) {
     return 'secret-tool';
   }
-  if (await runCommand('which', ['pass'])) {
+  if (await runCommand('which', ['pass'], deps.runner)) {
     return 'pass';
   }
   return null;
@@ -52,9 +52,9 @@ async function storeViaSecretTool({ service, account, secret }) {
   }
 }
 
-async function retrieveViaSecretTool({ service, account }) {
+async function retrieveViaSecretTool({ service, account }, deps = {}) {
   try {
-    const result = await execFileAsync('secret-tool', 
+    const result = await (deps.runner || execFileAsync)('secret-tool',
       ['lookup', 'service', service, 'account', account]
     );
     return result?.stdout ? String(result.stdout).trim() : '';
@@ -95,11 +95,11 @@ async function storeViaPass({ service, account, secret }) {
   }
 }
 
-async function retrieveViaPass({ service, account }) {
+async function retrieveViaPass({ service, account }, deps = {}) {
   const passPath = `papernexus/${service}/${account}`;
   
   try {
-    const result = await execFileAsync('pass', ['show', passPath]);
+    const result = await (deps.runner || execFileAsync)('pass', ['show', passPath]);
     return result?.stdout ? String(result.stdout).trim() : '';
   } catch {
     return '';
@@ -160,14 +160,14 @@ export async function getSecret({ service, account }, deps = {}) {
     return '';
   }
 
-  const tool = await getAvailableTool();
+  const tool = await getAvailableTool(deps);
 
   if (tool === 'secret-tool') {
-    return retrieveViaSecretTool({ service, account });
+    return retrieveViaSecretTool({ service, account }, deps);
   }
 
   if (tool === 'pass') {
-    return retrieveViaPass({ service, account });
+    return retrieveViaPass({ service, account }, deps);
   }
 
   return '';

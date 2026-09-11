@@ -846,7 +846,11 @@ function buildGapCandidates(lineages = [], limit = 5) {
   const output = [];
 
   for (const bottleneck of bottlenecks.slice(0, limit)) {
-    const tradeoff = tradeoffs[output.length % Math.max(1, tradeoffs.length)] || null;
+    const tradeoff = tradeoffs
+      .filter((entry) => entry.groundingEdges.some((id) => bottleneck.groundingEdges.includes(id)))
+      .sort((a, b) => b.groundingEdges.filter((id) => bottleneck.groundingEdges.includes(id)).length
+        - a.groundingEdges.filter((id) => bottleneck.groundingEdges.includes(id)).length
+        || a.dimension.localeCompare(b.dimension))[0] || null;
     const groundingEdges = unique([
       ...bottleneck.groundingEdges,
       ...(tradeoff?.groundingEdges || [])
@@ -863,7 +867,9 @@ function buildGapCandidates(lineages = [], limit = 5) {
       tradeoffDimension: tradeoff?.dimension || null,
       groundingEdges,
       evidenceQuotes,
-      confidence: normalizeScore(Math.min(1, groundingEdges.length / 3))
+      confidence: normalizeScore(Math.min(1, groundingEdges.length / 3)),
+      evidenceStatus: 'source_reported_candidate',
+      boundary: 'A bottleneck and tradeoff sharing source edges; later work and experiments must establish whether this remains an open opportunity.'
     });
   }
 

@@ -4,6 +4,8 @@ This document records the public PaperNexus MCP/SKILL surface that should stay s
 
 ## Stability Rule
 
+The 2026-09-11 workflow migration changes the default **advertised list** to three tools: `literature_review`, `lineage_analysis`, and `idea_generation`. All 23 original names, schemas and direct-call result formats remain supported. `serve.mcp.toolProfile=legacy` or `PAPERNEXUS_MCP_TOOL_PROFILE=legacy` restores the old list; `all` exposes both. This is an intentional tool-discovery change with a compatibility switch, not removal of backend capabilities. Reconnect clients after changing profiles. See [the migration contract](./mcp-three-workflows.md).
+
 - Existing MCP tool names remain stable.
 - Existing required arguments remain required with the same meaning.
 - Existing response fields remain present when callers already depend on them.
@@ -12,7 +14,7 @@ This document records the public PaperNexus MCP/SKILL surface that should stay s
 
 ## Public MCP Tools
 
-The generated reference in `docs/reference/generated/mcp-tools.md` is the source of truth for tool names and argument descriptions. The current public high-level tools are:
+The generated reference in `docs/reference/generated/mcp-tools.md` documents the three default workflows first, then the legacy/advanced catalog below. `src/mcp/research-workflows.js` owns the new schemas and deterministic routing; `src/mcp/tools.js` remains the legacy schema authority. The original public high-level tools remain:
 
 | Tool | Contract status |
 |---|---|
@@ -100,6 +102,85 @@ The 2026-05-14 engineering-control work is also additive:
 - Live Idea-Catalyst LLM subtasks can write optional batch-ledger rows when `llmBatchLedgerDir` is supplied.
 
 These fields are not required for older clients. Callers that do not need provenance or trace observability can ignore them.
+
+## Topic workflow refinements (2026-09-11)
+
+This change adds three read-only operations to the existing research_lookup tool:
+topic_analysis, problem_evolution, and analysis_subgraph. Their HTTP equivalents
+are POST /api/topic-analysis, POST /api/problem-evolution, and
+POST /api/analysis-subgraph. All three return the same
+papernexus-topic-analysis-v1 bundle under result, including graph, objects,
+adaptations, gaps, problemEvolution, methodEvolution, scope, and diagnostics.
+Clients can consume the section needed by their selected operation.
+The HTTP response also exposes graph, summary, and corpus meta for the Web UI.
+
+Example MCP arguments:
+
+    {
+      "operation": "topic_analysis",
+      "query": "sparse feedback calibration",
+      "targetDomain": "Education",
+      "constraints": {"labelsAvailable": false, "maxLatencyMs": 40},
+      "maxDepth": 3,
+      "maxNodes": 180,
+      "maxEdges": 350
+    }
+
+Parameters are optional except the existing operation. The query selects lexical
+topic evidence; targetDomain restricts initial seeds to that domain or unknown
+domain metadata, then traversal may reach other domains. Domain names match the
+corpus metadata case-insensitively. The seedNodeIds array supplies explicit anchors.
+An empty query without seeds means bounded overview, with status=overview.
+No topic matches yields status=no_matches and an empty graph.
+Other statuses are ok and partial; neither means research or experiments completed.
+
+Default node/edge/depth budgets are 180/350/2; hard caps are 500/1000/4.
+The scope fields truncated, truncationReasons, missingSeeds, and neighborhoodLayers
+explain coverage. Optional fromYear/toYear are inclusive; undated evidence
+remains included and is marked. Observations are dated source reports, not inferred
+causal evolution. Method lineages reuse source-evidence validation within the
+returned projection.
+
+Adaptations use extracted tasks, shared mechanisms or lexical overlap and explicit
+conditions. Object constraint keys compare exact primitive values against method
+requirements; numeric maxX keys require the method value ≤ target value, and
+minX keys require ≥. Unknown fields and free-text constraints require source
+review. Incompatible methods appear in excluded, with their conflicts; they are
+not eligible candidates. The hypothesis and needs_evidence statuses never assert
+successful transfer. Gap categories distinguish corpus_gap, extraction_gap,
+evidence_gap, traversal_gap, and source-reported research_opportunity.
+Claims alone are evidence-verification tasks. The analysis performs no provider
+calls, persistent state transitions, or graph writes.
+
+The existing Python wrapper also accepts these operation names, coverage arguments,
+target domain and free-text constraints:
+
+    python3 SKILL/PaperNexus/scripts/pn_graph_query.py --corpus "<corpus>" \
+      topic_analysis "sparse feedback calibration" --target-domain Education \
+      --max-depth 3 --max-nodes 180 --constraints "limited labels"
+
+Use direct MCP JSON arguments for structured condition comparisons. The wrapper's
+query operation also accepts --sort-by relevance or --sort-by date.
+
+Compatible behavior refinements:
+
+- Graph query now requires a lexical match before type priors apply. Default
+  ordering is relevance first, with publication date as a tie-breaker. Clients
+  needing recency ordering can pass options.sortBy="date".
+- Material gap maps no longer label an ordinary Claim as a proven
+  claim_evidence_mismatch; they use evidence_verification_needed and explicit
+  category/status fields. Method mappings, experiment anchors, and story priors
+  use task/source associations instead of array position.
+- Markdown cleaning preserves named metrics, model names, equations, tables and
+  fenced code. The parsePaperMarkdown textQuality field and persisted semantic
+  snapshots include a papernexus-text-quality-v1 removal report with source hash
+  and UTF-16 offsets into the original Markdown. This is formatting cleanup,
+  not numerical or semantic OCR correction. Existing stored corpora are not
+  automatically rebuilt.
+- The Web UI loads a bounded overview and exposes topic analysis plus four
+  evidence views. The top search is local to the loaded subgraph. All loaded
+  schema types are initially visible; the old full /api/corpus endpoint remains
+  available to existing clients.
 
 ## Review Checklist For Future Changes
 

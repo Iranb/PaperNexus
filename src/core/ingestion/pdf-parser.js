@@ -650,8 +650,8 @@ function resolvePaddleOcrVlLayoutModel(options = {}) {
   return String(
     options.paddleocrVlLayoutModel
     || process.env.PAPERNEXUS_PADDLEOCR_VL_LAYOUT_MODEL
-    || 'PP-DocLayout-S'
-  ).trim() || 'PP-DocLayout-S';
+    || ''
+  ).trim();
 }
 
 function resolveFirecrawlApiBaseUrl(options = {}) {
@@ -1559,6 +1559,15 @@ function buildRemoteMarkerScript({ markerCommand, remotePdfPath, remoteRunDir, p
   ].join('\n');
 }
 
+function buildCompatibleDoclingShellCommand(command, argv) {
+  // Docling 2.126 uses subcommands; older releases accept the input directly.
+  // Probe the selected executable, including on SSH hosts, without loading a PDF.
+  const help = buildShellCommand(command, ['--help']);
+  const current = buildShellCommand(command, ['convert', ...argv]);
+  const legacy = buildShellCommand(command, argv);
+  return `if { ${help} 2>/dev/null || true; } | grep -q 'convert-remote'; then\n${current}\nelse\n${legacy}\nfi`;
+}
+
 function buildRemoteDoclingScript({
   doclingCommand,
   remotePdfPath,
@@ -1584,7 +1593,7 @@ function buildRemoteDoclingScript({
   hfHubDisableTelemetry,
   autoGpu = true
 }) {
-  const command = buildShellCommand(
+  const command = buildCompatibleDoclingShellCommand(
     doclingCommand,
     buildDoclingCliArgv({
       inputPath: remotePdfPath,
@@ -2080,7 +2089,7 @@ async function runLocalDoclingCli(pdfPath, runDir, options = {}, executionOption
     tracker
   );
   try {
-    return await runCommand('/bin/sh', ['-lc', buildShellCommand(options.doclingCommand, argv)], {
+    return await runCommand('/bin/sh', ['-lc', buildCompatibleDoclingShellCommand(options.doclingCommand, argv)], {
       ...executionOptions,
       env: {
         ...env,
@@ -2491,7 +2500,7 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
   if (!quiet) {
     process.stderr.write(`[mineru:${basename}] Running local mineru with remote backend\n`);
   }
-  await measureDuration(timings, 'mineruRequestMs', () => runCommand('mineru', args, {
+  await measureDuration(timings, 'mineruRequestMs', () => runCommand(mineruCommand || 'mineru', args, {
     onStdout: quiet ? () => {} : undefined,
     onStderr: quiet ? () => {} : undefined,
     timeoutMs,
@@ -2503,7 +2512,7 @@ async function convertPdfToMarkdownViaMineru(pdfPath, options = {}) {
 
   return {
     markdown,
-    parserCommand: `mineru -b vlm-http-client -u ${mineruHttpUrl || mineruCommand}`,
+    parserCommand: `${mineruCommand || 'mineru'} -b vlm-http-client -u ${mineruHttpUrl || mineruCommand}`,
     timings
   };
 }
@@ -3020,7 +3029,7 @@ async function convertPdfToMarkdownWithMineru(pdfPath, options = {}) {
       currentStep: 'running local mineru',
       message: 'Running local MinerU'
     });
-    await runCommand('mineru', args, {
+    await runCommand(mineruCommand, args, {
       onStdout: quiet ? () => {} : undefined,
       onStderr: quiet ? () => {} : undefined,
       timeoutMs,

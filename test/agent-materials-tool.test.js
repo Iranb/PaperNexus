@@ -2467,7 +2467,7 @@ test('agent_materials research_controller run_round advances through durable one
 test('MCP exposes agent_materials and dispatches read-only material operations', async () => {
   const rootPath = await createMaterialCorpus();
   try {
-    const tools = await handleMessage({ method: 'tools/list' });
+    const tools = await handleMessage({ method: 'tools/list' }, { toolProfile: 'legacy' });
     assert.ok(tools.tools.some((tool) => tool.name === 'agent_materials'));
     const agentMaterials = tools.tools.find((tool) => tool.name === 'agent_materials');
     assert.ok(agentMaterials.inputSchema.properties.operation.enum.includes('innovation_evidence_pack'));

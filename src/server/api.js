@@ -1,3 +1,4 @@
+import { buildTopicAnalysis } from '../core/graph/topic-analysis.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -674,6 +675,7 @@ function groupPaperIndexEntries(entries = []) {
 function normalizeQueryOptions(options = {}) {
   return {
     limit: boundedInteger(options.limit, 5, { max: MAX_API_RESULT_LIMIT }),
+    sortBy: options.sortBy === 'date' ? 'date' : 'relevance',
     layers: options.layers
   };
 }
@@ -2826,4 +2828,18 @@ export async function updateLlmConfigPayload(nextLlmConfig, options = {}) {
     configPath: saved.path,
     message: 'LLM configuration saved. Restart any running analyze/watch process to apply it there.'
   };
+}
+
+// Shared read-only projection for HTTP and MCP. No provider or graph writeback.
+export async function topicAnalysisPayload(candidate, body = {}, options = {}) {
+  const rootPath = await resolveCorpusForApi(body.name || candidate, options);
+  const { graph, meta } = await loadCorpusLiteForApi(rootPath, options);
+  const result = buildTopicAnalysis(graph, { ...(body.options || {}), ...body });
+  const counts = (items, key) => Object.fromEntries([...new Set(items.map(key))].sort()
+    .map((type) => [type, items.filter((item) => key(item) === type).length]));
+  return presentPortablePayload({ rootPath, meta, result, graph: result.graph,
+    summary: { nodeTypes: counts(result.graph.nodes, (node) => node.type),
+      nodeLayers: counts(result.graph.nodes, (node) => getApiNodeLayer(node)),
+      relationTypes: counts(result.graph.relationships, (edge) => edge.type) },
+    generatedAt: new Date().toISOString() }, options);
 }

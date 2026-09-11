@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This page is generated from [`config.example.json`](https://github.com/papernexus/PaperNexus/blob/main/config.example.json). The example file is the maintained default source of truth for shipped runtime settings.
+This page is generated from [`config.example.json`](https://github.com/Iranb/PaperNexus/blob/main/config.example.json). The example file is the maintained default source of truth for shipped runtime settings.
 
 ## Example Config
 
@@ -104,6 +104,7 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
     "importWorkflowRecoveryStaleMs": 30000,
     "mcp": {
       "enabled": true,
+      "toolProfile": "research",
       "path": "/mcp",
       "transport": "streamable-http",
       "requestTimeoutMs": 600000,
@@ -250,6 +251,7 @@ This page is generated from [`config.example.json`](https://github.com/papernexu
 | `serve.importWorkflowRecoveryStaleMs` | number | `30000` |
 | `serve.mcp` | object | section |
 | `serve.mcp.enabled` | boolean | `true` |
+| `serve.mcp.toolProfile` | string | `research` |
 | `serve.mcp.path` | string | `/mcp` |
 | `serve.mcp.transport` | string | `streamable-http` |
 | `serve.mcp.requestTimeoutMs` | number | `600000` |

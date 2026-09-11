@@ -21,7 +21,7 @@ let previousGraphBackend;
 function startMcpClient(env) {
   const child = spawn('node', [cliPath, 'mcp'], {
     cwd: projectRoot,
-    env,
+    env: { ...env, PAPERNEXUS_MCP_TOOL_PROFILE: 'legacy' },
     stdio: ['pipe', 'pipe', 'pipe']
   });
 

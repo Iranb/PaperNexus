@@ -93,6 +93,7 @@
     "importWorkflowRecoveryStaleMs": 30000,
     "mcp": {
       "enabled": true,
+      "toolProfile": "research",
       "path": "/mcp",
       "transport": "streamable-http",
       "requestTimeoutMs": 600000,

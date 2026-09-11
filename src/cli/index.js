@@ -693,7 +693,7 @@ function buildAnalyzeOptions(flags, config, commandName = 'analyze') {
     firecrawlTimeoutMs: toNumber(firstDefined(flags['firecrawl-timeout-ms'], commandConfig.firecrawlTimeoutMs), undefined),
     paddleocrVlPython: firstDefined(flags['paddleocr-vl-python'], commandConfig.paddleocrVlPython, commandConfig.pythonCommand),
     paddleocrVlServerUrl: firstDefined(commandConfig.paddleocrVlServerUrl, 'http://127.0.0.1:8080/v1'),
-    paddleocrVlLayoutModel: firstDefined(commandConfig.paddleocrVlLayoutModel, 'PP-DocLayout-S'),
+    paddleocrVlLayoutModel: firstDefined(commandConfig.paddleocrVlLayoutModel, ''),
     pageRange: firstDefined(flags['page-range'], commandConfig.pageRange),
     pdfSshHost: firstDefined(flags['pdf-ssh-host'], commandConfig.pdfSshHost, commandConfig.pdfParserSshHost, llmSshHost),
     ...llmOptions,
@@ -2343,7 +2343,7 @@ async function handleUpdateCommand(flags) {
   } catch (error) {
 		throw new Error(
 			'Not a git repository. PaperNexus must be cloned from GitHub to use update.\n'
-			+ 'Clone with: git clone https://github.com/papernexus/PaperNexus.git'
+			+ 'Clone with: git clone https://github.com/Iranb/PaperNexus.git'
 		);
 	}
   

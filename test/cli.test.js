@@ -751,7 +751,10 @@ test('CLI scrub-degenerate-papers removes degenerate graph sources and purges mi
       analyze: {
         name: 'degenerate-scrub-test',
         pdfParser: 'docling',
-        doclingCommand: './fake-docling.sh'
+        doclingCommand: './fake-docling.sh',
+        doclingDevice: 'cpu',
+        doclingAutoGpu: false,
+        doclingPreload: false
       }
     }, null, 2)}\n`);
 
@@ -1125,6 +1128,24 @@ if (command === 'delete-generic-password') {
 process.exit(0);
 `);
     await fs.chmod(path.join(binDir, 'security'), 0o755);
+
+    await fs.writeFile(path.join(binDir, 'secret-tool'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const command = args[0];
+const key = args[args.indexOf('service') + 1] + '|' + args[args.indexOf('account') + 1];
+const storePath = process.env.FAKE_SECURITY_STORE;
+const store = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : {};
+if (command === 'store') {
+  store[key] = fs.readFileSync(0, 'utf8');
+  fs.writeFileSync(storePath, JSON.stringify(store));
+} else if (command === 'lookup') {
+  process.stdout.write(store[key] || '');
+} else if (command === 'clear') {
+  delete store[key];
+  fs.writeFileSync(storePath, JSON.stringify(store));
+} else process.exit(1);
+`, { mode: 0o755 });
 
     const authRun = await spawnCli(['auth', 'llm', 'set', '--provider', 'deepseek', '--stdin'], {
       cwd: workspaceRoot,

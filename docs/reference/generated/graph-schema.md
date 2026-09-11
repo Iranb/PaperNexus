@@ -1,6 +1,6 @@
 # Graph Schema Reference
 
-This page is generated from [`src/core/graph/schema.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/schema.js) and [`src/core/graph/rules.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/graph/rules.js). It reflects the actual node, layer, edge, and compatibility definitions used by the graph engine.
+This page is generated from [`src/core/graph/schema.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/schema.js) and [`src/core/graph/rules.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/rules.js). It reflects the actual node, layer, edge, and compatibility definitions used by the graph engine.
 
 ## Graph Layers
 

@@ -1,5 +1,24 @@
 # PDF Parsers And Runtime
 
+## Verified stable versions (2026-09-11)
+
+The version contract is `config/pdf-parser-versions.json` in the repository. `scripts/pdf-parser-runtime.py` installs each Python parser into an independent versioned environment and audits its installed distribution/source. It prints an `analyze` config patch; installation alone does not change the running service or prove successful PDF conversion.
+
+| Parser | Stable target | Official release source | Runtime detail |
+| --- | --- | --- | --- |
+| MarkItDown | 0.1.7 | [PyPI](https://pypi.org/project/markitdown/0.1.7/) | Includes the `pdf` extra; 0.1.8b1 is excluded as a prerelease. |
+| MarkPDFDown | GitHub 1.2.0 | [Release](https://github.com/MarkPDFdown/markpdfdown/releases/tag/1.2.0) | Commit `2e34a1b0b0a1f4e60b53164bd85988a3b399f06b`; upstream package metadata still says 1.1.2. Audit the source URL as well as the package version. |
+| OpenDataLoader PDF | 2.5.8 | [PyPI](https://pypi.org/project/opendataloader-pdf/2.5.8/) | Published on the verification date; Java 11+ is required. The pinned environment includes jdk4py 25.0.2.1 for hosts without Java. |
+| Docling | 2.126.0 | [PyPI](https://pypi.org/project/docling/2.126.0/) | Current CLI uses `docling convert`; PaperNexus detects the CLI form on local and SSH runtimes. VLM requests use `engine_type` and dictionary headers. |
+| Marker | 2.0.0 | [PyPI](https://pypi.org/project/marker-pdf/2.0.0/) | `marker_single` flags remain supported. Needs model weights in addition to the Python package. |
+| MinerU | 3.4.5 | [PyPI](https://pypi.org/project/mineru/3.4.5/) | Uses the configured `mineruCommand` for both local and HTTP-client execution; 4.0.0 alpha releases are excluded. |
+| PaddleOCR-VL | PaddleOCR 3.7.0 / VL 1.6 pipeline | [PyPI](https://pypi.org/project/paddleocr/3.7.0/) | Default layout follows the upstream pipeline (currently PP-DocLayoutV3). The remote VLM server must separately serve compatible weights. CPU Paddle 3.3.1 is included in the pinned environment. |
+| Firecrawl | HTTP API v2 | [Parse API](https://docs.firecrawl.dev/features/parse) | `/v2/parse` for uploads and `/v2/scrape` for URLs; no Firecrawl SDK dependency. The provider controls the hosted engine version. |
+
+Do not install these families into one shared Python environment: Marker 2.0.0 requires Pillow <11 and Transformers >=5.12.1, while MinerU 3.4.5 requires Pillow >=11 and its local model extras require Transformers <5. The default installer chooses CPU PyTorch wheels and does not allocate GPUs or start VLM services. Use `--torch-backend` only when intentionally preparing another backend.
+
+The optional SSH text fallback uses `pdftotext` or [pypdf 6.18.0](https://pypi.org/project/pypdf/6.18.0/) on the selected fallback host. GROBID TEI, S2ORC, and COCI are separate offline evidence import adapters, not additional PDF parser runtimes. Keep package/version audits, CLI checks, real PDF conversion, and model/service checks separate in validation reports.
+
 This page documents the current PDF parsing layer as it exists in the repository today.
 
 It focuses on:
@@ -27,7 +46,7 @@ There is one important refinement: **a bad title alone no longer forces Docling 
 
 ## Supported Parser Families
 
-The current parser layer is implemented in [`src/core/ingestion/pdf-parser.js`](https://github.com/papernexus/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js).
+The current parser layer is implemented in [`src/core/ingestion/pdf-parser.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js).
 
 The supported parser families are:
 
@@ -316,7 +335,7 @@ papernexus analyze ./papers \
 
 ## MarkItDown Runtime
 
-The PaperNexus wrapper for MarkItDown lives at [`scripts/markitdown_to_markdown.py`](https://github.com/papernexus/PaperNexus/blob/main/scripts/markitdown_to_markdown.py).
+The PaperNexus wrapper for MarkItDown lives at [`scripts/markitdown_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/markitdown_to_markdown.py).
 
 ### Default behavior
 
