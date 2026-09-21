@@ -287,21 +287,14 @@ async function ensureApiToken(forcePrompt = false) {
 }
 
 async function apiFetch(url, options = {}) {
-  const makeRequest = async (token) => {
-    const headers = new Headers(options.headers || {});
-    headers.set('Authorization', `Bearer ${token}`);
-    return fetch(url, {
-      ...options,
-      headers
-    });
-  };
-
-  let token = await ensureApiToken(false);
-  let response = await makeRequest(token);
-  if (response.status === 401 && !options._retriedAuth) {
+  const headers = new Headers(options.headers || {});
+  const token = state.apiToken || captureApiTokenFromLocation() || loadApiTokenFromStorage();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const response = await fetch(url, { ...options, headers, credentials: 'same-origin' });
+  if (response.status === 401) {
     persistApiToken('');
-    token = await ensureApiToken(true);
-    response = await makeRequest(token);
+    window.location.replace('/login.html');
+    throw new Error('请先登录');
   }
   return response;
 }
@@ -2583,4 +2576,9 @@ bindEvents();
 loadCorpora().catch((error) => {
   overviewCard.innerHTML = `<div class="empty-copy">${escapeHtml(error.message)}</div>`;
   renderEmptyState();
+});
+
+document.getElementById('logout-button').addEventListener('click', async () => {
+  const response = await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  if (response.ok) { persistApiToken(''); window.location.replace('/login.html'); }
 });

@@ -1,3 +1,4 @@
+import { createBrowserAuth } from './browser-auth.js';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -1252,6 +1253,7 @@ export async function serveCommand(options = {}) {
   const apiToken = resolveApiToken(options);
   const mcpConfig = getMcpHttpConfig(options);
   const serveConfig = getServeConfig(options);
+  const browserAuth = createBrowserAuth(serveConfig.login);
   const rootResolution = await getConfiguredRootPaths(options);
   const rootPaths = rootResolution.rootPaths.length ? rootResolution.rootPaths : undefined;
   const webRoot = buildWebRoot();
@@ -1412,6 +1414,8 @@ export async function serveCommand(options = {}) {
         }
       };
 
+      if (await browserAuth.handle(request, response, url.pathname, { readJsonBody, sendJson })) return;
+
       if (request.method === 'GET' && url.pathname === '/livez') {
         sendJson(response, 200, {
           ok: true,
@@ -1462,7 +1466,7 @@ export async function serveCommand(options = {}) {
       }
 
       if (url.pathname.startsWith('/api/')) {
-        if (!requireApiToken(request, response, apiToken)) {
+        if (!browserAuth.authenticated(request) && !requireApiToken(request, response, apiToken)) {
           return;
         }
       }
