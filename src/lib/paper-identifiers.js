@@ -299,7 +299,9 @@ export function createPaperIdentifierKeys(input = {}) {
 function createIdentifierAlias(field, value = '') {
   const normalized = normalizeIdentifierValue(field, value);
   if (!normalized) return '';
-  return `${PAPER_IDENTIFIER_PREFIXES[field]}:${normalized}`;
+  const identityValue = field === 'arxivId' ? stripArxivVersion(normalized)
+    : field === 'doi' && extractArxivIdFromDoi(normalized) ? `10.48550/arxiv.${stripArxivVersion(extractArxivIdFromDoi(normalized))}` : normalized;
+  return `${PAPER_IDENTIFIER_PREFIXES[field]}:${identityValue}`;
 }
 
 export function normalizeExactPaperTitle(value = '') {
@@ -347,6 +349,7 @@ export function createPaperIdentityAliases(input = {}) {
   for (const field of PAPER_IDENTIFIER_FIELDS) {
     const alias = createIdentifierAlias(field, identifiers[field]);
     if (alias) aliases.push(alias);
+    if (field === 'arxivId' && hasArxivVersion(identifiers[field])) aliases.push(`arxiv:${identifiers[field]}`);
   }
 
   const titleAlias = createPaperTitleAlias(
@@ -440,7 +443,10 @@ export function mergePaperIdentifiers(...inputs) {
         continue;
       }
       if (merged[field] !== value) {
-        conflicts[field] = unique([merged[field], value]);
+        if (field === 'arxivId' && stripArxivVersion(merged[field]) === stripArxivVersion(value)) {
+          const version = id => Number(id.match(/v(\d+)$/)?.[1] || 0);
+          if (version(value) > version(merged[field])) merged[field] = value;
+        } else conflicts[field] = unique([...(conflicts[field] || []), merged[field], value]);
       }
     }
   }
@@ -474,6 +480,7 @@ export function mergePaperIdentity(...inputs) {
       identifiers: mergedIdentifiers.identifiers,
       normalizedTitle
     }),
+    ...inputs.flatMap((input) => createPaperIdentityAliases(input)),
     ...explicitAliases
   ]).sort();
 
@@ -504,7 +511,7 @@ export function paperIdentifiersConflict(left = {}, right = {}) {
   return PAPER_IDENTIFIER_FIELDS.some((field) => (
     leftIdentifiers[field]
     && rightIdentifiers[field]
-    && leftIdentifiers[field] !== rightIdentifiers[field]
+    && createIdentifierAlias(field, leftIdentifiers[field]) !== createIdentifierAlias(field, rightIdentifiers[field])
   ));
 }
 

@@ -1,3 +1,4 @@
+import { buildResearchQualityView } from '../core/graph/research-quality.js';
 import { buildTopicAnalysis } from '../core/graph/topic-analysis.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -5,7 +6,6 @@ import {
   applyCorpusMutations,
   backupCorpus,
   hasCorpusGraphStore,
-  loadCorpus,
   loadCorpusLite,
   loadCorpusMeta,
   loadSourceManifest,
@@ -460,14 +460,12 @@ export async function configuredWorkerCoveragePayload(rootPath, options = {}) {
 
 export async function corpusPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
-  const cache = options.cache;
-  const stamp = await readPathStamp(getCorpusPaths(rootPath).metaPath);
-
-  if (!cache?.corpusByRoot) {
-    const { meta, graph } = await loadCorpus(rootPath);
+  const paths = getCorpusPaths(rootPath);
+  const stamp = `${await readPathStamp(paths.metaPath)}|${await readPathStamp(paths.liteGraphPath)}|${await readPathStamp(paths.graphPath)}|${await readPathStamp(paths.kuzuGraphPath)}`;
+  const buildPayload = async () => {
+    const { meta, graph, quality } = await loadCorpusLiteForApi(rootPath, options);
     return presentPortablePayload({
-      meta,
-      graph: graph.toJSON(),
+      meta, quality, graph: graph.toJSON(),
       summary: {
         nodeTypes: sortObjectEntries(countBy(graph.nodes, (node) => node.type)),
         nodeLayers: sortObjectEntries(countBy(graph.nodes, (node) => getApiNodeLayer(node))),
@@ -475,21 +473,9 @@ export async function corpusPayload(candidate, options = {}) {
         layerPaths: sortObjectEntries(countBy(graph.relationships, (relationship) => relationship.properties?.layerPath || 'Unknown'))
       }
     }, options);
-  }
-
-  return resolveCachedPayload(cache.corpusByRoot, rootPath, stamp, async () => {
-    const { meta, graph } = await loadCorpus(rootPath);
-    return presentPortablePayload({
-      meta,
-      graph: graph.toJSON(),
-      summary: {
-        nodeTypes: sortObjectEntries(countBy(graph.nodes, (node) => node.type)),
-        nodeLayers: sortObjectEntries(countBy(graph.nodes, (node) => getApiNodeLayer(node))),
-        relationTypes: sortObjectEntries(countBy(graph.relationships, (relationship) => relationship.type)),
-        layerPaths: sortObjectEntries(countBy(graph.relationships, (relationship) => relationship.properties?.layerPath || 'Unknown'))
-      }
-    }, options);
-  });
+  };
+  if (!options.cache?.corpusByRoot) return buildPayload();
+  return resolveCachedPayload(options.cache.corpusByRoot, rootPath, stamp, buildPayload);
 }
 
 export async function loadCorpusLiteForApi(rootPath, options = {}) {
@@ -497,11 +483,17 @@ export async function loadCorpusLiteForApi(rootPath, options = {}) {
   const paths = getCorpusPaths(rootPath);
   const stamp = `${await readPathStamp(paths.metaPath)}|${await readPathStamp(paths.liteGraphPath)}|${await readPathStamp(paths.graphPath)}|${await readPathStamp(paths.kuzuGraphPath)}`;
 
-  if (!cache?.corpusLiteByRoot) {
-    return loadCorpusLite(rootPath);
-  }
-
-  return resolveCachedPayload(cache.corpusLiteByRoot, rootPath, stamp, async () => loadCorpusLite(rootPath));
+  const loadResearchView = async () => {
+    const loaded = await loadCorpusLite(rootPath);
+    const { graph, report } = buildResearchQualityView(loaded.graph);
+    return { ...loaded, graph, quality: report, meta: {
+      ...loaded.meta, rawPaperCount: loaded.meta.paperCount,
+      paperCount: report.paperCount, nodeCount: report.nodeCount, relationshipCount: report.relationshipCount,
+      researchQualityVersion: report.version
+    } };
+  };
+  if (!cache?.corpusLiteByRoot) return loadResearchView();
+  return resolveCachedPayload(cache.corpusLiteByRoot, rootPath, stamp, loadResearchView);
 }
 
 function normalizeGraphRequestBody(body = {}) {
@@ -1906,17 +1898,18 @@ export async function brainstormBriefPayload(candidate, body = {}, options = {})
 export async function corpusMetaPayload(candidate, options = {}) {
   const rootPath = await resolveCorpusForApi(candidate, options);
   const cache = options.cache;
-  const { metaPath, authoritativeSyncQueuePath } = getCorpusPaths(rootPath);
-  const stamp = `${await readPathStamp(metaPath)}|${await readPathStamp(authoritativeSyncQueuePath)}`;
+  const { metaPath, liteGraphPath, authoritativeSyncQueuePath } = getCorpusPaths(rootPath);
+  const stamp = `${await readPathStamp(metaPath)}|${await readPathStamp(liteGraphPath)}|${await readPathStamp(authoritativeSyncQueuePath)}`;
 
   const buildPayload = async () => {
-    const [meta, syncJobs] = await Promise.all([
-      loadCorpusMeta(rootPath),
+    const [loaded, syncJobs] = await Promise.all([
+      loadCorpusLiteForApi(rootPath, options),
       listAuthoritativeSyncJobs(rootPath)
     ]);
 
+    const { meta, quality } = loaded;
     return presentPortablePayload({
-      meta,
+      meta, quality,
       authoritativeSync: {
         status: meta.authoritativeSyncStatus || (syncJobs.length ? 'pending' : 'synced'),
         pendingJobCount: syncJobs.length,

@@ -3586,19 +3586,19 @@ We study manifest-level cache reuse for paper A.
     const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
     assert.ok(manifest.llmOptimization);
     assert.deepEqual(manifest.llmOptimization.promptVersions, {
-      semanticObjects: 'semantic-objects-v2',
+      semanticObjects: 'semantic-objects-v3-quality',
       researchRelations: 'research-relations-v1',
-      chunkSemanticObjects: 'chunk-semantic-objects-v1',
+      chunkSemanticObjects: 'chunk-semantic-objects-v2-quality',
       chunkResearchRelations: 'chunk-research-relations-v1'
     });
     assert.ok(manifest.llmOptimization.chunkPipelineConfigSignature);
-    assert.equal(JSON.parse(manifest.llmOptimization.semanticConfigSignature).promptVersion, 'semantic-objects-v2');
+    assert.equal(JSON.parse(manifest.llmOptimization.semanticConfigSignature).promptVersion, 'semantic-objects-v3-quality');
     assert.equal(JSON.parse(manifest.llmOptimization.relationConfigSignature).promptVersion, 'research-relations-v1');
 
     const firstSource = manifest.sources[0];
     const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, firstSource.sourceKey);
-    assert.equal(snapshot.llmSemanticObjects.promptVersion, 'semantic-objects-v2');
-    assert.equal(snapshot.llm.semanticPromptVersion, 'semantic-objects-v2');
+    assert.equal(snapshot.llmSemanticObjects.promptVersion, 'semantic-objects-v3-quality');
+    assert.equal(snapshot.llm.semanticPromptVersion, 'semantic-objects-v3-quality');
     assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v1');
     assert.equal(snapshot.llm.chunkPipeline.enabled, true);
     assert.equal(snapshot.llm.chunkPipeline.configSignature, manifest.llmOptimization.chunkPipelineConfigSignature);

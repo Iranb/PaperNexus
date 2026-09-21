@@ -2324,7 +2324,10 @@ async function loadSelectedCorpus(runtime, corpusFlag) {
 
 async function loadSelectedCorpusLite(runtime, corpusFlag) {
   const rootPath = await runtime.resolveCorpus(corpusFlag);
-  return runtime.loadCorpusLite(rootPath);
+  const loaded = await runtime.loadCorpusLite(rootPath);
+  const { buildResearchQualityView } = await import('../core/graph/research-quality.js');
+  const { graph, report } = buildResearchQualityView(loaded.graph);
+  return { ...loaded, graph, quality: report };
 }
 
 async function handleUpdateCommand(flags) {

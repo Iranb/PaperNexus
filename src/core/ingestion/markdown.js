@@ -1,3 +1,4 @@
+import { assessSourceContent, invalidPaperTitleReason } from './source-quality.js';
 import path from 'node:path';
 import {
   normalizeText,
@@ -128,7 +129,7 @@ export function assessPaperTitleCandidate(rawTitle, filePath = '') {
   const fallbackTitle = path.basename(filePath || 'paper', path.extname(filePath || '')) || 'paper';
   const normalizedCandidate = normalizeTitleCandidate(rawTitle);
   const normalizedKey = normalizeText(normalizedCandidate);
-  let reason = null;
+  let reason = invalidPaperTitleReason(normalizedCandidate);
 
   if (!normalizedCandidate) {
     reason = 'empty';
@@ -427,6 +428,12 @@ export function extractConceptCandidates(texts) {
 }
 
 export function parsePaperMarkdown(markdown, filePath) {
+  const sourceQuality = assessSourceContent(markdown);
+  if (!sourceQuality.valid) {
+    const error = new Error(`Rejected paper source: ${sourceQuality.reason}`);
+    error.code = 'PAPERNEXUS_INVALID_PAPER_SOURCE';
+    throw error;
+  }
   const cleaned = cleanMarkdownWithReport(markdown);
   const lines = cleaned.text.split('\n');
   let title = path.basename(filePath, path.extname(filePath));

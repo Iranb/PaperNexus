@@ -1,4 +1,4 @@
-export const PROMPT_VERSION = 'semantic-objects-v2';
+export const PROMPT_VERSION = 'semantic-objects-v3-quality';
 
 function normalizeFallbackConfig(fallback = null) {
   if (!fallback) return null;

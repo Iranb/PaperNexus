@@ -1,3 +1,4 @@
+import { assessLimitationRecord } from './source-quality.js';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -249,7 +250,6 @@ const METHOD_SENTENCE_PATTERNS = [
 ];
 
 const CLAIM_PATTERNS = /\b(show|demonstrate|find|improve|outperform|enable|reveal|indicate|suggest|achieve|support|reduce|increase|expose|trace)\b/i;
-const LIMITATION_PATTERNS = /\b(limit(?:ation)?s?|however|but|fails?|failure|challenge|costly|expensive|sensitive|degrad(?:e|es|ed)|drop|cannot|unable|lack|missing|only|not evaluate|future work)\b/i;
 const ASSUMPTION_PATTERNS = /\b(assume|assumption|given access to|under the setting|requires?|relies on|depends on|available knowledge|high[- ]quality labels?)\b/i;
 const FUTURE_PATTERNS = /\b(future work|future research|we plan to|could be extended|can be extended|explore|investigate|extend to|remains to)\b/i;
 const EVIDENCE_PATTERNS = /\b(result|results|benchmark|baseline|ablation|outperform|improve|improved|gain|gains|degrade|drop|score|accuracy|f1|bleu|auc|latency|throughput)\b/i;
@@ -768,6 +768,20 @@ function admitSemanticRecords(items, type, limit) {
 }
 
 export function applySemanticAdmissionPolicy(semanticPaper) {
+  const limitationReview = [];
+  const limitations = [];
+  const findings = [...(semanticPaper.findings || [])];
+  for (const record of semanticPaper.limitations || []) {
+    const assessment = assessLimitationRecord(record);
+    if (assessment.decision === 'keep') limitations.push(record);
+    else {
+      limitationReview.push({ ...record, reviewReason: assessment.reason, proposedType: assessment.decision === 'finding' ? 'Finding' : null });
+      if (assessment.decision === 'finding') findings.push({ ...record, type: NODE_TYPES.FINDING, qualityOriginalType: NODE_TYPES.LIMITATION });
+    }
+  }
+  semanticPaper.limitations = limitations;
+  semanticPaper.findings = findings;
+  semanticPaper.semanticQualityReview = Array.from(new Map([...(semanticPaper.semanticQualityReview || []), ...limitationReview].map(record => [JSON.stringify(record), record])).values());
   semanticPaper.problems = admitSemanticRecords(semanticPaper.problems, NODE_TYPES.PROBLEM, 4);
   semanticPaper.methods = admitSemanticRecords(semanticPaper.methods, NODE_TYPES.METHOD, 3);
   semanticPaper.datasets = admitSemanticRecords(semanticPaper.datasets, NODE_TYPES.DATASET, 6);
@@ -1187,7 +1201,7 @@ function extractLimitations(paper) {
 
   for (const section of sections) {
     for (const sentence of splitSentences(section.text)) {
-      if (!LIMITATION_PATTERNS.test(sentence)) continue;
+      if (assessLimitationRecord({ evidenceText: sentence }).decision !== 'keep') continue;
       items.push(createSlot(sentence, {
         text: sentence,
         evidenceText: sentence,

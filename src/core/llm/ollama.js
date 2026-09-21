@@ -58,7 +58,7 @@ const ANTHROPIC_VERSION = '2023-06-01';
 const TRANSIENT_LLM_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const llmRateLimitCooldowns = new Map();
 const execFileAsync = promisify(nodeExecFile);
-export const CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION = 'chunk-semantic-objects-v1';
+export const CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION = 'chunk-semantic-objects-v2-quality';
 export const CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION = 'chunk-research-relations-v1';
 
 function pickDefined(...values) {
@@ -539,6 +539,7 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
     'Do not invent unsupported entities.',
     'Prefer short canonical names for Problem and Method nodes.',
     'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the paper text.',
+    'Limitations require an explicit failure condition, scope restriction, missing validation, or resource constraint supported by a verbatim evidenceText from this source. A positive result, table caption, or the words however/only/drop alone are not a limitation. Put improvements in findings. Leave unsupported limitations empty.',
     'Merge synonymous surface forms into one canonical object when possible.',
     '',
     `Paper title: ${parsedPaper.title}`,
@@ -631,6 +632,7 @@ function buildSemanticExtractionBatchPrompt(entries) {
     'Do not invent unsupported entities.',
     'Prefer short canonical names for Problem and Method nodes.',
     'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the paper text.',
+    'Limitations require an explicit failure condition, scope restriction, missing validation, or resource constraint supported by a verbatim evidenceText from this source. A positive result, table caption, or the words however/only/drop alone are not a limitation. Put improvements in findings. Leave unsupported limitations empty.',
     'Merge synonymous surface forms into one canonical object when possible.',
     '',
     'Return this JSON shape:',
@@ -709,6 +711,7 @@ function buildChunkSemanticExtractionBatchPrompt(entries) {
     'Do not invent unsupported entities.',
     'Prefer short canonical names for Problem and Method nodes.',
     'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the chunk text.',
+    'Limitations require an explicit failure condition, scope restriction, missing validation, or resource constraint supported by a verbatim evidenceText from this source. A positive result, table caption, or the words however/only/drop alone are not a limitation. Put improvements in findings. Leave unsupported limitations empty.',
     'Merge synonymous surface forms into one canonical object when possible.',
     '',
     'Return this JSON shape:',
