@@ -158,7 +158,7 @@ Decision：summary opt-in与按需技能，已有缓存/状态继续复用。Rat
 - [x] 新增审计反例并修复四项功能问题；材料/图/提案定向32项通过。
 - [x] 安装幂等性、部署回滚、变更冲突与越界路径检查3项通过。
 - [x] 全量回归1033通过、2跳过、0失败；新增发布工具3/3通过；41隔离45/45与在线验收通过。
-- [ ] 本轮GitNexus提交前检查与main发布。
+- [x] 本轮GitNexus提交前检查与main发布。
 
 Decision：保留canonical ID但新增selected_source，避免为修复版本一致性重新拆回重复论文节点。来源否决按原始版本处理，不把不同版本一并隔离。Date/Author：2026-09-22 Codex。
 
@@ -167,3 +167,5 @@ Decision：保留canonical ID但新增selected_source，避免为修复版本一
 本轮在线验收：无actions、空flat slate、空round slate均needs_actions/0轮，9个旧响应字段均保留；正常论文可读，隔离论文上下文0条。真实v1论文paper:b14030b8262e返回canonical arXiv=2407.19001v3、selected_source arXiv=2407.19001v1，上下文原始版本均一致。应用文件校验及原始GCD图哈希不变检查通过。备份：/data2/hyq/.papernexus/deploy-backups/research-review-fixes-20260922；manifest.json和files/由入库发布脚本产生，按runbook可回滚。安装技能备份：.agent/reports/2026-09-22-review-fixes/installed-skills-before；6个已安装技能通过quick_validate。
 
 本轮GitNexus staged检查：14个预期文件，批次风险CRITICAL，已提示并复核。既有论文PDF、旧计划与私有回执均未暂存。全量及41回归通过后按现有授权发布；本轮新增发布工具为可预览、可回滚操作，不自动启动服务或科研任务。
+
+本轮完成：实现提交 `2091b028493d8d86104918abead98387d8071a07` 已推送GitHub main并核对远端SHA；232个部署应用/技能/文档文件与提交逐项一致。本轮四项审计问题和安装/回滚交接缺口已闭合，Phase 1、2补验收通过。计划收尾提交仅记录完成状态。
