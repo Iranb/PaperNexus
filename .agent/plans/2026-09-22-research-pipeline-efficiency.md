@@ -22,7 +22,7 @@ Related docs: `docs/interfaces/mcp-skill-contracts.md`、`docs/interfaces/mcp-th
 - [x] Phase 3：技能合并、阶段引用、AutoResearch 适配与契约文档。
 - [x] Phase 4：定向及全量回归、生成文档、接口预算验证。
 - [x] Phase 5：41 只读预检、隔离演练、备份部署与在线验收。
-- [ ] Phase 6：GitNexus staged 检查、选择性提交、推送并核对 GitHub main。
+- [x] Phase 6：GitNexus staged 检查、选择性提交、推送并核对 GitHub main。
 
 ## Context and Orientation
 
@@ -133,7 +133,7 @@ Decision：summary opt-in与按需技能，已有缓存/状态继续复用。Rat
 
 ## Outcomes & Retrospective
 
-工程优化和41部署已完成，发布阶段待GitNexus staged检查与GitHub SHA核对。研究入口47行，12个SKILL.md合计175行，详细规则移动到按需references；这只代表默认加载缩减，不能等同科学正确率提升。完整回归1029通过、2跳过，后续修改通过针对性与41回归。已验证summary 32KiB预算、来源隔离、版本兼容、无动作快速诊断和有动作路径。没有运行付费发现、语料写入、模型评审或科研实验；未证明创新质量或实验收益提升。当前Git提交即本次交付版本，发布后在独立回执记录SHA，避免自引用提交哈希。
+工程优化和41部署已完成；实现提交 `dd932c520701b6a885c1fd8ca0fd51f4ae690db4` 已推送GitHub main并核对远端SHA。本次计划收尾仅更新验收记录，应用代码与41保持字节一致。研究入口47行，12个SKILL.md合计175行，详细规则移动到按需references；这只代表默认加载缩减，不能等同科学正确率提升。完整回归1029通过、2跳过，后续修改通过针对性与41回归。已验证summary 32KiB预算、来源隔离、版本兼容、无动作快速诊断和有动作路径。没有运行付费发现、语料写入、模型评审或科研实验；未证明创新质量或实验收益提升。当前Git提交即本次交付版本，发布后在独立回执记录SHA，避免自引用提交哈希。
 
 ## Plan Audit / Revision Notes
 
@@ -142,3 +142,5 @@ Decision：summary opt-in与按需技能，已有缓存/状态继续复用。Rat
 2026-09-22修订：依次完成材料投影、动作诊断/能力/摘要、技能合并、回归和41部署。补充发现：全局 *.md 忽略规则会隐藏技能references，已对规范目录添加精确例外，确保干净克隆可用。提交前只显式暂存任务文件；本地论文PDF及旧计划/回执/重复文件继续保留。
 
 提交前GitNexus：staged 32文件、118个符号/文档节、17条受影响流程，批次风险CRITICAL；逐项核对均为计划中的MCP分发/材料/创新路径，已告知用户并核对高风险上下文。无预期外代码改动，全量和定向/远端验收支持继续发布。
+
+发布回执：实现提交 `dd932c520701b6a885c1fd8ca0fd51f4ae690db4`；正常push成功，远端main与本地SHA一致，部署226个文件与该提交逐项一致。后续计划收尾提交不改变应用文件。阶段1—6已完成。
