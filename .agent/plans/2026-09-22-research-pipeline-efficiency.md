@@ -17,14 +17,16 @@ Related docs: `docs/interfaces/mcp-skill-contracts.md`、`docs/interfaces/mcp-th
 ## Progress
 
 - [x] 2026-09-22：审计当前 main=4dc47ae、生产旧23工具与本机技能；确认现有 ExecPlan 规范，工作树保护范围。
-- [x] Phase 1：统一材料质量与身份映射，验证隔离和版本兼容。
-- [x] Phase 2：明确提案动作契约、能力发现、可选紧凑响应。
+- [x] Phase 1（审计后补验收）：统一材料质量与身份映射，验证隔离和版本兼容。
+- [x] Phase 2（审计后补验收）：明确提案动作契约、能力发现、可选紧凑响应。
 - [x] Phase 3：技能合并、阶段引用、AutoResearch 适配与契约文档。
 - [x] Phase 4：定向及全量回归、生成文档、接口预算验证。
 - [x] Phase 5：41 只读预检、隔离演练、备份部署与在线验收。
 - [x] Phase 6：GitNexus staged 检查、选择性提交、推送并核对 GitHub main。
 
 ## Context and Orientation
+
+### 实施前基线（4dc47ae，以下内容不是当前部署状态）
 
 当前 main 已有 src/mcp/research-workflows.js 的 literature_review、lineage_analysis、idea_generation（11/7/6 操作），但 41 `/data2/hyq/PaperNexus` 没有这个模块，实际 tools/list 仍23个旧工具。src/mcp/core.js 分发新旧调用；旧工具保持直接调用兼容。src/core/materials/agent-materials.js 的 loadMaterialContext 直接读取原始 lite 图；buildPaperMaterialView 可能将原始隔离记录标为 in_graph。src/core/graph/research-quality.js 提供不写原图的质量投影。
 
@@ -144,3 +146,24 @@ Decision：summary opt-in与按需技能，已有缓存/状态继续复用。Rat
 提交前GitNexus：staged 32文件、118个符号/文档节、17条受影响流程，批次风险CRITICAL；逐项核对均为计划中的MCP分发/材料/创新路径，已告知用户并核对高风险上下文。无预期外代码改动，全量和定向/远端验收支持继续发布。
 
 发布回执：实现提交 `dd932c520701b6a885c1fd8ca0fd51f4ae690db4`；正常push成功，远端main与本地SHA一致，部署226个文件与该提交逐项一致。后续计划收尾提交不改变应用文件。阶段1—6已完成。
+
+## 2026-09-22 审计修复迭代
+
+本轮起点 main=3273c44。此前已发布事实保留；原“全部完成”结论由审计反例修正。源manifest拒绝与图节点元数据不同步时可绕过准入；v1查询混合v2摘要与不同版本上下文；缺动作响应删除旧字段；非空slate容器里没有actions仍空跑。新增测试先在旧实现失败，再修复。
+
+修复设计：质量投影接收显式来源评估，默认调用不变；按原始版本合并准入，拒绝不能被canonical回退覆盖。paper.identifiers使用canonical身份，paper.selected_source记录实际来源；摘要、原文与带原始端点的上下文按所选版本对齐。proposal controller统一校验slate格式和实际轮次动作，有无动作走同一响应结构；无动作不迭代、不写artifact，合法动作继续原有commit路径。
+
+交接补项：新增 scripts/install-research-skills.py，可预览、备份并重复安装三入口及已有AutoResearch客户端的共享适配；新增 scripts/research-release-files.py，支持预览/文件备份/部署/漂移检查/回滚。完整命令和HTTP MCP验收步骤在 docs/operations/research-release-runbook.md，不再依赖私有脚本。技能安装和回滚已通过隔离目录测试，未改变既有科研验收门槛。
+
+- [x] 新增审计反例并修复四项功能问题；材料/图/提案定向32项通过。
+- [x] 安装幂等性、部署回滚、变更冲突与越界路径检查3项通过。
+- [x] 全量回归1033通过、2跳过、0失败；新增发布工具3/3通过；41隔离45/45与在线验收通过。
+- [ ] 本轮GitNexus提交前检查与main发布。
+
+Decision：保留canonical ID但新增selected_source，避免为修复版本一致性重新拆回重复论文节点。来源否决按原始版本处理，不把不同版本一并隔离。Date/Author：2026-09-22 Codex。
+
+恢复：先检查实际git状态、测试日志和41部署manifest；若本轮未发布，继续定向/在线验收。部署回滚照入库runbook执行，不能覆盖部署后出现的未知文件变更。本轮结果将在此追加，不覆写历史失败轨迹。
+
+本轮在线验收：无actions、空flat slate、空round slate均needs_actions/0轮，9个旧响应字段均保留；正常论文可读，隔离论文上下文0条。真实v1论文paper:b14030b8262e返回canonical arXiv=2407.19001v3、selected_source arXiv=2407.19001v1，上下文原始版本均一致。应用文件校验及原始GCD图哈希不变检查通过。备份：/data2/hyq/.papernexus/deploy-backups/research-review-fixes-20260922；manifest.json和files/由入库发布脚本产生，按runbook可回滚。安装技能备份：.agent/reports/2026-09-22-review-fixes/installed-skills-before；6个已安装技能通过quick_validate。
+
+本轮GitNexus staged检查：14个预期文件，批次风险CRITICAL，已提示并复核。既有论文PDF、旧计划与私有回执均未暂存。全量及41回归通过后按现有授权发布；本轮新增发布工具为可预览、可回滚操作，不自动启动服务或科研任务。

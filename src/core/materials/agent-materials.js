@@ -446,13 +446,18 @@ function materialStatus(availability = {}, entries = []) {
   return 'material_unavailable';
 }
 
-function graphContextForPaper(graph, paperNode = null, limit = 12) {
+function graphContextForPaper(graph, paperNode = null, limit = 12, selectedSource = {}) {
   if (!graph || !paperNode) return [];
   const relationships = [
     ...(typeof graph.getOutgoing === 'function' ? graph.getOutgoing(paperNode.id) : []),
     ...(typeof graph.getIncoming === 'function' ? graph.getIncoming(paperNode.id) : [])
   ];
-  return relationships.slice(0, limit).map((relationship) => {
+  return relationships.filter(relationship => {
+    if (!selectedSource.paper_id) return true;
+    const p = relationship.properties || {};
+    const endpoints = p.qualityOriginalEndpoints || relationship;
+    return endpoints.sourceId === selectedSource.paper_id || endpoints.targetId === selectedSource.paper_id;
+  }).slice(0, limit).map((relationship) => {
     const neighborId = relationship.sourceId === paperNode.id ? relationship.targetId : relationship.sourceId;
     const neighbor = typeof graph.getNode === 'function' ? graph.getNode(neighborId) : null;
     return {
@@ -462,7 +467,12 @@ function graphContextForPaper(graph, paperNode = null, limit = 12) {
       node_id: neighbor?.id || neighborId,
       node_type: neighbor?.type || null,
       node_name: neighbor?.name || null,
-      provenance: relationship.properties?.sourceSpanId || relationship.properties?.spanId || null
+      provenance: relationship.properties?.sourceSpanId || relationship.properties?.spanId || null,
+      source_paper_id: selectedSource.paper_id || paperNode.id,
+      source_identifiers: selectedSource.identifiers || {},
+      original_endpoints: relationship.properties?.qualityOriginalEndpoints || {
+        sourceId: relationship.sourceId, targetId: relationship.targetId
+      }
     };
   });
 }
@@ -697,14 +707,25 @@ async function loadMaterialContext(args = {}, options = {}) {
     loadSourceManifest(rootPath),
     loadCorpusLite(rootPath).catch((error) => ({ error, graph: null, meta: null }))
   ]);
-  const quality = lite.graph ? buildResearchQualityView(lite.graph) : null;
-  const canonicalIds = new Map((quality?.report.mergedPapers || []).flatMap(group =>
-    group.originalPaperIds.map(id => [id, group.representativeId])));
-  const quarantinedIds = new Set((quality?.report.quarantinedPapers || []).map(paper => paper.id));
   const rawManifest = manifest || { sources: [] };
   const sourceAdmission = entry => assessResearchPaper({
     name: paperTitleFromEntry(entry), properties: { ...entry, identifiers: identifiersOf(entry) }
   });
+  const sourcePaperIds = new Map();
+  const paperAssessments = new Map();
+  for (const entry of rawManifest.sources || []) {
+    const paper = findPaperNode(lite.graph, { paperId: paperIdFromEntry(entry),
+      ...identifiersOf(entry), paperTitle: paperTitleFromEntry(entry) });
+    if (!paper) continue;
+    sourcePaperIds.set(entry, paper.id);
+    const previous = paperAssessments.get(paper.id) || assessResearchPaper(paper);
+    const reasons = unique([...previous.reasons, ...sourceAdmission(entry).reasons]);
+    paperAssessments.set(paper.id, { ...previous, reasons, eligible: reasons.length === 0 });
+  }
+  const quality = lite.graph ? buildResearchQualityView(lite.graph, { sourceAssessments: paperAssessments }) : null;
+  const canonicalIds = new Map((quality?.report.mergedPapers || []).flatMap(group =>
+    group.originalPaperIds.map(id => [id, group.representativeId])));
+  const quarantinedIds = new Set((quality?.report.quarantinedPapers || []).map(paper => paper.id));
   const context = {
     rootPath,
     meta,
@@ -712,9 +733,9 @@ async function loadMaterialContext(args = {}, options = {}) {
     rawGraph: lite.graph || null,
     canonicalIds,
     quarantinedIds,
-    sourceAdmission,
+    sourceAdmission, sourcePaperIds, paperAssessments,
     manifest: { ...rawManifest, sources: (rawManifest.sources || []).filter(entry =>
-      !quarantinedIds.has(paperIdFromEntry(entry)) && sourceAdmission(entry).eligible) },
+      !quarantinedIds.has(sourcePaperIds.get(entry) || paperIdFromEntry(entry)) && sourceAdmission(entry).eligible) },
     graph: quality?.graph || null,
     graphLoadError: lite.error ? (lite.error.message || String(lite.error)) : null,
     options
@@ -725,7 +746,7 @@ async function loadMaterialContext(args = {}, options = {}) {
 
 export async function buildPaperMaterialView(args = {}, options = {}) {
   const context = await loadMaterialContext(args, options);
-  const selector = {
+  let selector = {
     paperId: args.paperId || args.paper_id,
     sourceKey: args.sourceKey || args.source_key,
     paperTitle: args.paperTitle || args.paper_title || args.title,
@@ -736,11 +757,18 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
     pmcid: args.pmcid,
     query: args.query
   };
+  // An explicit source or identity must not also match other versions by title/query.
+  if (selector.sourceKey) selector = { sourceKey: selector.sourceKey };
+  else if (selector.paperId) selector = { paperId: selector.paperId };
+  else if (selector.identifier) selector = { identifier: selector.identifier };
+  else if (selector.doi || selector.arxivId || selector.pmid || selector.pmcid) {
+    selector = { doi: selector.doi, arxivId: selector.arxivId, pmid: selector.pmid, pmcid: selector.pmcid };
+  }
   const rawEntries = findSourceEntries(context.rawManifest, selector);
   const rawPaper = findPaperNode(context.rawGraph, {
-    ...selector, paperId: selector.paperId || paperIdFromEntry(rawEntries[0])
+    ...selector, paperId: selector.paperId || context.sourcePaperIds.get(rawEntries[0]) || paperIdFromEntry(rawEntries[0])
   });
-  const assessment = rawPaper ? assessResearchPaper(rawPaper)
+  const assessment = rawPaper ? (context.paperAssessments.get(rawPaper.id) || assessResearchPaper(rawPaper))
     : rawEntries.length ? context.sourceAdmission(rawEntries[0]) : null;
   if (assessment && !assessment.eligible) {
     return {
@@ -764,8 +792,8 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
   }
   let entries = findSourceEntries(context.manifest, selector);
   const canonicalId = context.canonicalIds.get(rawPaper?.id || selector.paperId);
-  if (!entries.length && canonicalId) entries = context.manifest.sources.filter(entry =>
-    (context.canonicalIds.get(paperIdFromEntry(entry)) || paperIdFromEntry(entry)) === canonicalId);
+  if (rawPaper) entries = entries.filter(entry => context.sourcePaperIds.get(entry) === rawPaper.id);
+  else if (entries.length) entries = entries.filter(entry => paperIdFromEntry(entry) === paperIdFromEntry(entries[0]));
   const representative = entries[0] || {};
   const paperNode = findPaperNode(context.graph, {
     ...selector,
@@ -776,7 +804,7 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
   const chunks = await collectChunks(context.rootPath, entries, chunkLimit);
   const spans = await sourceSpans(context.rootPath, entries, 4);
   const paperId = paperNode?.properties?.paperId || paperNode?.id || paperIdFromEntry(representative) || selector.paperId || null;
-  const title = paperNode?.properties?.paperTitle || paperNode?.name || paperTitleFromEntry(representative) || selector.paperTitle || null;
+  const title = paperNode?.properties?.paperTitle || paperNode?.name || paperTitleFromEntry(representative) || selector.paperTitle || args.paperTitle || args.paper_title || args.title || null;
   const structuredMaterials = await collectStructuredMaterials(context.rootPath, entries, {
     paper_id: paperId,
     title
@@ -792,9 +820,14 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
         paperTitle: paperNodeProperties.paperTitle || paperNode.name
       })
     : {};
-  const paperIdentifiers = Object.keys(representativeIdentifiers).length
-    ? representativeIdentifiers
-    : (Object.keys(paperNodeIdentifiers).length ? paperNodeIdentifiers : identifiersOf(selector));
+  const paperIdentifiers = Object.keys(paperNodeIdentifiers).length
+    ? paperNodeIdentifiers : (Object.keys(representativeIdentifiers).length ? representativeIdentifiers : identifiersOf(selector));
+  const selectedSource = {
+    paper_id: rawPaper?.id || paperIdFromEntry(representative) || selector.paperId || null,
+    identifiers: rawPaper ? identifiersOf(rawPaper.properties || {}) : representativeIdentifiers,
+    source_keys: entries.map(sourceKeyFromEntry),
+    canonical_paper_id: paperId
+  };
   const projectOverlay = await loadProjectOverlaySummary(context.rootPath, args.project);
   const sources = entries.map((entry) => ({
     source_key: sourceKeyFromEntry(entry) || null,
@@ -816,15 +849,16 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
       paper_id: paperId,
       title,
       identifiers: paperIdentifiers,
+      selected_source: selectedSource,
       status,
       source_admission: { eligible: Boolean(paperNode || entries.length), reasons: [], version: RESEARCH_QUALITY_VERSION, verification: 'Eligibility is not independent publication verification.' },
       availability
     },
     sources,
     overlay_roles: overlayRolesForPaper(projectOverlay.roles, { paper_id: paperId, title, sources }),
-    graph_context: graphContextForPaper(context.graph, paperNode),
+    graph_context: graphContextForPaper(context.graph, paperNode, 12, selectedSource),
     materials: {
-      abstract: paperNode?.properties?.abstract || representative.abstract || null,
+      abstract: rawPaper?.properties?.abstract || representative.abstract || null,
       chunks,
       source_spans: spans,
       tables: structuredMaterials.tables,
@@ -2835,6 +2869,7 @@ async function materialItemFromCandidate(candidate = {}, args = {}, options = {}
     status: view.paper.status,
     availability: view.paper.availability,
     source_admission: view.paper.source_admission,
+    selected_source: view.paper.selected_source,
     role: candidate.role || null,
     layer: candidate.layer || null,
     source_domain: candidate.source_domain || null,
@@ -2909,6 +2944,7 @@ async function materialItemFromOverlayRole(overlayRole = {}, args = {}, options 
     status: view.paper.status,
     availability: view.paper.availability,
     source_admission: view.paper.source_admission,
+    selected_source: view.paper.selected_source,
     role: overlayRole.role || null,
     layer: overlayRole.layer || null,
     match: {
@@ -5241,21 +5277,6 @@ async function buildProposalGraphSession(args = {}) {
   const problem = compactText(args.problem || args.targetProblem || args.target_problem || args.query || args.title);
   if (!problem) throw new Error('proposal_graph_session requires problem, targetProblem, or query.');
   const targetDomain = compactText(args.targetDomain || args.target_domain);
-  const actions = asArray(args.proposalActions || args.proposal_actions || args.actions);
-  const slates = args.proposalSlates || args.proposal_slates || args.fixtureSlates || args.fixture_slates;
-  if (!actions.length && !Object.values(slates || {}).some(value => Array.isArray(value) ? value.length : value)) {
-    return {
-      contractVersion: AGENT_MATERIALS_CONTRACT_VERSION, operation: 'proposal_graph_session',
-      project: compactText(args.project), run_id: compactText(args.runId || args.run_id),
-      target_domain: targetDomain, target_problem: problem,
-      execution_mode: 'caller_supplied_actions', input_status: 'needs_actions',
-      final_status: 'diagnosis', round_count: 0,
-      required_inputs: ['proposalActions or proposalSlates'],
-      next_action: 'Construct evidence-backed Hypothesis, Mechanism, Method, NoveltyClaim, EvalPlan and Risk actions, then resubmit with their connections. evidenceRefs alone cannot generate actions.',
-      evidence_boundary: 'This endpoint validates caller-supplied proposals; it does not run a model to invent candidates or certify novelty.',
-      artifact_paths: null, generatedAt: nowIso()
-    };
-  }
   const result = await runProposalGraphSession({
     run_id: compactText(args.runId || args.run_id),
     problem,
@@ -5278,6 +5299,11 @@ async function buildProposalGraphSession(args = {}) {
     run_id: result.input.run_id,
     target_domain: result.input.target_domain,
     target_problem: result.input.problem,
+    ...(result.input_status ? {
+      input_status: result.input_status, execution_mode: result.execution_mode,
+      required_inputs: result.required_inputs, next_action: result.next_action,
+      evidence_boundary: result.evidence_boundary
+    } : {}),
     final_status: result.final_status,
     round_count: result.round_count,
     graph: result.graph,

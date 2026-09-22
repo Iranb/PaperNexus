@@ -9,3 +9,5 @@
 Keep an incremental ledger: canonical identifier and version, source hash/span, evidence role, protocol, verified claim, missing material and next action. For a baseline/closest prior read methods, evaluation protocol and claim-bearing tables; abstract triage alone is insufficient. Numerical comparisons must name their source and align protocols; otherwise state `paper-report comparison not established`.
 
 Quick questions stop once the bounded question is answered. A deep survey stops when required evidence roles and known objections are covered or limitations are explicitly recorded. Counts of papers and fixed selection percentages are budgets, not proof of coverage. Existing AutoResearch hard gates must still be met or changed by their owning workflow, never bypassed in prose.
+
+For merged versions, paper.identifiers identify the canonical paper and paper.selected_source identifies the version actually read. Keep selected_source with the material packet and use graph_context source_paper_id/source_identifiers; do not combine different versions as if they were one source.

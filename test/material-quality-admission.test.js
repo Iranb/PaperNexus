@@ -70,3 +70,49 @@ test('proposal MCP reports missing actions without empty iteration',async()=>{
  assert.ok(result.required_inputs.includes('proposalActions or proposalSlates'));
  assert.equal(result.execution_mode,'caller_supplied_actions');
 });
+
+test('manifest denial applies to every selector and material search without rejecting another version',async t=>{
+ const {root,paths,bytes}=await fixture(t);
+ const fsManifest=JSON.parse(await fs.readFile(paths.sourceManifestPath || paths.manifestPath,'utf8'));
+ fsManifest.sources.find(s=>s.paperId==='paper:new').sourcePurpose='test';
+ await saveSourceManifest(root,fsManifest);
+ for(const selector of [{paperId:'paper:new'},{identifier:'2401.01234v2'},{sourceKey:'new'}]) {
+  const view=await run({operation:'paper_material_view',corpus:root,...selector});
+  assert.equal(view.paper.status,'quarantined');
+  assert.ok(view.paper.source_admission.reasons.includes('test-source'));
+  assert.deepEqual(view.graph_context,[]);
+ }
+ const old=await run({operation:'paper_material_view',corpus:root,paperId:'paper:old'});
+ assert.equal(old.paper.status,'in_graph');
+ const plan=await run({operation:'source_discovery_plan',corpus:root,targetProblem:'GCD'});
+ assert.ok(plan.candidate_papers.every(p=>p.paper_id!=='paper:new'));
+ assert.equal(await fs.readFile(paths.liteGraphPath,'utf8'),bytes);
+});
+
+test('version views align identifiers, abstract, spans and relationship provenance',async t=>{
+ const {root}=await fixture(t);
+ for(const version of ['old','new']) {
+  const view=await run({operation:'paper_material_view',corpus:root,paperId:`paper:${version}`,paperTitle:'Reliable GCD'});
+  assert.equal(view.paper.paper_id,'paper:new');
+  assert.equal(view.paper.identifiers.arxivId,'2401.01234v2');
+  assert.equal(view.paper.selected_source.paper_id,`paper:${version}`);
+  assert.equal(view.paper.selected_source.identifiers.arxivId,version==='old'?'2401.01234v1':'2401.01234v2');
+  assert.match(view.materials.abstract,new RegExp(version));
+  assert.ok(view.materials.source_spans.every(s=>s.source_key===version));
+  assert.ok(view.graph_context.length>0);
+  assert.ok(view.graph_context.every(c=>c.source_paper_id===`paper:${version}`));
+  assert.ok(view.graph_context.every(c=>c.node_id===`method:${version}`));
+ }
+});
+
+test('empty proposal variants preserve response shape without rounds or artifact writes',async t=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'pn-empty-proposal-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+ for(const proposalSlates of [undefined,[],[[]],[{role_id:'A',actions:[]}],{'round-000':[{role_id:'A',actions:[]}]}]) {
+  const r=await run({operation:'proposal_graph_session',problem:'GCD',proposalSlates,maxRounds:5,outputDir:path.join(root,'output')});
+  assert.equal(r.input_status,'needs_actions');assert.equal(r.round_count,0);
+  for(const key of ['graph','validation_report','commit_decisions','edit_decisions','patches','role_trace','proposal_bundle','evidence_export','manifest']) assert.ok(Object.hasOwn(r,key),key);
+  assert.equal(r.validation_report.graph.valid,true);
+ }
+ assert.deepEqual(await fs.readdir(root),[]);
+ for(const proposalSlates of ['invalid',{'bad-round':[]},[{actions:'invalid'}]]) await assert.rejects(run({operation:'proposal_graph_session',problem:'GCD',proposalSlates}),/slate|actions/i);
+});

@@ -58,6 +58,27 @@ function slatesForRound(source, round, roundId) {
   return [];
 }
 
+function validateConfiguredSlates(source) {
+  if (source == null) return;
+  const validateSlate = slate => {
+    if (!slate || typeof slate !== 'object' || Array.isArray(slate)
+      || (slate.actions != null && !Array.isArray(slate.actions))) {
+      throw new Error('Invalid proposal slate: actions must be an array.');
+    }
+  };
+  if (Array.isArray(source)) {
+    if (source.every(Array.isArray)) source.forEach(round => round.forEach(validateSlate));
+    else source.forEach(validateSlate);
+  } else if (typeof source === 'object') {
+    for (const [round, slates] of Object.entries(source)) {
+      if (!/^(?:\d+|round-\d{3,})$/.test(round) || !Array.isArray(slates)) {
+        throw new Error('Invalid proposal slate round; use numeric keys or round-NNN with slate arrays.');
+      }
+      slates.forEach(validateSlate);
+    }
+  } else throw new Error('Invalid proposal slates: expected an array or round map.');
+}
+
 function hydrateSnapshotTokens(value, snapshot = {}) {
   if (Array.isArray(value)) return value.map((entry) => hydrateSnapshotTokens(entry, snapshot));
   if (value && typeof value === 'object') {
@@ -501,6 +522,7 @@ export async function runProposalGraphSession(input = {}) {
     allow_live_discovery: Boolean(input.allowLiveDiscovery || input.allow_live_discovery),
     allow_imports: Boolean(input.allowImports || input.allow_imports)
   };
+  if (!Number.isFinite(sessionInput.max_rounds)) throw new Error('maxRounds must be finite.');
   let graph = createProposalGraph({
     run_id: runId,
     problem: sessionInput.problem,
@@ -513,15 +535,22 @@ export async function runProposalGraphSession(input = {}) {
   const editDecisions = [];
   const commitDecisions = [];
   const roleRunners = asArray(input.roleRunners || input.role_runners);
-  const initialActions = asArray(input.proposalActions || input.proposal_actions || input.actions);
+  const suppliedActions = input.proposalActions || input.proposal_actions || input.actions;
+  if (suppliedActions != null && !Array.isArray(suppliedActions)) throw new Error('Proposal actions must be an array.');
+  const initialActions = asArray(suppliedActions);
   const configuredSlates = input.proposalSlates
     || input.proposal_slates
     || input.fixtureSlates
     || input.fixture_slates;
+  validateConfiguredSlates(configuredSlates);
+  const configuredRounds = Array.from({ length: sessionInput.max_rounds }, (_, round) =>
+    slatesForRound(configuredSlates, round, `round-${String(round).padStart(3, '0')}`));
+  const needsActions = !roleRunners.length && !initialActions.length
+    && !configuredRounds.some(slates => slates.some(slate => !slate.skip && asArray(slate.actions).length));
   let proposalBundle = null;
   let finalStatus = 'diagnosis';
 
-  for (let round = 0; round < sessionInput.max_rounds; round += 1) {
+  for (let round = 0; !needsActions && round < sessionInput.max_rounds; round += 1) {
     const roundId = `round-${String(round).padStart(3, '0')}`;
     const snapshot = createGraphSnapshot(graph, { round: graph.round || round });
     const rawSlates = [];
@@ -541,7 +570,7 @@ export async function runProposalGraphSession(input = {}) {
         actions: initialActions
       }, snapshot, roundId));
     }
-    rawSlates.push(...slatesForRound(configuredSlates, round, roundId)
+    rawSlates.push(...configuredRounds[round]
       .map((slate) => hydrateSlateForSnapshot(slate, snapshot, roundId)));
     const validationResults = validateRoleSlates(rawSlates, snapshot);
     const selection = selectProposalActions(validationResults, { round_id: roundId });
@@ -588,6 +617,14 @@ export async function runProposalGraphSession(input = {}) {
     proposal_bundle: proposalBundle,
     final_status: finalStatus,
     round_count: commitDecisions.length
+  };
+
+  if (needsActions) return {
+    ...state, input_status: 'needs_actions', execution_mode: 'caller_supplied_actions',
+    required_inputs: ['proposalActions or proposalSlates'],
+    next_action: 'Construct evidence-backed Hypothesis, Mechanism, Method, NoveltyClaim, EvalPlan and Risk actions with connections, then resubmit. evidenceRefs alone cannot generate actions.',
+    evidence_boundary: 'This endpoint validates caller-supplied proposals; it does not invent candidates or certify novelty.',
+    manifest: null, artifact_paths: null
   };
 
   if (input.outputDir || input.output_dir) {

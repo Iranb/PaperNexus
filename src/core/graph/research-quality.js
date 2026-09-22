@@ -22,7 +22,7 @@ export function assessResearchPaper(node) {
 }
 
 // Rebuild a research-only view. Never mutate the authoritative graph, source files or snapshots.
-export function buildResearchQualityView(input) {
+export function buildResearchQualityView(input, { sourceAssessments = new Map() } = {}) {
   const data = typeof input.toJSON === 'function' ? input.toJSON() : input;
   const nodes = data.nodes || [];
   const edges = data.relationships || [];
@@ -33,6 +33,8 @@ export function buildResearchQualityView(input) {
   const assessments = new Map();
   for (const paper of papers) {
     const assessment = assessResearchPaper(paper);
+    assessment.reasons = [...new Set([...assessment.reasons, ...(sourceAssessments.get(paper.id)?.reasons || [])])];
+    assessment.eligible = assessment.reasons.length === 0;
     assessments.set(paper.id, assessment);
     if (!assessment.eligible) {
       excluded.add(paper.id);

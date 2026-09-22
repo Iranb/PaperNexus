@@ -2,7 +2,7 @@
 
 Feature-detect `agent_materials` and its operation fields. If the client needs advanced schemas use an appropriate advertised profile; do not guess unsupported arguments.
 
-`proposal_graph_session` is an episode-local action validator and committer. It does not bind a server-side model generator. The caller must create proposalActions or proposalSlates from read evidence. problem/evidenceRefs alone returns final_status=diagnosis, input_status=needs_actions, round_count=0. Increasing maxRounds does not supply actions.
+`proposal_graph_session` is an episode-local action validator and committer. It does not bind a server-side model generator. The caller must create proposalActions or proposalSlates from read evidence. problem/evidenceRefs alone returns final_status=diagnosis, input_status=needs_actions, round_count=0. Increasing maxRounds does not supply actions. Empty flat/nested/round-indexed slates also return zero rounds with the initial graph and validation report; malformed slate containers are rejected.
 
 An action has stable id and type. A minimal speculative node action has this shape (replace every placeholder with task-specific content):
 

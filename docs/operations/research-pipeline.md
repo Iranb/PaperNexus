@@ -10,7 +10,7 @@ An older server advertising only 23 tools does not implement these new routes. D
 
 ## Material admission
 
-All material contexts use the same non-mutating research-quality graph projection as regular research reads. Direct reads of quarantined sources return `paper.status=quarantined`, `paper.source_admission.eligible=false`, reasons and no active research material or graph context. Project overlay roles cannot promote those records into role-grouped material evidence. Version aliases resolve to the canonical paper while retaining source access. Raw corpus files remain untouched.
+All material contexts use the same non-mutating research-quality graph projection as regular research reads. Direct reads of quarantined sources return `paper.status=quarantined`, `paper.source_admission.eligible=false`, reasons and no active research material or graph context. Project overlay roles cannot promote those records into role-grouped material evidence. Version aliases resolve to the canonical paper while retaining source access. `paper.identifiers` describe that canonical record; `paper.selected_source` identifies the selected original version. Abstract, source spans and graph context use that selected version; context records retain original endpoints and source identifiers. Source-manifest denials participate in admission even when graph metadata has not caught up. Raw corpus files remain untouched.
 
 `in_graph`, source eligibility, publication verification, authoritative synchronization and semantic readiness are different facts. `source_admission.eligible=true` is not bibliographic verification. A missing source remains missing, not quarantined. Correcting the authoritative source/identity and rebuilding through the existing authorized maintenance workflow can restore admission.
 
@@ -24,7 +24,7 @@ Null or omitted evidence is unknown. The caller must not infer permission from a
 
 ## Proposal actions
 
-`agent_materials/proposal_graph_session` accepts caller-supplied `proposalActions` or `proposalSlates`. A request containing only problem/evidenceRefs returns `final_status=diagnosis`, `input_status=needs_actions`, `round_count=0` and required inputs. It makes no model call or artifact write. The existing action validation/commit path remains available.
+`agent_materials/proposal_graph_session` accepts caller-supplied `proposalActions` or `proposalSlates`. A request containing only problem/evidenceRefs returns `final_status=diagnosis`, `input_status=needs_actions`, `round_count=0` and required inputs. It makes no model call or artifact write. Empty flat or round-indexed slates follow the same zero-round path. The response retains the initial graph, validation report, empty decision/trace arrays and nullable artifact fields. Malformed slate structures return an input error. The existing action validation/commit path remains available.
 
 The caller constructs grounded candidate actions, then the service validates structure, risks and evaluation readiness. See [the action guide](../../SKILL/PaperNexus/references/advanced.md). Do not repeatedly run the proposal validator, research_controller and an ideation panel as three redundant generators. A connected, committed graph still needs independent source-backed semantic review.
 
@@ -41,3 +41,5 @@ The primary entrypoints are [research](../../SKILL/PaperNexus/SKILL.md), [ingest
 Run material-quality-admission, research-pipeline-contract, existing MCP workflow and proposal-controller tests, then the full Node suite. Fixed synthetic fixtures must show normal sources still usable, quarantined sources excluded even via project overlays, versions resolvable, denial gates retained and valid proposal actions still committed. No scientific productivity claim follows from smaller schemas alone.
 
 Before deployment archive affected application files and record raw graph hashes. Stage and test the candidate application with existing dependencies and isolated test corpora. Keep config, credentials and real corpus files outside the application archive. On failed health/MCP/admission checks restore the previous application and restart via the existing service script. Restore locally installed skill backups independently if needed.
+
+For reproducible installation and application recovery, use [the release runbook](./research-release-runbook.md).

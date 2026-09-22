@@ -13,3 +13,5 @@ The caller must generate action slates before proposal_graph_session. Read advan
 Literature review owns the source/protocol matrix; innovation owns candidate evidence and collision questions; the ideation panel owns independent causal-hypothesis review. Reuse the same evidence IDs. Select one main generator (caller actions or research_controller); avoid serially repeating three generation loops. Negative or absent evidence remains bounded by query coverage and provider failures.
 
 Suggested session index: corpus, capability contract, question, depth, source/evidence refs, graph/source/quality revisions, pending run/job/task IDs, selected candidate IDs, unresolved evidence and next operation. This is a handoff index, not a new completion authority or an instruction to overwrite existing StateStore records.
+
+Install the shared bundle and managed adapter with `scripts/install-research-skills.py` from the repository; preview is the default and apply requires a fresh backup directory. See `docs/operations/research-release-runbook.md` in the checkout for exact commands and recovery.

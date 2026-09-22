@@ -51,6 +51,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/graph_manage/delete_graph_index.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/graph_manage/delete_graph_index.sh) | Delete Graph Index implementation. |
 | [`scripts/graph_manage/delete_graph_index_snapshot.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/graph_manage/delete_graph_index_snapshot.sh) | Delete Graph Index Snapshot implementation. |
 | [`scripts/inspect-graph-ablation-candidates.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/inspect-graph-ablation-candidates.mjs) | Inspect Graph Ablation Candidates implementation. |
+| [`scripts/install-research-skills.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/install-research-skills.py) | Install Research Skills implementation. |
 | [`scripts/install-service.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/install-service.sh) | Install platform-specific background services for watch and serve. |
 | [`scripts/manage-service.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/manage-service.sh) | Inspect and control installed services on supported platforms. |
 | [`scripts/markitdown_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/markitdown_to_markdown.py) | Standalone MarkItDown PDF-to-markdown bridge. |
@@ -88,6 +89,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/prepare-scientific-embedding-release-evidence.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/prepare-scientific-embedding-release-evidence.mjs) | Prepare Scientific Embedding Release Evidence implementation. |
 | [`scripts/prepare-scientific-embeddings.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/prepare-scientific-embeddings.mjs) | Prepare Scientific Embeddings implementation. |
 | [`scripts/reinstall.sh`](https://github.com/Iranb/PaperNexus/blob/main/scripts/reinstall.sh) | Reinstall implementation. |
+| [`scripts/research-release-files.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/research-release-files.py) | Research Release Files implementation. |
 | [`scripts/run-engineering-control-acceptance.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/run-engineering-control-acceptance.mjs) | Run Engineering Control Acceptance implementation. |
 | [`scripts/run-fixed-corpus-retrieval-suite.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/run-fixed-corpus-retrieval-suite.mjs) | Run Fixed Corpus Retrieval Suite implementation. |
 | [`scripts/run-graph-ablation-paper-claim-pipeline.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/run-graph-ablation-paper-claim-pipeline.mjs) | Run Graph Ablation Paper Claim Pipeline implementation. |
