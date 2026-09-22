@@ -35,6 +35,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py) | Skill wrapper for path traces, evidence chains, reflection chains, and brief retrieval. |
 | [`scripts/apply-ingestion-graph-mutations.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/apply-ingestion-graph-mutations.mjs) | Apply Ingestion Graph Mutations implementation. |
 | [`scripts/audit-graph-provenance.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/audit-graph-provenance.mjs) | Audit Graph Provenance implementation. |
+| [`scripts/audit-research-quality.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/audit-research-quality.mjs) | Audit Research Quality implementation. |
 | [`scripts/benchmark-graph-ranking-ablation.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/benchmark-graph-ranking-ablation.mjs) | Benchmark Graph Ranking Ablation implementation. |
 | [`scripts/benchmark-graph-v2-delta.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/benchmark-graph-v2-delta.mjs) | Benchmark Graph V2 Delta implementation. |
 | [`scripts/build_papernexus_autoreskill_memo.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/build_papernexus_autoreskill_memo.py) | Build Papernexus Autoreskill Memo implementation. |

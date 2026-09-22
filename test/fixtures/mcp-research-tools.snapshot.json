@@ -1,7 +1,7 @@
 [
   {
     "name": "literature_review",
-    "description": "Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.",
+    "description": "capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.",
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -14,6 +14,7 @@
         "operation": {
           "type": "string",
           "enum": [
+            "capabilities",
             "corpora",
             "status",
             "sources",
@@ -26,13 +27,21 @@
             "import",
             "import_status"
           ],
-          "description": "corpora: corpus; status: corpus; sources: corpus; search: corpus, query, limit, layers, sortBy; paper: corpus, query, paperId, identifier, chunkLimit; survey: corpus, query, targetDomain, constraints, limit; discover: corpus, query, discoveryMode, providers, maxPapers; discovery_status: corpus, runId, limit; discovery_report: corpus, runId; import: corpus, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, jobId, taskId, taskIds"
+          "description": "capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds"
         },
         "corpus": {
           "type": "string",
           "minLength": 1,
           "maxLength": 8000,
           "description": "Corpus name or indexed root. Use literature_review/corpora when unknown."
+        },
+        "responseMode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "summary"
+          ],
+          "description": "full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions."
         },
         "query": {
           "type": "string",
@@ -192,6 +201,39 @@
         "operation"
       ],
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "capabilities"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "discoveryMode": false,
+              "providers": false,
+              "maxPapers": false,
+              "runId": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "idempotencyKey": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
         {
           "if": {
             "properties": {
@@ -595,13 +637,21 @@
             "context",
             "impact"
           ],
-          "description": "overview: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, query, method, direction, maxDepth, limit; evidence: corpus, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, from, to, maxDepth, limit, layers; context: corpus, query, layers; impact: corpus, query, direction, maxDepth, layers"
+          "description": "overview: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, responseMode, query, method, direction, maxDepth, limit; evidence: corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, responseMode, from, to, maxDepth, limit, layers; context: corpus, responseMode, query, layers; impact: corpus, responseMode, query, direction, maxDepth, layers"
         },
         "corpus": {
           "type": "string",
           "minLength": 1,
           "maxLength": 8000,
           "description": "Corpus name or indexed root. Use literature_review/corpora when unknown."
+        },
+        "responseMode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "summary"
+          ],
+          "description": "full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions."
         },
         "query": {
           "type": "string",
@@ -1014,13 +1064,21 @@
             "evaluate",
             "experiment_materials"
           ],
-          "description": "generate: corpus, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, query, maxDepth, limit, layers; converge: corpus, query, maxDepth, limit, layers; gaps: corpus, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, query, targetDomain, constraints, limit"
+          "description": "generate: corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, responseMode, query, maxDepth, limit, layers; converge: corpus, responseMode, query, maxDepth, limit, layers; gaps: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, responseMode, query, targetDomain, constraints, limit"
         },
         "corpus": {
           "type": "string",
           "minLength": 1,
           "maxLength": 8000,
           "description": "Corpus name or indexed root. Use literature_review/corpora when unknown."
+        },
+        "responseMode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "summary"
+          ],
+          "description": "full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions."
         },
         "query": {
           "type": "string",

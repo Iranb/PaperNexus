@@ -51,6 +51,7 @@ import {
   resolveCorpus
 } from '../../storage/corpus-store.js';
 import { NODE_TYPES } from '../graph/schema.js';
+import { assessResearchPaper, buildResearchQualityView, RESEARCH_QUALITY_VERSION } from '../graph/research-quality.js';
 
 const require = createRequire(import.meta.url);
 let jsonrepair = null;
@@ -690,19 +691,36 @@ function requisitionForPaper(input = {}, reason = 'material unavailable') {
 
 async function loadMaterialContext(args = {}, options = {}) {
   const rootPath = await resolveCorpus(args.corpus);
+  if (options.materialContextCache?.has(rootPath)) return options.materialContextCache.get(rootPath);
   const [meta, manifest, lite] = await Promise.all([
     loadCorpusMeta(rootPath),
     loadSourceManifest(rootPath),
     loadCorpusLite(rootPath).catch((error) => ({ error, graph: null, meta: null }))
   ]);
-  return {
+  const quality = lite.graph ? buildResearchQualityView(lite.graph) : null;
+  const canonicalIds = new Map((quality?.report.mergedPapers || []).flatMap(group =>
+    group.originalPaperIds.map(id => [id, group.representativeId])));
+  const quarantinedIds = new Set((quality?.report.quarantinedPapers || []).map(paper => paper.id));
+  const rawManifest = manifest || { sources: [] };
+  const sourceAdmission = entry => assessResearchPaper({
+    name: paperTitleFromEntry(entry), properties: { ...entry, identifiers: identifiersOf(entry) }
+  });
+  const context = {
     rootPath,
     meta,
-    manifest: manifest || { sources: [] },
-    graph: lite.graph || null,
+    rawManifest,
+    rawGraph: lite.graph || null,
+    canonicalIds,
+    quarantinedIds,
+    sourceAdmission,
+    manifest: { ...rawManifest, sources: (rawManifest.sources || []).filter(entry =>
+      !quarantinedIds.has(paperIdFromEntry(entry)) && sourceAdmission(entry).eligible) },
+    graph: quality?.graph || null,
     graphLoadError: lite.error ? (lite.error.message || String(lite.error)) : null,
     options
   };
+  options.materialContextCache?.set(rootPath, context);
+  return context;
 }
 
 export async function buildPaperMaterialView(args = {}, options = {}) {
@@ -718,11 +736,40 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
     pmcid: args.pmcid,
     query: args.query
   };
-  const entries = findSourceEntries(context.manifest, selector);
+  const rawEntries = findSourceEntries(context.rawManifest, selector);
+  const rawPaper = findPaperNode(context.rawGraph, {
+    ...selector, paperId: selector.paperId || paperIdFromEntry(rawEntries[0])
+  });
+  const assessment = rawPaper ? assessResearchPaper(rawPaper)
+    : rawEntries.length ? context.sourceAdmission(rawEntries[0]) : null;
+  if (assessment && !assessment.eligible) {
+    return {
+      contractVersion: AGENT_MATERIALS_CONTRACT_VERSION, operation: 'paper_material_view',
+      rootPath: context.rootPath, corpus: context.meta.name || args.corpus || context.rootPath,
+      paper: {
+        paper_id: rawPaper?.id || paperIdFromEntry(rawEntries[0]) || selector.paperId || null,
+        title: rawPaper?.name || paperTitleFromEntry(rawEntries[0]),
+        identifiers: rawPaper?.properties?.identifiers || identifiersOf(rawEntries[0]),
+        status: 'quarantined',
+        source_admission: { eligible: false, reasons: assessment.reasons, version: RESEARCH_QUALITY_VERSION },
+        availability: { abstract: false, markdown: false, pdf: false, graph_context: false,
+          chunks: false, tables: false, figures: false, source: false }
+      },
+      sources: [], overlay_roles: [], graph_context: [],
+      materials: { abstract: null, chunks: [], source_spans: [], tables: [], figures: [] },
+      import_requisitions: [],
+      next_action: 'Review the original source and repair its identity/content before using it as research evidence.',
+      generatedAt: nowIso()
+    };
+  }
+  let entries = findSourceEntries(context.manifest, selector);
+  const canonicalId = context.canonicalIds.get(rawPaper?.id || selector.paperId);
+  if (!entries.length && canonicalId) entries = context.manifest.sources.filter(entry =>
+    (context.canonicalIds.get(paperIdFromEntry(entry)) || paperIdFromEntry(entry)) === canonicalId);
   const representative = entries[0] || {};
   const paperNode = findPaperNode(context.graph, {
     ...selector,
-    paperId: selector.paperId || paperIdFromEntry(representative),
+    paperId: canonicalId || selector.paperId || paperIdFromEntry(representative),
     paperTitle: selector.paperTitle || paperTitleFromEntry(representative)
   });
   const chunkLimit = boundedInteger(args.chunkLimit || args.chunk_limit, 8, { max: 40 });
@@ -770,6 +817,7 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
       title,
       identifiers: paperIdentifiers,
       status,
+      source_admission: { eligible: Boolean(paperNode || entries.length), reasons: [], version: RESEARCH_QUALITY_VERSION, verification: 'Eligibility is not independent publication verification.' },
       availability
     },
     sources,
@@ -2786,6 +2834,7 @@ async function materialItemFromCandidate(candidate = {}, args = {}, options = {}
     title: view.paper.title,
     status: view.paper.status,
     availability: view.paper.availability,
+    source_admission: view.paper.source_admission,
     role: candidate.role || null,
     layer: candidate.layer || null,
     source_domain: candidate.source_domain || null,
@@ -2859,6 +2908,7 @@ async function materialItemFromOverlayRole(overlayRole = {}, args = {}, options 
     title: view.paper.title || overlayRole.title,
     status: view.paper.status,
     availability: view.paper.availability,
+    source_admission: view.paper.source_admission,
     role: overlayRole.role || null,
     layer: overlayRole.layer || null,
     match: {
@@ -2884,11 +2934,15 @@ async function materialItemFromOverlayRole(overlayRole = {}, args = {}, options 
 }
 
 export async function buildResearchMaterialPack(args = {}, options = {}) {
+  // Request-scoped reuse only; never cache across corpus revisions or import side effects.
+  const discoveryConfig = literatureDiscoveryConfig(args);
+  options = { ...options, materialContextCache: discoveryConfig.submit_imports || discoveryConfig.process_imports ? undefined : new Map() };
   const plan = await buildSourceDiscoveryPlan(args, options);
   const projectOverlay = await loadProjectOverlaySummary(plan.rootPath, plan.project);
   const roles = normalizeRoles(args.roles || args.role);
   const limit = boundedInteger(args.limit, 5, { max: 20 });
   const groups = [];
+  const quarantinedMaterials = [];
 
   for (const role of roles) {
     const candidates = plan.candidate_papers.filter((entry) => entry.role === role).slice(0, limit);
@@ -2905,7 +2959,11 @@ export async function buildResearchMaterialPack(args = {}, options = {}) {
       role,
       purpose: ROLE_PURPOSES[role] || `Collect materials for ${role}.`,
       overlay_roles: overlayRoles,
-      items
+      items: items.filter(item => {
+        if (item.status !== 'quarantined') return true;
+        quarantinedMaterials.push({ paper_id: item.paper_id, role, source_admission: item.source_admission });
+        return false;
+      })
     });
   }
 
@@ -2943,6 +3001,7 @@ export async function buildResearchMaterialPack(args = {}, options = {}) {
       import_requisitions: plan.import_requisitions
     },
     groups,
+    quarantined_materials: quarantinedMaterials,
     missing_materials: missingMaterials,
     negative_evidence: plan.negative_evidence,
     import_requisitions: plan.import_requisitions,
@@ -5182,6 +5241,21 @@ async function buildProposalGraphSession(args = {}) {
   const problem = compactText(args.problem || args.targetProblem || args.target_problem || args.query || args.title);
   if (!problem) throw new Error('proposal_graph_session requires problem, targetProblem, or query.');
   const targetDomain = compactText(args.targetDomain || args.target_domain);
+  const actions = asArray(args.proposalActions || args.proposal_actions || args.actions);
+  const slates = args.proposalSlates || args.proposal_slates || args.fixtureSlates || args.fixture_slates;
+  if (!actions.length && !Object.values(slates || {}).some(value => Array.isArray(value) ? value.length : value)) {
+    return {
+      contractVersion: AGENT_MATERIALS_CONTRACT_VERSION, operation: 'proposal_graph_session',
+      project: compactText(args.project), run_id: compactText(args.runId || args.run_id),
+      target_domain: targetDomain, target_problem: problem,
+      execution_mode: 'caller_supplied_actions', input_status: 'needs_actions',
+      final_status: 'diagnosis', round_count: 0,
+      required_inputs: ['proposalActions or proposalSlates'],
+      next_action: 'Construct evidence-backed Hypothesis, Mechanism, Method, NoveltyClaim, EvalPlan and Risk actions, then resubmit with their connections. evidenceRefs alone cannot generate actions.',
+      evidence_boundary: 'This endpoint validates caller-supplied proposals; it does not run a model to invent candidates or certify novelty.',
+      artifact_paths: null, generatedAt: nowIso()
+    };
+  }
   const result = await runProposalGraphSession({
     run_id: compactText(args.runId || args.run_id),
     problem,

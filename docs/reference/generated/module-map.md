@@ -15,6 +15,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/mcp/core.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/core.js) | Core implementation. |
 | [`src/mcp/http.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/http.js) | Streamable HTTP MCP transport adapter and request dispatch. |
 | [`src/mcp/prompts.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/prompts.js) | Prompts implementation. |
+| [`src/mcp/research-summary.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/research-summary.js) | Research Summary implementation. |
 | [`src/mcp/research-workflows.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/research-workflows.js) | Research Workflows implementation. |
 | [`src/mcp/resources.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/resources.js) | MCP resource definitions, including domain-taxonomy style resource payloads. |
 | [`src/mcp/server.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/server.js) | MCP server assembly for stdio and streamable HTTP transports. |
@@ -33,6 +34,7 @@ This page is generated from the repository file tree. It is intended as a system
 | File | Responsibility |
 | --- | --- |
 | [`src/server/api.js`](https://github.com/Iranb/PaperNexus/blob/main/src/server/api.js) | Payload builders and request handlers behind the HTTP routes. |
+| [`src/server/browser-auth.js`](https://github.com/Iranb/PaperNexus/blob/main/src/server/browser-auth.js) | Browser Auth implementation. |
 | [`src/server/http.js`](https://github.com/Iranb/PaperNexus/blob/main/src/server/http.js) | Authenticated HTTP server, browser UI host, and remote MCP bootstrap. |
 
 ## Storage
@@ -133,6 +135,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/proposal-graph.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/proposal-graph.js) | Proposal Graph implementation. |
 | [`src/core/graph/proposal-synthesis.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/proposal-synthesis.js) | Proposal Synthesis implementation. |
 | [`src/core/graph/research-intelligence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/research-intelligence.js) | Research Intelligence implementation. |
+| [`src/core/graph/research-quality.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/research-quality.js) | Research Quality implementation. |
 | [`src/core/graph/research-questions.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/research-questions.js) | Research question normalization and graph projection helpers. |
 | [`src/core/graph/reviewer-simulation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/reviewer-simulation.js) | Reviewer Simulation implementation. |
 | [`src/core/graph/rules.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/rules.js) | Rules implementation. |
@@ -163,6 +166,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/ingestion/pdf-parser.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js) | PDF-to-markdown parser integration layer for MarkItDown, Docling, Marker, MinerU, and related helpers. |
 | [`src/core/ingestion/pipeline.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pipeline.js) | Main staged build pipeline from sources to graph commit. |
 | [`src/core/ingestion/s2orc.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/s2orc.js) | S2orc implementation. |
+| [`src/core/ingestion/source-quality.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/source-quality.js) | Source Quality implementation. |
 | [`src/core/llm/batch-worker-pool.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/batch-worker-pool.js) | Batch Worker Pool implementation. |
 | [`src/core/llm/ollama.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/ollama.js) | Ollama implementation. |
 | [`src/core/llm/prompts/research-relations-v1.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/prompts/research-relations-v1.js) | Research Relations V1 implementation. |
@@ -182,4 +186,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`web/analysis-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/analysis-view.js) | Analysis View implementation. |
 | [`web/app.js`](https://github.com/Iranb/PaperNexus/blob/main/web/app.js) | Single-page browser UI client logic. |
 | [`web/index.html`](https://github.com/Iranb/PaperNexus/blob/main/web/index.html) | Index implementation. |
+| [`web/login.css`](https://github.com/Iranb/PaperNexus/blob/main/web/login.css) | Login implementation. |
+| [`web/login.html`](https://github.com/Iranb/PaperNexus/blob/main/web/login.html) | Login implementation. |
+| [`web/login.js`](https://github.com/Iranb/PaperNexus/blob/main/web/login.js) | Login implementation. |
 | [`web/styles.css`](https://github.com/Iranb/PaperNexus/blob/main/web/styles.css) | Dashboard styling. |

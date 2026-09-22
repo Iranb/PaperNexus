@@ -12,6 +12,14 @@ The 2026-09-11 workflow migration changes the default **advertised list** to thr
 - New fields must be optional/additive unless a versioned tool or explicit migration note is introduced.
 - Skill wrappers should keep their command-line entrypoints stable and route live graph work through remote HTTP MCP.
 
+## Research pipeline refinement (2026-09-22)
+
+`literature_review/capabilities` reports supported workflow operations and advanced proposal requirements. All three research tools accept optional `responseMode=summary` with a 32 KiB JSON display budget; the default remains `full`. Truncated evidence never grants permission to advance. Submission summaries link to existing job status, never a replay of the write.
+
+Material reads now apply the shared research-quality projection. A quarantined paper returns `status=quarantined`, admission reasons and empty evidence, replacing the incorrect `in_graph` classification. Version aliases resolve to the canonical paper while retaining source access. Empty proposal actions return immediate `diagnosis/needs_actions` rather than running empty rounds. See [the pipeline contract and migration guide](../operations/research-pipeline.md).
+
+Skills share three canonical entrypoints: research, ingestion/maintenance and reflection. Old names and wrapper scripts remain compatible; stage references and the AutoResearch adapter carry shared rules.
+
 ## Public MCP Tools
 
 The generated reference in `docs/reference/generated/mcp-tools.md` documents the three default workflows first, then the legacy/advanced catalog below. `src/mcp/research-workflows.js` owns the new schemas and deterministic routing; `src/mcp/tools.js` remains the legacy schema authority. The original public high-level tools remain:
@@ -53,7 +61,7 @@ Stable wrapper expectations:
 - `pn_research_chains.py` owns chain and briefing workflows.
 - `pn_agent_materials.py` owns Agent material pack, `structural-gap-pack`, `innovation-pattern-pack`, innovation evidence pack, source discovery plan, paper material view, negative evidence, experiment-cost materials, explicit `--include-cost-llm-extraction`, import requisition, `--auto-discover-sources`, graph-native source-router hints, opt-in provider-evidence/live-discovery/literature-discovery evidence, sparse live/literature-discovery fallback, opt-in `--literature-discovery-seed-provider-papers` and `--literature-discovery-seed-live-papers`, explicit literature-discovery import submission/processing, persistence flags, proposal graph sessions, paper role overlay, evidence cart, and workflow state workflows. Its ResearchStudio controls include `--method`, lineage bounds, distinct-paper persistence threshold, pattern limit/cards, candidate mechanism, and removed components.
 - `pn_resilient_discovery.py` owns timeout-resilient literature-discovery lane submission, polling, reconciliation, and import queue progress reads through `literature_discovery`, `literature_discovery_progress`, and `import_workflow`. It is additive and should use the read-only progress tool for timer-based wait decisions when available.
-- `pn_import_submit.py`, `pn_import_queue.py`, and `pn_batch_import.py` own remote import submission and tracking.
+- `pn_import_submit.py` and `pn_batch_import.py` own remote import submission and tracking; `pn_resilient_discovery.py` reads queue progress.
 - Skill wrappers should not call private `/api/*` routes for live graph control.
 - Skill docs must not embed bearer tokens, server IPs, or user-specific credentials.
 - MCP import batching is a server/worker default, not a wrapper protocol: `papernexus serve` defaults to `imports.batchEnabled=true`, `batchProgressive=true`, `batchInitialTasks=4`, `batchMaxTasks=16`, and `batchCoalesceMs=0`; wrappers continue tracking per-task ids.

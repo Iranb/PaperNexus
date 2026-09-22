@@ -12,7 +12,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 
 | Tool | Description |
 | --- | --- |
-| [literature_review](#tool-literature_review) | Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
+| [literature_review](#tool-literature_review) | capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
 | [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
 | [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains. |
 
@@ -54,30 +54,32 @@ Each tool section lists the tool purpose first, followed by every currently expo
 
 ### Function
 
-Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.
+capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.
 
 ### Operation Routing
 
 | Operation | Accepted fields | Required fields | Effect |
 | --- | --- | --- | --- |
-| corpora | corpus | None | committed_read |
-| status | corpus | None | committed_read |
-| sources | corpus | None | committed_read |
-| search | corpus, query, limit, layers, sortBy | query | committed_read |
-| paper | corpus, query, paperId, identifier, chunkLimit | one of: query, paperId, identifier | committed_read |
-| survey | corpus, query, targetDomain, constraints, limit | query | committed_read |
-| discover | corpus, query, discoveryMode, providers, maxPapers | query | discovery_submit |
-| discovery_status | corpus, runId, limit | None | discovery_read |
-| discovery_report | corpus, runId | runId | discovery_read |
-| import | corpus, serverFilePath, runId, doi, arxivId, idempotencyKey | one of: serverFilePath, runId | import_submit |
-| import_status | corpus, jobId, taskId, taskIds | None | import_read |
+| capabilities | corpus, responseMode | None | capability_read |
+| corpora | corpus, responseMode | None | committed_read |
+| status | corpus, responseMode | None | committed_read |
+| sources | corpus, responseMode | None | committed_read |
+| search | corpus, responseMode, query, limit, layers, sortBy | query | committed_read |
+| paper | corpus, responseMode, query, paperId, identifier, chunkLimit | one of: query, paperId, identifier | committed_read |
+| survey | corpus, responseMode, query, targetDomain, constraints, limit | query | committed_read |
+| discover | corpus, responseMode, query, discoveryMode, providers, maxPapers | query | discovery_submit |
+| discovery_status | corpus, responseMode, runId, limit | None | discovery_read |
+| discovery_report | corpus, responseMode, runId | runId | discovery_read |
+| import | corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey | one of: serverFilePath, runId | import_submit |
+| import_status | corpus, responseMode, jobId, taskId, taskIds | None | import_read |
 
 ### Parameters
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (corpora, status, sources, search, paper, survey, discover, discovery_status, discovery_report, import, import_status) | corpora: corpus; status: corpus; sources: corpus; search: corpus, query, limit, layers, sortBy; paper: corpus, query, paperId, identifier, chunkLimit; survey: corpus, query, targetDomain, constraints, limit; discover: corpus, query, discoveryMode, providers, maxPapers; discovery_status: corpus, runId, limit; discovery_report: corpus, runId; import: corpus, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, jobId, taskId, taskIds Allowed values: `corpora`, `status`, `sources`, `search`, `paper`, `survey`, `discover`, `discovery_status`, `discovery_report`, `import`, `import_status`. |
+| `operation` | required | string (capabilities, corpora, status, sources, search, paper, survey, discover, discovery_status, discovery_report, import, import_status) | capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds Allowed values: `capabilities`, `corpora`, `status`, `sources`, `search`, `paper`, `survey`, `discover`, `discovery_status`, `discovery_report`, `import`, `import_status`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
+| `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
 | `limit` | optional | integer | Result budget, default 5. |
 | `layers` | optional | string | Comma-separated graph layer filter. |
@@ -139,20 +141,21 @@ Analyze research evolution from committed evidence: overview maps a bounded topi
 
 | Operation | Accepted fields | Required fields | Effect |
 | --- | --- | --- | --- |
-| overview | corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | None | committed_read |
-| problem | corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | query | committed_read |
-| method | corpus, query, method, direction, maxDepth, limit | one of: query, method | committed_read |
-| evidence | corpus, query, method, sourceMethod, targetMethod, edgeId, limit | one of: query, method, sourceMethod, targetMethod, edgeId | committed_read |
-| path | corpus, from, to, maxDepth, limit, layers | from; to | committed_read |
-| context | corpus, query, layers | query | committed_read |
-| impact | corpus, query, direction, maxDepth, layers | query | committed_read |
+| overview | corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | None | committed_read |
+| problem | corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | query | committed_read |
+| method | corpus, responseMode, query, method, direction, maxDepth, limit | one of: query, method | committed_read |
+| evidence | corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit | one of: query, method, sourceMethod, targetMethod, edgeId | committed_read |
+| path | corpus, responseMode, from, to, maxDepth, limit, layers | from; to | committed_read |
+| context | corpus, responseMode, query, layers | query | committed_read |
+| impact | corpus, responseMode, query, direction, maxDepth, layers | query | committed_read |
 
 ### Parameters
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (overview, problem, method, evidence, path, context, impact) | overview: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, query, method, direction, maxDepth, limit; evidence: corpus, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, from, to, maxDepth, limit, layers; context: corpus, query, layers; impact: corpus, query, direction, maxDepth, layers Allowed values: `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`. |
+| `operation` | required | string (overview, problem, method, evidence, path, context, impact) | overview: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, responseMode, query, method, direction, maxDepth, limit; evidence: corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, responseMode, from, to, maxDepth, limit, layers; context: corpus, responseMode, query, layers; impact: corpus, responseMode, query, direction, maxDepth, layers Allowed values: `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
+| `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
 | `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
 | `constraints` | optional | string \| array&lt;string&gt; \| object | Source-review conditions. Lineage overview/problem also accept up to 30 primitive method requirements, such as labelsAvailable=false or maxLatencyMs=40. |
@@ -201,19 +204,20 @@ Generate and evaluate research hypotheses from committed sources: generate retur
 
 | Operation | Accepted fields | Required fields | Effect |
 | --- | --- | --- | --- |
-| generate | corpus, query, targetDomain, mechanisms, limit, selectionMode, selectionK | query | committed_read |
-| diverge | corpus, query, maxDepth, limit, layers | query | committed_read |
-| converge | corpus, query, maxDepth, limit, layers | query | committed_read |
-| gaps | corpus, query, targetDomain, constraints, limit, method, maxDepth | query | committed_read |
-| evaluate | corpus, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents | query; candidateMechanism | committed_read |
-| experiment_materials | corpus, query, targetDomain, constraints, limit | query | committed_read |
+| generate | corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK | query | committed_read |
+| diverge | corpus, responseMode, query, maxDepth, limit, layers | query | committed_read |
+| converge | corpus, responseMode, query, maxDepth, limit, layers | query | committed_read |
+| gaps | corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth | query | committed_read |
+| evaluate | corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents | query; candidateMechanism | committed_read |
+| experiment_materials | corpus, responseMode, query, targetDomain, constraints, limit | query | committed_read |
 
 ### Parameters
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (generate, diverge, converge, gaps, evaluate, experiment_materials) | generate: corpus, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, query, maxDepth, limit, layers; converge: corpus, query, maxDepth, limit, layers; gaps: corpus, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, query, targetDomain, constraints, limit Allowed values: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`. |
+| `operation` | required | string (generate, diverge, converge, gaps, evaluate, experiment_materials) | generate: corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, responseMode, query, maxDepth, limit, layers; converge: corpus, responseMode, query, maxDepth, limit, layers; gaps: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, responseMode, query, targetDomain, constraints, limit Allowed values: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
+| `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
 | `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
 | `mechanisms` | optional | array&lt;string&gt; | Candidate mechanism terms. |

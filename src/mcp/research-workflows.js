@@ -1,3 +1,4 @@
+import { summarizeResearchEnvelope, RESEARCH_SUMMARY_MAX_BYTES } from './research-summary.js';
 import { PAPERNEXUS_TOOLS } from './tools.js';
 import { loadDiscoveryRun } from '../core/discovery/store.js';
 import { submitDiscoveryImports } from '../core/discovery/import-bridge.js';
@@ -9,6 +10,7 @@ const text = (description) => ({ type: 'string', minLength: 1, maxLength: 8000, 
 const count = (maximum, description) => ({ type: 'integer', minimum: 1, maximum, description });
 const strings = (description) => ({ type: 'array', items: text('Value'), maxItems: 30, description });
 const FIELDS = {
+  responseMode: { type: 'string', enum: ['full', 'summary'], description: 'full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions.' },
   corpus: text('Corpus name or indexed root. Use literature_review/corpora when unknown.'),
   query: text('Research topic, question, or exact node anchor.'),
   paperId: text('Exact committed paper id.'),
@@ -54,7 +56,7 @@ const FIELDS = {
 };
 
 const read = (backend, operation, fields, required = [], anyRequired = []) => ({
-  backend, operation, fields: ['corpus', ...fields], required, anyRequired, effect: 'committed_read'
+  backend, operation, fields: ['corpus', 'responseMode', ...fields], required, anyRequired, effect: 'committed_read'
 });
 const topicFields = ['query', 'targetDomain', 'constraints', 'maxDepth', 'maxNodes', 'maxEdges', 'seedNodeIds', 'fromYear', 'toYear'];
 const materialFields = ['query', 'targetDomain', 'constraints', 'limit'];
@@ -69,6 +71,7 @@ function researchFieldSchema(tool, field) {
 // One route owns each public operation. No arbitrary backend/options passthrough.
 export const RESEARCH_ROUTES = {
   literature_review: {
+    capabilities: { ...read('capabilities', null, []), effect: 'capability_read' },
     corpora: read('list_corpora', null, []),
     status: read('corpus_status', null, []),
     sources: read('corpus_sources', null, []),
@@ -101,7 +104,7 @@ export const RESEARCH_ROUTES = {
 };
 
 const DESCRIPTIONS = {
-  literature_review: 'Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
+  literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
   lineage_analysis: 'Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
   idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains.'
 };
@@ -188,7 +191,7 @@ export function resolveResearchWorkflowCall(name, args = {}) {
   }
   if (args.fromYear && args.toYear && args.fromYear > args.toYear) throw new Error('fromYear must not exceed toYear.');
   let backend = route.backend;
-  let backendArgs = { ...pick(args, route.fields), ...(route.operation ? { operation: route.operation } : {}) };
+  let backendArgs = { ...pick(args, route.fields.filter(field => field !== 'responseMode')), ...(route.operation ? { operation: route.operation } : {}) };
   const budget = { limit: args.limit ?? 5, maxDepth: args.maxDepth ?? 2 };
   if (backend === 'research_lookup') {
     if (['query', 'context', 'impact', 'ideas', 'brainstorm'].includes(route.operation)) {
@@ -310,10 +313,12 @@ async function importSavedDiscoverySources(args, options) {
 export async function executeResearchWorkflow(name, args, options, invoke) {
   const call = resolveResearchWorkflowCall(name, args);
   if (!call) throw new Error('Unknown research tool: ' + name);
-  const result = call.backend === 'discovery_import_bridge'
+  const result = call.backend === 'capabilities'
+    ? researchCapabilities(options)
+    : call.backend === 'discovery_import_bridge'
     ? await importSavedDiscoverySources(call.args, options)
     : decodeResult(await invoke(call.backend, call.args, options));
-  return {
+  const envelope = {
     contractVersion: RESEARCH_WORKFLOW_VERSION,
     tool: name,
     operation: call.operation,
@@ -329,5 +334,20 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
         : 'Discovery, import submission, graph visibility, and authoritative synchronization are distinct. Graph paths are not causal proof.'
     },
     nextActions: nextActions(call, args, result)
+  };
+  return args.responseMode === 'summary' ? summarizeResearchEnvelope(envelope, args) : envelope;
+}
+
+export function researchCapabilities(options = {}) {
+  return {
+    contractVersion: RESEARCH_WORKFLOW_VERSION,
+    advertisedProfile: resolveMcpToolProfile(options),
+    workflows: Object.fromEntries(Object.entries(RESEARCH_ROUTES).map(([name, routes]) => [name, Object.keys(routes)])),
+    responseModes: ['full', 'summary'], summaryMaxBytes: RESEARCH_SUMMARY_MAX_BYTES,
+    advanced: { tool: 'agent_materials', operations: ['proposal_graph_session', 'research_controller'],
+      profileHint: 'Legacy names remain callable; clients needing schema discovery can use the all or legacy profile.',
+      proposalExecution: 'caller_supplied_actions', proposalRequiredInput: 'proposalActions or proposalSlates',
+      sourceAdmission: 'research-quality-v1' },
+    evidenceBoundary: 'Graph visibility, source admission, semantic readiness and scientific verification are distinct.'
   };
 }

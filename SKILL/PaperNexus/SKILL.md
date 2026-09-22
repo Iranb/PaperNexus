@@ -1,303 +1,47 @@
 ---
 name: papernexus
-description: Use when working in PaperNexus and the task touches a live corpus, corpus-scale refresh or optimization, remote graph build, queued import, or authenticated remote query flow. Skills must use remote HTTP MCP, not the legacy HTTP API.
+description: Discover and read literature with PaperNexus, trace source-backed methods and problems, and generate and audit hypotheses. Use for research evidence, not corpus maintenance or experiment execution.
 ---
 
-# PaperNexus
+# PaperNexus Research
 
-Use this skill when the task is about a live PaperNexus corpus or the PaperNexus codebase.
+This is the canonical research entrypoint. Its existing `papernexus` name remains compatible. Load only the stage reference needed now.
 
-## Live Graph Policy
+## Start with capabilities and scope
 
-For a running user graph, the control plane is:
+Use the configured remote PaperNexus MCP. Read [the shared remote contract](references/remote-contract.md) once per setup or reconnect. Inspect the advertised tools; when `literature_review` exists, call `operation=capabilities` once and retain the result for this connection. Use `corpora` only if the corpus is unknown. A newer skill does not make an operation available on an older server.
 
-- remote HTTP MCP only
-- no raw `/api/*` calls
-- no stdio/local MCP for live graph work
-- no local CLI graph reads against the live graph
+Use `responseMode=summary` for triage on servers advertising it. It is a bounded preview, not a complete evidence review. Read exact papers and source spans before adopting a claim. Preserve original gate denials and unknowns; omitted evidence is never approval.
 
-Default client assumption:
+## Select the depth that serves the request
 
-- OpenClaw or Codex already has a PaperNexus MCP server configured
-- the configured server name is `papernexus-remote`
-- live graph reads should use that MCP server directly
-- literal IPs, MCP URLs, and bearer tokens do not belong in SKILL instructions
+- Quick: answer one question from existing evidence; return sources and uncertainty. Do not initialize a full AutoResearch project or trigger imports just to answer a question.
+- Standard: map related work, read selected papers and fill concrete evidence gaps. Reuse prior evidence by paper identity and source version.
+- Deep: support a selected research idea with closest-prior comparison, protocol, counterevidence and a falsifiable experiment. Existing project acceptance gates remain authoritative.
 
-Preferred MCP tools in the default research profile:
+Depth controls work budget, not claim truth. Missing evidence limits the conclusion at every depth.
 
-- `literature_review`: `corpora`, `status`, `sources`, `search`, `paper`, `survey`; explicitly requested `discover`/`import` and their status/report operations.
-- `lineage_analysis`: `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`.
-- `idea_generation`: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`.
+## Route the current stage
 
-Use these task-oriented tools when advertised. Existing servers may still advertise the legacy tools below; use those until deployment. Advanced maintenance, controller and overlay workflows remain on legacy tools. If a required advanced tool is not exposed, the server's `legacy` or `all` profile must be selected and the client reconnected; do not replace MCP with raw HTTP or local graph access.
+| Need | Reference | Primary tools |
+|---|---|---|
+| Find, select, read or compare papers | [Literature](references/literature.md) | `literature_review` |
+| Explain methods, assumptions, evidence or evolution | [Analysis](references/analysis.md) | `lineage_analysis` |
+| Generate, contrast or reject a hypothesis | [Ideation](references/ideation.md) | `idea_generation` |
+| Action-driven proposals and AutoResearch handoff | [Advanced](references/advanced.md), [adapter](references/autoresearch-adapter.md) | feature-detected `agent_materials` |
+| Upload, refresh or repair corpus files | [Maintenance skill](../PaperNexusMaintenance/SKILL.md) | explicit discovery/import/maintenance operations |
+| Analyze actual experiment outcomes | [Reflection skill](../PaperNexusReflection/SKILL.md) | evidence and reflection reads |
 
-Shell fallback wrappers:
+## Preserve research boundaries
 
-- `python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py`
-- `python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py`
-- `python3 SKILL/PaperNexusCorpusRefresh/scripts/pn_corpus_refresh.py`
-- `python3 SKILL/PaperNexus/scripts/pn_paper_index.py`
-- `python3 SKILL/PaperNexus/scripts/pn_batch_import.py`
-- `python3 SKILL/PaperNexus/scripts/pn_stage_sync.py`
-- `python3 SKILL/PaperNexus/scripts/pn_import_submit.py`
-- `python3 SKILL/PaperNexus/scripts/pn_import_queue.py`
-- `python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py`
-- `python3 SKILL/PaperNexus/scripts/pn_agent_materials.py`
-- `python3 SKILL/PaperNexus/scripts/pn_graph_query.py`
-- `python3 SKILL/PaperNexus/scripts/pn_research_chains.py`
+`in_graph` means stored/visible, not verified publication. Inspect `source_admission`; quarantined sources cannot support research claims. Eligibility alone is not independent bibliographic verification. Keep discovery, graph evidence, source evidence, inference and experiment outcomes distinct.
 
-These wrappers exist for shell-only fallback and local file staging. They should inherit connection details from the active PaperNexus setup and should never hardcode IPs in skill examples.
+Graph paths are connectivity, not causal proof. Sparse results are not evidence of an unexplored field. Lexical collision is a screening signal, not semantic equivalence. A committed proposal is structurally accepted, not scientifically validated. Respect all returned evidence gates, including the stricter mechanism audit when other coverage fields look sufficient.
 
-## Remote Path Contract
+For every consequential conclusion retain paper/version, source span, task/protocol and uncertainty. Reuse an existing packet only when source/graph/quality versions and the current evidence role remain compatible. Refetch after graph or quality changes.
 
-All server-owned filesystem paths must use a portable PaperNexus server form:
+## Compatible older servers
 
-- prefer `~/.papernexus/...` over `/home/<user>/.papernexus/...`
-- prefer `~/uploads/...` over `/home/<user>/uploads/...`
-- `/tmp/...` stays `/tmp/...`
+If only legacy tools are advertised, map search/paper/survey to `research_lookup/query`, `agent_materials/paper_material_view`, `agent_materials/research_material_pack`; map analysis to `research_lookup` and `research_briefing`; map ideation to `idea_catalyst` and `agent_materials/innovation_evidence_pack`. Only send fields present in the advertised schema. Read the advanced reference for stateful workflows; do not send unsupported `candidateMechanism` to an older material tool and assume it was used.
 
-Rules:
-
-- when MCP or HTTP metadata shows a server-home path, treat the `~` form as canonical
-- do not rewrite the `~` form back into a guessed `/home/...` absolute path
-- if a wrapper accepts a server path, it accepts both absolute and `~/...` forms, but SKILL examples should use `~/...`
-- let the PaperNexus framework expand `~` on the server side
-
-## Default Three-Workflow Mapping
-
-Start with `literature_review/corpora` when the target corpus is unknown. Use `search` for committed graph matches, `paper` for source-backed reading and `survey` for grouped research materials. Missing papers require an explicit `discover` operation followed by `discovery_status` and `discovery_report` using the returned runId. `import` accepts a resolved discovery runId or an already staged serverFilePath; follow `import_status` by jobId and then taskId. Async submission completion is not graph synchronization.
-
-Use `lineage_analysis/overview` for a bounded topic projection, `problem` for dated source observations, `method` for validated method evolution, and `evidence` for exact edge quotes. Paths and impact describe graph connectivity, not causal proof. Use `idea_generation/generate` for hypotheses, add targetDomain for cross-domain candidates, and use `evaluate` with a concrete candidateMechanism for evidence/novelty audit. `experiment_materials` supplies anchors and cost evidence, not a completed plan or experiment. Respect the original result's novelty and evidence-sufficiency restrictions.
-
-Do not add legacy options, provider flags, export paths or writeback controls to these three tools. Their operation-specific schemas reject hidden side effects. Existing Python wrapper entrypoints continue calling compatible legacy names.
-
-## Legacy And Advanced MCP Tool Mapping
-
-For OpenClaw-native use, call these tools on the configured `papernexus-remote` server directly:
-
-- `research_lookup`
-  Use for `query`, `context`, `impact`, `ideas`, `brainstorm`, and `paper_index`
-- `research_briefing`
-  Use for `path-trace`, `evidence-chain`, `reflection-chain`, `theory-brief`, `storyline-brief`, `research-brief`, `brainstorm-brief`, and `paper-enhancement`
-- `import_workflow`
-  Use for queue submit, status, progress, log, and wait operations after a file is already on the server
-  Important operations: `submit`, `status`, `progress`, `queue_progress`, `log`, `wait`
-- `idea_catalyst`
-  Use for cross-domain ideation
-- `mutate_graph`
-  Use for ordered batch graph edits with one dry-run preview before apply
-- `refresh_corpus`
-  Use for corpus-scale batch refresh and staged maintenance.
-  Important modes: `analyze`, `materialize`, `llm_optimize`, `optimize`
-- `refresh_paper_graph`
-  Use to force-refresh one already-indexed paper or one duplicate group
-- `list_corpora`
-  Use to resolve the current corpus when the active corpus is not explicit
-- `agent_materials`
-  Use for multi-domain Agent material workflows: `research_material_pack`, `structural_gap_pack`, `innovation_pattern_pack`, `innovation_evidence_pack`, `source_discovery_plan`, `paper_material_view`, `import_requisition_pack`, `negative_evidence_pack`, `paper_role_overlay`, `evidence_cart`, and `workflow_state`. Prefer graph-first packs, then explicitly opt into provider evidence, live discovery, literature-discovery source resolution, and import submission only when the task requires those phases. ResearchStudio-style discovery must follow committed evidence -> structural gap -> research action; built-in pattern cards are seed taxonomy rather than empirical outcome evidence, and bounded lineage endpoints are only frontier candidates. For `innovation_evidence_pack`, treat `evidence_sufficiency`, `coverage_matrix`, `composition_collision_matrix`, `mechanism_collision_audit`, and `required_followup` as novelty-audit control fields: if `novelty_claim_allowed=false`, continue approved follow-up research or report a blocker instead of giving a final novelty claim.
-- `literature_discovery`
-  Use for keyword/topic literature survey, provider search, legal full-text resolution, discovery reports, and optional import submission.
-  Important operations: `plan`, `search`, `resolve`, `run`, `import`, `ingest`, `import_and_process`, `status`, `report`, `list`, `supplement`
-
-For target-domain / near-source / far-source material workflows, read `SKILL/PaperNexusAgentMaterials/SKILL.md` and use its phased MCP process.
-
-## Keyword Discovery And Graph-Lag Policy
-
-In the default profile use `literature_review/discover`, followed by `discovery_status` and `discovery_report`, for keyword-based literature research or missing-paper discovery. Import is a separate explicit `literature_review/import` action. The detailed legacy workflow below applies when legacy tools are advertised or used by existing wrappers.
-
-Keep three states separate:
-
-- discovery result: candidate papers and coverage artifacts are available through `literature_discovery status` / `report`
-- submitted import: resolved full-text files were handed to the import queue, but graph visibility is not guaranteed yet
-- graph committed: `import_workflow status` / `wait` reports `status=completed` and `stage=completed`
-
-Recommended flow:
-
-1. Use `literature_discovery plan` for query families when the topic is broad or ambiguous.
-2. Use `literature_discovery search` for fast metadata-only keyword survey.
-3. Use `literature_discovery run` or `resolve` when you need legal Markdown/PDF source resolution and persisted coverage artifacts.
-4. Use `literature_discovery import` or `run` with `importResolved=true` to submit resolved full text to the import queue.
-5. Use `literature_discovery ingest`, `import_and_process`, or `processImports=true` only when the caller intentionally wants to wait for parsing and fast graph commit. This can be long-running.
-6. After any import submission, use `import_workflow queue_progress`, `status`, or `wait` before graph queries.
-7. Run `research_lookup query`, `context`, `impact`, `research_briefing`, or `idea_catalyst mode=graph` only after the relevant import tasks are complete.
-
-Latency rule:
-
-- Do not treat "discovery completed", "downloaded", "resolved", "submitted", or "deduped" as "already in the graph".
-- During graph-build delay, answer from `literature_discovery report` and label it as discovery evidence, not graph evidence.
-- If the user needs immediate analysis before import finishes, use discovery artifacts for paper lists and clearly say graph-grounded analysis is pending import completion.
-
-Timeout-safe rule:
-
-- High-risk MCP calls include broad/deep `literature_discovery search/run/resolve`, `ingest`, `import_and_process`, `processImports=true`, `import_workflow wait`, `agent_materials` with provider/live/literature/import opt-ins, research-controller material execution with the same opt-ins, `refresh_corpus`, source-backed `create_corpus` without async mode, and graph refresh/rebuild calls.
-- Prefer `literature_discovery operation=submit` for broad work, then use `progress`, `report`, and `list` with the returned or deterministic `runId`.
-- If a client-side wait limit or transport failure happens after a submit attempt, record the result as `unknown_after_timeout`, not success. Reconcile remote state with `progress`, `report`, `list`, and any import queue task ids before retrying.
-- For AutoResearch ideation, split broad discovery into `target`, `near`, and `far` lanes so target-domain priors, near-neighbor methods, and far-source transfers can be retried and screened independently.
-- When shell fallback is needed, use `python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py` to keep a local ledger for lane submit, poll, reconcile, and import queue progress:
-
-```bash
-python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
-  --corpus "<corpus>" \
-  --workflow-id "<project-or-run-id>" \
-  --ledger "/absolute/path/resilient-discovery-ledger.json" \
-  submit --lane target --lane near --lane far --topic "<research topic>"
-
-python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
-  --corpus "<corpus>" \
-  --workflow-id "<project-or-run-id>" \
-  --ledger "/absolute/path/resilient-discovery-ledger.json" \
-  poll
-
-python3 SKILL/PaperNexus/scripts/pn_resilient_discovery.py \
-  --corpus "<corpus>" \
-  --workflow-id "<project-or-run-id>" \
-  --ledger "/absolute/path/resilient-discovery-ledger.json" \
-  queue
-```
-
-## Remote Import Checklist
-
-1. Resolve the active corpus before touching the graph.
-   If the current corpus name is unknown, query `list_corpora` on `papernexus-remote` first.
-2. Understand the path boundary:
-   `import_workflow submit` sends `serverFilePath` to the remote PaperNexus server, so that path must exist on the server machine, not on the agent's local filesystem.
-   If the path is under the server user's home directory, keep it in `~/...` form instead of copying the raw `/home/...` prefix.
-3. If the paper is already on the server machine, use `--server-file-path`.
-   Before submitting, prefer an exact `paper_index` lookup by DOI / arXiv ID / PMID / PMCID when the identifier is available.
-4. If the paper is local to the agent machine, do not call `import_workflow submit` with the local path directly. Stage it with:
-   `python3 SKILL/PaperNexus/scripts/pn_import_submit.py --source <local-file> --doi <doi>`
-   The wrapper will:
-   - detect that the source is local
-   - `ssh`/`rsync` it to remote staging
-   - call remote `import_workflow submit` with the staged `serverFilePath`
-   Only pass `--ssh-target` when the local staging environment has not already been configured.
-5. For two or more files, prefer one JSON manifest plus:
-   `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> submit`
-6. Single-paper progress:
-   `python3 SKILL/PaperNexus/scripts/pn_import_queue.py status --paper-id <paperId>`
-   or
-   `python3 SKILL/PaperNexus/scripts/pn_import_queue.py wait --paper-id <paperId> --timeout 1800 --interval 15`
-7. Batch progress:
-   `python3 SKILL/PaperNexus/scripts/pn_batch_import.py --manifest <json> status`
-   because it uses one remote `queue_progress` snapshot instead of guessing by time
-8. MCP/serve import workers default to worker-side logical batching (`imports.batchEnabled=true`, `batchMaxTasks=8`), so multiple task ids may complete from one shared graph commit; keep waiting on each task id and do not change wrapper arguments.
-9. Only claim graph sync or graph visibility succeeded when the task is `status=completed` and `stage=completed`.
-
-Do not default to base64 uploads for large PDFs. Prefer `rsync`-style staging and `serverFilePath`.
-
-## Upload Rules
-
-- Every uploaded paper must include at least one precise identifier.
-- Strong paper identity prefers DOI, arXiv ID, PMID, or PMCID.
-- ISBN / ISSN are stored, but by themselves they do not replace article-level identity.
-- Never pass a local workstation path like `/Users/<user>/.../paper.pdf` as remote `serverFilePath`.
-- `serverFilePath` is only valid for files already present on the remote PaperNexus server.
-- If a remote metadata response shows `~/.papernexus/...`, keep that exact `~`-prefixed path when calling wrappers again.
-- For local files, use `pn_import_submit.py --source ...` or `pn_batch_import.py submit` so the wrapper can upload first.
-- For batch work, prefer one manifest and one wrapper call, not ad-hoc loops of raw MCP submits.
-
-## Minimal Remote Examples
-
-For OpenClaw-native live graph work, prefer direct MCP tool calls against the configured `papernexus-remote` server.
-
-Use shell examples only when local file staging or shell-only execution is required.
-
-```bash
-python3 SKILL/PaperNexus/scripts/pn_import_submit.py \
-  --corpus "<corpus>" \
-  --paper-id "data-shapley-iclr-2025" \
-  --doi "10.48550/arXiv.2401.12345" \
-  --source-provider "filesystem" \
-  --source "/absolute/path/paper.pdf"
-
-python3 SKILL/PaperNexus/scripts/pn_paper_index.py \
-  --corpus "<corpus>" \
-  --doi "10.48550/arXiv.2401.12345" \
-  --json
-
-python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
-  --corpus "<corpus>" \
-  status --paper-id "data-shapley-iclr-2025"
-
-python3 SKILL/PaperNexus/scripts/pn_import_queue.py \
-  --corpus "<corpus>" \
-  wait --paper-id "data-shapley-iclr-2025" --timeout 1800 --interval 15
-
-python3 SKILL/PaperNexus/scripts/pn_batch_import.py \
-  --corpus "<corpus>" \
-  --manifest "/absolute/path/batch-import.json" \
-  status
-
-python3 SKILL/PaperNexus/scripts/pn_graph_query.py \
-  --corpus "<corpus>" \
-  query "Data Shapley in One Training Run" --limit 8
-```
-
-## Queue Reading Rules
-
-- `pending` plus `queued`: task exists but the import worker has not picked it up
-- `running`: read `stage` and recent `log`
-- `completed` plus `completed`: safe to query the graph
-- `failed`: report `stage`, `error`, and recent log lines before retrying
-- `task.progress.percent`: per-task overall progress, not just terminal state
-- `task.progress.stagePercent`: progress inside the current stage
-- `task.progress.queuePosition`: current unfinished-queue position for that task
-- `summary.remaining`: unfinished tasks in the current batch or queue snapshot
-- `summary.overallPercent`: aggregate progress across the returned task set
-
-Only call a paper synchronized when the returned task state says it is completed.
-
-## Corpus-Scale Refresh And LLM Optimization
-
-When the task is not one-paper repair but corpus-scale maintenance, prefer `refresh_corpus` over ad-hoc command sequences.
-
-Use this mapping:
-
-- `refresh_corpus mode=analyze` for dirty-only or full corpus recommit after many sources changed
-- `refresh_corpus mode=materialize` for Stage 1 only when you want refreshed snapshots but no graph commit yet
-- `refresh_corpus mode=llm_optimize` for Stage 2 batch semantic/relation refresh over cached snapshots
-- `refresh_corpus mode=optimize` for Stage 2-5 from cached snapshots with graph commit
-
-Key rules:
-
-- `incremental=false` only matters for `mode=analyze`; it means force-refresh all tracked sources
-- `changedSourceKeys` only makes sense for `mode=llm_optimize` or `mode=optimize`
-- `semanticExtraction`, `llmBatchSize`, and `rebuildPdfMarkdown` are the main control knobs
-- after `mode=materialize` or `mode=llm_optimize`, do not claim the graph was recommitted
-- after `mode=analyze` or `mode=optimize`, the tool returns only after the selected maintenance path finishes
-
-Shell-only fallback example:
-
-```bash
-python3 SKILL/PaperNexusCorpusRefresh/scripts/pn_corpus_refresh.py \
-  --corpus "<corpus>" \
-  --mode llm_optimize \
-  --semantic-extraction llm-primary \
-  --llm-batch-size 16 \
-  --json
-```
-
-## Single-Paper Graph Repair
-
-If one already-indexed paper has stale graph content, a bad title, or a parser-correctable snapshot issue, prefer the `refresh_paper_graph` MCP tool.
-Use the dedicated wrapper only in shell-only fallback flows:
-
-```bash
-python3 SKILL/PaperNexusPaperRefresh/scripts/pn_paper_refresh.py \
-  --corpus "<corpus>" \
-  --paper-id "<paper-id>" \
-  --json
-```
-
-Rules:
-
-- use this only for already-indexed papers
-- if many papers changed or the caller wants corpus-wide batch optimization, use `refresh_corpus` instead
-- do not use it as an upload path
-- it refreshes one paper or one duplicate group, not the entire corpus
-- `--source` may be a server PDF path or a server Markdown path; a PDF source reruns the parser path
-- default behavior is to include the canonical duplicate group and rebuild PDF markdown before fast-committing the graph update
-
-## Repo-Local Exception
-
-Repo-local CLI commands are only for isolated development or fixture testing. They are not the control plane for a live user graph.
+Stable shell wrappers remain in `SKILL/PaperNexus/scripts`; specialized wrappers forward here. They are for configured shell clients and local staging, not a reason to reproduce authentication or protocol code.

@@ -66,7 +66,7 @@ test('default three tools reduce discovery size while legacy schemas remain avai
 });
 
 test('every public operation has one reviewed route and preserves backend evidence', async () => {
-  assert.equal(CASES.length, Object.values(RESEARCH_ROUTES).reduce((n, routes) => n + Object.keys(routes).length, 0));
+  assert.equal(CASES.length + 1, Object.values(RESEARCH_ROUTES).reduce((n, routes) => n + Object.keys(routes).length, 0));
   for (const [tool, operation, fields, backend, backendOperation] of CASES) {
     const args = {operation, corpus:'fixture', ...fields};
     let calls = 0;

@@ -1,50 +1,10 @@
 ---
 name: papernexus-main-graph-name
-description: Use when an agent needs to identify the current live PaperNexus corpus name before remote imports, queue inspection, or graph queries.
+description: Compatibility entry for PaperNexusMainGraphName; delegates to the canonical PaperNexus research or maintenance workflow.
 ---
 
-# PaperNexus Main Graph Name
+# PaperNexusMainGraphName compatibility entry
 
-Use this skill when the task is to find the current live PaperNexus graph name over remote HTTP MCP.
-Assume OpenClaw already has a configured PaperNexus MCP server named `papernexus-remote`.
+Read [the canonical workflow](../PaperNexus/references/remote-contract.md) for this task. For research routing start with [PaperNexus Research](../PaperNexus/SKILL.md); do not load unrelated stages.
 
-## Live Graph Policy
-
-- use remote HTTP MCP only
-- do not call raw `/api/*`
-- do not guess the corpus name from local folder names
-
-Preferred path:
-
-- call `list_corpora` on `papernexus-remote`
-- do not repeat IPs, URLs, or bearer tokens in the skill
-
-Shell fallback entry point:
-
-```bash
-python3 SKILL/PaperNexusMainGraphName/scripts/pn_main_graph_name.py \
-  [--corpus "<corpus>"] \
-  [--json]
-```
-
-## Resolution Rules
-
-- if the current session already has an explicit corpus, return that as the current graph name
-- otherwise query remote `list_corpora`
-- if the configured PaperNexus instance has exactly one corpus, return it as the main graph name
-- if the configured PaperNexus instance has multiple corpora, do not guess; return the available names and tell the caller to pass `--corpus`
-
-## Output Contract
-
-Important fields:
-
-- `primaryGraphName`
-- `resolvedBy`
-- `availableCorpora`
-- `message`
-
-Only treat the result as authoritative when:
-
-- `primaryGraphName` is non-empty
-
-If it is empty, the caller must choose a corpus explicitly before running imports or graph queries.
+Existing skill names and scripts remain supported. Shared remote/auth/path/timeout rules are maintained in [one contract](../PaperNexus/references/remote-contract.md). Canonical script implementations live in `SKILL/PaperNexus/scripts`; preserve existing specialized wrappers instead of copying protocol logic.
