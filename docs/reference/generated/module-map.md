@@ -26,6 +26,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/mcp/tool-literature-discovery-progress.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tool-literature-discovery-progress.js) | Tool Literature Discovery Progress implementation. |
 | [`src/mcp/tool-literature-discovery.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tool-literature-discovery.js) | Tool Literature Discovery implementation. |
 | [`src/mcp/tool-research-briefing.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tool-research-briefing.js) | Typed chain and brief retrieval surface for remote callers. |
+| [`src/mcp/tool-research-decision.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tool-research-decision.js) | Tool Research Decision implementation. |
 | [`src/mcp/tool-research-lookup.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tool-research-lookup.js) | Lookup and brainstorming surface for remote callers. |
 | [`src/mcp/tools.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tools.js) | Public MCP tool catalog and input schemas. |
 
@@ -176,6 +177,13 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/materials/research-controller.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/materials/research-controller.js) | Research Controller implementation. |
 | [`src/core/materials/researchstudio-innovation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/materials/researchstudio-innovation.js) | Researchstudio Innovation implementation. |
 | [`src/core/paper-date.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/paper-date.js) | Paper Date implementation. |
+| [`src/core/research/action-policy.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/action-policy.js) | Action Policy implementation. |
+| [`src/core/research/decision-contracts.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-contracts.js) | Decision Contracts implementation. |
+| [`src/core/research/decision-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-evidence.js) | Decision Evidence implementation. |
+| [`src/core/research/decision-service.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-service.js) | Decision Service implementation. |
+| [`src/core/research/decision-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-store.js) | Decision Store implementation. |
+| [`src/core/research/hypothesis-assessment.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/hypothesis-assessment.js) | Hypothesis Assessment implementation. |
+| [`src/core/research/opportunity-memory.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/opportunity-memory.js) | Opportunity Memory implementation. |
 | [`src/core/search/brainstorm-communities.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/search/brainstorm-communities.js) | Brainstorm Communities implementation. |
 | [`src/core/search/search.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/search/search.js) | Query, context, impact, idea, and brainstorming retrieval logic. |
 

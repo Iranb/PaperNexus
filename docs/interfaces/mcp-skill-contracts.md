@@ -4,7 +4,7 @@ This document records the public PaperNexus MCP/SKILL surface that should stay s
 
 ## Stability Rule
 
-The 2026-09-11 workflow migration changes the default **advertised list** to three tools: `literature_review`, `lineage_analysis`, and `idea_generation`. All 23 original names, schemas and direct-call result formats remain supported. `serve.mcp.toolProfile=legacy` or `PAPERNEXUS_MCP_TOOL_PROFILE=legacy` restores the old list; `all` exposes both. This is an intentional tool-discovery change with a compatibility switch, not removal of backend capabilities. Reconnect clients after changing profiles. See [the migration contract](./mcp-three-workflows.md).
+The default **advertised list** has four tools: `literature_review`, `lineage_analysis`, `idea_generation`, and `research_decision`. The decision tool has a separate [versioned state contract](./research-decision.md). All 23 original names, schemas and direct-call result formats remain supported. `serve.mcp.toolProfile=legacy` or `PAPERNEXUS_MCP_TOOL_PROFILE=legacy` restores the old list; `all` exposes both. This is an intentional tool-discovery change with a compatibility switch, not removal of backend capabilities. Reconnect clients after changing profiles. See [the migration contract](./mcp-three-workflows.md).
 
 - Existing MCP tool names remain stable.
 - Existing required arguments remain required with the same meaning.
@@ -14,7 +14,7 @@ The 2026-09-11 workflow migration changes the default **advertised list** to thr
 
 ## Research pipeline refinement (2026-09-22)
 
-`literature_review/capabilities` reports supported workflow operations and advanced proposal requirements. All three research tools accept optional `responseMode=summary` with a 32 KiB JSON display budget; the default remains `full`. Truncated evidence never grants permission to advance. Submission summaries link to existing job status, never a replay of the write.
+`literature_review/capabilities` reports supported workflow operations and advanced proposal requirements. All four research tools accept optional `responseMode=summary` with a 32 KiB JSON display budget; the default remains `full`. Truncated evidence never grants permission to advance. Submission summaries link to existing job status, never a replay of the write.
 
 Material reads now apply the shared research-quality projection. A quarantined paper returns `status=quarantined`, admission reasons and empty evidence, replacing the incorrect `in_graph` classification. Version aliases resolve to the canonical paper while retaining source access. Empty proposal actions return immediate `diagnosis/needs_actions` rather than running empty rounds. See [the pipeline contract and migration guide](../operations/research-pipeline.md).
 
@@ -22,7 +22,7 @@ Skills share three canonical entrypoints: research, ingestion/maintenance and re
 
 ## Public MCP Tools
 
-The generated reference in `docs/reference/generated/mcp-tools.md` documents the three default workflows first, then the legacy/advanced catalog below. `src/mcp/research-workflows.js` owns the new schemas and deterministic routing; `src/mcp/tools.js` remains the legacy schema authority. The original public high-level tools remain:
+The generated reference in `docs/reference/generated/mcp-tools.md` documents the four default workflows first, then the legacy/advanced catalog below. `src/mcp/research-workflows.js` owns the new schemas and deterministic routing; `src/mcp/tools.js` remains the legacy schema authority. The original public high-level tools remain:
 
 | Tool | Contract status |
 |---|---|

@@ -21,6 +21,7 @@ import { executeLiteratureDiscoveryProgressTool } from './tool-literature-discov
 import { executeResearchBriefingTool } from './tool-research-briefing.js';
 import { executeResearchLookupTool } from './tool-research-lookup.js';
 import { RESEARCH_ROUTES, executeResearchWorkflow, listMcpTools, resolveMcpToolProfile } from './research-workflows.js';
+import { executeResearchDecisionTool } from './tool-research-decision.js';
 
 export const SERVER_INFO = {
   name: 'papernexus',
@@ -501,6 +502,7 @@ async function submitMcpCreateCorpusJob(context, executionArgs) {
 }
 
 export async function executeTool(name, args, options = {}) {
+  if (name === 'research_decision') return executeResearchDecisionTool(args, options);
   if (Object.hasOwn(RESEARCH_ROUTES, name)) {
     return executeResearchWorkflow(name, args, options, executeTool);
   }

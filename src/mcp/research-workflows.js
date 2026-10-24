@@ -3,6 +3,8 @@ import { PAPERNEXUS_TOOLS } from './tools.js';
 import { loadDiscoveryRun } from '../core/discovery/store.js';
 import { submitDiscoveryImports } from '../core/discovery/import-bridge.js';
 import { resolveCorpusForApi } from '../server/api.js';
+import { RESEARCH_DECISION_TOOL } from './tool-research-decision.js';
+import { OPERATIONS as DECISION_OPERATIONS, DECISION_VERSION } from '../core/research/decision-contracts.js';
 
 export const RESEARCH_WORKFLOW_VERSION = 'papernexus-research-tools-v1';
 
@@ -150,8 +152,8 @@ export function resolveMcpToolProfile(options = {}) {
 export function listMcpTools(options = {}) {
   const profile = resolveMcpToolProfile(options);
   if (profile === 'legacy') return PAPERNEXUS_TOOLS;
-  if (profile === 'all') return [...RESEARCH_TOOLS, ...PAPERNEXUS_TOOLS];
-  return RESEARCH_TOOLS;
+  if (profile === 'all') return [...RESEARCH_TOOLS, RESEARCH_DECISION_TOOL, ...PAPERNEXUS_TOOLS];
+  return [...RESEARCH_TOOLS, RESEARCH_DECISION_TOOL];
 }
 
 function validValue(value, schema) {
@@ -342,7 +344,8 @@ export function researchCapabilities(options = {}) {
   return {
     contractVersion: RESEARCH_WORKFLOW_VERSION,
     advertisedProfile: resolveMcpToolProfile(options),
-    workflows: Object.fromEntries(Object.entries(RESEARCH_ROUTES).map(([name, routes]) => [name, Object.keys(routes)])),
+    workflows: { ...Object.fromEntries(Object.entries(RESEARCH_ROUTES).map(([name, routes]) => [name, Object.keys(routes)])), research_decision: DECISION_OPERATIONS },
+    researchDecision: { contractVersion: DECISION_VERSION, stateAuthority: 'project/research-decision-state.json', executionAuthority: 'external_executor', writesRequire: ['requestId', 'expectedRevision (except init)'] },
     responseModes: ['full', 'summary'], summaryMaxBytes: RESEARCH_SUMMARY_MAX_BYTES,
     advanced: { tool: 'agent_materials', operations: ['proposal_graph_session', 'research_controller'],
       profileHint: 'Legacy names remain callable; clients needing schema discovery can use the all or legacy profile.',

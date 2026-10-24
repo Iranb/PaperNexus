@@ -71,6 +71,7 @@ function sidebarInterfaces() {
       items: [
         { text: 'Interfaces Overview', link: '/interfaces/' },
         { text: 'MCP And Skill Contracts', link: '/interfaces/mcp-skill-contracts' },
+        { text: 'Research Decision Contract', link: '/interfaces/research-decision' },
         { text: 'Remote Import And Skills', link: '/interfaces/remote-import-and-skills' }
       ]
     }
@@ -106,7 +107,8 @@ function sidebarOperations() {
     {
       text: 'Operations',
       items: [
-        { text: 'Operations Overview', link: '/operations/' }
+        { text: 'Operations Overview', link: '/operations/' },
+        { text: 'Research Decision Loop', link: '/operations/research-decision-loop' }
       ]
     }
   ];

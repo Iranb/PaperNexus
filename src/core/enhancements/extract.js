@@ -624,7 +624,9 @@ function buildReflectionOverlay({ semanticPaper, parsedPaper, graph }) {
         ? `This suggests the proposed approach breaks under at least one tested setting and needs tighter boundary assumptions.`
         : sourceOutcome.verdict === 'mixed'
           ? `This suggests the paper's main idea works with trade-offs and should be reused with attention to context-specific limits.`
-          : `This suggests the paper's main idea is supported in the reported setting, but its transfer conditions should still be checked.`, {
+          : sourceOutcome.verdict === 'success'
+            ? `This suggests the paper's main idea is supported in the reported setting, but its transfer conditions should still be checked.`
+            : `The reported outcome is inconclusive. Additional measurements or controls are needed to distinguish the possible explanations.`, {
         paperId,
         sectionHeading: sourceOutcome.sectionHeading || '',
         sectionRole: sourceOutcome.sectionRole || '',

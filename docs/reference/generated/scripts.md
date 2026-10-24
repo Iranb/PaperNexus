@@ -13,6 +13,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexus/scripts/pn_import_submit.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_import_submit.py) | Canonical skill wrapper for remote import submission. |
 | [`SKILL/PaperNexus/scripts/pn_paper_index.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_paper_index.py) | Skill wrapper for precise paper lookup by DOI, arXiv ID, source key, title, or canonical id. |
 | [`SKILL/PaperNexus/scripts/pn_research_chains.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_research_chains.py) | Canonical skill wrapper for evidence, reflection, and research brief retrieval. |
+| [`SKILL/PaperNexus/scripts/pn_research_decision.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_research_decision.py) | Pn Research Decision implementation. |
 | [`SKILL/PaperNexus/scripts/pn_resilient_discovery.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_resilient_discovery.py) | Pn Resilient Discovery implementation. |
 | [`SKILL/PaperNexus/scripts/pn_stage_sync.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/scripts/pn_stage_sync.py) | Canonical skill wrapper for staging local files to a remote PaperNexus server. |
 | [`SKILL/PaperNexusAgenticReasoning/scripts/pn_batch_import.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusAgenticReasoning/scripts/pn_batch_import.py) | Skill wrapper for manifest-based multi-paper import submission, status, and wait workflows. |
@@ -43,6 +44,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/diagnose-graph-identity.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/diagnose-graph-identity.mjs) | Diagnose Graph Identity implementation. |
 | [`scripts/docling_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/docling_to_markdown.py) | Docling To Markdown implementation. |
 | [`scripts/evaluate-graph-link-prediction.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/evaluate-graph-link-prediction.mjs) | Evaluate Graph Link Prediction implementation. |
+| [`scripts/evaluate-research-decisions.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/evaluate-research-decisions.mjs) | Evaluate Research Decisions implementation. |
 | [`scripts/generate-docs-reference.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/generate-docs-reference.mjs) | Generate VitePress reference pages from code, config, and repository structure. |
 | [`scripts/generate-graph-ablation-artifact-contract.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/generate-graph-ablation-artifact-contract.mjs) | Generate Graph Ablation Artifact Contract implementation. |
 | [`scripts/generate-graph-quality-report.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/generate-graph-quality-report.mjs) | Generate Graph Quality Report implementation. |
