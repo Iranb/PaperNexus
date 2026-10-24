@@ -9,7 +9,7 @@ Plan review: `.agent/plans/2026-10-24-papernexus-research-decision-loop-review.m
 
 本文是持续维护的执行契约。实施者只需当前仓库和本文即可继续，不依赖聊天记录。仓库未发现 `PLANS.md`。每个里程碑后更新 Progress、Surprises & Discoveries、Decision Log、Artifacts and Notes、Outcomes & Retrospective，按依赖顺序完成后续工作。
 
-当前授权包括按本计划实施、提交 GitHub 并合并 main。用户另授权以真实 AutoResearch 项目验证研究推进，问题参考会话 01a10f21-8c1f-7040-9e2a-b9cfe4755e96；可使用 SSH/HPC，新增 GPU 总预算 100 小时。生产服务部署不在本次授权内。真实验证使用独立单元，保留原项目执行与预算权威。
+当前授权包括按本计划实施、提交 GitHub 并合并 main。用户另授权以真实 AutoResearch 项目验证研究推进，问题使用用户指定的 05-ML-CGCD 项目；可使用 SSH/HPC，新增 GPU 总预算 100 小时。生产服务部署不在本次授权内。真实验证使用独立单元，保留原项目执行与预算权威。
 
 ## Purpose / Big Picture
 
@@ -33,8 +33,8 @@ PaperNexus 负责证据组织、假设与行动记录、可复核的条件判断
 - [x] M4：交付多来源机会记忆、补证请求和条件触发的候选重访。
 - [x] M5：完成 AutoResearch 交接、完整 MCP/脚本体验、文档与恢复演练。
 - [x] M6：完成离线行为评测、兼容性回归和最终代码审查；记录能力与有效性边界。
-- [ ] M7：完成真实 AutoResearch 的完整测试集补证分析、回执、评估与下一步建议；单独报告新增 GPU 消耗。
-- [ ] 发布：提交任务文件、创建 GitHub PR、合并 main 并核对远端提交。
+- [x] M7：完成真实 AutoResearch 的完整测试集补证分析、HTTP MCP 回执、评估与下一步建议；新增 GPU 消耗为 0。
+发布记录：[PR #2](https://github.com/Iranb/PaperNexus/pull/2)。合并状态与 main 提交以 GitHub 回执为准。
 
 ## Context and Orientation
 
@@ -570,3 +570,5 @@ M0—M5 已交付 10 个 operation、不可变版本、原子回执、来源失�
 离线评测 seed=17，16 个 GCD/检索案例全部通过；错误排除、不可比提升、重复计费、预算违规、无效重复行动均为 0，条件触发重访 16 次，未解决案例 10 个。未解决结果保留不确定性。候选优先级基线与策略读取相同计划和成本；基线没有对应模拟运行结果，不能建立实际成本节约比较。完整证据位于 `.agent/reports/2026-10-24-research-decision-loop/`；复现命令见 operating guide。
 
 真实验证选用 05-ML-CGCD 的已验收 VOC2007 10+10、H1/EWB/POS/SWAP、seed 0 完整实验。四组已完成 100+30 epochs 和 2,030 次更新，原成本 1.6375 GPUh。新增行动为对全部 4,952 个唯一测试图像执行固定预测的配对 bootstrap，补充点估计缺少的不确定区间。保留原训练的回顾性边界，不把重新分析日期视为事前训练登记；不重复原会话正在执行的 36 组复测。
+
+M7 实际验证已通过：对全部 4,952 个唯一测试图像完成 5,000 次配对 bootstrap，固定原模型、指标和 calibration 类别映射。真实 HTTP MCP 先登记并选择补证行动，再接收实际分析 manifest、评估、推荐与导出。原效果假设为 weakened_in_scope，小幅差异解释为 compatible；所有确认性 gate 均为 false，没有将回顾性固定单 seed 结果升级为 excluded_in_scope。下一步为 needs_input，要求原项目已存在的三 seed/参数复测经其 owner 验收后再回流；重复 refresh 未触发无条件重访。新增计算 0.006056 CPUh、0 GPUh，剩余新增 GPU 预算 100h；历史训练成本不重复记账。实际项目目录 `experiments/papernexus_decision_validation_v1/` 保存 PLAN、MCP_TRACE、RUN_MANIFEST、ANALYSIS、STATISTICAL_REVIEW、VALIDATION、REPORT 和原始重采样数据。真实结果与数据保留在原项目。
