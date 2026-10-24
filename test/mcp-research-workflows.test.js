@@ -40,11 +40,11 @@ const CASES = [
   ['idea_generation', 'experiment_materials', {query:'feedback'}, 'agent_materials', 'experiment_cost_materials']
 ];
 
-test('default three tools reduce discovery size while legacy schemas remain available', async () => {
-  assert.deepEqual(listMcpTools({toolProfile:'research'}).map((tool) => tool.name), ['literature_review','lineage_analysis','idea_generation']);
+test('default four research tools preserve the three source workflows and legacy schemas', async () => {
+  assert.deepEqual(listMcpTools({toolProfile:'research'}).map((tool) => tool.name), ['literature_review','lineage_analysis','idea_generation','research_decision']);
   assert.equal(listMcpTools({toolProfile:'legacy'}), PAPERNEXUS_TOOLS);
   assert.equal(PAPERNEXUS_TOOLS.length, 23);
-  assert.equal(listMcpTools({toolProfile:'all'}).length, 26);
+  assert.equal(listMcpTools({toolProfile:'all'}).length, 27);
   assert.ok(Buffer.byteLength(JSON.stringify(RESEARCH_TOOLS)) < Buffer.byteLength(JSON.stringify(PAPERNEXUS_TOOLS)) / 2);
   const oldEnv = process.env.PAPERNEXUS_MCP_TOOL_PROFILE;
   try {
@@ -173,7 +173,7 @@ test('three real graph workflows retain results and leave graph bytes unchanged'
   } finally { await fs.rm(root,{recursive:true,force:true}); }
 });
 
-test('HTTP exposes three tools, executes each workflow, and still accepts legacy calls', {timeout:30000}, async () => {
+test('HTTP exposes four tools, executes source workflows, and still accepts legacy calls', {timeout:30000}, async () => {
   const {root} = await fixture();
   const server = http.createServer((request,response) => {
     void handleMcpHttpRequest(request,response,{toolProfile:'research'}).catch(() => response.destroy());
@@ -189,7 +189,7 @@ test('HTTP exposes three tools, executes each workflow, and still accepts legacy
     return response.json();
   };
   try {
-    assert.equal((await rpc('tools/list',{})).result.tools.length,3);
+    assert.equal((await rpc('tools/list',{})).result.tools.length,4);
     for (const [name,operation] of [['literature_review','search'],['lineage_analysis','overview'],['idea_generation','generate']]) {
       const response = await rpc('tools/call',{name,arguments:{operation,corpus:root,query:'feedback'}});
       assert.equal(JSON.parse(response.result.content[0].text).tool,name);
@@ -223,7 +223,7 @@ test('stdio uses the same default list and canonical prompts; legacy profile res
   try {
     const body=JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list',params:{}});
     child.stdin.write('Content-Length: '+Buffer.byteLength(body)+'\r\n\r\n'+body);
-    assert.deepEqual((await response).result.tools.map((tool)=>tool.name),RESEARCH_TOOLS.map((tool)=>tool.name));
+    assert.deepEqual((await response).result.tools.map((tool)=>tool.name),listMcpTools({toolProfile:'research'}).map((tool)=>tool.name));
     const modern=await handleMessage({method:'prompts/get',params:{name:'brainstorm_topic'}},{toolProfile:'research'});
     assert.match(modern.messages[0].content.text,/idea_generation/);
     const legacy=await handleMessage({method:'prompts/get',params:{name:'brainstorm_topic'}},{toolProfile:'legacy'});

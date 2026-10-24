@@ -1,12 +1,13 @@
-# Three research workflows and MCP migration
+# Research workflows and MCP migration
 
-PaperNexus now organizes its default MCP tool list by research task. The original 23 tools combined atomic graph actions, aggregate lookups, report formats, materials, queue control and runtime maintenance. The same search or brainstorming capability could appear in several tools. The new default is three entry points with operation-specific schemas and validation.
+PaperNexus now organizes its default MCP tool list by research task. The original 23 tools combined atomic graph actions, aggregate lookups, report formats, materials, queue control and runtime maintenance. The same search or brainstorming capability could appear in several tools. The default is four entry points with operation-specific schemas and validation.
 
 | User task | Default tool | Operations |
 | --- | --- | --- |
 | Find and understand papers | `literature_review` | corpora, status, sources, search, paper, survey, discover, discovery_status, discovery_report, import, import_status |
 | Analyze research lineage | `lineage_analysis` | overview, problem, method, evidence, path, context, impact |
 | Generate and assess ideas | `idea_generation` | generate, diverge, converge, gaps, evaluate, experiment_materials |
+| Decide from experimental feedback | `research_decision` | init, status, register_hypotheses, register_actions, record_run, assess_results, recommend_next, update_opportunities, refresh_evidence, export |
 
 ## How capabilities were merged
 
@@ -16,7 +17,7 @@ PaperNexus now organizes its default MCP tool list by research task. The origina
 
 `ideas`, `brainstorm`, `idea_catalyst` and innovation material packs move to `idea_generation`. `generate` uses graph ideas by default and cross-domain catalyst when `targetDomain` is supplied. `diverge` and `converge` express the two brainstorming stages. `gaps` compiles structural gaps; `evaluate` requires a concrete `candidateMechanism` and returns prior-art/evidence checks. `experiment_materials` collects source-backed experimental and cost anchors; it does not execute or complete an experiment.
 
-Runtime initialization, corpus creation/refresh, raw graph mutation, overlay editing, evidence-cart persistence and the research controller remain advanced operations. They are available through their unchanged old tool names in the legacy/all catalog. They are not hidden arbitrary subcommands inside the three research tools.
+Runtime initialization, corpus creation/refresh, raw graph mutation, overlay editing, evidence-cart persistence and the research controller remain advanced operations. They are available through their unchanged old tool names in the legacy/all catalog. They are not hidden arbitrary subcommands inside the original three research tools. Project decision state has its own explicit [research_decision contract](./research-decision.md).
 
 ## Normal research flow
 
@@ -54,7 +55,7 @@ The async job completing means the submission finished. It does not prove the pa
 
 ## Response contract
 
-New tools return a JSON object in the existing MCP text content format:
+The original three workflow tools return a JSON object in the existing MCP text content format:
 
     {
       "contractVersion":"papernexus-research-tools-v1",
@@ -72,7 +73,7 @@ Generated candidates, bounded frontiers, lexical collision checks and novelty au
 
 ## Compatibility and rollout
 
-`research` is the default advertised list of 3 tools. `legacy` restores the original 23 tools. `all` lists 26 tools. Old tool names remain callable under every profile; this setting is not an access-control mechanism. Existing Python wrappers retain their entrypoints and payloads.
+`research` is the default advertised list of 4 tools. `legacy` restores the original 23 tools. `all` lists 27 tools. Old tool names remain callable under every profile; this setting is not an access-control mechanism. Existing Python wrappers retain their entrypoints and payloads.
 
 Selection precedence is explicit server options, `PAPERNEXUS_MCP_TOOL_PROFILE`, `serve.mcp.toolProfile`, then `research`. HTTP and stdio use the same dispatcher. For runtime configuration:
 

@@ -6,10 +6,18 @@ const bytes = value => Buffer.byteLength(JSON.stringify(value, null, 2));
 const important = /^(status|final_status|input_status|paper|paper_id|id|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked)$/;
 
 export function summarizeResearchEnvelope(envelope, args = {}) {
+  const decisionTool = envelope.tool === 'research_decision';
+  const decisionWrite = decisionTool && ['project_state_write', 'dry_run'].includes(envelope.evidenceBoundary?.basis);
+  const decisionReadMore = { tool: 'research_decision', arguments: {
+    operation: 'status', ...(args.corpus ? { corpus: args.corpus } : {}), project: args.project,
+    ...(decisionWrite && !args.dryRun ? { requestId: args.requestId } : {}), responseMode: 'full'
+  } };
   const submitted = ['discovery_submit', 'import_submit'].includes(envelope.evidenceBoundary?.basis);
   const reconcile = (envelope.nextActions || []).find(action =>
     action.tool === 'literature_review' && ['discovery_status', 'discovery_report', 'import_status'].includes(action.arguments?.operation));
-  const readMore = submitted
+  const readMore = decisionWrite ? decisionReadMore : decisionTool && envelope.operation === 'export'
+    ? { tool: 'research_decision', arguments: { operation: 'export', ...(args.corpus ? { corpus: args.corpus } : {}), project: args.project, ...(args.assessmentId ? { assessmentId: args.assessmentId } : {}), responseMode: 'full' } }
+    : submitted
     ? reconcile ? { ...reconcile, arguments: { ...reconcile.arguments, responseMode: 'full' } }
       : { instruction: 'Inspect the existing discovery/import job records before any retry. Do not repeat the submission to expand this summary.' }
     : { tool: envelope.tool, arguments: { ...args, responseMode: 'full' } };
@@ -41,14 +49,15 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
   const result = project(envelope.result);
   // Keep root evidence gates exact when small; never infer permission from omitted fields.
   const gates = {};
-  for (const key of ['evidence_sufficiency', 'source_admission']) {
+  for (const key of ['evidence_sufficiency', 'source_admission', 'assessment_gate', 'budget_gate', 'execution_authority', 'based_on_revision']) {
     const value = envelope.result?.[key] ?? envelope.result?.paper?.[key];
-    if (value && bytes(value) <= 4000) gates[key] = value;
+    if (value !== undefined && bytes(value) <= 4000) gates[key] = value;
   }
+  if (decisionTool && result && typeof result === 'object') Object.assign(result, gates);
   const summary = {
     mode: 'summary', max_bytes: RESEARCH_SUMMARY_MAX_BYTES,
     full_result_bytes: Buffer.byteLength(serialized),
-    full_result_sha256: createHash('sha256').update(serialized).digest('hex'),
+    ...(!decisionTool ? { full_result_sha256: createHash('sha256').update(serialized).digest('hex') } : {}),
     complete: omitted.length === 0, omitted_paths: omitted,
     decision_authority: 'Original backend gates only. Omitted, null or shortened evidence is unknown, never permission to advance or claim novelty.',
     evidence_gates: gates,
@@ -61,7 +70,7 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
     output.nextActions = [];
     summary.complete = false;
     summary.omitted_paths = ['result'];
-    summary.read_more = submitted
+    summary.read_more = decisionTool ? decisionReadMore : submitted
       ? { instruction: 'Inspect the existing discovery/import job records before any retry. Do not repeat the submission to expand this summary.' }
       : { tool: envelope.tool, operation: envelope.operation, responseMode: 'full', instruction: 'Repeat the original request with responseMode=full.' };
   }

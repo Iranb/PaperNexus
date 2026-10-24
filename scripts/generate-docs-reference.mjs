@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { PAPERNEXUS_TOOLS } from '../src/mcp/tools.js';
 import { RESEARCH_TOOLS, RESEARCH_ROUTES } from '../src/mcp/research-workflows.js';
+import { RESEARCH_DECISION_TOOL } from '../src/mcp/tool-research-decision.js';
 import { EDGE_TYPES, GRAPH_LAYERS, NODE_TYPES, NODE_TYPE_TO_LAYER } from '../src/core/graph/schema.js';
 import { RELATION_COMPATIBILITY_RULES } from '../src/core/graph/rules.js';
 
@@ -682,17 +683,18 @@ const MCP_TOOL_EXAMPLES = {
 };
 
 function renderMcpReference() {
-  const catalog = [...RESEARCH_TOOLS, ...PAPERNEXUS_TOOLS];
+  const researchTools = [...RESEARCH_TOOLS, RESEARCH_DECISION_TOOL];
+  const catalog = [...researchTools, ...PAPERNEXUS_TOOLS];
   const sections = [
     heading('MCP Tool Reference'),
-    'The default research profile advertises only literature_review, lineage_analysis, and idea_generation. Set PAPERNEXUS_MCP_TOOL_PROFILE=legacy or serve.mcp.toolProfile=legacy to restore the original 23-tool list; all lists both surfaces. Reconnect clients after a profile change. Old tool names remain callable in every profile. Profiles control discovery, not authorization. See [migration and task routing](../../interfaces/mcp-three-workflows).\n',
+    'The default research profile advertises literature_review, lineage_analysis, idea_generation, and research_decision. Set PAPERNEXUS_MCP_TOOL_PROFILE=legacy or serve.mcp.toolProfile=legacy to restore the original 23-tool list; all lists 27 tools. Reconnect clients after a profile or server update. Old tool names remain callable in every profile. Profiles control discovery, not authorization. See [migration and task routing](../../interfaces/mcp-three-workflows) and [research decisions](../../interfaces/research-decision).\n',
     `This page is generated from ${repoFileLink('src/mcp/research-workflows.js')} and ${repoFileLink('src/mcp/tools.js')}. It documents the public MCP surface that remote and local clients should rely on.\n`,
     heading('How To Read This Page', 2),
     'Each tool section lists the tool purpose first, followed by every currently exposed input field from the JSON schema and one or more copyable JSON payload examples. Nested fields use dot notation, and array item fields use `[]`, for example `operations[].action` or `llm.provider`. Fields marked `required in parent` are required only when their containing object or array item is provided.\n',
     heading('Default Research Tools', 2),
     renderTable(
       ['Tool', 'Description'],
-      RESEARCH_TOOLS.map((tool) => ['[' + tool.name + '](#tool-' + tool.name + ')', tool.description])
+      researchTools.map((tool) => ['[' + tool.name + '](#tool-' + tool.name + ')', tool.description])
     ),
     heading('Legacy And Advanced Tool Index', 2),
     renderTable(

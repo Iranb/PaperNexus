@@ -330,15 +330,16 @@ http://<host>:4821/mcp
 Authorization: Bearer <token>
 ```
 
-The default MCP profile exposes three research workflows:
+The default MCP profile exposes four research workflows:
 
 | Tool | Purpose |
 |------|---------|
 | `literature_review` | Find and read papers, assemble surveys, explicitly discover/import sources, and track their status |
 | `lineage_analysis` | Topic and problem evolution, validated method lineage, source evidence, graph paths and impact |
 | `idea_generation` | Generate/diverge/converge hypotheses, inspect gaps, evaluate a mechanism, and collect experiment materials |
+| `research_decision` | Register predictions and actions, assess external results, track budgets and revisit research opportunities |
 
-For example, call `literature_review` with `operation=search` and a `query`, then `lineage_analysis` with `operation=overview`, and `idea_generation` with `operation=generate`. Source discovery and import require their explicit operations. Generated ideas remain hypotheses.
+For example, call `literature_review` with `operation=search` and a `query`, then `lineage_analysis` with `operation=overview`, and `idea_generation` with `operation=generate`. Source discovery and import require their explicit operations. Generated ideas remain hypotheses. Use [the research decision loop](docs/operations/research-decision-loop.md) to connect registered predictions, external results and the next action.
 
 All original 23 tool names remain callable. Set `serve.mcp.toolProfile` or `PAPERNEXUS_MCP_TOOL_PROFILE` to `legacy` to restore their original listing, or `all` to expose both sets and advanced maintenance/controller tools. Reconnect the client after changing the profile. Profiles organize discovery; they do not restrict permissions. See the [operation mapping and migration guide](docs/interfaces/mcp-three-workflows.md).
 

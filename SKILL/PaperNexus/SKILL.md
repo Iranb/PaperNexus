@@ -28,6 +28,7 @@ Depth controls work budget, not claim truth. Missing evidence limits the conclus
 | Find, select, read or compare papers | [Literature](references/literature.md) | `literature_review` |
 | Explain methods, assumptions, evidence or evolution | [Analysis](references/analysis.md) | `lineage_analysis` |
 | Generate, contrast or reject a hypothesis | [Ideation](references/ideation.md) | `idea_generation` |
+| Register predictions, assess results and choose the next action | [Decision loop](references/research-decision.md) | `research_decision` |
 | Action-driven proposals and AutoResearch handoff | [Advanced](references/advanced.md), [adapter](references/autoresearch-adapter.md) | feature-detected `agent_materials` |
 | Upload, refresh or repair corpus files | [Maintenance skill](../PaperNexusMaintenance/SKILL.md) | explicit discovery/import/maintenance operations |
 | Analyze actual experiment outcomes | [Reflection skill](../PaperNexusReflection/SKILL.md) | evidence and reflection reads |

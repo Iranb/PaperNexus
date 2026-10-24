@@ -352,3 +352,7 @@ plans remain user decision artifacts and are not final research directions or
 executable run instructions. `validate_gcd_mvp` can be called at any time after
 initialization, but a passing local report is still not a substitute for a
 successful MCP-smoke criterion in `gcd-mvp-validation.json`.
+
+## Experimental feedback
+
+Use [research_decision](../interfaces/research-decision.md) to connect existing controller candidates to registered predictions, external results and budget decisions. Its refresh reads candidate-graph records and preserves their original fields; it does not rewrite controller selections or treat preference scores as scientific probabilities.

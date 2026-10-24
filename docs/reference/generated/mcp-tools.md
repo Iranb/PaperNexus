@@ -1,6 +1,6 @@
 # MCP Tool Reference
 
-The default research profile advertises only literature_review, lineage_analysis, and idea_generation. Set PAPERNEXUS_MCP_TOOL_PROFILE=legacy or serve.mcp.toolProfile=legacy to restore the original 23-tool list; all lists both surfaces. Reconnect clients after a profile change. Old tool names remain callable in every profile. Profiles control discovery, not authorization. See [migration and task routing](../../interfaces/mcp-three-workflows).
+The default research profile advertises literature_review, lineage_analysis, idea_generation, and research_decision. Set PAPERNEXUS_MCP_TOOL_PROFILE=legacy or serve.mcp.toolProfile=legacy to restore the original 23-tool list; all lists 27 tools. Reconnect clients after a profile or server update. Old tool names remain callable in every profile. Profiles control discovery, not authorization. See [migration and task routing](../../interfaces/mcp-three-workflows) and [research decisions](../../interfaces/research-decision).
 
 This page is generated from [`src/mcp/research-workflows.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/research-workflows.js) and [`src/mcp/tools.js`](https://github.com/Iranb/PaperNexus/blob/main/src/mcp/tools.js). It documents the public MCP surface that remote and local clients should rely on.
 
@@ -15,6 +15,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 | [literature_review](#tool-literature_review) | capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
 | [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
 | [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains. |
+| [research_decision](#tool-research_decision) | Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts, assess explanations within their protocol, recommend discriminating actions under actual resource costs, and revisit parked opportunities. init/register/record/assess/update/refresh write only project state; status/recommend read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId). |
 
 ## Legacy And Advanced Tool Index
 
@@ -255,6 +256,38 @@ Generate and evaluate research hypotheses from committed sources: generate retur
   "candidateMechanism": "Calibrate feedback confidence before control updates"
 }
 ```
+
+## Tool: research_decision
+
+<a id="tool-research_decision"></a>
+
+**Area:** Other
+
+**Required top-level arguments:** `operation`, `project`
+
+### Function
+
+Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts, assess explanations within their protocol, recommend discriminating actions under actual resource costs, and revisit parked opportunities. init/register/record/assess/update/refresh write only project state; status/recommend read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId).
+
+### Parameters
+
+| Field | Required | Type | Description |
+| --- | --- | --- | --- |
+| `operation` | required | string (init, register_hypotheses, register_actions, record_run, assess_results, update_opportunities, refresh_evidence, status, recommend_next, export) | Allowed values: `init`, `register_hypotheses`, `register_actions`, `record_run`, `assess_results`, `update_opportunities`, `refresh_evidence`, `status`, `recommend_next`, `export`. |
+| `corpus` | optional | string |  |
+| `project` | required | string |  |
+| `requestId` | optional | string |  |
+| `expectedRevision` | optional | integer |  |
+| `responseMode` | optional | string (full, summary) | Allowed values: `full`, `summary`. |
+| `dryRun` | optional | boolean |  |
+| `payload` | optional | object |  |
+| `entityId` | optional | string |  |
+| `assessmentId` | optional | string |  |
+| `outputDir` | optional | string |  |
+
+### Examples
+
+No curated examples are defined for this entry yet.
 
 ## Tool: list_corpora
 

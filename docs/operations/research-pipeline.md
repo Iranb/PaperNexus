@@ -2,9 +2,9 @@
 
 PaperNexus supplies literature and source evidence. The calling research agent owns hypotheses and scientific judgment; AutoResearch retains experiment and project-state authority. A committed proposal is not a novelty certificate or a measured improvement.
 
-## Three research tools
+## Four research tools
 
-Deploy the complete application version and reconnect the MCP client. The default `research` profile advertises `literature_review`, `lineage_analysis`, `idea_generation`. Existing legacy names remain callable; clients needing their schemas can use `legacy` or `all`. `literature_review` with `operation=capabilities` reports actual workflow operations, contract version, presentation modes and advanced proposal requirements without reading a corpus or using the network.
+Deploy the complete application version and reconnect the MCP client. The default `research` profile advertises `literature_review`, `lineage_analysis`, `idea_generation`, and `research_decision`. The [decision loop](./research-decision-loop.md) records hypotheses, external results and budgets without taking over job execution. Existing legacy names remain callable; clients needing their schemas can use `legacy` or `all`. `literature_review` with `operation=capabilities` reports actual workflow operations, contract version, presentation modes and advanced proposal requirements without reading a corpus or using the network.
 
 An older server advertising only 23 tools does not implement these new routes. Detect operations from the server, not from locally installed skill text. Never rely on unknown fields being accepted by a legacy tool.
 
@@ -18,7 +18,7 @@ Material context reuse is scoped to one read-only pack request. There is no pers
 
 ## Bounded presentation
 
-The three research tools accept `responseMode=full|summary`, default `full` for compatibility. Summary is an opt-in preview with a 32 KiB UTF-8 budget for the pretty-printed workflow JSON envelope. MCP transport framing and escaping add bytes outside this envelope. It preserves small root admission/sufficiency gates, records the full-result size/hash, identifies omissions and supplies full-read instructions. It does not reduce the evidence retrieval computation or certify a complete review.
+All four research tools accept `responseMode=full|summary`, default `full` for compatibility. Summary is an opt-in preview with a 32 KiB UTF-8 budget for the pretty-printed workflow JSON envelope. MCP transport framing and escaping add bytes outside this envelope. It preserves small root admission/sufficiency gates, records the full-result size (and the original three workflows’ response digest), identifies omissions and supplies full-read instructions. It does not reduce the evidence retrieval computation or certify a complete review.
 
 Null or omitted evidence is unknown. The caller must not infer permission from a truncated gate or missing risk. Use exact `paper`, `evidence` and source spans for claim-bearing details. Read `presentation.read_more`; do not replay a discovery/import submission just to obtain full output—read its saved report/status instead. Responses with mutable timestamps can have different hashes between calls; the digest identifies the exact response content, not a stable corpus snapshot.
 
@@ -26,15 +26,15 @@ Null or omitted evidence is unknown. The caller must not infer permission from a
 
 `agent_materials/proposal_graph_session` accepts caller-supplied `proposalActions` or `proposalSlates`. A request containing only problem/evidenceRefs returns `final_status=diagnosis`, `input_status=needs_actions`, `round_count=0` and required inputs. It makes no model call or artifact write. Empty flat or round-indexed slates follow the same zero-round path. The response retains the initial graph, validation report, empty decision/trace arrays and nullable artifact fields. Malformed slate structures return an input error. The existing action validation/commit path remains available.
 
-The caller constructs grounded candidate actions, then the service validates structure, risks and evaluation readiness. See [the action guide](../../SKILL/PaperNexus/references/advanced.md). Do not repeatedly run the proposal validator, research_controller and an ideation panel as three redundant generators. A connected, committed graph still needs independent source-backed semantic review.
+The caller constructs grounded candidate actions, then the service validates structure, risks and evaluation readiness. See [the action guide](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/references/advanced.md). Do not repeatedly run the proposal validator, research_controller and an ideation panel as three redundant generators. A connected, committed graph still needs independent source-backed semantic review.
 
 Keyword collision only flags a candidate prior. Respect `mechanism_collision_audit.semantic_equivalence_checked=false` and `novelty_claim_allowed=false` even if other coverage fields are sufficient. Compare precise assumptions, interventions and predicted effects before judging novelty.
 
 ## Skills and project handoff
 
-The primary entrypoints are [research](../../SKILL/PaperNexus/SKILL.md), [ingestion and maintenance](../../SKILL/PaperNexusMaintenance/SKILL.md) and [reflection](../../SKILL/PaperNexusReflection/SKILL.md). Old skill names and script paths remain forwarding compatibility entrypoints. Stage details and remote rules are loaded on demand.
+The primary entrypoints are [research](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/SKILL.md), [ingestion and maintenance](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusMaintenance/SKILL.md) and [reflection](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusReflection/SKILL.md). Old skill names and script paths remain forwarding compatibility entrypoints. Stage details and remote rules are loaded on demand.
 
-[AutoResearch adaptation](../../SKILL/PaperNexus/references/autoresearch-adapter.md) explains evidence reuse and state ownership. Quick standalone questions do not initialize a full project. Deep selected ideas retain the project's reading, breadth, protocol and evidence gates; this migration does not replace their validators.
+[AutoResearch adaptation](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexus/references/autoresearch-adapter.md) explains evidence reuse and state ownership. Quick standalone questions do not initialize a full project. Deep selected ideas retain the project's reading, breadth, protocol and evidence gates; this migration does not replace their validators.
 
 ## Acceptance and rollback
 
