@@ -1,6 +1,6 @@
 # Field research acceptance
 
-Date: 2026-10-25. Feature branch: `codex/field-evolution-research`.
+Date: 2026-10-25. Feature branch: `codex/field-evolution-research`. Local `main` contains implementation `496f3f5` and integration `dd2bbc8`.
 
 The browser's **Research and build map** runs bounded literature discovery, missing-paper import, configured relation extraction, graph synchronization and field evolution analysis. **Map existing corpus** remains a committed-evidence read. HTTP and MCP use the same durable coordination service.
 
