@@ -26,6 +26,7 @@ const CASES = [
   ['literature_review', 'import', {serverFilePath:'/tmp/paper.pdf'}, 'import_workflow', 'submit'],
   ['literature_review', 'import_status', {taskId:'task-1'}, 'import_workflow', 'status'],
   ['lineage_analysis', 'overview', {}, 'research_lookup', 'topic_analysis'],
+  ['lineage_analysis', 'landscape', {query:'feedback'}, 'research_lookup', 'field_evolution'],
   ['lineage_analysis', 'problem', {query:'feedback'}, 'research_lookup', 'problem_evolution'],
   ['lineage_analysis', 'method', {method:'m2'}, 'research_lookup', 'method_lineage'],
   ['lineage_analysis', 'evidence', {edgeId:'evolution'}, 'research_lookup', 'method_evidence'],

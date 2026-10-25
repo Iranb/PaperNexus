@@ -108,6 +108,7 @@ function sidebarOperations() {
       text: 'Operations',
       items: [
         { text: 'Operations Overview', link: '/operations/' },
+        { text: 'Field Evolution Map', link: '/operations/field-evolution' },
         { text: 'Research Decision Loop', link: '/operations/research-decision-loop' }
       ]
     }

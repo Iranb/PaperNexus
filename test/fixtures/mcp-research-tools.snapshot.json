@@ -616,7 +616,7 @@
   },
   {
     "name": "lineage_analysis",
-    "description": "Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.",
+    "description": "Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -629,6 +629,7 @@
         "operation": {
           "type": "string",
           "enum": [
+            "landscape",
             "overview",
             "problem",
             "method",
@@ -637,7 +638,7 @@
             "context",
             "impact"
           ],
-          "description": "overview: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, responseMode, query, method, direction, maxDepth, limit; evidence: corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, responseMode, from, to, maxDepth, limit, layers; context: corpus, responseMode, query, layers; impact: corpus, responseMode, query, direction, maxDepth, layers"
+          "description": "landscape: corpus, responseMode, query, targetDomain, seedNodeIds, fromYear, toYear, maxDepth, maxNodes, maxEdges; overview: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, responseMode, query, method, direction, maxDepth, limit; evidence: corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, responseMode, from, to, maxDepth, limit, layers; context: corpus, responseMode, query, layers; impact: corpus, responseMode, query, direction, maxDepth, layers"
         },
         "corpus": {
           "type": "string",
@@ -664,6 +665,47 @@
           "minLength": 1,
           "maxLength": 8000,
           "description": "Target research domain; generate uses cross-domain catalyst when supplied."
+        },
+        "seedNodeIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "Value"
+          },
+          "maxItems": 30,
+          "description": "Explicit graph node anchors for a topic overview."
+        },
+        "fromYear": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 9999,
+          "description": "Inclusive topic observation lower year."
+        },
+        "toYear": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 9999,
+          "description": "Inclusive topic observation upper year."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Bounded graph traversal depth, default 2; never global frontier proof."
+        },
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Node budget, default 180. Landscape applies this separately to methods and papers."
+        },
+        "maxEdges": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Edge budget, default 350. Landscape applies this separately to method and paper relations."
         },
         "constraints": {
           "oneOf": [
@@ -706,47 +748,6 @@
             }
           ],
           "description": "Source-review conditions. Lineage overview/problem also accept up to 30 primitive method requirements, such as labelsAvailable=false or maxLatencyMs=40."
-        },
-        "maxDepth": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 4,
-          "description": "Bounded graph traversal depth, default 2; never global frontier proof."
-        },
-        "maxNodes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 500,
-          "description": "Topic subgraph node budget, default 180."
-        },
-        "maxEdges": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 1000,
-          "description": "Topic subgraph edge budget, default 350."
-        },
-        "seedNodeIds": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 8000,
-            "description": "Value"
-          },
-          "maxItems": 30,
-          "description": "Explicit graph node anchors for a topic overview."
-        },
-        "fromYear": {
-          "type": "integer",
-          "minimum": 1000,
-          "maximum": 9999,
-          "description": "Inclusive topic observation lower year."
-        },
-        "toYear": {
-          "type": "integer",
-          "minimum": 1000,
-          "maximum": 9999,
-          "description": "Inclusive topic observation upper year."
         },
         "method": {
           "type": "string",
@@ -810,6 +811,46 @@
         "operation"
       ],
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "landscape"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "targetDomain"
+                ]
+              },
+              {
+                "required": [
+                  "seedNodeIds"
+                ]
+              }
+            ],
+            "properties": {
+              "constraints": false,
+              "method": false,
+              "direction": false,
+              "limit": false,
+              "sourceMethod": false,
+              "targetMethod": false,
+              "edgeId": false,
+              "from": false,
+              "to": false,
+              "layers": false
+            }
+          }
+        },
         {
           "if": {
             "properties": {
@@ -880,12 +921,12 @@
             ],
             "properties": {
               "targetDomain": false,
-              "constraints": false,
-              "maxNodes": false,
-              "maxEdges": false,
               "seedNodeIds": false,
               "fromYear": false,
               "toYear": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "constraints": false,
               "sourceMethod": false,
               "targetMethod": false,
               "edgeId": false,
@@ -933,13 +974,13 @@
             ],
             "properties": {
               "targetDomain": false,
-              "constraints": false,
-              "maxDepth": false,
-              "maxNodes": false,
-              "maxEdges": false,
               "seedNodeIds": false,
               "fromYear": false,
               "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "constraints": false,
               "direction": false,
               "from": false,
               "to": false,
@@ -963,12 +1004,12 @@
             "properties": {
               "query": false,
               "targetDomain": false,
-              "constraints": false,
-              "maxNodes": false,
-              "maxEdges": false,
               "seedNodeIds": false,
               "fromYear": false,
               "toYear": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "constraints": false,
               "method": false,
               "direction": false,
               "sourceMethod": false,
@@ -991,13 +1032,13 @@
             ],
             "properties": {
               "targetDomain": false,
-              "constraints": false,
-              "maxDepth": false,
-              "maxNodes": false,
-              "maxEdges": false,
               "seedNodeIds": false,
               "fromYear": false,
               "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "constraints": false,
               "method": false,
               "direction": false,
               "limit": false,
@@ -1023,12 +1064,12 @@
             ],
             "properties": {
               "targetDomain": false,
-              "constraints": false,
-              "maxNodes": false,
-              "maxEdges": false,
               "seedNodeIds": false,
               "fromYear": false,
               "toYear": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "constraints": false,
               "method": false,
               "limit": false,
               "sourceMethod": false,

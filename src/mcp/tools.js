@@ -295,6 +295,7 @@ export const PAPERNEXUS_TOOLS = [
           type: 'string',
           enum: [
             'topic_analysis',
+            'field_evolution',
             'problem_evolution',
             'analysis_subgraph',
             'query',

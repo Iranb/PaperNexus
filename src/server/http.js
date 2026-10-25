@@ -35,6 +35,7 @@ import {
   pathTraceGraphPayload,
   queryGraphPayload,
   topicAnalysisPayload,
+  fieldEvolutionPayload,
   reflectionChainPayload,
   researchBriefPayload,
   reviewerSimulatePayload,
@@ -1652,6 +1653,13 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request, options);
         sendJson(response, 200, await topicAnalysisPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/field-evolution') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await fieldEvolutionPayload(name, body, apiOptions));
         return;
       }
 

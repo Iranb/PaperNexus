@@ -1,4 +1,5 @@
 import { renderAnalysisHtml, layoutAnalysisGraph } from './analysis-view.js';
+import { mountFieldEvolution } from './field-evolution-view.js';
 const NODE_COLORS = {
   ResearchQuestion: '#f472b6',
   Challenge: '#fb7185',
@@ -2012,7 +2013,7 @@ function stopCorpusAutoRefresh() {
 }
 
 async function checkForCorpusUpdates() {
-  if (!state.activeCorpusName || !state.meta || document.hidden || state.analysisRequest) return;
+  if (!state.activeCorpusName || !state.meta || document.hidden || state.analysisRequest || fieldView.isOpen()) return;
 
   try {
     const payload = await fetchJson(`/api/corpus-meta?name=${encodeURIComponent(state.activeCorpusName)}`);
@@ -2058,6 +2059,7 @@ function renderCorpusOptions() {
 }
 
 function renderEmptyState() {
+  fieldView.reset();
   stopCorpusAutoRefresh();
   state.activeCorpusName = '';
   state.analysisResult = null;
@@ -2093,6 +2095,7 @@ function renderEmptyState() {
 
 async function loadCorpus(name, options = {}) {
   if (!name) return;
+  fieldView.reset();
   const previousSelectedNodeId = options.preserveSelection ? state.selectedNodeId : null;
   const previousVisibleNodeTypes = options.preserveFilters ? new Set(state.visibleNodeTypes) : null;
   const previousVisibleLayers = options.preserveFilters ? new Set(state.visibleLayers) : null;
@@ -2103,6 +2106,7 @@ async function loadCorpus(name, options = {}) {
   const request = options.analysisRequest || {};
   const payload = await postJson('/api/analysis-subgraph?name=' + encodeURIComponent(name), request);
   if (sequence !== state.graphLoadSequence) return;
+  fieldView.reset();
   state.analysisResult = payload.result;
   state.analysisRequest = request.query || request.seedNodeIds?.length ? request : null;
   state.activeCorpusName = payload.meta.name;
@@ -2569,6 +2573,10 @@ function bindTopicAnalysisEvents() {
     selectNode(node.id);
   });
 }
+
+const fieldView = mountFieldEvolution({ host: document.getElementById('field-evolution-panel'),
+  getCorpus: () => state.activeCorpusName === corpusSelect.value ? state.activeCorpusName : '',
+  postJson, onClose: () => scheduleCameraFit() });
 
 bindTopicAnalysisEvents();
 

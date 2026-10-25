@@ -39,8 +39,6 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/audit-research-quality.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/audit-research-quality.mjs) | Audit Research Quality implementation. |
 | [`scripts/benchmark-graph-ranking-ablation.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/benchmark-graph-ranking-ablation.mjs) | Benchmark Graph Ranking Ablation implementation. |
 | [`scripts/benchmark-graph-v2-delta.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/benchmark-graph-v2-delta.mjs) | Benchmark Graph V2 Delta implementation. |
-| [`scripts/build_papernexus_autoreskill_memo.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/build_papernexus_autoreskill_memo.py) | Build Papernexus Autoreskill Memo implementation. |
-| [`scripts/build_resume_yiqing.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/build_resume_yiqing.py) | Build Resume Yiqing implementation. |
 | [`scripts/diagnose-graph-identity.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/diagnose-graph-identity.mjs) | Diagnose Graph Identity implementation. |
 | [`scripts/docling_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/docling_to_markdown.py) | Docling To Markdown implementation. |
 | [`scripts/evaluate-graph-link-prediction.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/evaluate-graph-link-prediction.mjs) | Evaluate Graph Link Prediction implementation. |
@@ -106,6 +104,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/sweep-fixed-corpus-scan-limit.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/sweep-fixed-corpus-scan-limit.mjs) | Sweep Fixed Corpus Scan Limit implementation. |
 | [`scripts/sweep-identity-normalization.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/sweep-identity-normalization.mjs) | Sweep Identity Normalization implementation. |
 | [`scripts/test-pdf-to-markdown.js`](https://github.com/Iranb/PaperNexus/blob/main/scripts/test-pdf-to-markdown.js) | Test Pdf To Markdown implementation. |
+| [`scripts/verify-field-evolution-browser.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/verify-field-evolution-browser.mjs) | Verify Field Evolution Browser implementation. |
 
 ## Skill Wrapper Examples
 

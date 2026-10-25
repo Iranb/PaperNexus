@@ -1,5 +1,6 @@
 import { buildResearchQualityView } from '../core/graph/research-quality.js';
 import { buildTopicAnalysis } from '../core/graph/topic-analysis.js';
+import { buildFieldEvolution } from '../core/graph/field-evolution.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -2834,5 +2835,13 @@ export async function topicAnalysisPayload(candidate, body = {}, options = {}) {
     summary: { nodeTypes: counts(result.graph.nodes, (node) => node.type),
       nodeLayers: counts(result.graph.nodes, (node) => getApiNodeLayer(node)),
       relationTypes: counts(result.graph.relationships, (edge) => edge.type) },
+    generatedAt: new Date().toISOString() }, options);
+}
+
+export async function fieldEvolutionPayload(candidate, body = {}, options = {}) {
+  const rootPath = await resolveCorpusForApi(body.name || candidate, options);
+  const { graph, meta, quality } = await loadCorpusLiteForApi(rootPath, options);
+  return presentPortablePayload({ rootPath, meta, sourceQuality: quality,
+    result: buildFieldEvolution(graph, { ...(body.options || {}), ...body }),
     generatedAt: new Date().toISOString() }, options);
 }
