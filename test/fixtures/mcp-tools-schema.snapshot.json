@@ -2955,6 +2955,7 @@
             "cross_domain_evidence",
             "domain_distance",
             "extract_takeaways",
+            "field_evolution",
             "ideas",
             "impact",
             "interdisciplinary_potential",

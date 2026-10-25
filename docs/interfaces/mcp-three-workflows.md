@@ -5,7 +5,7 @@ PaperNexus now organizes its default MCP tool list by research task. The origina
 | User task | Default tool | Operations |
 | --- | --- | --- |
 | Find and understand papers | `literature_review` | corpora, status, sources, search, paper, survey, discover, discovery_status, discovery_report, import, import_status |
-| Analyze research lineage | `lineage_analysis` | overview, problem, method, evidence, path, context, impact |
+| Analyze research lineage | `lineage_analysis` | landscape, overview, problem, method, evidence, path, context, impact |
 | Generate and assess ideas | `idea_generation` | generate, diverge, converge, gaps, evaluate, experiment_materials |
 | Decide from experimental feedback | `research_decision` | init, status, evidence_view, register_hypotheses, register_actions, record_run, assess_results, recommend_next, update_opportunities, refresh_evidence, export |
 
@@ -31,10 +31,13 @@ Call that through `literature_review` when the corpus is unknown. Then:
 
 For lineage, call `lineage_analysis`:
 
+    {"operation":"landscape","corpus":"demo","query":"feedback calibration","fromYear":2010,"maxNodes":300}
     {"operation":"overview","corpus":"demo","query":"feedback calibration","maxDepth":2,"maxNodes":180}
     {"operation":"overview","corpus":"demo","query":"feedback calibration","constraints":{"labelsAvailable":false,"maxLatencyMs":40}}
     {"operation":"method","corpus":"demo","method":"method:example","direction":"backward","maxDepth":3}
     {"operation":"evidence","corpus":"demo","edgeId":"edge:example"}
+
+`landscape` returns a field timeline with paper/method views, connected families, structural mainlines and source-backed turning-point candidates. The browser's **Build evolution map** uses the same result. See [field evolution](../operations/field-evolution.md) for selection, coverage, evidence and visualization semantics.
 
 For proposals, call `idea_generation`:
 

@@ -114,6 +114,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/diversity-selection.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/diversity-selection.js) | Diversity Selection implementation. |
 | [`src/core/graph/domain-bridges.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/domain-bridges.js) | Cross-domain bridge construction, takeaways, and transferable edge enrichment. |
 | [`src/core/graph/domain-taxonomy.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/domain-taxonomy.js) | Graph-derived domain taxonomy and distance computation. |
+| [`src/core/graph/field-evolution.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/field-evolution.js) | Field Evolution implementation. |
 | [`src/core/graph/graph.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/graph.js) | Graph implementation. |
 | [`src/core/graph/idea-catalyst-evidence-export.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/idea-catalyst-evidence-export.js) | Idea Catalyst Evidence Export implementation. |
 | [`src/core/graph/idea-catalyst-live.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/idea-catalyst-live.js) | Idea Catalyst Live implementation. |
@@ -196,6 +197,7 @@ This page is generated from the repository file tree. It is intended as a system
 | --- | --- |
 | [`web/analysis-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/analysis-view.js) | Analysis View implementation. |
 | [`web/app.js`](https://github.com/Iranb/PaperNexus/blob/main/web/app.js) | Single-page browser UI client logic. |
+| [`web/field-evolution-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-evolution-view.js) | Field Evolution View implementation. |
 | [`web/index.html`](https://github.com/Iranb/PaperNexus/blob/main/web/index.html) | Index implementation. |
 | [`web/login.css`](https://github.com/Iranb/PaperNexus/blob/main/web/login.css) | Login implementation. |
 | [`web/login.html`](https://github.com/Iranb/PaperNexus/blob/main/web/login.html) | Login implementation. |

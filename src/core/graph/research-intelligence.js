@@ -1119,7 +1119,7 @@ function methodEvidenceDedupKey(record) {
   return record.candidateId || record.citationRelationshipId || record.edgeId;
 }
 
-function buildMethodEvidenceRecord(graph, relationship) {
+export function buildMethodEvidenceRecord(graph, relationship) {
   const validation = validateMethodEvolutionEdge(graph, relationship);
   const includeCandidateValidation = validateMethodEvolutionEdge(graph, relationship, { includeCandidate: true });
   const base = buildMethodEdgeRecord(graph, relationship, relationship.properties?.dagDirection || 'evidence');

@@ -68,3 +68,11 @@ node scripts/evaluate-research-feedback.mjs --input test/fixtures/research-feedb
 A/B/C 材料已冻结，尚未调用外部模型或完成盲评。因此没有建立图结构独立效用或科研成功率提升。历史案例只有一组配对训练 seed，图像 bootstrap 仅覆盖固定模型范围；paper-report comparison not established。
 
 缺少显式候选身份的既有图候选保持 unlinked。项目研究重点仍可使用有效实测，不能凭标题相似度补造关联。
+
+## 本地 main 组合验证
+
+本功能通过 PR #3 合入远端 main，提交为 `1bea36c274e7abcba274676d394666fccf392fab`。本地 main 的领域演化提交 `885af7c`、`e2a9f5c` 与本功能共同保留。
+
+组合版本的全量回归共 1,112 项：1,110 通过、0 失败、2 项既有可选吞吐基准跳过，耗时 116.06 秒；文档构建通过。证据为 `M6/integration-test.log` 和 `M6/integration-docs-build.log`。MCP 同时提供领域演化入口与项目实验反馈，已合并对应工具说明。
+
+组合提交的 GitNexus 检查覆盖 30 个文件、319 个符号及 8 条领域演化查询流程，整体 HIGH；完整流程列表符合已有领域演化特性的范围。记录见 `M6/integration-detect-changes.txt`。

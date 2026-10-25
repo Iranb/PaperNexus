@@ -35,8 +35,8 @@ const FIELDS = {
   limit: count(20, 'Result budget, default 5.'),
   chunkLimit: count(40, 'Maximum source chunks in a paper view.'),
   maxDepth: count(4, 'Bounded graph traversal depth, default 2; never global frontier proof.'),
-  maxNodes: count(500, 'Topic subgraph node budget, default 180.'),
-  maxEdges: count(1000, 'Topic subgraph edge budget, default 350.'),
+  maxNodes: count(500, 'Node budget, default 180. Landscape applies this separately to methods and papers.'),
+  maxEdges: count(1000, 'Edge budget, default 350. Landscape applies this separately to method and paper relations.'),
   seedNodeIds: strings('Explicit graph node anchors for a topic overview.'),
   fromYear: { type: 'integer', minimum: 1000, maximum: 9999, description: 'Inclusive topic observation lower year.' },
   toYear: { type: 'integer', minimum: 1000, maximum: 9999, description: 'Inclusive topic observation upper year.' },
@@ -93,6 +93,7 @@ export const RESEARCH_ROUTES = {
     import_status: { ...read('import_workflow', 'queue_progress', ['jobId', 'taskId', 'taskIds']), effect: 'import_read' }
   },
   lineage_analysis: {
+    landscape: read('research_lookup', 'field_evolution', ['query', 'targetDomain', 'seedNodeIds', 'fromYear', 'toYear', 'maxDepth', 'maxNodes', 'maxEdges'], [], ['query', 'targetDomain', 'seedNodeIds']),
     overview: read('research_lookup', 'topic_analysis', topicFields),
     problem: read('research_lookup', 'problem_evolution', topicFields, ['query']),
     method: read('research_lookup', 'method_lineage', ['query', 'method', 'direction', 'maxDepth', 'limit'], [], ['query', 'method']),
@@ -113,7 +114,7 @@ export const RESEARCH_ROUTES = {
 
 const DESCRIPTIONS = {
   literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
-  lineage_analysis: 'Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
+  lineage_analysis: 'Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
   idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains.'
 };
 

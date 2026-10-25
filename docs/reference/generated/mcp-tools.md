@@ -13,7 +13,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 | Tool | Description |
 | --- | --- |
 | [literature_review](#tool-literature_review) | capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
-| [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
+| [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
 | [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains. |
 | [research_decision](#tool-research_decision) | Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve project feedback with evidence_view, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId). |
 
@@ -136,12 +136,13 @@ capabilities reports supported contracts and operations. Find and read papers, a
 
 ### Function
 
-Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.
+Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.
 
 ### Operation Routing
 
 | Operation | Accepted fields | Required fields | Effect |
 | --- | --- | --- | --- |
+| landscape | corpus, responseMode, query, targetDomain, seedNodeIds, fromYear, toYear, maxDepth, maxNodes, maxEdges | one of: query, targetDomain, seedNodeIds | committed_read |
 | overview | corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | None | committed_read |
 | problem | corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear | query | committed_read |
 | method | corpus, responseMode, query, method, direction, maxDepth, limit | one of: query, method | committed_read |
@@ -154,18 +155,18 @@ Analyze research evolution from committed evidence: overview maps a bounded topi
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (overview, problem, method, evidence, path, context, impact) | overview: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, responseMode, query, method, direction, maxDepth, limit; evidence: corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, responseMode, from, to, maxDepth, limit, layers; context: corpus, responseMode, query, layers; impact: corpus, responseMode, query, direction, maxDepth, layers Allowed values: `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`. |
+| `operation` | required | string (landscape, overview, problem, method, evidence, path, context, impact) | landscape: corpus, responseMode, query, targetDomain, seedNodeIds, fromYear, toYear, maxDepth, maxNodes, maxEdges; overview: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, responseMode, query, method, direction, maxDepth, limit; evidence: corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, responseMode, from, to, maxDepth, limit, layers; context: corpus, responseMode, query, layers; impact: corpus, responseMode, query, direction, maxDepth, layers Allowed values: `landscape`, `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
 | `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
 | `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
-| `constraints` | optional | string \| array&lt;string&gt; \| object | Source-review conditions. Lineage overview/problem also accept up to 30 primitive method requirements, such as labelsAvailable=false or maxLatencyMs=40. |
-| `maxDepth` | optional | integer | Bounded graph traversal depth, default 2; never global frontier proof. |
-| `maxNodes` | optional | integer | Topic subgraph node budget, default 180. |
-| `maxEdges` | optional | integer | Topic subgraph edge budget, default 350. |
 | `seedNodeIds` | optional | array&lt;string&gt; | Explicit graph node anchors for a topic overview. |
 | `fromYear` | optional | integer | Inclusive topic observation lower year. |
 | `toYear` | optional | integer | Inclusive topic observation upper year. |
+| `maxDepth` | optional | integer | Bounded graph traversal depth, default 2; never global frontier proof. |
+| `maxNodes` | optional | integer | Node budget, default 180. Landscape applies this separately to methods and papers. |
+| `maxEdges` | optional | integer | Edge budget, default 350. Landscape applies this separately to method and paper relations. |
+| `constraints` | optional | string \| array&lt;string&gt; \| object | Source-review conditions. Lineage overview/problem also accept up to 30 primitive method requirements, such as labelsAvailable=false or maxLatencyMs=40. |
 | `method` | optional | string | Exact method id or method name. |
 | `direction` | optional | string (backward, forward, both) | Method/evidence direction. Impact accepts backward or forward only. Allowed values: `backward`, `forward`, `both`. |
 | `limit` | optional | integer | Result budget, default 5. |
@@ -677,7 +678,7 @@ Run high-level lookup operations over already committed graph state using one re
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (topic_analysis, problem_evolution, analysis_subgraph, query, context, impact, ideas, brainstorm, paper_index, domain_distance, extract_takeaways, interdisciplinary_potential, cross_domain_evidence, method_lineage, method_evidence, method_registry, research_answer) | Allowed values: `topic_analysis`, `problem_evolution`, `analysis_subgraph`, `query`, `context`, `impact`, `ideas`, `brainstorm`, `paper_index`, `domain_distance`, `extract_takeaways`, `interdisciplinary_potential`, `cross_domain_evidence`, `method_lineage`, `method_evidence`, `method_registry`, `research_answer`. |
+| `operation` | required | string (topic_analysis, field_evolution, problem_evolution, analysis_subgraph, query, context, impact, ideas, brainstorm, paper_index, domain_distance, extract_takeaways, interdisciplinary_potential, cross_domain_evidence, method_lineage, method_evidence, method_registry, research_answer) | Allowed values: `topic_analysis`, `field_evolution`, `problem_evolution`, `analysis_subgraph`, `query`, `context`, `impact`, `ideas`, `brainstorm`, `paper_index`, `domain_distance`, `extract_takeaways`, `interdisciplinary_potential`, `cross_domain_evidence`, `method_lineage`, `method_evidence`, `method_registry`, `research_answer`. |
 | `corpus` | optional | string | Corpus name or indexed root path. Optional if only one corpus is indexed. |
 | `query` | optional | string | Topic, node anchor, or challenge text used by the selected lookup operation. |
 | `paperId` | optional | string | Exact internal paper id used by the paper_index operation. |
