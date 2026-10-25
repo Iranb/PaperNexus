@@ -22,6 +22,26 @@ node --test test/research-decision-*.test.js test/mcp-research-decision.test.js
 
 ## AutoResearch handoff
 
+Retrieve feedback without resending outcomes:
+
+```json
+{"operation":"evidence_view","corpus":"my-corpus","project":"selection-mechanism","limit":10,"responseMode":"full"}
+```
+
+Submit this request through `pn_research_decision.py --request-file`. The wrapper already passes optional fields through; no client rewrite is needed. Example files are in `SKILL/PaperNexus/examples/research-feedback/`.
+
+For a measured historical HTTP replay and recovery exercise:
+
+```sh
+node scripts/evaluate-research-feedback.mjs --input test/fixtures/research-feedback/measured --output /tmp/pn-feedback-history --mode engineering --seed 17
+node scripts/evaluate-research-feedback.mjs --input test/fixtures/research-feedback/measured --output /tmp/pn-feedback-history --mode engineering --seed 17 --resume
+node scripts/evaluate-research-feedback.mjs --input test/fixtures/research-feedback/measured --output /tmp/pn-feedback-ablation --mode prepare-ablation --seed 17
+```
+
+Engineering mode starts only a local HTTP MCP server and keeps its corpus, frozen requests, trace and receipts in the output directory. A completed output returns `existing_output`. An interrupted output requires `--resume`, unchanged source versions/configuration and the same requests. Lost mutation responses are recovered by requestId. Historical GPU cost is separate from the current validation CPU/time; no training or provider call is launched.
+
+The replay retains the measured NEW decline and OLD improvement as a tradeoff. The one-seed, fixed-model and retrospective limits remain explicit. Ablation preparation exports equivalent source facts in text, structured and graph forms at three decision points, with labels and review templates outside visible materials. It performs no model calls or blind review and does not establish graph utility.
+
 1. Feature-detect `research_decision` and retain its contract version. Choose a PaperNexus project ID linked to the actual AutoResearch unit and corpus. Initialize an explicit total budget and optional exploration cap.
 2. Register hypotheses, predictions and complete action versions before starting prospective experiments. Retain registration request receipts beside the executor plan.
 3. Call `recommend_next`. Read its scientific and budget gates. A recommendation does not advance an AutoResearch stage or authorize a job.

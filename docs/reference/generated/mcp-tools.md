@@ -14,8 +14,8 @@ Each tool section lists the tool purpose first, followed by every currently expo
 | --- | --- |
 | [literature_review](#tool-literature_review) | capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
 | [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
-| [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains. |
-| [research_decision](#tool-research_decision) | Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts, assess explanations within their protocol, recommend discriminating actions under actual resource costs, and revisit parked opportunities. init/register/record/assess/update/refresh write only project state; status/recommend read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId). |
+| [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains. |
+| [research_decision](#tool-research_decision) | Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve project feedback with evidence_view, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId). |
 
 ## Legacy And Advanced Tool Index
 
@@ -199,24 +199,24 @@ Analyze research evolution from committed evidence: overview maps a bounded topi
 
 ### Function
 
-Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains.
+Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains.
 
 ### Operation Routing
 
 | Operation | Accepted fields | Required fields | Effect |
 | --- | --- | --- | --- |
-| generate | corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK | query | committed_read |
+| generate | corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK, project | query | committed_read |
 | diverge | corpus, responseMode, query, maxDepth, limit, layers | query | committed_read |
 | converge | corpus, responseMode, query, maxDepth, limit, layers | query | committed_read |
 | gaps | corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth | query | committed_read |
-| evaluate | corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents | query; candidateMechanism | committed_read |
+| evaluate | corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents, project, purpose, actionId, actionVersion | None | committed_read |
 | experiment_materials | corpus, responseMode, query, targetDomain, constraints, limit | query | committed_read |
 
 ### Parameters
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (generate, diverge, converge, gaps, evaluate, experiment_materials) | generate: corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, responseMode, query, maxDepth, limit, layers; converge: corpus, responseMode, query, maxDepth, limit, layers; gaps: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, responseMode, query, targetDomain, constraints, limit Allowed values: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`. |
+| `operation` | required | string (generate, diverge, converge, gaps, evaluate, experiment_materials) | generate: corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK, project; diverge: corpus, responseMode, query, maxDepth, limit, layers; converge: corpus, responseMode, query, maxDepth, limit, layers; gaps: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents, project, purpose, actionId, actionVersion; experiment_materials: corpus, responseMode, query, targetDomain, constraints, limit Allowed values: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
 | `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
@@ -225,12 +225,16 @@ Generate and evaluate research hypotheses from committed sources: generate retur
 | `limit` | optional | integer | Result budget, default 5. |
 | `selectionMode` | optional | string (topk, mmr, submodular, dpp) | Cross-domain candidate selection when targetDomain is supplied. Allowed values: `topk`, `mmr`, `submodular`, `dpp`. |
 | `selectionK` | optional | integer | Number of cross-domain candidates retained. |
+| `project` | optional | string | Registered research decision project. |
 | `maxDepth` | optional | integer | Bounded graph traversal depth, default 2; never global frontier proof. |
 | `layers` | optional | string | Comma-separated graph layer filter. |
 | `constraints` | optional | string \| array&lt;string&gt; | Free-text source-review conditions; structured method requirements belong to lineage_analysis/overview or problem. |
 | `method` | optional | string | Exact method id or method name. |
 | `candidateMechanism` | optional | string | Concrete proposed mechanism for evidence and prior-art evaluation. |
 | `removedComponents` | optional | array&lt;string&gt; | Assumptions or components the proposal removes. |
+| `purpose` | optional | string (novelty_audit, mechanism_diagnosis, performance_validation) | Evaluate purpose; defaults to novelty_audit. Project task gates do not authorize execution. Allowed values: `novelty_audit`, `mechanism_diagnosis`, `performance_validation`. |
+| `actionId` | optional | string | Registered action id for project evaluation. |
+| `actionVersion` | optional | integer | Registered action version; defaults to the latest version. |
 
 ### Examples
 
@@ -267,13 +271,13 @@ Generate and evaluate research hypotheses from committed sources: generate retur
 
 ### Function
 
-Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts, assess explanations within their protocol, recommend discriminating actions under actual resource costs, and revisit parked opportunities. init/register/record/assess/update/refresh write only project state; status/recommend read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId).
+Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve project feedback with evidence_view, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId).
 
 ### Parameters
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (init, register_hypotheses, register_actions, record_run, assess_results, update_opportunities, refresh_evidence, status, recommend_next, export) | Allowed values: `init`, `register_hypotheses`, `register_actions`, `record_run`, `assess_results`, `update_opportunities`, `refresh_evidence`, `status`, `recommend_next`, `export`. |
+| `operation` | required | string (init, register_hypotheses, register_actions, record_run, assess_results, update_opportunities, refresh_evidence, status, recommend_next, export, evidence_view) | Allowed values: `init`, `register_hypotheses`, `register_actions`, `record_run`, `assess_results`, `update_opportunities`, `refresh_evidence`, `status`, `recommend_next`, `export`, `evidence_view`. |
 | `corpus` | optional | string |  |
 | `project` | required | string |  |
 | `requestId` | optional | string |  |
@@ -284,6 +288,9 @@ Maintain a project research decision loop: register competing hypotheses and pla
 | `entityId` | optional | string |  |
 | `assessmentId` | optional | string |  |
 | `outputDir` | optional | string |  |
+| `query` | optional | string |  |
+| `limit` | optional | integer |  |
+| `includeHistory` | optional | boolean |  |
 
 ### Examples
 

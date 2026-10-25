@@ -1,0 +1,60 @@
+{
+  "analyzed_at": "2026-10-25T02:17:17.089900+00:00",
+  "plan": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_graph_followup/MAPPING_INVARIANT_PLAN.json",
+  "comparison": "vs matched reproduced baseline",
+  "cohorts": {
+    "unlabelled": {
+      "arms": {
+        "sampled": {
+          "source": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/runs/full_sampled_seed0_a1/final_unlabelled_predictions.npz",
+          "novel_sample_count": 5694,
+          "ARI": 0.29991141766375273,
+          "NMI": 0.7011876621075018,
+          "homogeneity": 0.6985727030498092,
+          "completeness": 0.7038222718147703
+        },
+        "complete": {
+          "source": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/runs/full_complete_seed0_a1/final_unlabelled_predictions.npz",
+          "novel_sample_count": 5694,
+          "ARI": 0.27273254655477674,
+          "NMI": 0.6864782014782272,
+          "homogeneity": 0.6827062993986883,
+          "completeness": 0.6902920140732852
+        }
+      },
+      "complete_minus_sampled": {
+        "ARI": -0.027178871108975988,
+        "NMI": -0.014709460629274584,
+        "homogeneity": -0.01586640365112091,
+        "completeness": -0.013530257741485086
+      }
+    },
+    "heldout": {
+      "arms": {
+        "sampled": {
+          "source": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/runs/full_sampled_seed0_a1/final_heldout_predictions.npz",
+          "novel_sample_count": 5551,
+          "ARI": 0.3005754627843221,
+          "NMI": 0.7038420565799072,
+          "homogeneity": 0.7015853553517374,
+          "completeness": 0.7061133223490929
+        },
+        "complete": {
+          "source": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/runs/full_complete_seed0_a1/final_heldout_predictions.npz",
+          "novel_sample_count": 5551,
+          "ARI": 0.28378739364108857,
+          "NMI": 0.6914162246051324,
+          "homogeneity": 0.6883335131813373,
+          "completeness": 0.6945266721795401
+        }
+      },
+      "complete_minus_sampled": {
+        "ARI": -0.016788069143233553,
+        "NMI": -0.01242583197477476,
+        "homogeneity": -0.013251842170400097,
+        "completeness": -0.011586650169552737
+      }
+    }
+  },
+  "interpretation_boundary": "Describes fixed raw cluster partitions without Hungarian matching; does not separate feature geometry from the clustering procedure, establish a training cause, or estimate training-seed variance."
+}

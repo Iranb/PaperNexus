@@ -17,7 +17,7 @@ import { mergeDiscoveryCandidates } from '../src/core/discovery/merge.js';
 import { resolveDiscoverySources } from '../src/core/discovery/source-resolution.js';
 import { submitDiscoveryImports } from '../src/core/discovery/import-bridge.js';
 import { buildLiteratureDiscoveryRunPlan, runLiteratureDiscovery } from '../src/core/discovery/workflow.js';
-import { loadDiscoveryRun, saveDiscoveryProgress, saveDiscoveryRun } from '../src/core/discovery/store.js';
+import { getDiscoveryProgressPaths, loadDiscoveryRun, saveDiscoveryProgress, saveDiscoveryRun } from '../src/core/discovery/store.js';
 import { handleMessage } from '../src/mcp/core.js';
 import { executeLiteratureDiscoveryTool } from '../src/mcp/tool-literature-discovery.js';
 import { createImportTask } from '../src/storage/import-store.js';
@@ -3622,17 +3622,21 @@ test('literature_discovery submit writes progress snapshots for polling', async 
     assert.equal(submitted.progress.status, 'queued');
 
     let progress = null;
+    let latestProgress = null;
     for (let attempt = 0; attempt < 40; attempt += 1) {
       progress = JSON.parse(await executeLiteratureDiscoveryTool({
         corpus: rootPath,
         operation: 'progress',
         runId: submitted.runId
       }));
-      if (progress.status === 'completed' || progress.status === 'failed') break;
+      latestProgress = JSON.parse(await fs.readFile(getDiscoveryProgressPaths(rootPath).latestProgressPath, 'utf8'));
+      if (['completed', 'failed'].includes(progress.status) && latestProgress.status === progress.status && latestProgress.updatedAt === progress.updatedAt) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
 
     assert.equal(progress.status, 'completed');
+    assert.equal(latestProgress.status, 'completed');
+    assert.equal(latestProgress.updatedAt, progress.updatedAt);
     assert.equal(progress.stage, 'completed');
     assert.equal(progress.runId, submitted.runId);
     assert.equal(progress.operation, 'search');

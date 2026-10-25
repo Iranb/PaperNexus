@@ -7,7 +7,7 @@ PaperNexus now organizes its default MCP tool list by research task. The origina
 | Find and understand papers | `literature_review` | corpora, status, sources, search, paper, survey, discover, discovery_status, discovery_report, import, import_status |
 | Analyze research lineage | `lineage_analysis` | overview, problem, method, evidence, path, context, impact |
 | Generate and assess ideas | `idea_generation` | generate, diverge, converge, gaps, evaluate, experiment_materials |
-| Decide from experimental feedback | `research_decision` | init, status, register_hypotheses, register_actions, record_run, assess_results, recommend_next, update_opportunities, refresh_evidence, export |
+| Decide from experimental feedback | `research_decision` | init, status, evidence_view, register_hypotheses, register_actions, record_run, assess_results, recommend_next, update_opportunities, refresh_evidence, export |
 
 ## How capabilities were merged
 
@@ -15,7 +15,7 @@ PaperNexus now organizes its default MCP tool list by research task. The origina
 
 `research_lookup` method lineage, method evidence, problem evolution and topic analysis move to `lineage_analysis`. `context`, `impact` and briefing path tracing join them. Distinct graph evidence operations stay selectable because they answer different questions; a traversal and a validated evolution edge are not interchangeable.
 
-`ideas`, `brainstorm`, `idea_catalyst` and innovation material packs move to `idea_generation`. `generate` uses graph ideas by default and cross-domain catalyst when `targetDomain` is supplied. `diverge` and `converge` express the two brainstorming stages. `gaps` compiles structural gaps; `evaluate` requires a concrete `candidateMechanism` and returns prior-art/evidence checks. `experiment_materials` collects source-backed experimental and cost anchors; it does not execute or complete an experiment.
+`ideas`, `brainstorm`, `idea_catalyst` and innovation material packs move to `idea_generation`. `generate` uses graph ideas by default and cross-domain catalyst when `targetDomain` is supplied. Optional `project` adds saved experimental feedback and explicit candidate links. `diverge` and `converge` express the two brainstorming stages. `gaps` compiles structural gaps; default `evaluate` audits a concrete `candidateMechanism`. Its `mechanism_diagnosis` and `performance_validation` purposes instead require project/actionId and review a registered action. `experiment_materials` collects source-backed experimental and cost anchors; it does not execute or complete an experiment.
 
 Runtime initialization, corpus creation/refresh, raw graph mutation, overlay editing, evidence-cart persistence and the research controller remain advanced operations. They are available through their unchanged old tool names in the legacy/all catalog. They are not hidden arbitrary subcommands inside the original three research tools. Project decision state has its own explicit [research_decision contract](./research-decision.md).
 
@@ -40,6 +40,14 @@ For proposals, call `idea_generation`:
 
     {"operation":"generate","corpus":"demo","query":"feedback calibration","targetDomain":"Education"}
     {"operation":"evaluate","corpus":"demo","query":"feedback calibration","candidateMechanism":"Calibrate confidence before feedback control"}
+
+For saved project feedback, call `research_decision`, then `idea_generation`:
+
+    {"operation":"evidence_view","corpus":"demo","project":"calibration-study","limit":10}
+    {"operation":"generate","corpus":"demo","project":"calibration-study","query":"feedback calibration"}
+    {"operation":"evaluate","corpus":"demo","project":"calibration-study","purpose":"mechanism_diagnosis","actionId":"matched-control","actionVersion":1}
+
+Project evaluation returns `task_gate` and keeps novelty unestablished. Design readiness does not authorize an experiment. Source-only paper views expose graph readiness and a specific import/status handoff without importing during the read.
 
 The generated MCP reference lists accepted and required fields for every operation. Unrecognized fields and fields intended for another operation are rejected before backend execution. There is no free-form options/backend passthrough. The default graph operations cannot enable live providers, LLM extraction, automatic imports, controller actions, exports, or writeback through extra arguments.
 
