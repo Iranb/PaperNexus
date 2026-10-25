@@ -1,3 +1,5 @@
+import { mountFieldResearch } from './field-research-view.js';
+
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const colors = ['#68d5cb', '#a6a0ff', '#ffbc75', '#7bb8f9', '#ed9bd1', '#a7cf78'];
@@ -197,11 +199,12 @@ export function renderFieldDetails(result, { mode = 'papers', selection, familyI
     ${related.map(r => evidenceDetails(r, result)).join('') || '<p>No validated connection in this view. This does not establish that the paper or method has no predecessors.</p>'}`;
 }
 
-export function mountFieldEvolution({ host, getCorpus, postJson, onClose = () => {} }) {
+export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClose = () => {} }) {
   const workspace = host.closest('.workspace');
   host.innerHTML = `<header class="field-header"><div><span class="field-kicker">Research lineage</span><h2>Evolution map</h2></div>
     <button type="button" class="action-button" data-field-action="close">Back to graph</button></header>
     <p class="field-scope" role="status" aria-live="polite"></p>
+    <section class="field-research-summary" aria-label="Field research progress" aria-live="polite" hidden></section>
     <div class="field-toolbar" hidden><div class="field-modes" role="group" aria-label="Timeline view">
       <button type="button" data-field-mode="papers" aria-pressed="true">Papers</button><button type="button" data-field-mode="methods" aria-pressed="false">Methods</button></div>
       <label>Family<select class="field-family" aria-label="Method family"></select></label>
@@ -227,6 +230,7 @@ export function mountFieldEvolution({ host, getCorpus, postJson, onClose = () =>
   let scale = 1;
   let drawing = null;
   let corpus = '';
+  let research;
 
   const resizeSvg = () => {
     const svg = map.querySelector('svg');
@@ -242,17 +246,36 @@ export function mountFieldEvolution({ host, getCorpus, postJson, onClose = () =>
     resizeSvg();
   };
   const reset = () => {
+    research?.pause();
     sequence++; payload = null; drawing = null; corpus = '';
     host.hidden = true; workspace.classList.remove('field-mode');
     map.innerHTML = ''; details.innerHTML = ''; toolbar.hidden = true; legend.hidden = true;
   };
-  const run = async () => {
+  const showAnalysis = (response, selectedCorpus, topic) => {
+    payload = response; corpus = selectedCorpus;
+    view = { mode: 'papers', familyId: '', search: '', mainline: true, selection: null, timelineWidth: map.clientWidth };
+    search.value = ''; host.querySelector('.field-mainline input').checked = true;
+    const result = response.result;
+    status.textContent = `${selectedCorpus} · ${topic} · ${result.papers.length} papers · ${result.methods.length} methods · ${result.relations.length} evidence relations${result.scope.truncated ? ' · Coverage limited' : ''}`;
+    familySelect.innerHTML = '<option value="">All families</option>' + result.families.map(f => `<option value="${escape(f.id)}">${escape(f.name)} (${f.methodIds.length})</option>`).join('');
+    toolbar.hidden = false; legend.hidden = false;
+    const counts = result.scope.counts;
+    host.querySelector('.field-coverage div').innerHTML = `<p>${escape(result.scope.boundary)}</p>
+      <p>${counts.matchedPapers} matched papers / ${counts.corpusPapers} eligible corpus papers. Showing ${counts.returnedPapers}/${counts.availablePapers} scoped papers and ${counts.returnedMethods}/${counts.availableMethods} scoped methods.</p>
+      <p>Years: ${result.scope.fromYear || 'any'}–${result.scope.toYear || 'any'}; undated: ${result.diagnostics.undatedPapers} papers, ${result.diagnostics.undatedMethods} methods. ${result.scope.truncated ? 'Limits reached: ' + escape(result.scope.truncationReasons.join(', ')) : 'No display budget was reached.'}</p>
+      <p>${result.diagnostics.rejectedRelations.length} relations did not pass lineage validation; ${result.diagnostics.paperProjectionOmissions.length} method relations have no displayed paper projection; ${result.diagnostics.cyclicFamilyIds.length} cyclic families have no mainline.</p>
+      <p>Source quality: ${response.sourceQuality?.quarantinedPapers?.length || 0} papers excluded. Snapshot: ${escape(response.generatedAt || '')}.</p>`;
+    update();
+    scale = 1;
+    resizeSvg(); map.scrollLeft = 0; map.scrollTop = 0;
+  };
+  const readRequest = () => {
     const selectedCorpus = getCorpus();
     const query = document.getElementById('topic-query').value.trim();
     const targetDomain = document.getElementById('topic-domain').value.trim();
     if (!selectedCorpus || (!query && !targetDomain)) {
       document.getElementById('topic-status').textContent = !selectedCorpus ? 'Load a corpus first.' : 'Enter a topic or target domain for the evolution map.';
-      return;
+      return null;
     }
     const request = { ...(query ? { query } : {}), ...(targetDomain ? { targetDomain } : {}),
       maxDepth: Number(document.getElementById('topic-depth').value), maxNodes: Number(document.getElementById('topic-budget').value) };
@@ -260,6 +283,15 @@ export function mountFieldEvolution({ host, getCorpus, postJson, onClose = () =>
       const value = document.getElementById(id).value;
       if (value) request[key] = Number(value);
     }
+    return request;
+  };
+  const run = async () => {
+    const selectedCorpus = getCorpus();
+    const request = readRequest();
+    if (!request) return;
+    const { query, targetDomain } = request;
+    research?.pause(true);
+    host.querySelector(".field-research-summary").hidden = true;
     const current = ++sequence;
     payload = null; drawing = null; corpus = selectedCorpus;
     host.hidden = false; workspace.classList.add('field-mode');
@@ -270,22 +302,7 @@ export function mountFieldEvolution({ host, getCorpus, postJson, onClose = () =>
     try {
       const response = await postJson('/api/field-evolution?name=' + encodeURIComponent(selectedCorpus), request);
       if (current !== sequence || getCorpus() !== selectedCorpus) return;
-      payload = response;
-      view = { mode: 'papers', familyId: '', search: '', mainline: true, selection: null, timelineWidth: map.clientWidth };
-      search.value = ''; host.querySelector('.field-mainline input').checked = true;
-      const result = response.result;
-      status.textContent = `${selectedCorpus} · ${query || targetDomain} · ${result.papers.length} papers · ${result.methods.length} methods · ${result.relations.length} evidence relations${result.scope.truncated ? ' · Coverage limited' : ''}`;
-      familySelect.innerHTML = '<option value="">All families</option>' + result.families.map(f => `<option value="${escape(f.id)}">${escape(f.name)} (${f.methodIds.length})</option>`).join('');
-      toolbar.hidden = false; legend.hidden = false;
-      const counts = result.scope.counts;
-      host.querySelector('.field-coverage div').innerHTML = `<p>${escape(result.scope.boundary)}</p>
-        <p>${counts.matchedPapers} matched papers / ${counts.corpusPapers} eligible corpus papers. Showing ${counts.returnedPapers}/${counts.availablePapers} scoped papers and ${counts.returnedMethods}/${counts.availableMethods} scoped methods.</p>
-        <p>Years: ${result.scope.fromYear || 'any'}–${result.scope.toYear || 'any'}; undated: ${result.diagnostics.undatedPapers} papers, ${result.diagnostics.undatedMethods} methods. ${result.scope.truncated ? 'Limits reached: ' + escape(result.scope.truncationReasons.join(', ')) : 'No display budget was reached.'}</p>
-        <p>${result.diagnostics.rejectedRelations.length} relations did not pass lineage validation; ${result.diagnostics.paperProjectionOmissions.length} method relations have no displayed paper projection; ${result.diagnostics.cyclicFamilyIds.length} cyclic families have no mainline.</p>
-        <p>Source quality: ${response.sourceQuality?.quarantinedPapers?.length || 0} papers excluded. Snapshot: ${escape(response.generatedAt || '')}.</p>`;
-      update();
-      scale = 1;
-      resizeSvg(); map.scrollLeft = 0; map.scrollTop = 0;
+      showAnalysis(response, selectedCorpus, query || targetDomain);
     } catch (error) {
       if (current !== sequence) return;
       status.textContent = 'The evolution map could not be built.';
@@ -311,14 +328,14 @@ export function mountFieldEvolution({ host, getCorpus, postJson, onClose = () =>
     if (select(target)) return;
     if (target.dataset.fieldMode) { view.mode = target.dataset.fieldMode; view.selection = null; update(); return; }
     const action = target.dataset.fieldAction;
-    if (action === 'close') { reset(); onClose(); return; }
+    if (action === 'close') { research?.pause(true); reset(); onClose(); return; }
     if (action === 'retry') { run(); return; }
     if (!payload) return;
     if (action === 'clear') { view.selection = null; update(); }
     if (action === 'fit') { view.timelineWidth = map.clientWidth; scale = 1; update(); map.scrollLeft = 0; }
     if (action === 'zoom-in' || action === 'zoom-out') { scale = Math.max(.15, Math.min(2.5, scale * (action === 'zoom-in' ? 1.25 : .8))); resizeSvg(); }
     if (action === 'svg') download(drawing.svg, 'image/svg+xml', `papernexus-evolution-${view.mode}.svg`);
-    if (action === 'json') download(JSON.stringify({ corpus, generatedAt: payload.generatedAt, view, result: payload.result, sourceQuality: payload.sourceQuality }, null, 2), 'application/json', 'papernexus-evolution.json');
+    if (action === 'json') download(JSON.stringify({ corpus, generatedAt: payload.generatedAt, view, result: payload.result, sourceQuality: payload.sourceQuality, research: payload.research }, null, 2), 'application/json', 'papernexus-evolution.json');
   });
   host.addEventListener('keydown', event => {
     const target = event.target.closest('g[data-field-node],g[data-field-edge]');
@@ -333,5 +350,15 @@ export function mountFieldEvolution({ host, getCorpus, postJson, onClose = () =>
   search.addEventListener('input', () => { view.search = search.value; update(); });
   host.querySelector('.field-mainline input').addEventListener('change', event => { view.mainline = event.target.checked; update(); });
   document.getElementById('field-build').addEventListener('click', run);
-  return { reset, run, isOpen: () => !host.hidden };
+  research = mountFieldResearch({ host, getCorpus, getJson, postJson, readRequest, showAnalysis,
+    open: selectedCorpus => {
+      sequence++; payload = null; drawing = null; corpus = selectedCorpus;
+      host.hidden = false; workspace.classList.add('field-mode');
+      toolbar.hidden = true; legend.hidden = true; details.innerHTML = '';
+      host.querySelector('.field-coverage div').textContent = '';
+      status.textContent = `${selectedCorpus} · Researching the field…`;
+      map.innerHTML = '<div class="field-empty"><h3>Building the evidence base</h3><p>The map will appear after imports, extraction and graph synchronization finish.</p></div>';
+    }
+  });
+  return { reset, run, restoreResearch: research.restore, isOpen: () => !host.hidden };
 }

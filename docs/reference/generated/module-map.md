@@ -183,6 +183,8 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/research/decision-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-evidence.js) | Decision Evidence implementation. |
 | [`src/core/research/decision-service.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-service.js) | Decision Service implementation. |
 | [`src/core/research/decision-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-store.js) | Decision Store implementation. |
+| [`src/core/research/field-research-scope.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-research-scope.js) | Field Research Scope implementation. |
+| [`src/core/research/field-research.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-research.js) | Field Research implementation. |
 | [`src/core/research/hypothesis-assessment.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/hypothesis-assessment.js) | Hypothesis Assessment implementation. |
 | [`src/core/research/opportunity-memory.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/opportunity-memory.js) | Opportunity Memory implementation. |
 | [`src/core/search/brainstorm-communities.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/search/brainstorm-communities.js) | Brainstorm Communities implementation. |
@@ -195,6 +197,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`web/analysis-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/analysis-view.js) | Analysis View implementation. |
 | [`web/app.js`](https://github.com/Iranb/PaperNexus/blob/main/web/app.js) | Single-page browser UI client logic. |
 | [`web/field-evolution-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-evolution-view.js) | Field Evolution View implementation. |
+| [`web/field-research-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-research-view.js) | Field Research View implementation. |
 | [`web/index.html`](https://github.com/Iranb/PaperNexus/blob/main/web/index.html) | Index implementation. |
 | [`web/login.css`](https://github.com/Iranb/PaperNexus/blob/main/web/login.css) | Login implementation. |
 | [`web/login.html`](https://github.com/Iranb/PaperNexus/blob/main/web/login.html) | Login implementation. |

@@ -52,6 +52,7 @@ import { startImportWorker } from '../core/imports/worker.js';
 import { startIsolatedFastMdImportWorker } from '../core/imports/fast-md-lane-worker.js';
 import { startLiteratureDiscoveryRecoveryWorker } from '../mcp/tool-literature-discovery.js';
 import { startImportWorkflowRecoveryWorker } from '../mcp/tool-import-workflow.js';
+import { executeFieldResearchOperation, startFieldResearchRecoveryWorker } from '../core/research/field-research.js';
 import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 import { startRegistryReconcileWorker } from '../storage/registry-reconcile.js';
 
@@ -1353,6 +1354,14 @@ export async function serveCommand(options = {}) {
     },
     workerLogger
   );
+  const fieldResearchOptions = {
+    config: options.config || {}, configBaseDir: options.configBaseDir || process.cwd(), logger: workerLogger,
+    workerRootPaths: rootPaths, fieldResearchDependencies: options.fieldResearchDependencies,
+    fieldResearchWorkers: { imports: options.enableImports !== false, synchronization: options.enableAuthoritativeSync !== false },
+    onImportTaskCreated() { importWorker?.pollNow?.(); fastMdImportWorker?.pollNow?.(); }
+  };
+  const fieldResearchRecoveryWorker = options.enableImports !== false
+    ? startFieldResearchRecoveryWorker({ ...fieldResearchOptions, rootPaths }) : null;
   const triggerMineruWarmup = options.warmMineruBackends || warmMineruBackends;
   const triggerDoclingWarmup = options.warmDoclingRuntime || warmDoclingRuntime;
   const shouldWarmDocling = options.enableImports !== false
@@ -1403,6 +1412,7 @@ export async function serveCommand(options = {}) {
     try {
       const url = new URL(request.url || '/', `http://${host}:${port}`);
       const apiOptions = {
+        ...fieldResearchOptions,
         cache: apiCache,
         config: options.config || {},
         configBaseDir: options.configBaseDir || process.cwd(),
@@ -1443,6 +1453,7 @@ export async function serveCommand(options = {}) {
 
         const startedAt = Date.now();
         const result = await handleMcpHttpRequest(request, response, {
+          ...fieldResearchOptions,
           config: options.config || {},
           configBaseDir: options.configBaseDir || process.cwd(),
           maxJsonBodyBytes: options.maxJsonBodyBytes,
@@ -1663,6 +1674,20 @@ export async function serveCommand(options = {}) {
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/api/field-research') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, body.dryRun ? 200 : 202, await executeFieldResearchOperation(name, 'start', body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/field-research') {
+        const name = url.searchParams.get('name') || undefined;
+        const runId = url.searchParams.get('runId') || undefined;
+        sendJson(response, 200, await executeFieldResearchOperation(name, 'status', { runId }, apiOptions));
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/api/method-lineage') {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request, options);
@@ -1839,6 +1864,7 @@ export async function serveCommand(options = {}) {
       fastMdImportWorker?.stop?.(),
       literatureDiscoveryRecoveryWorker?.stop?.(),
       importWorkflowRecoveryWorker?.stop?.(),
+      fieldResearchRecoveryWorker?.stop?.(),
       registryReconcileWorker?.stop?.()
     ]);
     await new Promise((resolve) => {

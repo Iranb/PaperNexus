@@ -4,7 +4,7 @@ PaperNexus now organizes its default MCP tool list by research task. The origina
 
 | User task | Default tool | Operations |
 | --- | --- | --- |
-| Find and understand papers | `literature_review` | corpora, status, sources, search, paper, survey, discover, discovery_status, discovery_report, import, import_status |
+| Find and understand papers | `literature_review` | corpora, status, sources, search, paper, survey, field_research, field_research_status, discover, discovery_status, discovery_report, import, import_status |
 | Analyze research lineage | `lineage_analysis` | landscape, overview, problem, method, evidence, path, context, impact |
 | Generate and assess ideas | `idea_generation` | generate, diverge, converge, gaps, evaluate, experiment_materials |
 | Decide from experimental feedback | `research_decision` | init, status, register_hypotheses, register_actions, record_run, assess_results, recommend_next, update_opportunities, refresh_evidence, export |
@@ -37,7 +37,7 @@ For lineage, call `lineage_analysis`:
     {"operation":"method","corpus":"demo","method":"method:example","direction":"backward","maxDepth":3}
     {"operation":"evidence","corpus":"demo","edgeId":"edge:example"}
 
-`landscape` returns a field timeline with paper/method views, connected families, structural mainlines and source-backed turning-point candidates. The browser's **Build evolution map** uses the same result. See [field evolution](../operations/field-evolution.md) for selection, coverage, evidence and visualization semantics.
+`landscape` returns a field timeline with paper/method views, connected families, structural mainlines and source-backed turning-point candidates. The browser's **Map existing corpus** uses the same result. See [field evolution](../operations/field-evolution.md) for selection, coverage, evidence and visualization semantics.
 
 For proposals, call `idea_generation`:
 
@@ -49,6 +49,8 @@ The generated MCP reference lists accepted and required fields for every operati
 For `overview` and `problem`, structured `constraints` compare primitive method requirements and exclude conflicting transfers. Missing requirements remain unknown. Free text requires source review. Material operations such as `survey`, `gaps` and `evaluate` accept text or text arrays only; they do not silently convert structured requirements to a search string.
 
 ## Missing papers, asynchronous work and evidence state
+
+`literature_review/field_research` starts the complete bounded workflow: literature discovery, missing-paper import, configured extraction, synchronization and an evolution map. Supply `idempotencyKey` and a query or target domain; `maxPapers` defaults to 20, up to 100. `dryRun=true` previews scope and worker readiness. `field_research_status` reads the exact run or the latest saved run. It distinguishes submission from evidence readiness and returns partial maps with explicit coverage gaps. See [field research](../operations/field-evolution.md#research-and-build-the-map).
 
 Explicitly call `literature_review/discover` to submit network discovery. `discoveryMode` defaults to metadata `search`; `resolve` and `run` may fetch lawful full text. The operation never imports automatically. Keep the returned `runId`; use `discovery_status` and then `discovery_report` to read its state and sources.
 

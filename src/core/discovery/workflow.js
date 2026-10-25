@@ -884,7 +884,9 @@ export async function runLiteratureDiscovery(params = {}) {
     ]
   });
   const maxCandidates = resolveMaxCandidates(params, plan);
-  const initialWindow = selectCandidateWindow(initialMerged, seedCandidates, maxCandidates);
+  const initialSelection = typeof params.selectCandidates === 'function'
+    ? await params.selectCandidates(initialMerged, { phase: 'citation_seeds', maxCandidates }) : null;
+  const initialWindow = initialSelection?.candidates || selectCandidateWindow(initialMerged, seedCandidates, maxCandidates);
   const expandCitations = shouldExpandCitations(params, plan);
   if (expandCitations) {
     await emitDiscoveryProgress(params, {
@@ -932,7 +934,9 @@ export async function runLiteratureDiscovery(params = {}) {
       ...citationExpansion.candidates
     ]
   });
-  const candidateWindow = selectCandidateWindow(merged, seedCandidates, maxCandidates);
+  const finalSelection = typeof params.selectCandidates === 'function'
+    ? await params.selectCandidates(merged, { phase: 'source_resolution', maxCandidates }) : null;
+  const candidateWindow = finalSelection?.candidates || selectCandidateWindow(merged, seedCandidates, maxCandidates);
   await emitDiscoveryProgress(params, {
     runId,
     topic: plan.topic,
@@ -991,6 +995,7 @@ export async function runLiteratureDiscovery(params = {}) {
     ],
     rawCandidateCount: seedCandidates.length + providerResult.candidates.length + citationExpansion.candidates.length,
     candidates: resolution.candidates,
+    ...(finalSelection?.selection ? { candidateSelection: finalSelection.selection } : {}),
     resolutionSummary: resolution.summary,
     citationExpansion: citationExpansion.summary,
     accessPolicy: {

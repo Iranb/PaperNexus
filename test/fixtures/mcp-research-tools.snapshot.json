@@ -1,7 +1,7 @@
 [
   {
     "name": "literature_review",
-    "description": "capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.",
+    "description": "capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts bounded discovery, missing-paper import and configured extraction for an evolution map (idempotencyKey required unless dryRun); field_research_status reads progress and the ready map. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.",
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -21,13 +21,15 @@
             "search",
             "paper",
             "survey",
+            "field_research",
+            "field_research_status",
             "discover",
             "discovery_status",
             "discovery_report",
             "import",
             "import_status"
           ],
-          "description": "capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds"
+          "description": "capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; field_research: corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun; field_research_status: corpus, responseMode, runId; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds"
         },
         "corpus": {
           "type": "string",
@@ -115,14 +117,41 @@
           ],
           "description": "Free-text source-review conditions; structured method requirements belong to lineage_analysis/overview or problem."
         },
-        "discoveryMode": {
-          "type": "string",
-          "enum": [
-            "search",
-            "resolve",
-            "run"
-          ],
-          "description": "search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically."
+        "fromYear": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 9999,
+          "description": "Inclusive topic observation lower year."
+        },
+        "toYear": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 9999,
+          "description": "Inclusive topic observation upper year."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Bounded graph traversal depth, default 2; never global frontier proof."
+        },
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Node budget, default 180. Landscape applies this separately to methods and papers."
+        },
+        "maxEdges": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Edge budget, default 350. Landscape applies this separately to method and paper relations."
+        },
+        "maxPapers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum discovery papers; default 20."
         },
         "providers": {
           "type": "array",
@@ -135,11 +164,15 @@
           "maxItems": 30,
           "description": "Optional discovery provider names."
         },
-        "maxPapers": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 100,
-          "description": "Maximum discovery papers; default 20."
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Stable id for an import submission; reuse to avoid duplicate async jobs."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "Preview field research scope and worker readiness without searching, downloading, importing or creating a run."
         },
         "runId": {
           "type": "string",
@@ -147,6 +180,15 @@
           "maxLength": 200,
           "description": "Existing literature discovery run id.",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "discoveryMode": {
+          "type": "string",
+          "enum": [
+            "search",
+            "resolve",
+            "run"
+          ],
+          "description": "search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically."
         },
         "serverFilePath": {
           "type": "string",
@@ -165,12 +207,6 @@
           "minLength": 1,
           "maxLength": 8000,
           "description": "Optional arXiv id for an imported source."
-        },
-        "idempotencyKey": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 200,
-          "description": "Stable id for an import submission; reuse to avoid duplicate async jobs."
         },
         "jobId": {
           "type": "string",
@@ -220,14 +256,20 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -253,14 +295,20 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -286,14 +334,20 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -319,14 +373,20 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -351,14 +411,20 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -397,14 +463,20 @@
               "sortBy": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -429,14 +501,98 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "field_research"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "query"
+                ]
+              },
+              {
+                "required": [
+                  "targetDomain"
+                ]
+              }
+            ],
+            "properties": {
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "constraints": false,
+              "runId": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "field_research_status"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "targetDomain": false,
+              "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "maxPapers": false,
+              "providers": false,
               "idempotencyKey": false,
+              "dryRun": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -464,11 +620,17 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -493,13 +655,19 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -528,13 +696,19 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
-              "idempotencyKey": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -572,9 +746,15 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "dryRun": false,
+              "discoveryMode": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -600,14 +780,20 @@
               "chunkLimit": false,
               "targetDomain": false,
               "constraints": false,
-              "discoveryMode": false,
-              "providers": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
               "maxPapers": false,
+              "providers": false,
+              "idempotencyKey": false,
+              "dryRun": false,
               "runId": false,
+              "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
-              "arxivId": false,
-              "idempotencyKey": false
+              "arxivId": false
             }
           }
         }

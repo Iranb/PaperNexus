@@ -25,7 +25,7 @@ function normalizeFieldOptions(raw) {
   const targetDomain = String(raw.targetDomain || '').trim();
   const seedNodeIds = unique(array(raw.seedNodeIds).map(String).filter(Boolean));
   if (!query && !targetDomain && !seedNodeIds.length) throw new Error('A query, targetDomain or nonempty seedNodeIds is required.');
-  if (query.length > 8000 || targetDomain.length > 8000 || seedNodeIds.length > 30) throw new Error('Field selector exceeds its supported size.');
+  if (query.length > 8000 || targetDomain.length > 8000 || seedNodeIds.length > 500) throw new Error('Field selector exceeds its supported size.');
   const fromYear = integer('fromYear', null, 1000, 9999);
   const toYear = integer('toYear', null, 1000, 9999);
   if (fromYear && toYear && fromYear > toYear) throw new Error('fromYear must not exceed toYear.');

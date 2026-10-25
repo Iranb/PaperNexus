@@ -105,6 +105,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/sweep-identity-normalization.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/sweep-identity-normalization.mjs) | Sweep Identity Normalization implementation. |
 | [`scripts/test-pdf-to-markdown.js`](https://github.com/Iranb/PaperNexus/blob/main/scripts/test-pdf-to-markdown.js) | Test Pdf To Markdown implementation. |
 | [`scripts/verify-field-evolution-browser.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/verify-field-evolution-browser.mjs) | Verify Field Evolution Browser implementation. |
+| [`scripts/verify-field-research-browser.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/verify-field-research-browser.mjs) | Verify Field Research Browser implementation. |
 
 ## Skill Wrapper Examples
 

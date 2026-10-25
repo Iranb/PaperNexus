@@ -2149,6 +2149,7 @@ async function loadCorpus(name, options = {}) {
   if (!options.skipAutoRefreshRestart) {
     startCorpusAutoRefresh();
   }
+  if (!options.analysisRequest && !options.preserveView) fieldView.restoreResearch();
 }
 
 async function triggerBackup() {
@@ -2576,7 +2577,7 @@ function bindTopicAnalysisEvents() {
 
 const fieldView = mountFieldEvolution({ host: document.getElementById('field-evolution-panel'),
   getCorpus: () => state.activeCorpusName === corpusSelect.value ? state.activeCorpusName : '',
-  postJson, onClose: () => scheduleCameraFit() });
+  getJson: fetchJson, postJson, onClose: () => scheduleCameraFit() });
 
 bindTopicAnalysisEvents();
 

@@ -31,6 +31,8 @@ This page is generated from route declarations in [`src/server/http.js`](https:/
 | `POST` | `/api/path-trace` |
 | `POST` | `/api/evidence-chain` |
 | `POST` | `/api/field-evolution` |
+| `POST` | `/api/field-research` |
+| `GET` | `/api/field-research` |
 | `POST` | `/api/method-lineage` |
 | `POST` | `/api/method-evidence` |
 | `POST` | `/api/reflection-chain` |

@@ -5,6 +5,7 @@ import { submitDiscoveryImports } from '../core/discovery/import-bridge.js';
 import { resolveCorpusForApi } from '../server/api.js';
 import { RESEARCH_DECISION_TOOL } from './tool-research-decision.js';
 import { OPERATIONS as DECISION_OPERATIONS, DECISION_VERSION } from '../core/research/decision-contracts.js';
+import { executeFieldResearchOperation } from '../core/research/field-research.js';
 
 export const RESEARCH_WORKFLOW_VERSION = 'papernexus-research-tools-v1';
 
@@ -47,6 +48,7 @@ const FIELDS = {
   discoveryMode: { type: 'string', enum: ['search', 'resolve', 'run'], description: 'search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically.' },
   providers: strings('Optional discovery provider names.'),
   maxPapers: count(100, 'Maximum discovery papers; default 20.'),
+  dryRun: { type: 'boolean', description: 'Preview field research scope and worker readiness without searching, downloading, importing or creating a run.' },
   runId: { ...text('Existing literature discovery run id.'), maxLength: 200, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$' },
   serverFilePath: text('Already staged server-side PDF/Markdown file to import.'),
   doi: text('Optional DOI for an imported source.'),
@@ -80,6 +82,8 @@ export const RESEARCH_ROUTES = {
     search: read('research_lookup', 'query', ['query', 'limit', 'layers', 'sortBy'], ['query']),
     paper: read('agent_materials', 'paper_material_view', ['query', 'paperId', 'identifier', 'chunkLimit'], [], ['query', 'paperId', 'identifier']),
     survey: read('agent_materials', 'research_material_pack', materialFields, ['query']),
+    field_research: { ...read('field_research', 'start', ['query', 'targetDomain', 'fromYear', 'toYear', 'maxDepth', 'maxNodes', 'maxEdges', 'maxPapers', 'providers', 'idempotencyKey', 'dryRun'], [], ['query', 'targetDomain']), effect: 'field_research_submit' },
+    field_research_status: { ...read('field_research', 'status', ['runId']), effect: 'field_research_read' },
     discover: { ...read('literature_discovery', 'submit', ['query', 'discoveryMode', 'providers', 'maxPapers'], ['query']), effect: 'discovery_submit' },
     discovery_status: { ...read('literature_discovery_progress', null, ['runId', 'limit']), effect: 'discovery_read' },
     discovery_report: { ...read('literature_discovery', 'report', ['runId'], ['runId']), effect: 'discovery_read' },
@@ -107,7 +111,7 @@ export const RESEARCH_ROUTES = {
 };
 
 const DESCRIPTIONS = {
-  literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
+  literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts bounded discovery, missing-paper import and configured extraction for an evolution map (idempotencyKey required unless dryRun); field_research_status reads progress and the ready map. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
   lineage_analysis: 'Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
   idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains.'
 };
@@ -270,6 +274,8 @@ function nextActions(call, args, result) {
   const shared = args.corpus ? { corpus: args.corpus } : {};
   const next = (tool, operation, fields = {}) => ({ tool, arguments: { operation, ...shared, ...fields } });
   const runId = result?.runId || result?.run_id || args.runId;
+  if (call.backend === 'field_research') return runId && !result?.terminal && !result?.dryRun
+    ? [next('literature_review', 'field_research_status', { runId })] : [];
   if (call.effect === 'discovery_submit' && runId) return [next('literature_review', 'discovery_status', { runId })];
   if (call.effect === 'discovery_read') {
     if (call.operation !== 'discovery_status' || !runId) return [];
@@ -320,6 +326,9 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
     ? researchCapabilities(options)
     : call.backend === 'discovery_import_bridge'
     ? await importSavedDiscoverySources(call.args, options)
+    : call.backend === 'field_research'
+    ? await executeFieldResearchOperation(call.args.corpus, call.args.operation,
+        Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
     : decodeResult(await invoke(call.backend, call.args, options));
   const envelope = {
     contractVersion: RESEARCH_WORKFLOW_VERSION,
@@ -327,10 +336,12 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
     operation: call.operation,
     backend: call.backend === 'discovery_import_bridge'
       ? { tool: null, component: 'submitDiscoveryImports', operation: 'saved_source_import' }
+      : call.backend === 'field_research'
+      ? { tool: null, component: 'executeFieldResearchOperation', operation: call.args.operation }
       : { tool: call.backend, operation: call.args.operation || null },
     result,
     evidenceBoundary: {
-      basis: call.effect,
+      basis: result?.dryRun && call.backend === 'field_research' ? 'dry_run' : call.effect,
       statusAuthority: 'The backend result and original discovery/import/graph-sync records; this envelope creates no completion state.',
       limitation: name === 'idea_generation'
         ? 'Candidate hypotheses and bounded prior-art evidence do not prove novelty, causal transfer, or experimental gains.'

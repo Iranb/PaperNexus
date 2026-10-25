@@ -1474,6 +1474,7 @@ export async function executeLiteratureDiscoveryTool(args = {}, options = {}) {
       resolveSources: operation === 'search' ? false : (args.resolveSources ?? args.resolve_sources),
       persist: args.persist !== false,
       deferCompletedProgress: shouldSubmitImports(operation, args),
+      selectCandidates: options.selectDiscoveryCandidates,
       onProgress: progressWriter || undefined
     });
 

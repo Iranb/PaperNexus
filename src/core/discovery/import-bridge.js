@@ -55,7 +55,11 @@ export async function submitDiscoveryImports(params = {}) {
     const sourcePath = sourcePathOf(candidate);
     const identifiers = identifiersOf(candidate);
     try {
-      const payload = await createImportTaskPayload(corpus, buildImportBody(candidate), params.options || {});
+      const payload = await createImportTaskPayload(corpus, {
+        ...buildImportBody(candidate),
+        ...(params.processingProfile ? { processingProfile: params.processingProfile } : {}),
+        ...(params.completionPolicy ? { completionPolicy: params.completionPolicy } : {})
+      }, params.options || {});
       results.push({
         candidateId,
         canonicalId: candidate.canonicalId || candidate.canonical_id,
