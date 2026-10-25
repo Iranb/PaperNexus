@@ -90,6 +90,9 @@ export function summarizeFieldResearchImports(importResults, tasks = [], missing
     const graph = task.graphVisibilityStatus || task.result?.graphVisibilityStatus || 'unknown';
     const semantic = task.semanticStatus || task.result?.semanticStatus || 'unknown';
     const sync = task.authoritativeSyncStatus || task.result?.authoritativeSync?.status || 'unknown';
+    const batches = task.result?.metrics?.importPerformance?.llmBatches;
+    const failedBatches = Number(batches?.failedBatchCount || 0);
+    const skippedProviderCalls = Number(batches?.skippedProviderCallCount || 0);
     let phase;
     if ([task.status, graph, semantic, sync].some(status => ['failed', 'cancelled', 'blocked', 'superseded'].includes(status))) {
       phase = 'failed'; issues.push({ taskId: id, stage: task.stage || phase, message: task.error?.message || task.error || `Import/evidence state: ${task.status}/${graph}/${semantic}/${sync}` });
@@ -97,6 +100,11 @@ export function summarizeFieldResearchImports(importResults, tasks = [], missing
     else if (task.status === 'running') phase = task.stage === 'llm-optimize' ? 'extracting' : 'importing';
     else if (task.status !== 'completed' || graph !== 'completed') phase = 'unknown';
     else if (['pending', 'queued', 'running'].includes(semantic)) phase = 'extracting';
+    else if (failedBatches > 0 || skippedProviderCalls > 0) {
+      phase = 'failed'; issues.push({ taskId: id, stage: 'extraction',
+        message: `Relation extraction has ${failedBatches} failed LLM batches and ${skippedProviderCalls} skipped provider calls.`,
+        failedBatches, skippedProviderCalls, failureReasons: batches.failureReasons || {} });
+    }
     else if (semantic === 'not-required') {
       phase = 'failed'; issues.push({ taskId: id, stage: 'extraction', message: 'This source has only structural processing; relation extraction did not complete.' });
     } else if (semantic !== 'completed') phase = 'unknown';

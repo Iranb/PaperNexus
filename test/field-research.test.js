@@ -97,6 +97,30 @@ test('readiness distinguishes task completion, semantic completion and authorita
   assert.deepEqual(ready.readyTaskIds, ['one']);
 });
 
+test('provider failures and skipped calls prevent completed imports from becoming evidence-ready', () => {
+  const receipt = { results: [{ taskId: 'one', status: 'submitted' }] };
+  const complete = { id: 'one', status: 'completed', graphVisibilityStatus: 'completed',
+    semanticStatus: 'completed', authoritativeSyncStatus: 'completed' };
+  for (const llmBatches of [
+    { completedBatchCount: 13, failedBatchCount: 13, failureReasons: { 'provider-network': 13 } },
+    { completedBatchCount: 13, failedBatchCount: 1 },
+    { completedBatchCount: 13, skippedProviderCallCount: 1 }
+  ]) {
+    const result = summarizeFieldResearchImports(receipt, [{ ...complete,
+      result: { metrics: { importPerformance: { llmBatches } } } }]);
+    assert.equal(result.counts.ready, 0);
+    assert.equal(result.counts.failed, 1);
+    assert.deepEqual(result.readyTaskIds, []);
+    assert.equal(result.issues[0].stage, 'extraction');
+  }
+  const cached = summarizeFieldResearchImports(receipt, [{ ...complete,
+    result: { metrics: { importPerformance: { llmBatches: {
+      completedBatchCount: 13, cachedBatchCount: 13, skippedBatchCount: 13,
+      failedBatchCount: 0, skippedProviderCallCount: 0
+    } } } } }]);
+  assert.deepEqual(cached.readyTaskIds, ['one']);
+});
+
 test('one durable request queues real imports once and exposes new admitted papers only after completion', async () => {
   const f = await fixture();
   let discoveries = 0;
