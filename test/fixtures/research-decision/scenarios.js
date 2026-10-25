@@ -92,6 +92,7 @@ export async function createDecisionFixture(t, options = {}) {
   }
   input.hypotheses[0].evidence_refs = [refs[0]];
   input.hypotheses[1].evidence_refs = [refs[1]];
+  for (const action of input.actions) Object.assign(action.precision, { anticipated_interval_width: 0.4, basis_refs: [refs[0]] });
   input.candidates = [
     { candidate_id: 'target', source_domain: 'target', mechanism: 'count', subproblem: 'confounding', evidence_cluster: 'count', evidence_refs: [refs[1]], bridge_evidence: true },
     { candidate_id: 'near', source_domain: 'near', mechanism: 'quality', subproblem: 'selection', evidence_cluster: 'quality', evidence_refs: [refs[0]], bridge_evidence: true },
@@ -114,7 +115,7 @@ export async function createDecisionFixture(t, options = {}) {
   const run = (outcome = 'negative', overrides = {}) => ({
     record_id: 'record-1', executor_id: 'offline-fixture', run_id: 'control', attempt_id: 'attempt-1', source_revision: 1,
     status: 'completed', action_id: 'E1', action_version: 1, registration_receipt: 'actions-1', started_at: new Date().toISOString(), ended_at: new Date().toISOString(),
-    protocol: structuredClone(input.protocol), analysis: structuredClone(input.actions[1].analysis),
+    protocol: structuredClone(input.protocol), analysis: structuredClone(input.actions.find(a => a.action_id === 'E1').analysis),
     measurements: [{ quantity: input.quantity, unit: 'percentage_points', ...structuredClone(OUTCOMES[outcome]),
       uncertainty: { method: 'synthetic fixed endpoint interval', level: 0.95, independent_unit: 'seed', unit_count: 5,
         calculation_ref: 'synthetic/raw-seeds', review: { status: 'reviewed', reviewer: 'fixture-only', reference: 'synthetic/review' } } }],

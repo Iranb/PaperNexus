@@ -2,6 +2,7 @@ import { POLICY_VERSION, predictionRange, EXPERIMENT_TYPES } from './decision-co
 import { isDeepStrictEqual } from 'node:util';
 import { attemptKey, latestRuns, latestVersions } from './decision-store.js';
 import { scientificState, assessmentValidity } from './hypothesis-assessment.js';
+import { evidenceKey } from './decision-evidence.js';
 
 export function resourceAmounts(cost = {}) {
   const amounts = {};
@@ -71,7 +72,7 @@ export function actionBudgetGate(action, state, ledger = budgetLedger(state)) {
   return { allowed: !reasons.length, reason_codes: reasons, estimated_upper: action.estimated_cost?.upper || null, based_on_revision: state.revision };
 }
 
-export function actionDiscrimination(action, hypotheses, conclusions) {
+export function actionDiscrimination(action, hypotheses, conclusions, evidenceSnapshots = []) {
   const bound = (action.hypothesis_versions || []).map(ref => hypotheses.find(h => h.hypothesis_id === ref.hypothesis_id && h.version === ref.version)).filter(Boolean);
   const pairs = [], potential = [];
   for (let i = 0; i < bound.length; i++) for (let j = i + 1; j < bound.length; j++) {
@@ -79,13 +80,25 @@ export function actionDiscrimination(action, hypotheses, conclusions) {
     if (!a.alternative_hypothesis_ids?.includes(b.hypothesis_id) && !b.alternative_hypothesis_ids?.includes(a.hypothesis_id)) continue;
     if ([a, b].some(h => conclusions.find(c => c.hypothesis_id === h.hypothesis_id && c.version === h.version)?.status === 'excluded_in_scope')) continue;
     for (const p of a.predictions) for (const q of b.predictions) {
-      if (p.quantity !== q.quantity || p.unit !== q.unit || !action.measurements?.includes(p.quantity)
+      if (p.quantity !== q.quantity || p.unit !== q.unit || p.comparison_id !== q.comparison_id || !action.measurements?.includes(p.quantity)
         || !action.prediction_ids?.includes(p.prediction_id) || !action.prediction_ids?.includes(q.prediction_id)) continue;
       const [alo, ahi] = predictionRange(p), [blo, bhi] = predictionRange(q);
       if (alo === blo && ahi === bhi) continue;
       const gap = Math.max(blo - ahi, alo - bhi);
-      const entry = { hypotheses: [a.hypothesis_id, b.hypothesis_id], quantity: p.quantity, predictions: [p.prediction_id, q.prediction_id], separation: Number.isFinite(gap) ? Math.max(0, gap) : null };
-      if (gap > 0 && action.precision?.max_interval_width <= gap) pairs.push(entry);
+      const anticipated = action.precision?.anticipated_interval_width;
+      const basis = action.precision?.basis_refs;
+      const grounded = basis?.length > 0 && basis.every(ref => evidenceSnapshots.some(s => s.key === evidenceKey(ref) && s.admitted));
+      const target = action.precision?.inference_target;
+      const scopeMatches = (!action.evaluation_plan?.inference_target || action.evaluation_plan.inference_target === target)
+        && [p, q].every(prediction => !prediction.inference_target || prediction.inference_target === target);
+      const achievable = grounded && anticipated !== undefined && scopeMatches;
+      const entry = { hypotheses: [a.hypothesis_id, b.hypothesis_id], quantity: p.quantity, comparison_id: p.comparison_id || null,
+        predictions: [p.prediction_id, q.prediction_id], separation: Number.isFinite(gap) ? Math.max(0, gap) : null,
+        required_interval_width: gap > 0 && Number.isFinite(gap) ? gap : null,
+        planned_max_interval_width: action.precision?.max_interval_width ?? null, anticipated_interval_width: anticipated ?? null,
+        achievability_status: !achievable ? 'unknown' : gap <= 0 || anticipated > gap ? 'insufficient' : 'estimated',
+        inference_target: target || null, basis_refs: basis || [] };
+      if (gap > 0 && achievable && anticipated <= gap && anticipated <= action.precision?.max_interval_width) pairs.push(entry);
       else potential.push({ ...entry, required_precision: gap > 0 ? `interval width <= ${gap}` : 'Predictions overlap; identify a discriminating condition or measurement.' });
     }
   }
@@ -116,6 +129,8 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
   if (unassessed.length) return { ...base, decision: { kind: 'assess_results', run_record_ids: unassessed.map(r => r.record_id), reason: 'Assess the available result before choosing another experiment.' } };
   const candidates = [];
   const diagnosticHypotheses = new Set([
+    ...selected.filter(a => a.type === 'controlled_experiment' && !a.exploration && !actionDiscrimination(a, state.hypotheses, conclusions, state.evidence_snapshots).distinguishes.length)
+      .flatMap(a => a.hypothesis_versions || []).map(h => h.hypothesis_id),
     ...runs.filter(r => r.status === 'failed').flatMap(r => state.actions.find(a => a.action_id === r.action_id && a.version === r.action_version).hypothesis_versions || []).map(h => h.hypothesis_id),
     ...conclusions.filter(c => ['unassessable', 'conflicted'].includes(c.status)).map(h => h.hypothesis_id)
   ]);
@@ -123,6 +138,7 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
     const blocked = [...action.missing_fields.map(k => `missing:${k}`)];
     const bound = (action.hypothesis_versions || []).map(ref => state.hypotheses.find(h => h.hypothesis_id === ref.hypothesis_id && h.version === ref.version));
     if (bound.some(h => h.design_status !== 'testable')) blocked.push('draft_hypothesis');
+    if (bound.some(h => h.run_record_ids?.some(id => !allRuns.some(r => r.record_id === id)))) blocked.push('stale_measurement_dependency');
     const evidenceKeys = [...(action.evidence_keys || []), ...bound.flatMap(h => h.evidence_keys || [])];
     for (const key of evidenceKeys) {
       if (staleSourceKeys.includes(key)) blocked.push('stale_dependencies');
@@ -139,12 +155,14 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
     if (opportunity && opportunity.status !== 'active') blocked.push(`opportunity_${opportunity.status}`);
     const budgetGate = actionBudgetGate(action, state, ledger);
     blocked.push(...budgetGate.reason_codes);
-    const discrimination = actionDiscrimination(action, state.hypotheses, conclusions);
+    const discrimination = actionDiscrimination(action, state.hypotheses, conclusions, state.evidence_snapshots);
     const diagnostic = ['read_source', 'search_literature', 'inspect_code', 'profile_cost', 'repair_baseline', 'diagnostic'].includes(action.type);
     if (base.unmodeled_explanation && !diagnostic) blocked.push('unmodeled_explanation_requires_revision');
     if (action.type === 'scale_test' && !bound.some(h => conclusions.some(c => c.hypothesis_id === h.hypothesis_id && c.version === h.version && c.status === 'supported_in_scope'))) blocked.push('mechanism_not_supported');
     if (state.goal_phase === 'mechanism_validation' && EXPERIMENT_TYPES.includes(action.type) && action.type !== 'replicate'
       && !discrimination.distinguishes.length && !discrimination.potentially_discriminating.length && action.type !== 'scale_test') blocked.push('does_not_distinguish_explanations');
+    if (action.type === 'controlled_experiment' && state.goal_phase === 'mechanism_validation' && !action.exploration
+      && !discrimination.distinguishes.length && discrimination.potentially_discriminating.length) blocked.push('needs_precision_evidence_or_different_measurement');
     if (blocked.length) { base.blocked_actions.push({ action_id: action.action_id, reason_codes: [...new Set(blocked)], budget_gate: budgetGate }); continue; }
     const priority = diagnostic && bound.some(h => diagnosticHypotheses.has(h.hypothesis_id)) ? 0 : discrimination.distinguishes.length ? 1
       : action.type === 'replicate' && bound.some(h => conclusions.some(c => c.hypothesis_id === h.hypothesis_id && c.version === h.version && ['supported_in_scope', 'conflicted'].includes(c.status))) ? 1
@@ -165,13 +183,15 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
   }
   const eligible = candidates.filter(c => !c.dominated_by.length).sort((a, b) => a.priority - b.priority || a.action.action_id.localeCompare(b.action.action_id));
   const chosen = eligible[0];
-  if (!chosen) return { ...base, decision: { kind: base.blocked_actions.some(a => a.reason_codes.some(r => /unknown|missing|stale|needs_evidence|draft|uncertain/.test(r))) ? 'needs_input' : 'stop',
+  if (!chosen) return { ...base, decision: { kind: base.blocked_actions.some(a => a.reason_codes.some(r => /unknown|missing|stale|needs_evidence|needs_precision|draft|uncertain/.test(r))) ? 'needs_input' : 'stop',
     reason: base.unmodeled_explanation ? 'Revise explanations or measurements; none of the registered explanations accounts for the valid results.' : 'No registered action meets the evidence, design and budget conditions.',
-    next_step: base.blocked_actions.some(a => a.reason_codes.some(r => r.startsWith('unknown_cost'))) ? 'Register a bounded profile_cost action.' : 'Resolve the listed gaps or park this direction.' } };
+    next_step: base.blocked_actions.some(a => a.reason_codes.some(r => r.startsWith('unknown_cost'))) ? 'Register a bounded profile_cost action.'
+      : base.blocked_actions.some(a => a.reason_codes.includes('needs_precision_evidence_or_different_measurement')) ? 'Register a low-cost precision diagnostic for the same predictions, supply an anticipated interval width with evidence, or register bounded exploration.' : 'Resolve the listed gaps or park this direction.' } };
   return { ...base, decision: { kind: 'execute_action', action_id: chosen.action.action_id, action_version: chosen.action.version,
     hypothesis_ids: chosen.action.hypothesis_versions.map(ref => ref.hypothesis_id),
-    reason: chosen.distinguishes.length ? 'This action separates registered competing predictions at the planned precision.'
-      : chosen.potentially_discriminating.length ? 'This control can distinguish competing predictions; the remaining precision requirement is explicit.' : `The ${chosen.action.type} action addresses the current prerequisites.`,
+    reason: chosen.distinguishes.length ? 'The cited precision estimate is sufficient to separate the registered prediction intervals; the observed result may still be inconclusive.'
+      : chosen.action.exploration ? 'This bounded exploration gathers evidence; it does not establish sufficient precision to distinguish explanations.'
+      : chosen.potentially_discriminating.length ? 'This action gathers evidence for the unresolved precision or measurement requirement.' : `The ${chosen.action.type} action addresses the current prerequisites.`,
     action: chosen.action, distinguishes: chosen.distinguishes, potentially_discriminating: chosen.potentially_discriminating,
     result_branches: chosen.action.result_branches, stopping_rule: chosen.action.stopping_rule },
     budget_gate: chosen.budget_gate,

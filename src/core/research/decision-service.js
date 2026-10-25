@@ -3,12 +3,14 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { writeJson, writeText } from '../../lib/fs.js';
 import { loadSourceManifest } from '../../storage/corpus-store.js';
-import { DECISION_VERSION, MUTATIONS, decisionError, validateDecisionRequest, validateHypothesisSet, validateActionPlan } from './decision-contracts.js';
+import { DECISION_VERSION, MUTATIONS, decisionError, validateDecisionRequest, validateHypothesisSet, validateActionPlan, collectEntityEvidence, measurementReferences } from './decision-contracts.js';
 import { decisionPaths, readDecisionState, mutateDecisionState, findRequestReceipt, latestRuns, latestVersions, attemptKey } from './decision-store.js';
-import { inspectEvidence, evidenceKey, changedEvidence, mergeEvidenceSnapshots, verifyRunManifest } from './decision-evidence.js';
+import { inspectEvidence, evidenceKey, changedEvidence, mergeEvidenceSnapshots, verifyRunManifest, inspectComparisonReferences } from './decision-evidence.js';
 import { assessObservation, compareExplanations, scientificState, assessmentValidity } from './hypothesis-assessment.js';
 import { budgetLedger, recommendNextAction } from './action-policy.js';
 import { mergeOpportunities, updateOpportunities, evaluateRevisitTriggers, evidenceRequests } from './opportunity-memory.js';
+import { buildProjectEvidence } from './project-evidence.js';
+import { assessComparisons, comparisonDependencyChanges } from './comparison-assessment.js';
 
 export function selectHypotheses(state, versions) {
   return versions.map(ref => {
@@ -40,7 +42,7 @@ export function decisionDependencies(state, args) {
 }
 
 export function runEvidenceRefs(run) {
-  return [...(run.artifact_refs || []), ...(run.comparison?.source_ref ? [run.comparison.source_ref] : []),
+  return [...collectEntityEvidence(run), ...(run.comparison?.source_ref ? [run.comparison.source_ref] : []),
     ...(run.manifest_path ? [{ evidence_origin: 'external_measured', source_id: `${run.executor_id}/${run.run_id}/${run.attempt_id}`,
       source_version: String(run.source_revision), locator: 'manifest', artifact_path: run.manifest_path }] : [])];
 }
@@ -78,7 +80,7 @@ export function appendRun(state, run, verification, requestId) {
       ? current : { status: 'unverified_stale_reference', provided_ref: run.recommendation_ref };
   }
   state.runs.push({ ...run, verification, prospectivity: registrationProspectivity(state, action, run),
-    evidence_keys: runEvidenceRefs(run).map(evidenceKey), accepted_request_id: requestId,
+    evidence_keys: [...new Set([...runEvidenceRefs(run).map(evidenceKey), ...(verification.comparisons || []).flatMap(c => c.evidence_keys || [])])], accepted_request_id: requestId,
     recorded_at: new Date().toISOString(), recommendation_snapshot: recommendationSnapshot });
   return { run_record_id: run.record_id, duplicate: false, current_record: latestRuns(state.runs).find(r => attemptKey(r) === attemptKey(run)).record_id,
     verification, budget: budgetLedger(state), scientific_assessment: 'pending' };
@@ -118,12 +120,22 @@ export function decisionStatus(state, args = {}) {
     evidence_requests: evidenceRequests(state), freshness: 'Stored snapshots; recommend_next and assess_results check their live dependencies.' };
 }
 
-export function decisionMarkdown(state, assessment) {
-  const scientific = assessment ? assessment.hypotheses : scientificState(state);
+export function decisionMarkdown(state, assessment, staleSourceKeys = []) {
+  const scientific = assessment && assessmentValidity(assessment, state, staleSourceKeys).status === 'current' ? assessment.hypotheses : scientificState(state, staleSourceKeys);
   const lines = [`# Research decision: ${state.project}`, '', state.objective, '', `Revision: ${state.revision}`, `Goal: ${state.goal_phase}`, '',
     '## Explanations', '', ...scientific.map(h => `- ${h.hypothesis_id} v${h.version}: ${h.status}. Scope: ${JSON.stringify(h.scope)}. Evidence groups: ${(h.evidence_groups || []).join(', ')}`),
     '', '## Observations', ''];
   for (const h of scientific) for (const row of h.rows || []) lines.push(`- ${row.run_record_id} / ${row.prediction_id}: ${row.relation}; ${row.comparison}. Origin: ${row.evidence_origin}. Gate: ${JSON.stringify(row.assessment_gate)}.`);
+  lines.push('', '## Comparisons', '');
+  const view = buildProjectEvidence(state, { limit: Number.MAX_SAFE_INTEGER, staleSourceKeys });
+  for (const run of latestRuns(state.runs)) {
+    const action = state.actions.find(a => a.action_id === run.action_id && a.version === run.action_version);
+    const comparison = view.comparison_summary.find(c => c.run_record_id === run.record_id);
+    if (!comparison.comparisons.length) continue;
+    lines.push(`- ${run.record_id}: ${comparison.status}; inference: ${comparison.inference_target || 'unknown'}.`);
+    for (const row of comparison.comparisons) lines.push(`  - ${row.comparison_id} / ${row.quantity}: ${row.measurement?.estimate ?? 'unknown'} ${row.unit}; ${row.label}; ${row.result} (${row.outcome_role}).`);
+    lines.push(`  - Limitations: ${comparison.limitations.join(', ')}.`);
+  }
   lines.push('', '## Budget', '', '| Resource | Limit | Spent | Committed | Remaining |', '| --- | ---: | ---: | ---: | ---: |');
   for (const [key, b] of Object.entries(budgetLedger(state).dimensions)) lines.push(`| ${key} | ${b.limit ?? 'unspecified'} | ${b.spent} | ${b.committed} | ${b.remaining ?? 'unknown'} |`);
   lines.push('', '## Opportunities', '', ...state.opportunities.map(o => `- ${o.candidate_id}: ${o.status}. ${o.reason}`), '', '## Evidence requests', '', ...evidenceRequests(state).map(r => `- ${r.candidate_id}: ${r.reason}`), '',
@@ -143,13 +155,21 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
     return { revision: 0, result: { status: 'not_initialized', project: args.project } };
   }
   const loadEvidence = options.inspectEvidence || (refs => inspectEvidence(rootPath, refs));
+  if (args.operation === 'evidence_view') {
+    const current = await loadEvidence(initial.evidence_snapshots.map(s => s.ref));
+    const stale = changedEvidence(initial.evidence_snapshots, current);
+    return { revision: initial.revision, result: buildProjectEvidence(initial, { ...args, staleSourceKeys: stale, currentEvidence: current }) };
+  }
   if (args.operation === 'status') return { revision: initial.revision, result: decisionStatus(initial, args) };
   if (args.operation === 'export') {
+    const current = await loadEvidence(initial.evidence_snapshots.map(s => s.ref));
+    const stale = changedEvidence(initial.evidence_snapshots, current);
     const assessment = args.assessmentId ? initial.assessments.find(a => a.assessment_id === args.assessmentId) : null;
     if (args.assessmentId && !assessment) throw decisionError('invalid_reference', 'Unknown assessmentId');
     const result = { status: 'exported', based_on_revision: initial.revision,
-      json: assessment ? { ...assessment, validity: assessmentValidity(assessment, initial) } : decisionStatus(initial),
-      markdown: decisionMarkdown(initial, assessment) };
+      json: assessment ? { ...assessment, validity: assessmentValidity(assessment, initial, stale) } : { ...decisionStatus(initial),
+        project_evidence: buildProjectEvidence(initial, { limit: Number.MAX_SAFE_INTEGER, staleSourceKeys: stale, currentEvidence: current }) },
+      markdown: decisionMarkdown(initial, assessment, stale) };
     if (args.outputDir && !args.dryRun) {
       try {
         const directory = path.resolve(args.outputDir);
@@ -170,9 +190,18 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
   }
   const payload = args.payload || {};
   let refs = [], candidates = [], verification = null;
-  if (args.operation === 'register_hypotheses') refs = payload.hypotheses.flatMap(h => h.evidence_refs || []);
-  if (args.operation === 'register_actions') refs = payload.actions.flatMap(a => a.evidence_refs || []);
-  if (args.operation === 'record_run') { refs = runEvidenceRefs(payload.run); verification = await verifyRunManifest(rootPath, payload.run); }
+  if (args.operation === 'register_hypotheses') refs = payload.hypotheses.flatMap(collectEntityEvidence);
+  if (args.operation === 'register_actions') refs = payload.actions.flatMap(collectEntityEvidence);
+  if (args.operation === 'record_run') {
+    refs = runEvidenceRefs(payload.run); verification = await verifyRunManifest(rootPath, payload.run);
+    const action = initial.actions.find(a => a.action_id === payload.run.action_id && a.version === payload.run.action_version);
+    if (!action) throw decisionError('invalid_reference', 'Run must reference an existing action version');
+    if (payload.run.comparisons) verification.comparisons = await inspectComparisonReferences(rootPath, initial, action, payload.run, loadEvidence);
+    for (const c of payload.run.comparisons || []) if (c.reference.kind === 'run_record') {
+      const source = initial.runs.find(r => r.record_id === c.reference.record_id);
+      refs.push(...runEvidenceRefs(source));
+    }
+  }
   if (args.operation === 'refresh_evidence') {
     candidates = [...await controllerCandidates(rootPath, args.project), ...(payload.candidate_refs || [])];
     refs = [...initial.evidence_snapshots.map(s => s.ref), ...(payload.source_refs || []), ...candidates.flatMap(c => c.evidence_refs || [])];
@@ -190,6 +219,8 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
   if (args.operation === 'assess_results') {
     const stale = changedEvidence(initial.evidence_snapshots, snapshots);
     if (stale.length) throw decisionError('stale_dependencies', 'Refresh changed sources before assessment', stale);
+    const comparatorChanges = selectRuns(initial, payload.run_record_ids).flatMap(run => comparisonDependencyChanges(run, initial));
+    if (comparatorChanges.length) throw decisionError('stale_dependencies', 'Submit a new run source revision with the corrected comparator before assessment', comparatorChanges);
     const refreshed = await loadEvidence(refs);
     if (changedEvidence(snapshots, refreshed).length) throw decisionError('stale_dependencies', 'Sources changed during assessment preparation');
   }
@@ -205,12 +236,15 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
       const hypothesisMode = args.operation === 'register_hypotheses';
       const field = hypothesisMode ? 'hypotheses' : 'actions';
       const idField = hypothesisMode ? 'hypothesis_id' : 'action_id';
-      const values = hypothesisMode ? validateHypothesisSet(payload.hypotheses, state.hypotheses) : payload.actions.map(a => validateActionPlan(a, state.hypotheses));
+      const measurements = measurementReferences(latestRuns(state.runs));
+      const values = hypothesisMode ? validateHypothesisSet(payload.hypotheses, state.hypotheses, measurements.map(m => m.id)) : payload.actions.map(a => validateActionPlan(a, state.hypotheses));
       for (const item of values) {
         const latest = latestVersions(state[field], idField).find(prior => prior[idField] === item[idField]);
         if (item.version !== (latest?.version || 0) + 1) throw decisionError('invalid_version', `${item[idField]} requires a new consecutive version`);
+        const referencedRuns = measurements.filter(m => item.mechanism_evidence?.links.some(l => l.from === m.id || l.to === m.id)).map(m => state.runs.find(r => r.record_id === m.record_id));
         const record = { ...item, registered_request_id: args.requestId, registered_revision: revision, created_at: now,
-          evidence_keys: (item.evidence_refs || []).map(evidenceKey) };
+          ...(hypothesisMode ? { run_record_ids: [...new Set(referencedRuns.map(r => r.record_id))] } : {}),
+          evidence_keys: [...new Set([...collectEntityEvidence(item).map(evidenceKey), ...referencedRuns.flatMap(r => r.evidence_keys || [])])] };
         state[field].push(record);
         if (hypothesisMode) state.predictions.push(...record.predictions.map(p => ({ ...p, hypothesis_id: record.hypothesis_id, hypothesis_version: record.version, registered_revision: revision })));
       }
@@ -224,10 +258,12 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
       if (missing.length) return { status: 'needs_input', assessment_gate: { allowed: false, reason_codes: ['source_not_admitted'], sources: missing }, next_step: 'Supply or repair the specific source references.' };
       const rows = compareExplanations(runs.flatMap(run => {
         const action = state.actions.find(a => a.action_id === run.action_id && a.version === run.action_version);
-        return hypotheses.flatMap(h => assessObservation(h, action, run));
+        return hypotheses.flatMap(h => assessObservation(h, action, run, state.runs));
       }), hypotheses);
       const assessment = { assessment_id: `assessment:${revision}`, created_at: now, based_on_revision: state.revision,
         run_record_ids: runs.map(r => r.record_id), hypothesis_versions: payload.hypothesis_versions,
+        reference_record_ids: [...hypotheses.flatMap(h => h.run_record_ids || []), ...runs.flatMap(r => (r.comparisons || []).filter(c => c.reference.kind === 'run_record').map(c => c.reference.record_id))],
+        comparison_summary: runs.map(r => assessComparisons(state.actions.find(a => a.action_id === r.action_id && a.version === r.action_version), r, state.runs)),
         evidence_keys: snapshots.map(s => s.key), evidence_snapshots: snapshots, rows,
         analysis_annotations: (payload.analysis_annotations || []).map(a => ({ ...a, evidence_origin: 'agent_inferred', authority: 'annotation_only' })) };
       state.assessments.push(assessment);

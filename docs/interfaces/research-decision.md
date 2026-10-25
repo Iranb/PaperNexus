@@ -1,6 +1,6 @@
 # Research decision contract
 
-`research_decision` records competing explanations, selects a concrete next action and reassesses that choice after an external result. Its contract is `papernexus-research-decision-v1`. The default `research` profile advertises four tools; `legacy` retains 23 and `all` exposes 27. Reconnect clients after upgrading. The original three workflow schemas remain unchanged.
+`research_decision` records competing explanations, selects a concrete next action and reassesses that choice after an external result. Its contract is `papernexus-research-decision-v1`. The default `research` profile advertises four tools; `legacy` retains 23 and `all` exposes 27. Reconnect clients after upgrading and feature-detect optional operations and evaluation purposes.
 
 ## Requests and operations
 
@@ -10,6 +10,7 @@ Every request has `operation`, `project`, optional `corpus`, and `responseMode=f
 | --- | --- | --- |
 | `init` | `{objective, goal_phase, budget, exploration_limit?}` | Create a project; an existing project is never reset |
 | `status` | Optional `requestId` or `entityId` | Read state or the original committed receipt |
+| `evidence_view` | Optional `query`, `limit` (default 10, maximum 50), `includeHistory` | Read a project evidence projection and live dependency freshness |
 | `register_hypotheses` | `{hypotheses:[...]}` | Append immutable hypothesis and prediction versions |
 | `register_actions` | `{actions:[...]}` | Append plans; submit no jobs |
 | `record_run` | `{run:{...}}` | Accept cumulative external attempt facts and cost |
@@ -46,7 +47,45 @@ Actions bind exact `hypothesis_versions` and `prediction_ids`. A recommendable e
 
 `scope` and prediction conditions compare structured protocol fields. Relevant dataset/split, label access, model, preprocessing, training horizon, tuning budget, checkpoint rule, metric code, code revision, command and environment belong in the declared protocol. Independent unit and seed information must be retained with the source artifacts. Do not equate two experiments merely because their metric names match.
 
-Evidence origins are `paper_reported`, `external_measured`, `agent_inferred`, `search_absence`, and `synthetic_fixture`. Each reference contains `source_id`, `source_version`, `locator`, and the applicable `paper_id`/`source_key` or server-local `artifact_path`. Paper references require the selected source key as their version and use existing admission rules. Agent inference and search absence cannot independently support an experimental conclusion.
+Evidence origins are `paper_reported`, `external_measured`, `code_inspected`, `agent_inferred`, `search_absence`, and `synthetic_fixture`. Each reference contains `source_id`, `source_version`, `locator`, and the applicable `paper_id`/`source_key` or server-local `artifact_path`. Paper references require the selected source key as their version and use existing admission rules. Agent inference and search absence cannot independently support an experimental conclusion.
+
+`code_inspected` also requires `repository`, `code_revision`, `file_path` and `observation`. Its JSON artifact must contain those same fields. Verification is `code_artifact_present`, which establishes the availability of a saved static observation, not execution or causality. Optional `hypothesis.mechanism_evidence` contains typed components and links with `source_supported`, `code_observed`, `measured_association` or `hypothesized` status. Actions can reference components through `intervention_components`; changing several components yields `compound_intervention` in the evidence view.
+
+## Project evidence and task purposes
+
+`evidence_view` projects existing state at `based_on_revision`; it does not create a graph database, initialize a missing project or change revision/cost. It returns observations, comparison summaries, open explanations, mechanism paths, source readiness, evidence requests and nodes/edges. Query matching selects records without changing scientific conclusions. Coverage reports truncation; outstanding runs, budget and limitations remain visible regardless of the query.
+
+`idea_generation/generate` accepts optional `project`. Its `project_evidence` and `research_focus` cite saved runs and predictions. Candidates receive `project_assessment` through explicit candidate/source references. Candidates with no explicit connection remain `unlinked`; title similarity is not experiment identity.
+
+`idea_generation/evaluate` accepts `purpose`:
+
+| Purpose | Required input | Result |
+| --- | --- | --- |
+| `novelty_audit` (default) | `query`, `candidateMechanism` | Existing innovation evidence audit |
+| `mechanism_diagnosis` | `project`, `actionId`; optional `actionVersion` | Registered intervention, control, predictions, validity and evidence gaps |
+| `performance_validation` | Same registered action identity | Original baseline, primary target, guardrail, analysis and inference gaps |
+
+Project purposes return `task_gate.status=ready_for_design|needs_input`, `novelty_claim_allowed=false` and a separate `performance_claim_status`. They do not accept candidate overrides or grant execution permission. Missing action versions remain explicit gaps. The default novelty audit retains its existing evidence requirements; lexical collision candidates do not establish semantic equivalence.
+
+Paper material views expose `paper.graph_readiness`: readable source, admission, semantic node and source-anchored relation count. Status is `unavailable`, `source_only`, `node_only` or `anchored_relations`. Corpus membership is excluded. Missing semantics returns an existing task status or explicit staged-file import handoff; reads do not perform that import.
+
+## Comparators and outcome vectors
+
+An action's immutable `evaluation_plan` declares `comparators`, `outcomes` and `inference_target`. Comparators have `comparison_id`, `role=original|control|paper`, required protocol fields and a reference: `{kind:"run_record",record_id}` or `{kind:"external_manifest"|"paper_report",source_ref,protocol_locator,measurements_locator}`. External locators use JSON Pointer or dotted object paths in a readable structured extraction artifact. Reference snapshots retain source versions, protocol and absolute measurements.
+
+Outcomes declare quantity, difference unit, direction, `role=primary|guardrail|diagnostic`, comparison IDs and a minimum effect or maximum regression. New runs use `comparisons[]`; they cannot also use legacy `baseline`/`comparison`. Each comparison repeats its registered reference and contains measurements. Top-level measurements remain available for observations independent of a comparator. Legacy single-comparison inputs remain accepted.
+
+For a difference, `estimate=candidate_estimate-reference_estimate`. Absolute values share `value_unit`; the difference uses `unit`, such as `percent` and `pp`. The interval describes the difference. Units are not implicitly converted. Repeated comparison IDs, inconsistent absolute references and conflicting candidate estimates are rejected. Matched comparison labels require aligned candidate/reference protocol and resolved reference measurements.
+
+Predictions bind `comparison_id`. A new analysis binds `primary_comparison_id` and `primary_outcome`; adjusted analysis lists the covered `(comparison_id,quantity)` pairs in `family` and supplies its adjustment reference. Another comparison with the same quantity is still secondary. Multiple comparisons remain one physical attempt with one cumulative cost. Corrections supersede the old record and invalidate dependent assessments.
+
+Summary status is `not_assessed`, `inconclusive`, `tradeoff`, `partial_recovery` or `improved_in_scope`. A control gain below the original baseline remains partial recovery. Diagnostic gains cannot replace the primary target. Only valid prospective analysis with the original primary target and guards satisfied can establish improvement in scope. Every metric and limitation remains visible.
+
+## Precision and inference
+
+`precision.max_interval_width` is a planned threshold. `anticipated_interval_width` and admitted `basis_refs` provide a precision estimate. The policy `discriminating-action-v2` reports required, planned and anticipated widths separately. A controlled mechanism experiment without adequate evidence of achievable precision requests a bounded diagnostic or a revised measurement. Explicit bounded exploration remains available without a discrimination claim. Legacy inputs still parse; lacking precision evidence can now change the recommendation to `needs_input`.
+
+Register `inference_target=fixed_model|training_procedure` on the evaluation plan or precision/prediction and on measurement uncertainty. Training-procedure inference requires distinct completed `independent_run_refs`, matching independent-unit counts and distinct recorded independence groups. Related epochs and repeated references do not count as independent training runs. These provenance checks do not replace an applicable uncertainty calculation or statistical review.
 
 ## External runs
 
@@ -82,6 +121,6 @@ The project overlay's `research-decision-state.json` is the authority for this t
 
 After a timeout, call `status` with the original requestId. If committed, use that receipt; if absent, reconcile the transport and retry the exact request. Reusing a request ID with changed contents is an error. On revision conflict, read current state and make a new decision before using a new request ID. Never automatically replay a mutation merely to expand a summary.
 
-Summary responses preserve bounded gates and use read-only status/export links. When a gate cannot fit, retrieve full output before deciding. `status` and `export` show stored evidence snapshots and current validity against local state; they do not themselves perform a live evidence refresh. An export write failure returns `export_pending` without undoing committed state. `outputDir` belongs to the server filesystem.
+Summary responses preserve bounded gates and use read-only expansion requests. Oversized gates are marked `read_full_required`. `status` shows stored snapshots; `evidence_view`, project evaluation and export check live dependency freshness without writing refreshed state. Mutation summaries expand through `status(requestId)`, and evidence views expand through `evidence_view`. An export write failure returns `export_pending` without undoing committed state. `outputDir` belongs to the server filesystem.
 
 See the [end-to-end operating guide](../operations/research-decision-loop.md) for the runnable fixture, AutoResearch handoff and recovery checks.

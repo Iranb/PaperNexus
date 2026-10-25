@@ -2138,6 +2138,9 @@ async function loadCorpus(name, options = {}) {
   state.viewMode = previousViewMode;
 
   corpusSelect.value = payload.meta.name;
+  const corpusUrl = new URL(window.location.href);
+  corpusUrl.searchParams.set('corpus', payload.meta.name);
+  window.history.replaceState(null, '', corpusUrl);
   renderTopicResults();
   if (!options.preserveView) {
     state.cameraInteracted = false;

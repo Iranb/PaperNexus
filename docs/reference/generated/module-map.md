@@ -179,6 +179,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/materials/researchstudio-innovation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/materials/researchstudio-innovation.js) | Researchstudio Innovation implementation. |
 | [`src/core/paper-date.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/paper-date.js) | Paper Date implementation. |
 | [`src/core/research/action-policy.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/action-policy.js) | Action Policy implementation. |
+| [`src/core/research/comparison-assessment.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/comparison-assessment.js) | Comparison Assessment implementation. |
 | [`src/core/research/decision-contracts.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-contracts.js) | Decision Contracts implementation. |
 | [`src/core/research/decision-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-evidence.js) | Decision Evidence implementation. |
 | [`src/core/research/decision-service.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/decision-service.js) | Decision Service implementation. |
@@ -187,6 +188,8 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/research/field-research.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-research.js) | Field Research implementation. |
 | [`src/core/research/hypothesis-assessment.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/hypothesis-assessment.js) | Hypothesis Assessment implementation. |
 | [`src/core/research/opportunity-memory.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/opportunity-memory.js) | Opportunity Memory implementation. |
+| [`src/core/research/project-evaluation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evaluation.js) | Project Evaluation implementation. |
+| [`src/core/research/project-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evidence.js) | Project Evidence implementation. |
 | [`src/core/search/brainstorm-communities.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/search/brainstorm-communities.js) | Brainstorm Communities implementation. |
 | [`src/core/search/search.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/search/search.js) | Query, context, impact, idea, and brainstorming retrieval logic. |
 

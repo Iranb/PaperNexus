@@ -1,0 +1,61 @@
+{
+  "kind": "measured_historical",
+  "time_cutoff": "2026-10-25T06:31:00Z",
+  "files": [
+    {
+      "path": "ANALYSIS.json",
+      "original_path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_fsgcd_v1/ANALYSIS.json",
+      "source_version": "1792893050525846700",
+      "evidence_origin": "external_measured",
+      "bytes": 5785
+    },
+    {
+      "path": "MECHANISM_REVIEW.json",
+      "original_path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_fsgcd_v1/MECHANISM_REVIEW.json",
+      "source_version": "1792893382276834500",
+      "evidence_origin": "external_measured",
+      "bytes": 4149
+    },
+    {
+      "path": "ERROR_DECOMPOSITION.json",
+      "original_path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_graph_followup/ERROR_DECOMPOSITION.json",
+      "source_version": "1792894538999472700",
+      "evidence_origin": "external_measured",
+      "bytes": 35007
+    },
+    {
+      "path": "MAPPING_INVARIANT_REVIEW.json",
+      "original_path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_graph_followup/MAPPING_INVARIANT_REVIEW.json",
+      "source_version": "1792894648885096500",
+      "evidence_origin": "external_measured",
+      "bytes": 2489
+    },
+    {
+      "path": "BEFORE_GRAPH.md",
+      "original_path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_graph_followup/BEFORE_GRAPH.md",
+      "source_version": "1792894894408526000",
+      "evidence_origin": "agent_inferred",
+      "bytes": 1532
+    },
+    {
+      "path": "CAUSE_AUDIT.json",
+      "original_path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_fsgcd_v2/CAUSE_AUDIT.json",
+      "source_version": "1792909482167143700",
+      "evidence_origin": "external_measured",
+      "bytes": 2877
+    }
+  ],
+  "primary_source": "ANALYSIS.json",
+  "comparison_label": "vs matched reproduced baseline",
+  "paper_report_comparison": "paper-report comparison not established",
+  "excluded_results": [
+    "ongoing triplet restoration final result"
+  ],
+  "units": {
+    "accuracy": "percent",
+    "contrast": "pp"
+  },
+  "training_seeds": [
+    0
+  ]
+}

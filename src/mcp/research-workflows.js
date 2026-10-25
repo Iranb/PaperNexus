@@ -6,6 +6,8 @@ import { resolveCorpusForApi } from '../server/api.js';
 import { RESEARCH_DECISION_TOOL } from './tool-research-decision.js';
 import { OPERATIONS as DECISION_OPERATIONS, DECISION_VERSION } from '../core/research/decision-contracts.js';
 import { executeFieldResearchOperation } from '../core/research/field-research.js';
+import { readProjectEvidence, evaluateProject } from '../core/research/project-evaluation.js';
+import { attachProjectEvidence } from '../core/research/project-evidence.js';
 
 export const RESEARCH_WORKFLOW_VERSION = 'papernexus-research-tools-v1';
 
@@ -15,6 +17,10 @@ const strings = (description) => ({ type: 'array', items: text('Value'), maxItem
 const FIELDS = {
   responseMode: { type: 'string', enum: ['full', 'summary'], description: 'full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions.' },
   corpus: text('Corpus name or indexed root. Use literature_review/corpora when unknown.'),
+  project: text('Registered research decision project.'),
+  purpose: { type: 'string', enum: ['novelty_audit', 'mechanism_diagnosis', 'performance_validation'], description: 'Evaluate purpose; defaults to novelty_audit. Project task gates do not authorize execution.' },
+  actionId: text('Registered action id for project evaluation.'),
+  actionVersion: count(1000000, 'Registered action version; defaults to the latest version.'),
   query: text('Research topic, question, or exact node anchor.'),
   paperId: text('Exact committed paper id.'),
   identifier: text('Exact paper identifier such as DOI or arXiv id.'),
@@ -101,11 +107,11 @@ export const RESEARCH_ROUTES = {
     impact: read('research_lookup', 'impact', ['query', 'direction', 'maxDepth', 'layers'], ['query'])
   },
   idea_generation: {
-    generate: read('research_lookup', 'ideas', ['query', 'targetDomain', 'mechanisms', 'limit', 'selectionMode', 'selectionK'], ['query']),
+    generate: read('research_lookup', 'ideas', ['query', 'targetDomain', 'mechanisms', 'limit', 'selectionMode', 'selectionK', 'project'], ['query']),
     diverge: read('research_lookup', 'brainstorm', ['query', 'maxDepth', 'limit', 'layers'], ['query']),
     converge: read('research_lookup', 'brainstorm', ['query', 'maxDepth', 'limit', 'layers'], ['query']),
     gaps: read('agent_materials', 'structural_gap_pack', [...materialFields, 'method', 'maxDepth'], ['query']),
-    evaluate: read('agent_materials', 'innovation_evidence_pack', [...materialFields, 'method', 'maxDepth', 'candidateMechanism', 'removedComponents'], ['query', 'candidateMechanism']),
+    evaluate: read('agent_materials', 'innovation_evidence_pack', [...materialFields, 'method', 'maxDepth', 'candidateMechanism', 'removedComponents', 'project', 'purpose', 'actionId', 'actionVersion']),
     experiment_materials: read('agent_materials', 'experiment_cost_materials', materialFields, ['query'])
   }
 };
@@ -113,7 +119,7 @@ export const RESEARCH_ROUTES = {
 const DESCRIPTIONS = {
   literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts bounded discovery, missing-paper import and configured extraction for an evolution map (idempotencyKey required unless dryRun); field_research_status reads progress and the ready map. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
   lineage_analysis: 'Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
-  idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains.'
+  idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains.'
 };
 
 export const RESEARCH_TOOLS = Object.entries(RESEARCH_ROUTES).map(([name, operations]) => {
@@ -138,7 +144,12 @@ export const RESEARCH_TOOLS = Object.entries(RESEARCH_ROUTES).map(([name, operat
         then: {
           ...(route.required.length ? { required: route.required } : {}),
           ...(route.anyRequired.length ? { anyOf: route.anyRequired.map((field) => ({ required: [field] })) } : {}),
-          properties: Object.fromEntries(fields.filter((field) => !route.fields.includes(field)).map((field) => [field, false]))
+          properties: Object.fromEntries(fields.filter((field) => !route.fields.includes(field)).map((field) => [field, false])),
+          ...(name === 'idea_generation' && operation === 'evaluate' ? { allOf: [{
+            if: { required: ['purpose'], properties: { purpose: { enum: ['mechanism_diagnosis', 'performance_validation'] } } },
+            then: { required: ['project', 'actionId'], properties: { candidateMechanism: false, removedComponents: false, targetDomain: false, method: false } },
+            else: { required: ['query', 'candidateMechanism'], properties: { project: false, actionId: false, actionVersion: false } }
+          }] } : {})
         }
       }))
     }
@@ -223,6 +234,18 @@ export function resolveResearchWorkflowCall(name, args = {}) {
       autoDiscoverSources: false, submitLiteratureDiscoveryImports: false, processLiteratureDiscoveryImports: false });
   }
   if (name === 'idea_generation') {
+    if (args.operation === 'evaluate') {
+      if (args.purpose && args.purpose !== 'novelty_audit') {
+        if (!args.project || !args.actionId) throw new Error('Project evaluation requires project and actionId.');
+        if (['candidateMechanism', 'removedComponents', 'targetDomain', 'method'].some(k => args[k] !== undefined)) throw new Error('Project evaluation uses the registered action; candidate overrides are not accepted.');
+        backend = 'project_evaluation';
+        backendArgs = pick(args, ['corpus', 'project', 'purpose', 'actionId', 'actionVersion', 'query']);
+      } else {
+        if (!args.query || !args.candidateMechanism) throw new Error('novelty_audit requires query and candidateMechanism.');
+        if (['project', 'actionId', 'actionVersion'].some(k => args[k] !== undefined)) throw new Error('Action references require a project evaluation purpose.');
+        delete backendArgs.purpose;
+      }
+    }
     if (['diverge', 'converge'].includes(args.operation)) {
       Object.assign(backendArgs.options, { mode: args.operation, maxHops: budget.maxDepth });
     }
@@ -273,6 +296,8 @@ function decodeResult(result) {
 function nextActions(call, args, result) {
   const shared = args.corpus ? { corpus: args.corpus } : {};
   const next = (tool, operation, fields = {}) => ({ tool, arguments: { operation, ...shared, ...fields } });
+  if (call.backend === 'project_evaluation') return [next('research_decision', result.task_gate.status === 'ready_for_design' ? 'recommend_next' : 'evidence_view', { project: args.project })];
+  if (call.tool === 'idea_generation' && args.project) return [next('research_decision', 'evidence_view', { project: args.project })];
   const runId = result?.runId || result?.run_id || args.runId;
   if (call.backend === 'field_research') return runId && !result?.terminal && !result?.dryRun
     ? [next('literature_review', 'field_research_status', { runId })] : [];
@@ -322,14 +347,20 @@ async function importSavedDiscoverySources(args, options) {
 export async function executeResearchWorkflow(name, args, options, invoke) {
   const call = resolveResearchWorkflowCall(name, args);
   if (!call) throw new Error('Unknown research tool: ' + name);
-  const result = call.backend === 'capabilities'
+  let result = call.backend === 'capabilities'
     ? researchCapabilities(options)
     : call.backend === 'discovery_import_bridge'
     ? await importSavedDiscoverySources(call.args, options)
     : call.backend === 'field_research'
     ? await executeFieldResearchOperation(call.args.corpus, call.args.operation,
         Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
+    : call.backend === 'project_evaluation'
+    ? await evaluateProject(await resolveCorpusForApi(args.corpus, options), call.args)
     : decodeResult(await invoke(call.backend, call.args, options));
+  if (name === 'idea_generation' && args.operation === 'generate' && args.project) {
+    const { view } = await readProjectEvidence(await resolveCorpusForApi(args.corpus, options), args.project, { limit: 50 });
+    result = attachProjectEvidence(result, view);
+  }
   const envelope = {
     contractVersion: RESEARCH_WORKFLOW_VERSION,
     tool: name,
@@ -357,7 +388,9 @@ export function researchCapabilities(options = {}) {
     contractVersion: RESEARCH_WORKFLOW_VERSION,
     advertisedProfile: resolveMcpToolProfile(options),
     workflows: { ...Object.fromEntries(Object.entries(RESEARCH_ROUTES).map(([name, routes]) => [name, Object.keys(routes)])), research_decision: DECISION_OPERATIONS },
-    researchDecision: { contractVersion: DECISION_VERSION, stateAuthority: 'project/research-decision-state.json', executionAuthority: 'external_executor', writesRequire: ['requestId', 'expectedRevision (except init)'] },
+    researchDecision: { contractVersion: DECISION_VERSION, stateAuthority: 'project/research-decision-state.json', executionAuthority: 'external_executor', writesRequire: ['requestId', 'expectedRevision (except init)'],
+      evidenceView: { readOnly: true, maxLimit: 50, includeHistory: true }, multiComparison: true, codeEvidenceOrigin: 'code_inspected',
+      evaluationPurposes: ['novelty_audit', 'mechanism_diagnosis', 'performance_validation'], precision: 'anticipated_interval_width requires basis_refs; plan thresholds are not achievable precision evidence' },
     responseModes: ['full', 'summary'], summaryMaxBytes: RESEARCH_SUMMARY_MAX_BYTES,
     advanced: { tool: 'agent_materials', operations: ['proposal_graph_session', 'research_controller'],
       profileHint: 'Legacy names remain callable; clients needing schema discovery can use the all or legacy profile.',

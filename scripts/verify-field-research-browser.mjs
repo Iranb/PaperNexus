@@ -46,6 +46,7 @@ const server = await serveCommand({ host: '127.0.0.1', port, rootPaths: roots, a
   enableLiteratureDiscoveryRecovery: false, enableImportWorkflowRecovery: false, enableRegistryReconcile: false,
   fieldResearchDependencies: { async discover(args, options) {
     discoveries++;
+    if (args.query.startsWith('Unavailable provider')) throw new Error('Offline provider failure fixture.');
     await options.onLiteratureDiscoveryProgress({ stage: 'provider_search', rawCandidateCount: 2 });
     await discoveryGate;
     const candidates = [
@@ -133,7 +134,18 @@ try {
   await page.locator('#statusbar').filter({ hasText: 'empty-demo' }).waitFor();
   assert.equal(await page.locator('#field-evolution-panel').isVisible(), false);
   assert.equal(await page.locator('[data-field-node]').count(), 0);
-  checks.push('Changing corpus clears the previous research view.');
+  await page.reload();
+  await page.locator('#statusbar').filter({ hasText: 'empty-demo' }).waitFor();
+  assert.equal(await page.locator('#field-evolution-panel').isVisible(), false);
+  checks.push('Changing corpus clears the previous research view and retains the selected corpus after reload.');
+  await page.locator('#corpus-select').selectOption('research-demo');
+  await page.locator('#statusbar').filter({ hasText: 'research-demo' }).waitFor();
+  await page.locator('#topic-query').fill('Unavailable provider');
+  await page.locator('#field-research').click();
+  await page.locator('.field-research-heading strong').filter({ hasText: 'Research failed' }).waitFor();
+  assert.match(await page.locator('.field-research-summary').textContent(), /Offline provider failure fixture/);
+  assert.equal(await page.locator('[data-field-node]').count(), 0);
+  checks.push('A failed server run reports its failure and clears the previous map.');
   assert.deepEqual(errors, []);
   await fs.writeFile(path.join(output, 'acceptance.json'), JSON.stringify({ passed: checks.length, checks, browserErrors: errors,
     evidenceBoundary: 'Offline discovery fixture; real HTTP, import submission and status storage. Import completion and graph publication are supplied fixtures, not live extraction.' }, null, 2));

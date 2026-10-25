@@ -33,7 +33,8 @@ export function mountFieldResearch({ host, getCorpus, getJson, postJson, readReq
     const counts = response.imports?.counts;
     const selection = response.survey?.candidateSelection;
     const sources = response.survey?.sources || [];
-    const status = response.status === 'partial' ? 'Map ready · coverage gaps' : stages[response.stage] || response.status;
+    const status = response.status === 'failed' ? 'Research failed'
+      : response.status === 'partial' ? 'Map ready · coverage gaps' : stages[response.stage] || response.status;
     summary.hidden = false;
     summary.innerHTML = `<div class="field-research-heading"><strong>${escape(status)}</strong><span>${escape(response.runId || '')}</span></div>
       <p>Literature search → full text → relation evidence → graph synchronization → evolution map</p>
@@ -80,9 +81,6 @@ export function mountFieldResearch({ host, getCorpus, getJson, postJson, readReq
   };
   const activate = corpus => {
     pause(); selected = corpus;
-    const url = new URL(window.location.href);
-    url.searchParams.set('corpus', corpus);
-    window.history.replaceState(null, '', url);
     open(corpus);
     summary.hidden = false;
     return sequence;

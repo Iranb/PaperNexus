@@ -1,0 +1,87 @@
+{
+  "scope": "Post-hoc description of one accepted paired training seed; no independent-epoch inference.",
+  "source_analysis": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_fsgcd_v1/ANALYSIS.json",
+  "raw_epoch_sources": [
+    "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/runs/full_sampled_seed0_a1/epochs.jsonl",
+    "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/runs/full_complete_seed0_a1/epochs.jsonl"
+  ],
+  "calculation": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/experiments/papernexus_fsgcd_v1/posthoc_review.py",
+  "comparison": "vs matched reproduced baseline",
+  "arms": {
+    "sampled": {
+      "epoch_count": 200,
+      "mean_candidate_coverage": 0.39626558813616447,
+      "mean_pseudo_label_count": 100.265,
+      "mean_known_fraction": 0.5137512149071667,
+      "mean_correct_pseudo_labels": 39.685,
+      "mean_known_pseudo_labels": 51.415,
+      "mean_novel_pseudo_labels_as_known": 48.85,
+      "mean_wrong_known_pseudo_labels": 11.73
+    },
+    "complete": {
+      "epoch_count": 200,
+      "mean_candidate_coverage": 1.0,
+      "mean_pseudo_label_count": 129.535,
+      "mean_known_fraction": 0.62484577197523,
+      "mean_correct_pseudo_labels": 65.905,
+      "mean_known_pseudo_labels": 80.88,
+      "mean_novel_pseudo_labels_as_known": 48.655,
+      "mean_wrong_known_pseudo_labels": 14.975
+    }
+  },
+  "complete_minus_sampled": {
+    "mean_candidate_coverage": 0.6037344118638355,
+    "mean_pseudo_label_count": 29.269999999999996,
+    "mean_known_fraction": 0.11109455706806326,
+    "mean_correct_pseudo_labels": 26.22,
+    "mean_known_pseudo_labels": 29.464999999999996,
+    "mean_novel_pseudo_labels_as_known": -0.19500000000000028,
+    "mean_wrong_known_pseudo_labels": 3.244999999999999
+  },
+  "heldout_delta_pp": {
+    "all": -1.9848118743527792,
+    "old": 2.4691358024691397,
+    "new": -2.179787425689071
+  },
+  "best_to_final_NEW_drop_pp": {
+    "sampled": 1.580611169652265,
+    "complete": 5.28626624517036
+  },
+  "code_evidence": [
+    {
+      "path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/code/fsgcd_forward_v1/study_support.py",
+      "lines": [
+        25,
+        32
+      ],
+      "observation": "Known-class fractions and correctness use ground truth only for audit summaries."
+    },
+    {
+      "path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/code/fsgcd_forward_v1/train.py",
+      "lines": [
+        216,
+        228
+      ],
+      "observation": "A transferred pseudo label changes both its class target and pseudo_mask."
+    },
+    {
+      "path": "/Volumes/yylx-file-station/HYQ/AutoResearch/06-FS-GCD/code/fsgcd_forward_v1/train.py",
+      "lines": [
+        249,
+        289
+      ],
+      "observation": "pseudo_mask selects supervised contrastive examples; its complement selects triplet examples."
+    }
+  ],
+  "interpretation": [
+    "More correct known-class assignments account for most of the increase in pseudo-label count; mean novel-class assignments to known labels remain almost unchanged.",
+    "The proposed explanation that the larger pool simply adds more novel-class mislabels is not supported by these aggregate counts.",
+    "Known-class supervision and exclusion from the triplet branch are coupled by pseudo_mask. This is an observed code path, not proof that it causes the final NEW decrease.",
+    "The larger best-to-final decline in the complete arm is descriptive; it cannot replace the frozen final-epoch comparison."
+  ],
+  "decision": "Stop this candidate-completion branch; no automatic additional seed or GPU commitment.",
+  "unresolved_question": "Does removing pseudo-labelled images from the unsupervised triplet branch contribute to the old/new tradeoff?",
+  "future_discriminator": "A separately registered complete-pool control can retain pseudo-labelled images in the triplet branch while preserving pseudo-label supervision, the complete CUB protocol and fixed-final evaluation. Log branch populations and gradients; do not use unlabeled ground truth to choose training samples.",
+  "causal_claim_allowed": false,
+  "stable_improvement_claim_allowed": false
+}

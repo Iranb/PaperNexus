@@ -9,13 +9,16 @@ The browser's **Research and build map** runs bounded literature discovery, miss
 | Check | Result | Evidence |
 | --- | --- | --- |
 | Discovery, import, worker, synchronization, HTTP/MCP and field regression suite | 195 passed, 0 failed | `test/field-research.test.js`, `test/field-research-api.test.js` and existing pipeline suites |
-| Research browser acceptance | 7 passed, 0 page errors | `scripts/verify-field-research-browser.mjs` |
+| Research browser acceptance | 8 passed, 0 page errors | `scripts/verify-field-research-browser.mjs` |
 | Existing map browser regression | 10 passed, 0 page errors | `scripts/verify-field-evolution-browser.mjs` |
 | Documentation | Build passed | `npm run docs:build` |
+| Integration with project research feedback | 46 passed, 0 failed | Shared MCP workflows, field research and research feedback suites |
 
-The research browser check covers a lost submission response followed by replay of the same request key, one real import task, refresh recovery through status reads, admission of newly imported papers with different domain metadata, missing full-text coverage, JSON export, explicit resume and corpus changes.
+The research browser check covers a lost submission response followed by replay of the same request key, one real import task, refresh recovery through status reads, admission of newly imported papers with different domain metadata, missing full-text coverage, JSON export, explicit resume and corpus changes and explicit server failure.
 
 Core tests verify chronology-aware selection in the actual discovery workflow, reliable paper identity, exact import-task state, semantic and synchronization boundaries, durable request conflicts and reuse of saved discovery reports during recovery. A missing report yields `needs_attention` and cannot report terminal success. Existing import-worker and synchronization tests exercise the reused execution pipeline.
+
+The integrated MCP dispatcher supports field research and project evaluation. The measured replay fixture includes every source declared in its source map, including `BEFORE_GRAPH.md`.
 
 ## Artifacts
 

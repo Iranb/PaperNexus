@@ -4,6 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { buildPaperMaterialView } from '../materials/agent-materials.js';
 import { loadSourceManifest } from '../../storage/corpus-store.js';
 import { decisionError } from './decision-contracts.js';
+import { latestRuns } from './decision-store.js';
+import { validateComparisons } from './comparison-assessment.js';
 
 export function evidenceKey(ref) {
   return JSON.stringify([ref.evidence_origin, ref.source_id, ref.source_version, ref.locator]);
@@ -39,6 +41,8 @@ export async function inspectEvidence(rootPath, refs) {
           && (selectedKeys.includes(ref.source_version) || sourceVersion === ref.source_version),
         source_version: sourceVersion, quality_version: view.paper.source_admission.version,
         reasons: view.paper.source_admission.reasons, paper_id: view.paper.paper_id, source_metadata: sourceMetadata,
+        graph_readiness: view.paper.graph_readiness,
+        ...(ref.artifact_path ? { extraction_artifact: await artifactMetadata(path.resolve(rootPath, ref.artifact_path)) } : {}),
         verification: 'source_admission_only' };
     }
     if (ref.artifact_path) {
@@ -48,11 +52,55 @@ export async function inspectEvidence(rootPath, refs) {
         return { ...base, admitted: source.source_id === ref.source_id && source.source_version === ref.source_version && source.admitted === true,
           source_version: source.source_version || null, artifact, verification: 'synthetic_fixture' };
       }
+      if (ref.evidence_origin === 'code_inspected') {
+        let observation;
+        if (artifact.exists) {
+          try { observation = JSON.parse(await fs.readFile(artifact.path, 'utf8')); } catch { observation = null; }
+        }
+        const matches = ['repository', 'code_revision', 'file_path', 'observation'].every(k => observation?.[k] === ref[k]);
+        return { ...base, admitted: artifact.exists && matches, artifact,
+          verification: artifact.exists && matches ? 'code_artifact_present' : 'code_artifact_mismatch',
+          boundary: 'Saved code observation only; not independent execution or causal verification.' };
+      }
       return { ...base, admitted: artifact.exists && ref.evidence_origin === 'external_measured', artifact,
         verification: artifact.exists ? 'artifact_present' : 'artifact_missing' };
     }
     return { ...base, verification: 'provided_unverified', reasons: [ref.evidence_origin === 'search_absence' ? 'search_absence_is_not_refutation' : 'source_not_verified'] };
   }));
+}
+
+export function referenceField(data, locator) {
+  return locator.replace(/^\//, '').split(locator.startsWith('/') ? '/' : '.').filter(Boolean)
+    .reduce((value, key) => value?.[key.replace(/~1/g, '/').replace(/~0/g, '~')], data);
+}
+
+export async function inspectComparisonReferences(rootPath, state, action, run, loadEvidence) {
+  const references = [];
+  for (const comparison of run.comparisons || []) {
+    const ref = comparison.reference;
+    if (ref.kind === 'run_record') {
+      const source = latestRuns(state.runs).find(r => r.record_id === ref.record_id);
+      if (!source || source.status !== 'completed') throw decisionError('invalid_reference', `Reference run ${ref.record_id} is not a current completed run`);
+      references.push({ comparison_id: comparison.comparison_id, reference: ref, record_id: source.record_id,
+        source_revision: source.source_revision, evidence_keys: source.evidence_keys || [], protocol: source.protocol, measurements: source.measurements || [],
+        resolved: true, admitted: ['manifest_verified', 'synthetic_fixture'].includes(source.verification?.status) });
+      continue;
+    }
+    const [snapshot] = await loadEvidence([ref.source_ref]);
+    let data;
+    if (ref.source_ref.artifact_path) {
+      try { data = JSON.parse(await fs.readFile(path.resolve(rootPath, ref.source_ref.artifact_path), 'utf8')); }
+      catch (error) { throw decisionError('invalid_reference', `Cannot read comparator artifact: ${error.message}`); }
+    }
+    const protocol = data && referenceField(data, ref.protocol_locator);
+    const measurements = data && referenceField(data, ref.measurements_locator);
+    const resolved = Boolean(protocol && !Array.isArray(protocol) && typeof protocol === 'object' && Array.isArray(measurements));
+    references.push({ comparison_id: comparison.comparison_id, reference: ref, source_version: snapshot.source_version,
+      evidence_snapshot: snapshot, protocol: protocol || null, measurements: Array.isArray(measurements) ? measurements : [], resolved,
+      admitted: snapshot.admitted && (ref.kind !== 'paper_report' || ref.source_ref.evidence_origin === 'paper_reported') });
+  }
+  validateComparisons(run, action, references);
+  return references;
 }
 
 export function changedEvidence(saved, current) {
