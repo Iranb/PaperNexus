@@ -1437,7 +1437,7 @@ function normalizePaperMetadataPayload(input = {}, options = {}) {
   const nestedMetadata = input?.paperMetadata && typeof input.paperMetadata === 'object' ? input.paperMetadata : {};
   const sourceProvider = String(input?.sourceProvider || input?.provider || nestedMetadata.sourceProvider || '').trim();
   const metadataTitle = String(
-    firstDefinedValue(input?.paperTitle, input?.title, nestedMetadata.paperTitle, nestedMetadata.title, '')
+    firstDefinedValue(input?.paperTitle, input?.title, nestedMetadata.paperTitle, nestedMetadata.title) ?? ''
   ).trim();
   const trustTitle = Boolean(options.trustTitle || input?.metadataTitleTrusted || nestedMetadata.metadataTitleTrusted);
   if (!Object.keys(identifiers).length && !sourceProvider && !(trustTitle && metadataTitle)) {
