@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 // This is a display budget, never a new authority for scientific or queue state.
 export const RESEARCH_SUMMARY_MAX_BYTES = 32768;
 const bytes = value => Buffer.byteLength(JSON.stringify(value, null, 2));
-const important = /^(status|final_status|input_status|paper|paper_id|id|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked)$/;
+const important = /^(status|final_status|input_status|paper|paper_id|id|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked|purpose|task_gate|comparison_summary|inference_target|evidence_freshness|outstanding_runs|budget|source_readiness|performance_claim_status)$/;
 
 export function summarizeResearchEnvelope(envelope, args = {}) {
   const decisionTool = envelope.tool === 'research_decision';
@@ -49,11 +49,16 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
   const result = project(envelope.result);
   // Keep root evidence gates exact when small; never infer permission from omitted fields.
   const gates = {};
-  for (const key of ['evidence_sufficiency', 'source_admission', 'assessment_gate', 'budget_gate', 'execution_authority', 'based_on_revision']) {
-    const value = envelope.result?.[key] ?? envelope.result?.paper?.[key];
-    if (value !== undefined && bytes(value) <= 4000) gates[key] = value;
+  let gateBudget = 8000;
+  for (const key of ['evidence_sufficiency', 'source_admission', 'assessment_gate', 'budget_gate', 'execution_authority', 'based_on_revision',
+    'purpose', 'task_gate', 'performance_claim_status', 'comparison_summary', 'evidence_freshness', 'outstanding_runs', 'budget', 'source_readiness', 'graph_readiness']) {
+    const value = envelope.result?.[key] ?? envelope.result?.paper?.[key] ?? envelope.result?.project_evidence?.[key];
+    if (value !== undefined) {
+      gates[key] = bytes(value) <= Math.min(2400, gateBudget) ? value : { status: 'read_full_required', complete: false };
+      gateBudget -= bytes(gates[key]);
+    }
   }
-  if (decisionTool && result && typeof result === 'object') Object.assign(result, gates);
+  if (result && typeof result === 'object') Object.assign(result, gates);
   const summary = {
     mode: 'summary', max_bytes: RESEARCH_SUMMARY_MAX_BYTES,
     full_result_bytes: Buffer.byteLength(serialized),
@@ -70,9 +75,13 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
     output.nextActions = [];
     summary.complete = false;
     summary.omitted_paths = ['result'];
-    summary.read_more = decisionTool ? decisionReadMore : submitted
+    summary.read_more = decisionWrite ? decisionReadMore : decisionTool ? { tool: envelope.tool, arguments: { ...args, responseMode: 'full' } } : submitted
       ? { instruction: 'Inspect the existing discovery/import job records before any retry. Do not repeat the submission to expand this summary.' }
       : { tool: envelope.tool, operation: envelope.operation, responseMode: 'full', instruction: 'Repeat the original request with responseMode=full.' };
+  }
+  if (bytes(output) > RESEARCH_SUMMARY_MAX_BYTES) {
+    summary.read_more = { tool: envelope.tool, operation: decisionWrite ? 'status' : envelope.operation,
+      instruction: decisionWrite ? 'Read status with the original corpus, project and requestId. Do not replay the mutation.' : 'Repeat the original read with responseMode=full.' };
   }
   return output;
 }

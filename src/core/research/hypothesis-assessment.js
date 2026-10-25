@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { predictionRange } from './decision-contracts.js';
 import { latestRuns } from './decision-store.js';
+import { selectComparisonMeasurement, inferenceValidity } from './comparison-assessment.js';
 
 export function compareProtocol(action, run) {
   const unknown = [], mismatches = [];
@@ -21,7 +22,7 @@ export function comparisonLabel(run, protocol) {
     ? 'vs matched reproduced baseline' : run.comparison ? 'vs reproduced baseline' : 'paper-report comparison not established';
 }
 
-export function assessObservation(hypothesis, action, run) {
+export function assessObservation(hypothesis, action, run, runs = []) {
   const protocol = compareProtocol(action, run);
   const reasons = [];
   if (run.status !== 'completed') reasons.push('run_not_completed');
@@ -52,7 +53,11 @@ export function assessObservation(hypothesis, action, run) {
     for (const [field, value] of Object.entries(prediction.conditions || {})) {
       if (!isDeepStrictEqual(run.protocol?.[field], value)) rowReasons.push(`prediction_condition_mismatch:${field}`);
     }
-    const measurement = run.measurements?.find(m => m.quantity === prediction.quantity && m.unit === prediction.unit);
+    const selected = selectComparisonMeasurement(run, action, prediction);
+    const measurement = selected.measurement;
+    rowReasons.push(...selected.reasons);
+    const target = prediction.inference_target || action.evaluation_plan?.inference_target || action.precision?.inference_target;
+    const inference = inferenceValidity(measurement, target, runs);
     const interval = measurement?.interval;
     let relation = 'inconclusive';
     if (!measurement) rowReasons.push('missing_measurement');
@@ -70,9 +75,13 @@ export function assessObservation(hypothesis, action, run) {
       && uncertainty.review?.status === 'reviewed' && uncertainty.review.reviewer && uncertainty.review.reference);
     const precisionSufficient = interval && action.precision?.max_interval_width !== undefined
       && interval.upper - interval.lower <= action.precision.max_interval_width;
-    const primary = analysis?.primary_outcome === prediction.quantity;
+    const primary = analysis?.primary_outcome === prediction.quantity
+      && (!run.comparisons || analysis.primary_comparison_id === selected.comparison?.comparison_id);
+    const adjusted = analysis?.multiplicity === 'adjusted' && (!run.comparisons
+      || analysis.family?.some(f => f.comparison_id === selected.comparison?.comparison_id && f.quantity === prediction.quantity));
     const confirmatory = valid && verified && prospectivity === 'registered_before_run' && plannedAnalysis
-      && (primary || analysis?.multiplicity === 'adjusted') && uncertaintyReviewed && precisionSufficient;
+      && action.prediction_ids?.includes(prediction.prediction_id)
+      && (primary || adjusted) && uncertaintyReviewed && precisionSufficient && (!target || inference.status === 'supported');
     const necessary = hypothesis.falsification_rule?.necessary_prediction_ids?.includes(prediction.prediction_id) === true;
     let status = !valid ? 'unassessable' : relation === 'compatible' ? 'compatible' : 'inconclusive';
     if (relation === 'inconsistent' && valid && verified && uncertaintyReviewed) status = confirmatory && necessary ? 'excluded_in_scope' : 'weakened_in_scope';
@@ -84,13 +93,15 @@ export function assessObservation(hypothesis, action, run) {
       evidence_origin: run.evidence_origin,
       independent_group: measurement?.independent_group || run.independent_group || JSON.stringify([run.executor_id, run.run_id, run.attempt_id]),
       relation, status, measurement: measurement || null,
-      comparison: comparisonLabel(run, protocol), baseline_shortfall: run.baseline?.shortfall ?? null,
+      comparison: selected.comparison?.label || comparisonLabel(run, protocol), comparison_id: selected.comparison?.comparison_id || null,
+      inference, baseline_shortfall: run.baseline?.shortfall ?? null,
       assessment_gate: { valid, confirmatory: Boolean(confirmatory), necessary_prediction: necessary,
         protocol, prospectivity, uncertainty_reviewed: uncertaintyReviewed, precision_sufficient: Boolean(precisionSufficient),
         analysis_matches_plan: Boolean(analysisMatches), analysis_rule_valid: Boolean(plannedAnalysis),
         provenance: run.verification, reason_codes: rowReasons,
         limitations: [!verified && 'provided_measurements_unverified', prospectivity !== 'registered_before_run' && prospectivity,
-          !uncertaintyReviewed && 'uncertainty_not_reviewed', !precisionSufficient && 'insufficient_precision', !plannedAnalysis && 'exploratory_or_unverified_analysis'].filter(Boolean)
+          ...inference.reason_codes, !uncertaintyReviewed && 'uncertainty_not_reviewed', !precisionSufficient && 'insufficient_precision', !plannedAnalysis && 'exploratory_or_unverified_analysis',
+          run.comparisons && !primary && !adjusted && 'secondary_comparison_not_confirmatory'].filter(Boolean)
       }
     };
   });
@@ -99,7 +110,7 @@ export function assessObservation(hypothesis, action, run) {
 export function compareExplanations(rows, hypotheses) {
   return rows.map(row => {
     const hypothesis = hypotheses.find(h => h.hypothesis_id === row.hypothesis_id && h.version === row.hypothesis_version);
-    const alternatives = rows.filter(other => other.run_record_id === row.run_record_id && other.quantity === row.quantity && other.unit === row.unit
+    const alternatives = rows.filter(other => other.run_record_id === row.run_record_id && other.quantity === row.quantity && other.unit === row.unit && other.comparison_id === row.comparison_id
       && hypothesis.alternative_hypothesis_ids?.includes(other.hypothesis_id));
     const compatible = alternatives.filter(other => other.relation === 'compatible' && other.assessment_gate.valid).map(other => other.hypothesis_id);
     const differentiated = alternatives.filter(other => other.relation === 'inconsistent' && other.assessment_gate.confirmatory).filter(other => {
@@ -118,6 +129,7 @@ export function compareExplanations(rows, hypotheses) {
 export function assessmentValidity(assessment, state, staleSourceKeys = []) {
   const current = new Set(latestRuns(state.runs).map(run => run.record_id));
   const reasons = assessment.run_record_ids.filter(id => !current.has(id)).map(id => `superseded_run:${id}`);
+  for (const id of assessment.reference_record_ids || []) if (!current.has(id)) reasons.push(`superseded_reference:${id}`);
   for (const key of assessment.evidence_keys || []) {
     const saved = assessment.evidence_snapshots?.find(item => item.key === key);
     const now = state.evidence_snapshots.find(item => item.key === key);

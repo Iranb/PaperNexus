@@ -60,6 +60,9 @@ async function exerciseLoop(rpc, f, project) {
   const assessed = await call('assess_results', { run_record_ids: ['record-1'], hypothesis_versions: [{ hypothesis_id: 'Hq', version: 1 }, { hypothesis_id: 'Hn', version: 1 }] }, true);
   assert.equal(assessed.result.assessment.rows[0].status, 'excluded_in_scope');
   assert.equal((await call('recommend_next')).result.decision.action_id, 'E3');
+  const evidence = await call('evidence_view');
+  assert.equal(evidence.result.observations[0].record_id, 'record-1');
+  assert.equal(evidence.result.coverage.returned, 1);
   assert.match((await call('export')).result.markdown, /excluded_in_scope/);
   return call;
 }
@@ -82,11 +85,12 @@ test('A13 real HTTP MCP completes a loop and the canonical Python client uses th
   const { url, rpc } = await httpFixture(t);
   await exerciseLoop(rpc, f, 'http-project');
   const requestFile = path.join(f.root, 'request.json');
-  await fs.writeFile(requestFile, JSON.stringify({ operation: 'status', corpus: f.root, project: 'http-project' }));
+  await fs.writeFile(requestFile, JSON.stringify({ operation: 'evidence_view', corpus: f.root, project: 'http-project' }));
   const { stdout } = await execFileAsync('python3', ['SKILL/PaperNexus/scripts/pn_research_decision.py', '--request-file', requestFile, '--mcp-url', url, '--json'], {
     env: { ...process.env, PAPERNEXUS_ALLOW_LOCAL_MCP: '1', PAPERNEXUS_API_TOKEN: 'fixture-token' }
   });
   assert.equal(JSON.parse(stdout).result.budget.dimensions['gpu_hours:fixture-gpu'].spent, 1.2);
+  assert.equal(JSON.parse(stdout).result.observations[0].record_id, 'record-1');
 });
 
 test('A13 real stdio MCP completes the same loop', { timeout: 30000 }, async t => {

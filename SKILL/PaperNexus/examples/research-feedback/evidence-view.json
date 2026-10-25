@@ -1,0 +1,8 @@
+{
+  "operation": "evidence_view",
+  "corpus": "feedback-fixture",
+  "project": "fsgcd-feedback",
+  "limit": 10,
+  "includeHistory": false,
+  "responseMode": "full"
+}

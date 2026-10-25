@@ -780,6 +780,8 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
         identifiers: rawPaper?.properties?.identifiers || identifiersOf(rawEntries[0]),
         status: 'quarantined',
         source_admission: { eligible: false, reasons: assessment.reasons, version: RESEARCH_QUALITY_VERSION },
+        graph_readiness: { source_readable: false, source_admitted: false, semantic_node_present: false, source_anchored_relation_count: 0,
+          status: 'unavailable', reason_codes: ['source_not_admitted'], next_step: { status: 'needs_input', action: 'repair_source_admission' } },
         availability: { abstract: false, markdown: false, pdf: false, graph_context: false,
           chunks: false, tables: false, figures: false, source: false }
       },
@@ -836,6 +838,13 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
     provider: entry.sourceProvider || entry.source_provider || null,
     active_in_graph: entry.activeInGraph !== false && entry.active_in_graph !== false
   }));
+  const readable = [];
+  for (const entry of entries) {
+    const sourcePath = await firstReadablePath(context.rootPath, entry);
+    if (sourcePath) readable.push({ path: sourcePath, text: await readText(sourcePath).catch(() => '') });
+  }
+  const graphReadiness = paperGraphReadiness(context.graph, paperNode, selectedSource, readable, entries);
+  if (graphReadiness.next_step.arguments) graphReadiness.next_step.arguments.corpus = context.rootPath;
   const importRequisitions = status === 'material_unavailable' || (!availability.markdown && !availability.graph_context)
     ? [requisitionForPaper({ title, identifiers: paperIdentifiers, role: args.role }, availability.graph_context ? 'markdown source missing for paper material view' : 'paper is not graph-visible or source-backed')]
     : [];
@@ -852,7 +861,8 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
       selected_source: selectedSource,
       status,
       source_admission: { eligible: Boolean(paperNode || entries.length), reasons: [], version: RESEARCH_QUALITY_VERSION, verification: 'Eligibility is not independent publication verification.' },
-      availability
+      availability,
+      graph_readiness: graphReadiness
     },
     sources,
     overlay_roles: overlayRolesForPaper(projectOverlay.roles, { paper_id: paperId, title, sources }),
@@ -867,6 +877,30 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
     import_requisitions: importRequisitions,
     generatedAt: nowIso()
   };
+}
+
+export function paperGraphReadiness(graph, paperNode, selectedSource, readable, entries) {
+  const sourceReadable = readable.length > 0;
+  const relationships = paperNode ? [...graph.getOutgoing(paperNode.id), ...graph.getIncoming(paperNode.id)] : [];
+  const anchored = relationships.filter(edge => {
+    const neighborId = edge.sourceId === paperNode.id ? edge.targetId : edge.sourceId;
+    if (graph.getNode(neighborId)?.type === 'Corpus' || /BELONGS_TO|MEMBER_OF|CONTAINS/.test(edge.type)) return false;
+    const p = edge.properties || {}, original = p.qualityOriginalEndpoints || edge;
+    if (selectedSource.paper_id && original.sourceId !== selectedSource.paper_id && original.targetId !== selectedSource.paper_id) return false;
+    const span = p.sourceSpanId ? graph.getNode(p.sourceSpanId) : null;
+    const quote = p.evidenceText || p.evidence_text || p.quote || span?.properties?.text;
+    return typeof quote === 'string' && quote.trim().length > 0 && readable.some(source => source.text.includes(quote));
+  });
+  const status = anchored.length ? 'anchored_relations' : paperNode ? 'node_only' : sourceReadable ? 'source_only' : 'unavailable';
+  const reasonCodes = [!sourceReadable && 'source_unreadable', !paperNode && 'semantic_node_missing', paperNode && !anchored.length && 'source_anchored_relations_missing'].filter(Boolean);
+  const taskId = entries.find(e => e.import?.taskId || e.import?.task_id)?.import;
+  const nextStep = status === 'anchored_relations' ? { status: 'ready', action: 'inspect_question_specific_relations' }
+    : taskId ? { status: 'ready', tool: 'literature_review', arguments: { operation: 'import_status', taskId: taskId.taskId || taskId.task_id } }
+    : readable.length ? { status: 'ready', tool: 'literature_review', arguments: { operation: 'import', serverFilePath: readable[0].path }, action: 'explicit_import_then_authoritative_sync' }
+    : { status: 'needs_input', missing_fields: ['serverFilePath or taskId'], action: 'locate_source_or_existing_import' };
+  return { source_readable: sourceReadable, source_admitted: Boolean(paperNode || entries.length), semantic_node_present: Boolean(paperNode),
+    source_anchored_relation_count: new Set(anchored.map(e => e.id)).size, status, reason_codes: reasonCodes, next_step: nextStep,
+    boundary: 'Source-anchored relations describe availability, not relevance or causal validity.' };
 }
 
 function querySetForRole(role, args = {}) {

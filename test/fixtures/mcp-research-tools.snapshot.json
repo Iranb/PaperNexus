@@ -1044,7 +1044,7 @@
   },
   {
     "name": "idea_generation",
-    "description": "Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given); diverge/converge explore or focus; gaps separates structural gaps; evaluate audits a concrete candidateMechanism against prior work and evidence; experiment_materials returns evidence/cost anchors, not an executed experiment. No live discovery, graph writeback, or controller execution. Candidates and novelty audit artifacts do not prove novelty or gains.",
+    "description": "Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains.",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -1064,7 +1064,7 @@
             "evaluate",
             "experiment_materials"
           ],
-          "description": "generate: corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK; diverge: corpus, responseMode, query, maxDepth, limit, layers; converge: corpus, responseMode, query, maxDepth, limit, layers; gaps: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents; experiment_materials: corpus, responseMode, query, targetDomain, constraints, limit"
+          "description": "generate: corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK, project; diverge: corpus, responseMode, query, maxDepth, limit, layers; converge: corpus, responseMode, query, maxDepth, limit, layers; gaps: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents, project, purpose, actionId, actionVersion; experiment_materials: corpus, responseMode, query, targetDomain, constraints, limit"
         },
         "corpus": {
           "type": "string",
@@ -1125,6 +1125,12 @@
           "maximum": 20,
           "description": "Number of cross-domain candidates retained."
         },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Registered research decision project."
+        },
         "maxDepth": {
           "type": "integer",
           "minimum": 1,
@@ -1181,6 +1187,27 @@
           },
           "maxItems": 30,
           "description": "Assumptions or components the proposal removes."
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "novelty_audit",
+            "mechanism_diagnosis",
+            "performance_validation"
+          ],
+          "description": "Evaluate purpose; defaults to novelty_audit. Project task gates do not authorize execution."
+        },
+        "actionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Registered action id for project evaluation."
+        },
+        "actionVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000,
+          "description": "Registered action version; defaults to the latest version."
         }
       },
       "required": [
@@ -1205,7 +1232,10 @@
               "constraints": false,
               "method": false,
               "candidateMechanism": false,
-              "removedComponents": false
+              "removedComponents": false,
+              "purpose": false,
+              "actionId": false,
+              "actionVersion": false
             }
           }
         },
@@ -1226,10 +1256,14 @@
               "mechanisms": false,
               "selectionMode": false,
               "selectionK": false,
+              "project": false,
               "constraints": false,
               "method": false,
               "candidateMechanism": false,
-              "removedComponents": false
+              "removedComponents": false,
+              "purpose": false,
+              "actionId": false,
+              "actionVersion": false
             }
           }
         },
@@ -1250,10 +1284,14 @@
               "mechanisms": false,
               "selectionMode": false,
               "selectionK": false,
+              "project": false,
               "constraints": false,
               "method": false,
               "candidateMechanism": false,
-              "removedComponents": false
+              "removedComponents": false,
+              "purpose": false,
+              "actionId": false,
+              "actionVersion": false
             }
           }
         },
@@ -1273,9 +1311,13 @@
               "mechanisms": false,
               "selectionMode": false,
               "selectionK": false,
+              "project": false,
               "layers": false,
               "candidateMechanism": false,
-              "removedComponents": false
+              "removedComponents": false,
+              "purpose": false,
+              "actionId": false,
+              "actionVersion": false
             }
           }
         },
@@ -1288,16 +1330,52 @@
             }
           },
           "then": {
-            "required": [
-              "query",
-              "candidateMechanism"
-            ],
             "properties": {
               "mechanisms": false,
               "selectionMode": false,
               "selectionK": false,
               "layers": false
-            }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "purpose"
+                  ],
+                  "properties": {
+                    "purpose": {
+                      "enum": [
+                        "mechanism_diagnosis",
+                        "performance_validation"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "project",
+                    "actionId"
+                  ],
+                  "properties": {
+                    "candidateMechanism": false,
+                    "removedComponents": false,
+                    "targetDomain": false,
+                    "method": false
+                  }
+                },
+                "else": {
+                  "required": [
+                    "query",
+                    "candidateMechanism"
+                  ],
+                  "properties": {
+                    "project": false,
+                    "actionId": false,
+                    "actionVersion": false
+                  }
+                }
+              }
+            ]
           }
         },
         {
@@ -1316,11 +1394,15 @@
               "mechanisms": false,
               "selectionMode": false,
               "selectionK": false,
+              "project": false,
               "maxDepth": false,
               "layers": false,
               "method": false,
               "candidateMechanism": false,
-              "removedComponents": false
+              "removedComponents": false,
+              "purpose": false,
+              "actionId": false,
+              "actionVersion": false
             }
           }
         }

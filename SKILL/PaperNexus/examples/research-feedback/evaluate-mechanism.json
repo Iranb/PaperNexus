@@ -1,0 +1,9 @@
+{
+  "operation": "evaluate",
+  "corpus": "feedback-fixture",
+  "project": "fsgcd-feedback",
+  "purpose": "mechanism_diagnosis",
+  "actionId": "complete-coverage",
+  "actionVersion": 1,
+  "responseMode": "full"
+}

@@ -5,7 +5,7 @@ import { summarizeResearchEnvelope } from './research-summary.js';
 
 export const RESEARCH_DECISION_TOOL = {
   name: 'research_decision',
-  description: 'Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts, assess explanations within their protocol, recommend discriminating actions under actual resource costs, and revisit parked opportunities. init/register/record/assess/update/refresh write only project state; status/recommend read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId).',
+  description: 'Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve project feedback with evidence_view, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId).',
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   inputSchema: {
     type: 'object', additionalProperties: false, properties: REQUEST_PROPERTIES, required: ['operation', 'project'],

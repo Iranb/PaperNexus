@@ -1,0 +1,105 @@
+{
+  "created_at": "2026-10-25T06:24:41.086780+00:00",
+  "scope": "Post-hoc explanation; no change to frozen fixed-final endpoint and no independent-epoch inference",
+  "comparison": "vs matched reproduced baseline",
+  "weighted_ALL": {
+    "old_fraction": 0.04044489383215369,
+    "new_fraction": 0.9595551061678463,
+    "old_contribution_pp": 0.2864846646444218,
+    "new_contribution_pp": -3.3029996629592207,
+    "observed_all_delta_pp": -3.016514998314797
+  },
+  "new_trajectory_windows": [
+    {
+      "epochs": [
+        1,
+        20
+      ],
+      "mean_new_percent": {
+        "sampled": 37.922374429223744,
+        "complete": 37.842465753424655
+      },
+      "mean_delta_pp": -0.07990867579908638,
+      "min_delta_pp": -1.668422901299607,
+      "max_delta_pp": 2.1952932911837024,
+      "positive_delta_epochs": 9,
+      "count": 20
+    },
+    {
+      "epochs": [
+        61,
+        80
+      ],
+      "mean_new_percent": {
+        "sampled": 42.89164032314717,
+        "complete": 43.05409202669477
+      },
+      "mean_delta_pp": 0.1624517035475929,
+      "min_delta_pp": -3.5300316122233966,
+      "max_delta_pp": 4.039339655778015,
+      "positive_delta_epochs": 10,
+      "count": 20
+    },
+    {
+      "epochs": [
+        101,
+        120
+      ],
+      "mean_new_percent": {
+        "sampled": 41.695644538110294,
+        "complete": 41.78609062170706
+      },
+      "mean_delta_pp": 0.09044608359676758,
+      "min_delta_pp": -2.581664910432032,
+      "max_delta_pp": 2.125043905865823,
+      "positive_delta_epochs": 9,
+      "count": 20
+    },
+    {
+      "epochs": [
+        181,
+        200
+      ],
+      "mean_new_percent": {
+        "sampled": 41.684229012996134,
+        "complete": 41.102915349490694
+      },
+      "mean_delta_pp": -0.5813136635054444,
+      "min_delta_pp": -3.4422198805760473,
+      "max_delta_pp": 1.1942395504039354,
+      "positive_delta_epochs": 8,
+      "count": 20
+    },
+    {
+      "epochs": [
+        191,
+        200
+      ],
+      "mean_new_percent": {
+        "sampled": 41.666666666666664,
+        "complete": 40.98876009834914
+      },
+      "mean_delta_pp": -0.6779065683175283,
+      "min_delta_pp": -3.4422198805760473,
+      "max_delta_pp": 1.1942395504039354,
+      "positive_delta_epochs": 4,
+      "count": 10
+    },
+    {
+      "epochs": [
+        196,
+        200
+      ],
+      "mean_new_percent": {
+        "sampled": 42.216368106779065,
+        "complete": 40.95539164032315
+      },
+      "mean_delta_pp": -1.2609764664559193,
+      "min_delta_pp": -3.4422198805760473,
+      "max_delta_pp": 0.7024938531787797,
+      "positive_delta_epochs": 1,
+      "count": 5
+    }
+  ],
+  "interpretation_limit": "Epochs share trained weights and are dependent. Windows do not replace the final endpoint, estimate seed variability, or establish that optimization rather than clustering causes the fluctuation."
+}
