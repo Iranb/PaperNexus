@@ -25,7 +25,7 @@ Related docs: `docs/interfaces/mcp-three-workflows.md`、`docs/interfaces/mcp-sk
 - [x] 2026-10-25：M2：接入 HTTP/MCP，完成接口与来源准入验收。
 - [x] 2026-10-25：M3：完成可交互时间轴、论文/方法切换、分支筛选、主线、转折与证据详情。
 - [x] 2026-10-25：M4：完成浏览器行为验收、相关回归、文档与最终代码审查。
-- [ ] M5：提交本分支，合并到本地 `main`，记录提交与合并证据。
+- [x] 2026-10-25：M5：功能提交 `885af7ca8636a370253aa7cfe14ec9dc619a2179` 已 fast-forward 合并到本地 `main`，祖先检查通过；原工作区无关改动保留。
 
 ## Surprises & Discoveries
 
@@ -51,7 +51,7 @@ Related docs: `docs/interfaces/mcp-three-workflows.md`、`docs/interfaces/mcp-sk
 
 ## Outcomes & Retrospective
 
-已完成领域演化模型、HTTP/MCP 接口、SVG 时间轴及证据详情。相关回归测试 94/94 通过；最终界面修改后，视图测试 4/4 与真实浏览器验收 10/10 通过。文档站构建成功。具体行为与证据见 `docs/development/2026-10-25-field-evolution-acceptance.md`。提交前 GitNexus detect_changes 检查了 30 个文件、319 个符号（含文档标题），报告 8 条预期研究查询执行流，总体风险 HIGH；暂存差异未发现任务外改动。M5 待提交与本地合并后记录。合成样例证明软件行为，不证明某个真实领域的覆盖率或历史结论。
+已完成领域演化模型、HTTP/MCP 接口、SVG 时间轴及证据详情。相关回归测试 94/94 通过；最终界面修改后，视图测试 4/4 与真实浏览器验收 10/10 通过。文档站构建成功。具体行为与证据见 `docs/development/2026-10-25-field-evolution-acceptance.md`。提交前 GitNexus detect_changes 检查了 30 个文件、319 个符号（含文档标题），报告 8 条预期研究查询执行流，总体风险 HIGH；暂存差异未发现任务外改动。功能提交 `885af7ca8636a370253aa7cfe14ec9dc619a2179` 已于 2026-10-25 合并到本地 `main`；`git merge-base --is-ancestor 885af7ca8636a370253aa7cfe14ec9dc619a2179 main` 成功。合并无冲突，没有引入额外代码修改。合成样例证明软件行为，不证明某个真实领域的覆盖率或历史结论。
 
 ## Context and Orientation
 
@@ -177,3 +177,5 @@ SVG/HTML 转义来自论文的文本；点击来源只使用明确的 http/https
 2026-10-25：完成合理性审查，加入完整范围扫描、证据去重、论文投影、可解释主线、循环处理、逐视图预算和浏览器状态验收的确定性规则；审查材料位于同目录 review 文件。
 
 2026-10-25：完成 M0–M4，记录实现、相关回归、真实浏览器与文档构建结果，进入提交和本地合并。
+
+2026-10-25：M5 完成，本地 main 已包含功能提交；保留原工作区未提交论文 PDF 和无关未跟踪文件。
