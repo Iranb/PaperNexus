@@ -67,9 +67,12 @@ test('default four research tools preserve the three source workflows and legacy
 });
 
 test('every public operation has one reviewed route and preserves backend evidence', async () => {
-  assert.equal(CASES.length + 3, Object.values(RESEARCH_ROUTES).reduce((n, routes) => n + Object.keys(routes).length, 0));
+  const localOperations = ['capabilities', 'field_research', 'field_research_status', 'study_save', 'study', 'studies',
+    'lineage_extract', 'lineage_status', 'lineage_card'];
+  assert.deepEqual(new Set(Object.entries(RESEARCH_ROUTES).flatMap(([tool, routes]) => Object.keys(routes).map(operation => `${tool}/${operation}`))),
+    new Set([...CASES.map(([tool, operation]) => `${tool}/${operation}`), ...localOperations.map(operation => `literature_review/${operation}`)]));
   for (const [tool, operation, fields, backend, backendOperation] of CASES) {
-    const args = {operation, corpus:'fixture', ...fields};
+    const args = {operation, corpus:'fixture', responseMode:'full', ...fields};
     let calls = 0;
     const result = await executeResearchWorkflow(tool, args, {}, async (name, translated) => {
       calls++;
@@ -158,13 +161,13 @@ test('three real graph workflows retain results and leave graph bytes unchanged'
       ['lineage_analysis',{operation:'method',method:'m2',maxDepth:3}],
       ['idea_generation',{operation:'generate',query:'feedback',limit:4}]
     ]) {
-      const canonical = await executeTool(tool, {corpus:root,...args});
+      const canonical = await executeTool(tool, {corpus:root,...args,responseMode:'full'});
       const call = resolveResearchWorkflowCall(tool, {corpus:root,...args});
       const old = await executeTool(call.backend, call.args);
       assert.deepEqual(canonical.result.result, old.result);
     }
     for (const operation of ['overview','problem']) {
-      const result = await executeTool('lineage_analysis', {operation,corpus:root,query:'feedback',maxNodes:5});
+      const result = await executeTool('lineage_analysis', {operation,corpus:root,query:'feedback',maxNodes:5,responseMode:'full'});
       assert.ok(result.result.result.graph.nodes.length <= 5);
       assert.ok(result.result.result.scope.truncated);
     }

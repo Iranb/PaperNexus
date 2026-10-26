@@ -7,6 +7,7 @@ import { RESEARCH_DECISION_TOOL } from './tool-research-decision.js';
 import { OPERATIONS as DECISION_OPERATIONS, DECISION_VERSION } from '../core/research/decision-contracts.js';
 import { executeFieldResearchOperation } from '../core/research/field-research.js';
 import { executeFieldStudyOperation, FIELD_STUDY_SCHEMA } from '../core/research/field-studies.js';
+import { executeLineageEvidenceOperation, LINEAGE_CARD_VERSION } from '../core/research/lineage-evidence.js';
 import { readProjectEvidence, evaluateProject } from '../core/research/project-evaluation.js';
 import { attachProjectEvidence } from '../core/research/project-evidence.js';
 
@@ -16,7 +17,7 @@ const text = (description) => ({ type: 'string', minLength: 1, maxLength: 8000, 
 const count = (maximum, description) => ({ type: 'integer', minimum: 1, maximum, description });
 const strings = (description) => ({ type: 'array', items: text('Value'), maxItems: 30, description });
 const FIELDS = {
-  responseMode: { type: 'string', enum: ['full', 'summary'], description: 'full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions.' },
+  responseMode: { type: 'string', enum: ['full', 'summary'], description: 'Batch, search and overview operations default to summary. Exact paper, lineage_card, method/evidence/path and capability reads default to full. Explicit full preserves backend output.' },
   corpus: text('Corpus name or indexed root. Use literature_review/corpora when unknown.'),
   project: text('Registered research decision project.'),
   purpose: { type: 'string', enum: ['novelty_audit', 'mechanism_diagnosis', 'performance_validation'], description: 'Evaluate purpose; defaults to novelty_audit. Project task gates do not authorize execution.' },
@@ -24,6 +25,12 @@ const FIELDS = {
   actionVersion: count(1000000, 'Registered action version; defaults to the latest version.'),
   query: text('Research topic, question, or exact node anchor.'),
   paperId: text('Exact committed paper id.'),
+  papers: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', additionalProperties: false,
+    required: ['paperId'], properties: { paperId: { ...text('Exact committed paper id.'), maxLength: 1000 },
+      sourceKey: text('Exact active source key; required when source selection is ambiguous.') } },
+    description: 'Papers for source-versioned lineage evidence cards. Reuses completed cards before calling the configured model.' },
+  cardId: { ...text('Exact card id returned by lineage_status.'), pattern: '^card-[a-f0-9]{24}$' },
+  retryFailed: { type: 'boolean', description: 'Explicitly retry only failed or unprocessed entries in an existing lineage run. Completed cards are preserved.' },
   identifier: text('Exact paper identifier such as DOI or arXiv id.'),
   targetDomain: text('Target research domain; generate uses cross-domain catalyst when supplied.'),
   constraints: { oneOf: [text('Conditions to respect'), strings('Conditions to respect'), {
@@ -62,6 +69,8 @@ const FIELDS = {
   dryRun: { type: 'boolean', description: 'Preview field research scope and worker readiness without searching, downloading, importing or creating a run.' },
   runId: { ...text('Existing literature discovery run id.'), maxLength: 200, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$' },
   serverFilePath: text('Already staged server-side PDF/Markdown file to import.'),
+  processingProfile: { type: 'string', enum: ['fast-md-structural', 'full'], description: 'fast-md-structural indexes already-materialized Markdown without generic LLM extraction; use before lineage_extract. full runs the general semantic pipeline.' },
+  completionPolicy: { type: 'string', enum: ['graph-visible', 'semantic-complete'], description: 'Import completion target. Use graph-visible with fast imports, then review lineage cards separately.' },
   doi: text('Optional DOI for an imported source.'),
   arxivId: text('Optional arXiv id for an imported source.'),
   jobId: text('Durable asynchronous import submission job id.'),
@@ -92,6 +101,9 @@ export const RESEARCH_ROUTES = {
     sources: read('corpus_sources', null, []),
     search: read('research_lookup', 'query', ['query', 'limit', 'layers', 'sortBy'], ['query']),
     paper: read('agent_materials', 'paper_material_view', ['query', 'paperId', 'identifier', 'chunkLimit'], [], ['query', 'paperId', 'identifier']),
+    lineage_extract: { ...read('lineage_evidence', 'extract', ['papers', 'idempotencyKey', 'retryFailed', 'dryRun'], ['papers', 'idempotencyKey']), effect: 'lineage_extract_submit' },
+    lineage_status: { ...read('lineage_evidence', 'status', ['runId'], ['runId']), effect: 'lineage_extract_read' },
+    lineage_card: { ...read('lineage_evidence', 'card', ['cardId'], ['cardId']), effect: 'lineage_card_read' },
     survey: read('agent_materials', 'research_material_pack', materialFields, ['query']),
     field_research: { ...read('field_research', 'start', ['query', 'targetDomain', 'fromYear', 'toYear', 'maxDepth', 'maxNodes', 'maxEdges', 'maxPapers', 'providers', 'idempotencyKey', 'dryRun'], [], ['query', 'targetDomain']), effect: 'field_research_submit' },
     field_research_status: { ...read('field_research', 'status', ['runId']), effect: 'field_research_read' },
@@ -101,7 +113,7 @@ export const RESEARCH_ROUTES = {
     discover: { ...read('literature_discovery', 'submit', ['query', 'discoveryMode', 'providers', 'maxPapers'], ['query']), effect: 'discovery_submit' },
     discovery_status: { ...read('literature_discovery_progress', null, ['runId', 'limit']), effect: 'discovery_read' },
     discovery_report: { ...read('literature_discovery', 'report', ['runId'], ['runId']), effect: 'discovery_read' },
-    import: { ...read('import_workflow', 'submit', ['serverFilePath', 'runId', 'doi', 'arxivId', 'idempotencyKey'], [], ['serverFilePath', 'runId']), effect: 'import_submit' },
+    import: { ...read('import_workflow', 'submit', ['serverFilePath', 'runId', 'doi', 'arxivId', 'idempotencyKey', 'processingProfile', 'completionPolicy'], [], ['serverFilePath', 'runId']), effect: 'import_submit' },
     import_status: { ...read('import_workflow', 'queue_progress', ['jobId', 'taskId', 'taskIds']), effect: 'import_read' }
   },
   lineage_analysis: {
@@ -125,7 +137,7 @@ export const RESEARCH_ROUTES = {
 };
 
 const DESCRIPTIONS = {
-  literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts one bounded discovery/import/extraction batch (idempotencyKey required unless dryRun); field_research_status reports batch completion separately from field coverage. study_save saves a reviewed field scope, branches, searches and paper/method selections; study reads its current graph and coverage; studies lists saved studies for the Web. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
+  literature_review: 'Find and read papers, survey sources, and explicitly discover/import missing papers. capabilities lists contracts; corpora/status/sources inspect coverage; search queries the graph; paper reads source evidence. For method genealogy, lineage_extract reads each selected full text once and caches methods, variants and relation candidates by source version; lineage_status reads progress and token usage; lineage_card reads exact evidence and freshness. Model candidates require source review before graph writeback. discover/import submit jobs; their status/report operations reconcile existing jobs. Use fast-md-structural imports for materialized Markdown before lineage_extract. field_research runs bounded discovery plus general semantic extraction; batch completion is separate from field coverage. study_save/study/studies manage reviewed scopes and native Web maps. Batch and overview responses default to compact summaries; exact evidence reads retain full detail.',
   lineage_analysis: 'Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
   idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains.'
 };
@@ -282,14 +294,17 @@ export function resolveResearchWorkflowCall(name, args = {}) {
   }
   if (name === 'literature_review' && args.operation === 'import') {
     if (args.serverFilePath && args.runId) throw new Error('import accepts serverFilePath or runId, not both.');
+    if (args.processingProfile === 'fast-md-structural' && args.serverFilePath && !/\.(md|markdown)$/i.test(args.serverFilePath)) {
+      throw new Error('fast-md-structural requires materialized Markdown; convert the PDF before this import.');
+    }
     if (args.runId) {
       if (['doi', 'arxivId', 'idempotencyKey'].some((key) => args[key] !== undefined)) {
         throw new Error('Discovery-run import accepts corpus and runId only; file metadata/idempotencyKey belong to serverFilePath import.');
       }
       backend = 'discovery_import_bridge';
-      backendArgs = { corpus: args.corpus, runId: args.runId, operation: 'saved_source_import' };
+      backendArgs = { ...pick(args, ['corpus', 'runId', 'processingProfile', 'completionPolicy']), operation: 'saved_source_import' };
     } else {
-      backendArgs = { ...pick(args, ['corpus', 'serverFilePath', 'doi', 'arxivId', 'idempotencyKey']),
+      backendArgs = { ...pick(args, ['corpus', 'serverFilePath', 'doi', 'arxivId', 'idempotencyKey', 'processingProfile', 'completionPolicy']),
         operation: 'submit', async: true };
     }
   }
@@ -313,6 +328,13 @@ function nextActions(call, args, result) {
   if (call.backend === 'project_evaluation') return [next('research_decision', result.task_gate.status === 'ready_for_design' ? 'recommend_next' : 'evidence_view', { project: args.project })];
   if (call.tool === 'idea_generation' && args.project) return [next('research_decision', 'evidence_view', { project: args.project })];
   const runId = result?.runId || result?.run_id || args.runId;
+  if (call.backend === 'lineage_evidence') {
+    if (result?.dryRun || call.args.operation === 'card') return [];
+    if (call.args.operation === 'extract' || !result?.terminal) return [next('literature_review', 'lineage_status', { runId })];
+    return (result?.entries || []).filter(entry => entry.cardId).slice(0, 3)
+      .map(entry => next('literature_review', 'lineage_card', { cardId: entry.cardId }));
+  }
+  if (call.effect === 'study_write') return [next('literature_review', 'study', { studyId: args.studyId })];
   if (call.backend === 'field_research') return runId && !result?.terminal && !result?.dryRun
     ? [next('literature_review', 'field_research_status', { runId })] : [];
   if (call.effect === 'discovery_submit' && runId) return [next('literature_review', 'discovery_status', { runId })];
@@ -350,11 +372,15 @@ async function importSavedDiscoverySources(args, options) {
     && (candidate.source?.sourcePath || candidate.source?.source_path)
   ));
   if (candidates.length > 100) throw new Error('Saved run exceeds 100 ready sources; import selected serverFilePath entries in bounded batches.');
+  if (args.processingProfile === 'fast-md-structural' && candidates.some(candidate => !/\.(md|markdown)$/i.test(candidate.source.sourcePath || candidate.source.source_path))) {
+    throw new Error('This run contains non-Markdown sources. Materialize them first and import selected Markdown files with fast-md-structural.');
+  }
   return {
     runId: args.runId,
     sourceAuthority: 'Saved discovery candidates; no provider search or source resolution performed.',
     eligibleSources: candidates.length,
-    ...await submitDiscoveryImports({ corpus: rootPath, candidates, maxImported: 100, options })
+    ...await submitDiscoveryImports({ corpus: rootPath, candidates, maxImported: 100,
+      processingProfile: args.processingProfile, completionPolicy: args.completionPolicy, options })
   };
 }
 
@@ -370,6 +396,9 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
         Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
     : call.backend === 'field_study'
     ? await executeFieldStudyOperation(call.args.corpus, call.args.operation,
+        Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
+    : call.backend === 'lineage_evidence'
+    ? await executeLineageEvidenceOperation(call.args.corpus, call.args.operation,
         Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
     : call.backend === 'project_evaluation'
     ? await evaluateProject(await resolveCorpusForApi(args.corpus, options), call.args)
@@ -388,10 +417,12 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
       ? { tool: null, component: 'executeFieldResearchOperation', operation: call.args.operation }
       : call.backend === 'field_study'
       ? { tool: null, component: 'executeFieldStudyOperation', operation: call.args.operation }
+      : call.backend === 'lineage_evidence'
+      ? { tool: null, component: 'executeLineageEvidenceOperation', operation: call.args.operation }
       : { tool: call.backend, operation: call.args.operation || null },
     result,
     evidenceBoundary: {
-      basis: result?.dryRun && call.backend === 'field_research' ? 'dry_run' : call.effect,
+      basis: result?.dryRun && ['field_research', 'lineage_evidence'].includes(call.backend) ? 'dry_run' : call.effect,
       statusAuthority: 'The backend result and original discovery/import/graph-sync records; this envelope creates no completion state.',
       limitation: name === 'idea_generation'
         ? 'Candidate hypotheses and bounded prior-art evidence do not prove novelty, causal transfer, or experimental gains.'
@@ -399,7 +430,9 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
     },
     nextActions: nextActions(call, args, result)
   };
-  return args.responseMode === 'summary' ? summarizeResearchEnvelope(envelope, args) : envelope;
+  const defaultFull = ['capabilities', 'paper', 'lineage_card', 'method', 'evidence', 'path'].includes(call.operation);
+  const mode = args.responseMode || (defaultFull ? 'full' : 'summary');
+  return mode === 'summary' ? summarizeResearchEnvelope(envelope, args) : envelope;
 }
 
 export function researchCapabilities(options = {}) {
@@ -411,6 +444,10 @@ export function researchCapabilities(options = {}) {
       evidenceView: { readOnly: true, maxLimit: 50, includeHistory: true }, multiComparison: true, codeEvidenceOrigin: 'code_inspected',
       evaluationPurposes: ['novelty_audit', 'mechanism_diagnosis', 'performance_validation'], precision: 'anticipated_interval_width requires basis_refs; plan thresholds are not achievable precision evidence' },
     responseModes: ['full', 'summary'], summaryMaxBytes: RESEARCH_SUMMARY_MAX_BYTES,
+    responseDefaults: { batchAndOverview: 'summary', exactEvidence: 'full' },
+    lineageEvidence: { contractVersion: LINEAGE_CARD_VERSION, extraction: 'one_fulltext_pass_per_source_version',
+      cache: 'paper_source_version_model_contract', retries: 'explicit_failed_only', graphWriteback: false,
+      usage: 'provider_reported_by_phase', statusOperation: 'lineage_status', cardOperation: 'lineage_card' },
     advanced: { tool: 'agent_materials', operations: ['proposal_graph_session', 'research_controller'],
       profileHint: 'Legacy names remain callable; clients needing schema discovery can use the all or legacy profile.',
       proposalExecution: 'caller_supplied_actions', proposalRequiredInput: 'proposalActions or proposalSlates',

@@ -12,7 +12,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 
 | Tool | Description |
 | --- | --- |
-| [literature_review](#tool-literature_review) | capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts one bounded discovery/import/extraction batch (idempotencyKey required unless dryRun); field_research_status reports batch completion separately from field coverage. study_save saves a reviewed field scope, branches, searches and paper/method selections; study reads its current graph and coverage; studies lists saved studies for the Web. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
+| [literature_review](#tool-literature_review) | Find and read papers, survey sources, and explicitly discover/import missing papers. capabilities lists contracts; corpora/status/sources inspect coverage; search queries the graph; paper reads source evidence. For method genealogy, lineage_extract reads each selected full text once and caches methods, variants and relation candidates by source version; lineage_status reads progress and token usage; lineage_card reads exact evidence and freshness. Model candidates require source review before graph writeback. discover/import submit jobs; their status/report operations reconcile existing jobs. Use fast-md-structural imports for materialized Markdown before lineage_extract. field_research runs bounded discovery plus general semantic extraction; batch completion is separate from field coverage. study_save/study/studies manage reviewed scopes and native Web maps. Batch and overview responses default to compact summaries; exact evidence reads retain full detail. |
 | [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
 | [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains. |
 | [research_decision](#tool-research_decision) | Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve project feedback with evidence_view, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId). |
@@ -55,7 +55,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 
 ### Function
 
-capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts one bounded discovery/import/extraction batch (idempotencyKey required unless dryRun); field_research_status reports batch completion separately from field coverage. study_save saves a reviewed field scope, branches, searches and paper/method selections; study reads its current graph and coverage; studies lists saved studies for the Web. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.
+Find and read papers, survey sources, and explicitly discover/import missing papers. capabilities lists contracts; corpora/status/sources inspect coverage; search queries the graph; paper reads source evidence. For method genealogy, lineage_extract reads each selected full text once and caches methods, variants and relation candidates by source version; lineage_status reads progress and token usage; lineage_card reads exact evidence and freshness. Model candidates require source review before graph writeback. discover/import submit jobs; their status/report operations reconcile existing jobs. Use fast-md-structural imports for materialized Markdown before lineage_extract. field_research runs bounded discovery plus general semantic extraction; batch completion is separate from field coverage. study_save/study/studies manage reviewed scopes and native Web maps. Batch and overview responses default to compact summaries; exact evidence reads retain full detail.
 
 ### Operation Routing
 
@@ -67,6 +67,9 @@ capabilities reports supported contracts and operations. Find and read papers, a
 | sources | corpus, responseMode | None | committed_read |
 | search | corpus, responseMode, query, limit, layers, sortBy | query | committed_read |
 | paper | corpus, responseMode, query, paperId, identifier, chunkLimit | one of: query, paperId, identifier | committed_read |
+| lineage_extract | corpus, responseMode, papers, idempotencyKey, retryFailed, dryRun | papers; idempotencyKey | lineage_extract_submit |
+| lineage_status | corpus, responseMode, runId | runId | lineage_extract_read |
+| lineage_card | corpus, responseMode, cardId | cardId | lineage_card_read |
 | survey | corpus, responseMode, query, targetDomain, constraints, limit | query | committed_read |
 | field_research | corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun | one of: query, targetDomain | field_research_submit |
 | field_research_status | corpus, responseMode, runId | None | field_research_read |
@@ -76,16 +79,16 @@ capabilities reports supported contracts and operations. Find and read papers, a
 | discover | corpus, responseMode, query, discoveryMode, providers, maxPapers | query | discovery_submit |
 | discovery_status | corpus, responseMode, runId, limit | None | discovery_read |
 | discovery_report | corpus, responseMode, runId | runId | discovery_read |
-| import | corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey | one of: serverFilePath, runId | import_submit |
+| import | corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey, processingProfile, completionPolicy | one of: serverFilePath, runId | import_submit |
 | import_status | corpus, responseMode, jobId, taskId, taskIds | None | import_read |
 
 ### Parameters
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (capabilities, corpora, status, sources, search, paper, survey, field_research, field_research_status, study_save, study, studies, discover, discovery_status, discovery_report, import, import_status) | capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; field_research: corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun; field_research_status: corpus, responseMode, runId; study_save: corpus, responseMode, studyId, expectedRevision, study; study: corpus, responseMode, studyId, branchId, maxNodes, maxEdges; studies: corpus, responseMode; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds Allowed values: `capabilities`, `corpora`, `status`, `sources`, `search`, `paper`, `survey`, `field_research`, `field_research_status`, `study_save`, `study`, `studies`, `discover`, `discovery_status`, `discovery_report`, `import`, `import_status`. |
+| `operation` | required | string (capabilities, corpora, status, sources, search, paper, lineage_extract, lineage_status, lineage_card, survey, field_research, field_research_status, study_save, study, studies, discover, discovery_status, discovery_report, import, import_status) | capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; lineage_extract: corpus, responseMode, papers, idempotencyKey, retryFailed, dryRun; lineage_status: corpus, responseMode, runId; lineage_card: corpus, responseMode, cardId; survey: corpus, responseMode, query, targetDomain, constraints, limit; field_research: corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun; field_research_status: corpus, responseMode, runId; study_save: corpus, responseMode, studyId, expectedRevision, study; study: corpus, responseMode, studyId, branchId, maxNodes, maxEdges; studies: corpus, responseMode; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey, processingProfile, completionPolicy; import_status: corpus, responseMode, jobId, taskId, taskIds Allowed values: `capabilities`, `corpora`, `status`, `sources`, `search`, `paper`, `lineage_extract`, `lineage_status`, `lineage_card`, `survey`, `field_research`, `field_research_status`, `study_save`, `study`, `studies`, `discover`, `discovery_status`, `discovery_report`, `import`, `import_status`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
-| `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
+| `responseMode` | optional | string (full, summary) | Batch, search and overview operations default to summary. Exact paper, lineage_card, method/evidence/path and capability reads default to full. Explicit full preserves backend output. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
 | `limit` | optional | integer | Result budget, default 5. |
 | `layers` | optional | string | Comma-separated graph layer filter. |
@@ -93,6 +96,14 @@ capabilities reports supported contracts and operations. Find and read papers, a
 | `paperId` | optional | string | Exact committed paper id. |
 | `identifier` | optional | string | Exact paper identifier such as DOI or arXiv id. |
 | `chunkLimit` | optional | integer | Maximum source chunks in a paper view. |
+| `papers` | optional | array&lt;object&gt; | Papers for source-versioned lineage evidence cards. Reuses completed cards before calling the configured model. |
+| `papers[].paperId` | required in parent | string | Exact committed paper id. |
+| `papers[].sourceKey` | optional | string | Exact active source key; required when source selection is ambiguous. |
+| `idempotencyKey` | optional | string | Stable id for an import submission; reuse to avoid duplicate async jobs. |
+| `retryFailed` | optional | boolean | Explicitly retry only failed or unprocessed entries in an existing lineage run. Completed cards are preserved. |
+| `dryRun` | optional | boolean | Preview field research scope and worker readiness without searching, downloading, importing or creating a run. |
+| `runId` | optional | string | Existing literature discovery run id. |
+| `cardId` | optional | string | Exact card id returned by lineage_status. |
 | `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
 | `constraints` | optional | string \| array&lt;string&gt; | Free-text source-review conditions; structured method requirements belong to lineage_analysis/overview or problem. |
 | `fromYear` | optional | integer | Inclusive topic observation lower year. |
@@ -102,9 +113,6 @@ capabilities reports supported contracts and operations. Find and read papers, a
 | `maxEdges` | optional | integer | Edge budget, default 350. Landscape applies this separately to method and paper relations. |
 | `maxPapers` | optional | integer | Maximum discovery papers; default 20. |
 | `providers` | optional | array&lt;string&gt; | Optional discovery provider names. |
-| `idempotencyKey` | optional | string | Stable id for an import submission; reuse to avoid duplicate async jobs. |
-| `dryRun` | optional | boolean | Preview field research scope and worker readiness without searching, downloading, importing or creating a run. |
-| `runId` | optional | string | Existing literature discovery run id. |
 | `studyId` | optional | string | Saved field study identifier. |
 | `expectedRevision` | optional | integer | Read-back study revision; use 0 to create. |
 | `study` | optional | object | Field scope, branch reviews, search records and paper/method selection. Saving does not mutate graph evidence. |
@@ -147,6 +155,8 @@ capabilities reports supported contracts and operations. Find and read papers, a
 | `serverFilePath` | optional | string | Already staged server-side PDF/Markdown file to import. |
 | `doi` | optional | string | Optional DOI for an imported source. |
 | `arxivId` | optional | string | Optional arXiv id for an imported source. |
+| `processingProfile` | optional | string (fast-md-structural, full) | fast-md-structural indexes already-materialized Markdown without generic LLM extraction; use before lineage_extract. full runs the general semantic pipeline. Allowed values: `fast-md-structural`, `full`. |
+| `completionPolicy` | optional | string (graph-visible, semantic-complete) | Import completion target. Use graph-visible with fast imports, then review lineage cards separately. Allowed values: `graph-visible`, `semantic-complete`. |
 | `jobId` | optional | string | Durable asynchronous import submission job id. |
 | `taskId` | optional | string | Import task id from the authoritative queue. |
 | `taskIds` | optional | array&lt;string&gt; | Import task ids from a saved discovery run. |
@@ -206,7 +216,7 @@ Analyze research evolution from committed evidence: landscape builds a field tim
 | --- | --- | --- | --- |
 | `operation` | required | string (landscape, overview, problem, method, evidence, path, context, impact) | landscape: corpus, responseMode, query, targetDomain, seedNodeIds, fromYear, toYear, maxDepth, maxNodes, maxEdges; overview: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; problem: corpus, responseMode, query, targetDomain, constraints, maxDepth, maxNodes, maxEdges, seedNodeIds, fromYear, toYear; method: corpus, responseMode, query, method, direction, maxDepth, limit; evidence: corpus, responseMode, query, method, sourceMethod, targetMethod, edgeId, limit; path: corpus, responseMode, from, to, maxDepth, limit, layers; context: corpus, responseMode, query, layers; impact: corpus, responseMode, query, direction, maxDepth, layers Allowed values: `landscape`, `overview`, `problem`, `method`, `evidence`, `path`, `context`, `impact`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
-| `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
+| `responseMode` | optional | string (full, summary) | Batch, search and overview operations default to summary. Exact paper, lineage_card, method/evidence/path and capability reads default to full. Explicit full preserves backend output. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
 | `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
 | `seedNodeIds` | optional | array&lt;string&gt; | Explicit graph node anchors for a topic overview. |
@@ -268,7 +278,7 @@ Generate and evaluate research hypotheses from committed sources: generate retur
 | --- | --- | --- | --- |
 | `operation` | required | string (generate, diverge, converge, gaps, evaluate, experiment_materials) | generate: corpus, responseMode, query, targetDomain, mechanisms, limit, selectionMode, selectionK, project; diverge: corpus, responseMode, query, maxDepth, limit, layers; converge: corpus, responseMode, query, maxDepth, limit, layers; gaps: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth; evaluate: corpus, responseMode, query, targetDomain, constraints, limit, method, maxDepth, candidateMechanism, removedComponents, project, purpose, actionId, actionVersion; experiment_materials: corpus, responseMode, query, targetDomain, constraints, limit Allowed values: `generate`, `diverge`, `converge`, `gaps`, `evaluate`, `experiment_materials`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
-| `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
+| `responseMode` | optional | string (full, summary) | Batch, search and overview operations default to summary. Exact paper, lineage_card, method/evidence/path and capability reads default to full. Explicit full preserves backend output. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
 | `targetDomain` | optional | string | Target research domain; generate uses cross-domain catalyst when supplied. |
 | `mechanisms` | optional | array&lt;string&gt; | Candidate mechanism terms. |

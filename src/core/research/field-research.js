@@ -11,6 +11,7 @@ import { executeImportWorkflowTool } from '../../mcp/tool-import-workflow.js';
 import { configuredWorkerCoveragePayload, loadCorpusLiteForApi, resolveCorpusForApi } from '../../server/api.js';
 import { buildFieldEvolution } from '../graph/field-evolution.js';
 import { matchFieldResearchPaper, selectFieldResearchCandidates, summarizeFieldResearchImports } from './field-research-scope.js';
+import { recoverLineageExtractions } from './lineage-evidence.js';
 
 export const FIELD_RESEARCH_VERSION = 'papernexus-field-research-v1';
 const activeRuns = new Map();
@@ -273,6 +274,8 @@ export function startFieldResearchRecoveryWorker(options = {}) {
     polling = true;
     try {
       for (const rootPath of options.rootPaths || options.workerRootPaths || []) {
+        await recoverLineageExtractions(rootPath, options);
+        if (options.fieldResearchWorkers?.imports === false) continue;
         const runs = await fs.readdir(fieldResearchPaths(rootPath).runs).catch(error => {
           if (error.code === 'ENOENT') return [];
           throw error;

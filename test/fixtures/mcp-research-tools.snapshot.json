@@ -1,7 +1,7 @@
 [
   {
     "name": "literature_review",
-    "description": "capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts bounded discovery, missing-paper import and configured extraction for an evolution map (idempotencyKey required unless dryRun); field_research_status reads progress and the ready map. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.",
+    "description": "Find and read papers, survey sources, and explicitly discover/import missing papers. capabilities lists contracts; corpora/status/sources inspect coverage; search queries the graph; paper reads source evidence. For method genealogy, lineage_extract reads each selected full text once and caches methods, variants and relation candidates by source version; lineage_status reads progress and token usage; lineage_card reads exact evidence and freshness. Model candidates require source review before graph writeback. discover/import submit jobs; their status/report operations reconcile existing jobs. Use fast-md-structural imports for materialized Markdown before lineage_extract. field_research runs bounded discovery plus general semantic extraction; batch completion is separate from field coverage. study_save/study/studies manage reviewed scopes and native Web maps. Batch and overview responses default to compact summaries; exact evidence reads retain full detail.",
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -20,16 +20,22 @@
             "sources",
             "search",
             "paper",
+            "lineage_extract",
+            "lineage_status",
+            "lineage_card",
             "survey",
             "field_research",
             "field_research_status",
+            "study_save",
+            "study",
+            "studies",
             "discover",
             "discovery_status",
             "discovery_report",
             "import",
             "import_status"
           ],
-          "description": "capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; field_research: corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun; field_research_status: corpus, responseMode, runId; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds"
+          "description": "capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; lineage_extract: corpus, responseMode, papers, idempotencyKey, retryFailed, dryRun; lineage_status: corpus, responseMode, runId; lineage_card: corpus, responseMode, cardId; survey: corpus, responseMode, query, targetDomain, constraints, limit; field_research: corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun; field_research_status: corpus, responseMode, runId; study_save: corpus, responseMode, studyId, expectedRevision, study; study: corpus, responseMode, studyId, branchId, maxNodes, maxEdges; studies: corpus, responseMode; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey, processingProfile, completionPolicy; import_status: corpus, responseMode, jobId, taskId, taskIds"
         },
         "corpus": {
           "type": "string",
@@ -43,7 +49,7 @@
             "full",
             "summary"
           ],
-          "description": "full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions."
+          "description": "Batch, search and overview operations default to summary. Exact paper, lineage_card, method/evidence/path and capability reads default to full. Explicit full preserves backend output."
         },
         "query": {
           "type": "string",
@@ -88,6 +94,61 @@
           "minimum": 1,
           "maximum": 40,
           "description": "Maximum source chunks in a paper view."
+        },
+        "papers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "paperId"
+            ],
+            "properties": {
+              "paperId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000,
+                "description": "Exact committed paper id."
+              },
+              "sourceKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000,
+                "description": "Exact active source key; required when source selection is ambiguous."
+              }
+            }
+          },
+          "description": "Papers for source-versioned lineage evidence cards. Reuses completed cards before calling the configured model."
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Stable id for an import submission; reuse to avoid duplicate async jobs."
+        },
+        "retryFailed": {
+          "type": "boolean",
+          "description": "Explicitly retry only failed or unprocessed entries in an existing lineage run. Completed cards are preserved."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "Preview field research scope and worker readiness without searching, downloading, importing or creating a run."
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Existing literature discovery run id.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "cardId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Exact card id returned by lineage_status.",
+          "pattern": "^card-[a-f0-9]{24}$"
         },
         "targetDomain": {
           "type": "string",
@@ -164,22 +225,297 @@
           "maxItems": 30,
           "description": "Optional discovery provider names."
         },
-        "idempotencyKey": {
+        "studyId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200,
-          "description": "Stable id for an import submission; reuse to avoid duplicate async jobs."
+          "maxLength": 100,
+          "description": "Saved field study identifier.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
         },
-        "dryRun": {
-          "type": "boolean",
-          "description": "Preview field research scope and worker readiness without searching, downloading, importing or creating a run."
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000,
+          "description": "Read-back study revision; use 0 to create."
         },
-        "runId": {
+        "study": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000
+            },
+            "scope": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            },
+            "fromYear": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 9999
+            },
+            "toYear": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 9999
+            },
+            "branches": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "reviewStatus": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "reviewed",
+                      "limited"
+                    ]
+                  },
+                  "reviewSummary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "gaps": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 8000
+                    },
+                    "maxItems": 200
+                  }
+                },
+                "required": [
+                  "id",
+                  "label",
+                  "description",
+                  "reviewStatus",
+                  "reviewSummary",
+                  "gaps"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 40
+            },
+            "searches": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                  },
+                  "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "branchIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                    },
+                    "maxItems": 40
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "reference": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "retrievedAt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "candidateCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "notes": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  }
+                },
+                "required": [
+                  "id",
+                  "query",
+                  "branchIds",
+                  "source",
+                  "reference",
+                  "retrievedAt",
+                  "candidateCount"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 500
+            },
+            "papers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "paperId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "method",
+                      "context",
+                      "excluded"
+                    ]
+                  },
+                  "branchIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+                    },
+                    "maxItems": 40
+                  },
+                  "methodIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "maxItems": 500
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "evidenceRefs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 8000
+                    },
+                    "maxItems": 200
+                  },
+                  "sourceKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  }
+                },
+                "required": [
+                  "paperId",
+                  "role",
+                  "branchIds",
+                  "methodIds",
+                  "reason",
+                  "evidenceRefs"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 2000
+            },
+            "coverage": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "in_progress",
+                    "reviewed"
+                  ]
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 20000
+                },
+                "gaps": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "maxItems": 200
+                },
+                "nextActions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "maxItems": 200
+                }
+              },
+              "required": [
+                "status",
+                "summary",
+                "gaps",
+                "nextActions"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "title",
+            "query",
+            "scope",
+            "branches",
+            "searches",
+            "papers",
+            "coverage"
+          ],
+          "additionalProperties": false,
+          "description": "Field scope, branch reviews, search records and paper/method selection. Saving does not mutate graph evidence."
+        },
+        "branchId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200,
-          "description": "Existing literature discovery run id.",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          "maxLength": 100,
+          "description": "Optional branch within a saved field study."
         },
         "discoveryMode": {
           "type": "string",
@@ -207,6 +543,22 @@
           "minLength": 1,
           "maxLength": 8000,
           "description": "Optional arXiv id for an imported source."
+        },
+        "processingProfile": {
+          "type": "string",
+          "enum": [
+            "fast-md-structural",
+            "full"
+          ],
+          "description": "fast-md-structural indexes already-materialized Markdown without generic LLM extraction; use before lineage_extract. full runs the general semantic pipeline."
+        },
+        "completionPolicy": {
+          "type": "string",
+          "enum": [
+            "graph-visible",
+            "semantic-complete"
+          ],
+          "description": "Import completion target. Use graph-visible with fast imports, then review lineage cards separately."
         },
         "jobId": {
           "type": "string",
@@ -254,6 +606,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -263,13 +621,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -293,6 +654,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -302,13 +669,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -332,6 +702,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -341,13 +717,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -371,6 +750,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -380,13 +765,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -409,6 +797,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -418,13 +812,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -461,6 +858,12 @@
               "limit": false,
               "layers": false,
               "sortBy": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -470,13 +873,164 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "lineage_extract"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "papers",
+              "idempotencyKey"
+            ],
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "runId": false,
+              "cardId": false,
+              "targetDomain": false,
+              "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "maxPapers": false,
+              "providers": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "lineage_status"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "runId"
+            ],
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "cardId": false,
+              "targetDomain": false,
+              "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "maxPapers": false,
+              "providers": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "lineage_card"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "cardId"
+            ],
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "targetDomain": false,
+              "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "maxPapers": false,
+              "providers": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -501,6 +1055,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "fromYear": false,
               "toYear": false,
               "maxDepth": false,
@@ -508,13 +1068,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -549,12 +1112,21 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
-              "constraints": false,
+              "papers": false,
+              "retryFailed": false,
               "runId": false,
+              "cardId": false,
+              "constraints": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -578,6 +1150,11 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -587,12 +1164,161 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "study_save"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "studyId",
+              "expectedRevision",
+              "study"
+            ],
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
+              "targetDomain": false,
+              "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "maxPapers": false,
+              "providers": false,
+              "branchId": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "study"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "studyId"
+            ],
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
+              "targetDomain": false,
+              "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxPapers": false,
+              "providers": false,
+              "expectedRevision": false,
+              "study": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
+              "jobId": false,
+              "taskId": false,
+              "taskIds": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "studies"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "query": false,
+              "limit": false,
+              "layers": false,
+              "sortBy": false,
+              "paperId": false,
+              "identifier": false,
+              "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
+              "targetDomain": false,
+              "constraints": false,
+              "fromYear": false,
+              "toYear": false,
+              "maxDepth": false,
+              "maxNodes": false,
+              "maxEdges": false,
+              "maxPapers": false,
+              "providers": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
+              "discoveryMode": false,
+              "serverFilePath": false,
+              "doi": false,
+              "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -618,6 +1344,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -625,12 +1357,15 @@
               "maxDepth": false,
               "maxNodes": false,
               "maxEdges": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -653,6 +1388,11 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -662,12 +1402,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -694,6 +1438,11 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -703,12 +1452,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
               "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false,
               "jobId": false,
               "taskId": false,
               "taskIds": false
@@ -744,6 +1497,10 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -753,7 +1510,10 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "dryRun": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "jobId": false,
               "taskId": false,
@@ -778,6 +1538,12 @@
               "paperId": false,
               "identifier": false,
               "chunkLimit": false,
+              "papers": false,
+              "idempotencyKey": false,
+              "retryFailed": false,
+              "dryRun": false,
+              "runId": false,
+              "cardId": false,
               "targetDomain": false,
               "constraints": false,
               "fromYear": false,
@@ -787,13 +1553,16 @@
               "maxEdges": false,
               "maxPapers": false,
               "providers": false,
-              "idempotencyKey": false,
-              "dryRun": false,
-              "runId": false,
+              "studyId": false,
+              "expectedRevision": false,
+              "study": false,
+              "branchId": false,
               "discoveryMode": false,
               "serverFilePath": false,
               "doi": false,
-              "arxivId": false
+              "arxivId": false,
+              "processingProfile": false,
+              "completionPolicy": false
             }
           }
         }
@@ -838,7 +1607,7 @@
             "full",
             "summary"
           ],
-          "description": "full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions."
+          "description": "Batch, search and overview operations default to summary. Exact paper, lineage_card, method/evidence/path and capability reads default to full. Explicit full preserves backend output."
         },
         "query": {
           "type": "string",
@@ -1305,7 +2074,7 @@
             "full",
             "summary"
           ],
-          "description": "full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions."
+          "description": "Batch, search and overview operations default to summary. Exact paper, lineage_card, method/evidence/path and capability reads default to full. Explicit full preserves backend output."
         },
         "query": {
           "type": "string",

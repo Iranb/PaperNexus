@@ -11,7 +11,9 @@ This is the canonical research entrypoint. Its existing `papernexus` name remain
 
 Use the configured remote PaperNexus MCP. Read [the shared remote contract](references/remote-contract.md) once per setup or reconnect. Inspect the advertised tools; when `literature_review` exists, call `operation=capabilities` once and retain the result for this connection. Use `corpora` only if the corpus is unknown. A newer skill does not make an operation available on an older server.
 
-Use `responseMode=summary` for triage on servers advertising it. It is a bounded preview, not a complete evidence review. Read exact papers and source spans before adopting a claim. Preserve original gate denials and unknowns; omitted evidence is never approval.
+Batch, search and overview operations default to `responseMode=summary` on servers advertising `responseDefaults`. Use summary explicitly on older servers that support it. Exact paper, method evidence and lineage-card reads retain full detail. A summary is a preview, not an evidence review. Read decisive source spans before adopting a claim. Preserve original gate denials and unknowns; omitted evidence is never approval.
+
+Keep bulk data outside the conversation. Persist raw search records, full text and complete JSON locally or on the server; return counts, changed items, named failures and artifact references. Read selected papers/cards when a decision needs them. Reuse saved results across stages and chats; a new synthesis or layout change does not require another extraction. Use existing run/status operations after submission instead of resubmitting to obtain detail.
 
 ## Select the depth that serves the request
 

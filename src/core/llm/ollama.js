@@ -24,6 +24,7 @@ import {
   getKeychainSecret
 } from '../../lib/keychain.js';
 import { normalizeText, stableHash, truncate } from '../../lib/utils.js';
+import { appendLlmUsage, normalizeLlmUsage } from './usage.js';
 import {
   clearLlmRateLimitCooldownStore,
   loadLlmRateLimitCooldowns,
@@ -2062,6 +2063,7 @@ async function fetchLlmJsonWithRetry(providerLabel, url, requestOptions, config 
     const controller = new AbortController();
     const timeoutMs = toNonNegativeNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS);
     const timeoutHandle = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    let received = false;
 
     try {
       const response = await fetch(url, {
@@ -2073,8 +2075,17 @@ async function fetchLlmJsonWithRetry(providerLabel, url, requestOptions, config 
         throw await createLlmHttpError(providerLabel, response);
       }
 
-      return await response.json();
+      const payload = await response.json();
+      received = true;
+      await config.onLlmResponse?.({ provider: config.provider, model: payload.model || config.model,
+        requestId: payload.id || null, status: 'completed', attempt,
+        finishReason: payload.choices?.[0]?.finish_reason || payload.stop_reason || payload.done_reason || null,
+        usage: normalizeLlmUsage(payload, config.provider) });
+      return payload;
     } catch (error) {
+      if (received) throw error;
+      await config.onLlmResponse?.({ provider: config.provider, model: config.model, status: 'failed', attempt,
+        statusCode: error.statusCode || error.status || null, usage: null });
       lastError = error;
       if (isLlmRateLimitError(error)) {
         await recordLlmRateLimitCooldown(config, providerLabel, error);
@@ -2276,25 +2287,24 @@ async function requestOllamaGenerate(config, prompt) {
   };
 
   if (config.sshHost) {
-    const output = await runSshCommand(
-      config.sshHost,
-      [
-        'curl',
-        '-sS',
-        `${config.baseUrl}/api/generate`,
-        '--header',
-        'content-type:application/json',
-        '--data-binary',
-        '@-'
-      ],
-      JSON.stringify(payload),
-      config.timeoutMs,
-      'Ollama'
-    );
-    const response = JSON.parse(output);
-    return {
-      text: response.response || ''
-    };
+    let received = false;
+    try {
+      const output = await runSshCommand(
+        config.sshHost,
+        ['curl', '-sS', `${config.baseUrl}/api/generate`, '--header', 'content-type:application/json', '--data-binary', '@-'],
+        JSON.stringify(payload), config.timeoutMs, 'Ollama'
+      );
+      const response = JSON.parse(output);
+      received = true;
+      await config.onLlmResponse?.({ provider: config.provider, model: response.model || config.model,
+        status: 'completed', attempt: 0, finishReason: response.done_reason || null,
+        usage: normalizeLlmUsage(response, config.provider) });
+      return { text: response.response || '', finishReason: response.done_reason || null };
+    } catch (error) {
+      if (!received) await config.onLlmResponse?.({ provider: config.provider, model: config.model,
+        status: 'failed', attempt: 0, usage: null });
+      throw error;
+    }
   }
 
   const response = await fetchLlmJsonWithRetry(
@@ -2311,7 +2321,7 @@ async function requestOllamaGenerate(config, prompt) {
   );
 
   return {
-    text: response.response || ''
+    text: response.response || '', finishReason: response.done_reason || null
   };
 }
 
@@ -2448,7 +2458,7 @@ async function requestOpenAiGenerate(config, prompt) {
     }
   }
 
-  return { text };
+  return { text, finishReason: response.choices?.[0]?.finish_reason || null };
 }
 
 function extractAnthropicText(payload) {
@@ -2495,7 +2505,7 @@ async function requestAnthropicGenerate(config, prompt) {
   );
 
   return {
-    text: extractAnthropicText(response)
+    text: extractAnthropicText(response), finishReason: response.stop_reason || null
   };
 }
 
@@ -2524,7 +2534,9 @@ function withLlmGenerationMetadata(payload = {}, config = {}, extra = {}) {
   };
 }
 
-async function requestLlmGenerate(config, prompt) {
+async function requestLlmGenerate(config, prompt, usageContext = {}) {
+  if (usageContext.ledger?.dir) config = { ...config,
+    onLlmResponse: event => appendLlmUsage(usageContext.ledger, { batchId: usageContext.batchId || null, ...event }) };
   try {
     return withLlmGenerationMetadata(
       await requestLlmGenerateDirect(config, prompt),
@@ -2537,6 +2549,7 @@ async function requestLlmGenerate(config, prompt) {
 
     const fallbackConfig = {
       ...config.fallback,
+      onLlmResponse: config.onLlmResponse,
       fallback: null
     };
     try {
@@ -2558,6 +2571,12 @@ async function requestLlmGenerate(config, prompt) {
       throw fallbackError;
     }
   }
+}
+
+export async function generateResearchJson(prompt, options = {}) {
+  const config = resolveLlmConfig(options);
+  if (!config.enabled || !config.model) throw new Error('Configure a research model before extracting lineage evidence.');
+  return requestLlmGenerate(config, prompt, { ledger: resolveLlmBatchLedger(options, 'lineage-extraction'), batchId: options.lineageCardId });
 }
 
 function parseJsonText(text) {
@@ -2952,7 +2971,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
     });
 
     try {
-      const payload = await requestLlmGenerate(plan.config, prompt);
+      const payload = await requestLlmGenerate(plan.config, prompt, { ledger, batchId });
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || plan.config.provider;
       const topLevelSchemaError = raw?.papers !== undefined && !Array.isArray(raw.papers)
@@ -3478,7 +3497,7 @@ export async function inferChunkSemanticObjectsBatch(entries, options = {}) {
     });
 
     try {
-      const payload = await requestLlmGenerate(plan.config, prompt);
+      const payload = await requestLlmGenerate(plan.config, prompt, { ledger, batchId });
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || plan.config.provider;
       const chunkErrors = new Map(
@@ -3936,7 +3955,7 @@ export async function inferChunkResearchSemanticsBatch(entries, options = {}) {
     });
 
     try {
-      const payload = await requestLlmGenerate(config, prompt);
+      const payload = await requestLlmGenerate(config, prompt, { ledger, batchId });
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || config.provider;
       const chunkErrors = new Map(
@@ -4396,7 +4415,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
     });
 
     try {
-      const payload = await requestLlmGenerate(config, prompt);
+      const payload = await requestLlmGenerate(config, prompt, { ledger, batchId });
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || config.provider;
       const topLevelSchemaError = raw?.papers !== undefined && !Array.isArray(raw.papers)
@@ -4774,7 +4793,7 @@ export async function inferGraphNodeChecksBatch(entries, options = {}) {
     });
 
     try {
-      const payload = await requestLlmGenerate(config, prompt);
+      const payload = await requestLlmGenerate(config, prompt, { ledger, batchId });
       const raw = parseJsonText(payload.text);
       const resultProvider = payload.provider || config.provider;
       const nodeErrors = new Map(

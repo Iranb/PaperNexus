@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 
 // This is a display budget, never a new authority for scientific or queue state.
-export const RESEARCH_SUMMARY_MAX_BYTES = 32768;
+export const RESEARCH_SUMMARY_MAX_BYTES = 12288;
 const bytes = value => Buffer.byteLength(JSON.stringify(value, null, 2));
-const important = /^(status|final_status|input_status|paper|paper_id|id|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked|purpose|task_gate|comparison_summary|inference_target|evidence_freshness|outstanding_runs|budget|source_readiness|performance_claim_status)$/;
+const important = /^(status|terminal|counts|usage|coverageAssessment|evidenceBoundary|reviewStatus|freshness|usableForReview|final_status|input_status|paper|paper_id|id|studyId|revision|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked|purpose|task_gate|comparison_summary|inference_target|evidence_freshness|outstanding_runs|budget|source_readiness|performance_claim_status)$/;
 
 export function summarizeResearchEnvelope(envelope, args = {}) {
   const decisionTool = envelope.tool === 'research_decision';
@@ -12,9 +12,9 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
     operation: 'status', ...(args.corpus ? { corpus: args.corpus } : {}), project: args.project,
     ...(decisionWrite && !args.dryRun ? { requestId: args.requestId } : {}), responseMode: 'full'
   } };
-  const submitted = ['discovery_submit', 'import_submit'].includes(envelope.evidenceBoundary?.basis);
+  const submitted = ['discovery_submit', 'import_submit', 'field_research_submit', 'lineage_extract_submit', 'study_write'].includes(envelope.evidenceBoundary?.basis);
   const reconcile = (envelope.nextActions || []).find(action =>
-    action.tool === 'literature_review' && ['discovery_status', 'discovery_report', 'import_status'].includes(action.arguments?.operation));
+    action.tool === 'literature_review' && ['discovery_status', 'discovery_report', 'import_status', 'field_research_status', 'lineage_status', 'study'].includes(action.arguments?.operation));
   const readMore = decisionWrite ? decisionReadMore : decisionTool && envelope.operation === 'export'
     ? { tool: 'research_decision', arguments: { operation: 'export', ...(args.corpus ? { corpus: args.corpus } : {}), project: args.project, ...(args.assessmentId ? { assessmentId: args.assessmentId } : {}), responseMode: 'full' } }
     : submitted
@@ -23,7 +23,20 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
     : { tool: envelope.tool, arguments: { ...args, responseMode: 'full' } };
   const serialized = JSON.stringify(envelope.result);
   const omitted = [];
-  let budget = 12000;
+  let summarySource = envelope.result;
+  if (envelope.tool === 'literature_review' && envelope.operation === 'study' && envelope.result?.analysis?.study) {
+    const saved = envelope.result;
+    const study = saved.analysis.study;
+    const map = saved.analysis.result;
+    summarySource = { studyId: saved.studyId, revision: saved.revision, title: study.title,
+      counts: { selectedPapers: study.paperCount, selectedMethods: study.methodCount, branches: study.branchCount,
+        searches: study.searchCount, visiblePapers: map.papers?.length || 0, visibleMethods: map.methods?.length || 0,
+        visibleRelations: map.relations?.length || 0 },
+      coverageAssessment: saved.coverageAssessment, query: study.query, scope: saved.study.scope,
+      sourceQuality: saved.analysis.sourceQuality };
+    omitted.push('result.study.papers (read exact paper/card evidence)', 'result.analysis.result (read full for the map)');
+  }
+  let budget = 5000;
   const project = (value, pointer = 'result', depth = 0) => {
     if (budget <= 0 || depth > 7) { if (omitted.length < 40) omitted.push(pointer); return null; }
     if (typeof value === 'string') {
@@ -46,15 +59,20 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
     }
     return output;
   };
-  const result = project(envelope.result);
+  const result = project(summarySource);
   // Keep root evidence gates exact when small; never infer permission from omitted fields.
   const gates = {};
-  let gateBudget = 8000;
+  let gateBudget = 3500;
   for (const key of ['evidence_sufficiency', 'source_admission', 'assessment_gate', 'budget_gate', 'execution_authority', 'based_on_revision',
-    'purpose', 'task_gate', 'performance_claim_status', 'comparison_summary', 'evidence_freshness', 'outstanding_runs', 'budget', 'source_readiness', 'graph_readiness']) {
+    'purpose', 'task_gate', 'performance_claim_status', 'comparison_summary', 'evidence_freshness', 'outstanding_runs', 'budget', 'source_readiness', 'graph_readiness',
+    'coverageAssessment', 'evidenceBoundary', 'freshness', 'usableForReview']) {
     const value = envelope.result?.[key] ?? envelope.result?.paper?.[key] ?? envelope.result?.project_evidence?.[key];
     if (value !== undefined) {
-      gates[key] = bytes(value) <= Math.min(2400, gateBudget) ? value : { status: 'read_full_required', complete: false };
+      gates[key] = bytes(value) <= Math.min(2400, gateBudget) ? value : key === 'coverageAssessment'
+        ? { status: value.status, complete: false, read_full_required: true,
+            missingPaperCount: value.missingPapers?.length ?? null, missingMethodCount: value.missingMethods?.length ?? null,
+            mismatchedMethodCount: value.mismatchedMethods?.length ?? null }
+        : { status: 'read_full_required', complete: false };
       gateBudget -= bytes(gates[key]);
     }
   }

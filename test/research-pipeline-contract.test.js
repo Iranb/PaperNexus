@@ -41,6 +41,41 @@ test('new presentation controls do not enable extra side effects or arbitrary ba
  assert.throws(()=>resolveResearchWorkflowCall('literature_review',{operation:'paper',paperId:'p',responseMode:'hidden'}),/Invalid/);
 });
 
+test('overview defaults to bounded summaries while exact source reads remain full', async()=>{
+ const raw={status:'partial',evidenceBoundary:{reviewStatus:'pending'},groups:Array.from({length:40},(_,id)=>({id,text:'source '.repeat(500)}))};
+ const summary=await executeResearchWorkflow('literature_review',{operation:'search',query:'methods'},{},async()=>raw);
+ assert.equal(summary.presentation.mode,'summary');
+ assert.ok(Buffer.byteLength(JSON.stringify(summary,null,2))<=RESEARCH_SUMMARY_MAX_BYTES);
+ assert.equal(summary.presentation.read_more.arguments.operation,'search');
+ const paper=await executeResearchWorkflow('literature_review',{operation:'paper',paperId:'p1'},{},async()=>raw);
+ assert.equal(paper.result,raw); assert.equal(paper.presentation,undefined);
+});
+
+test('study and extraction summaries preserve coverage and reconcile using read operations',()=>{
+ for(const [operation,basis,statusOperation] of [['study_save','study_write','study'],['field_research','field_research_submit','field_research_status'],['lineage_extract','lineage_extract_submit','lineage_status']]) {
+  const result={coverageAssessment:{status:'in_progress',gaps:['Unreviewed branch.']},evidenceBoundary:{reviewStatus:'pending',graphWriteback:false}};
+  const response=summarizeResearchEnvelope({tool:'literature_review',operation,result,evidenceBoundary:{basis},
+   nextActions:[{tool:'literature_review',arguments:{operation:statusOperation,runId:'existing',studyId:'study'}}]}, {operation});
+  assert.equal(response.presentation.read_more.arguments.operation,statusOperation);
+  assert.deepEqual(response.presentation.evidence_gates.coverageAssessment,result.coverageAssessment);
+  assert.equal(response.presentation.evidence_gates.evidenceBoundary.graphWriteback,false);
+ }
+});
+
+test('large study summaries retain selected counts and unresolved coverage before omitting the map',()=>{
+ const result={studyId:'large-study',revision:2,study:{scope:'Classification.',papers:Array(100).fill({reason:'evidence '.repeat(1000)})},
+  coverageAssessment:{status:'needs_attention',summary:'A source is missing.',missingPapers:['missing'],missingMethods:[],mismatchedMethods:[],branches:Array(40).fill({reviewSummary:'review '.repeat(1000)})},
+  analysis:{study:{title:'Large study',paperCount:100,methodCount:120,branchCount:40,searchCount:10},
+   result:{papers:Array(100).fill({}),methods:Array(120).fill({}),relations:Array(30).fill({})},sourceQuality:{paperCount:99}}};
+ const response=summarizeResearchEnvelope({tool:'literature_review',operation:'study',result},{operation:'study',studyId:'large-study'});
+ assert.equal(response.result.counts.selectedPapers,100);
+ assert.equal(response.result.counts.visibleRelations,30);
+ assert.equal(response.result.coverageAssessment.status,'needs_attention');
+ assert.equal(response.result.coverageAssessment.missingPaperCount,1);
+ assert.equal(response.presentation.complete,false);
+ assert.ok(Buffer.byteLength(JSON.stringify(response,null,2))<=RESEARCH_SUMMARY_MAX_BYTES);
+});
+
 test('submission summaries direct callers to existing job status instead of repeating writes', async()=>{
  for(const [operation,fields,result,status] of [
   ['discover',{query:'GCD'},{runId:'run:1'},'discovery_status'],

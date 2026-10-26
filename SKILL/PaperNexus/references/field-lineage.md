@@ -16,9 +16,23 @@ Search both the current corpus and external primary sources. Retain query, provi
 
 `field_research` starts one bounded search/import/extraction batch. Its defaults and `maxPapers` are execution budgets, not acceptance targets. Use separate rounds or targeted `discover` calls for unresolved branches; read saved reports instead of repeating completed work. Keep runId/taskId and exact synchronization state. If importing only a reviewed subset, use selected staged files instead of importing an entire saved discovery run.
 
+When capabilities advertises `lineageEvidence`, prefer the dedicated card workflow below for a method genealogy. `field_research` still runs the general semantic graph pipeline; do not run both pipelines over the same papers merely to obtain lineage candidates.
+
 Maintain inclusion, context and exclusion decisions by canonical DOI/arXiv identity and selected version. Read decisive source passages before assigning a paper to a mechanism or declaring a lineage. Do not silently exclude existing relevant corpus papers merely because they were not in the initial list.
 
 ## Identify methods and substantiate relations
+
+### Reuse source-bound evidence cards
+
+1. Reuse existing reviewed paper identities, cards and source quotes. For new papers, materialize PDFs as complete Markdown through the existing parser. Import selected Markdown using `literature_review/import` with `processingProfile=fast-md-structural` and `completionPolicy=graph-visible`. This path does not run general semantic extraction. Wait for the import and authoritative synchronization before selecting its exact paper/source. A structural import is not semantic verification.
+2. Call `literature_review/lineage_extract` with a stable `idempotencyKey` and `papers: [{paperId, sourceKey?}]`; use `dryRun=true` to inspect cached, missing and ambiguous sources without a model call. Include sourceKey when multiple active sources exist. A batch can contain up to 100 selections; batch size is a scheduling limit, not a coverage target.
+3. Save the returned runId. Use `lineage_status` for progress, per-phase provider token usage and card IDs. The service reads each uncached full text once to extract methods, variants and lineage candidates together. Successful cards are reused across runs when paper, selected source text, model and card contract match. Adding a paper or changing one source requires extraction only for the affected selection.
+4. Use `lineage_card` with cardId to read exact quotes, section/page, parent references and freshness. Read only the cards needed for the next comparison. `freshness=stale/unavailable` or `usableForReview=false` prevents using that card as current evidence. Quote matching is not a check that the passage establishes the claimed relation.
+5. A repeated submission with the same idempotency key reconciles the existing run. To recover errors, explicitly submit the same selection and key with `retryFailed=true`; completed entries are preserved. Provider balance/auth/rate-limit errors stop fresh submissions. Resolve the provider issue before retrying. Use a new key for a changed selection or model. Do not rerun all successful papers for a failed subset.
+
+Keep all extracted relations as candidates until source interpretation and parent identity have been reviewed. `lineage_extract` never writes graph arrows. For an uncertain relation, read the relevant source span and cited predecessor; do not reopen every full paper in the study. Existing reviewed relations remain reusable unless their source or interpretation changes.
+
+`lineage_status.usage` reports requests, known input/output/cache tokens and unknown-usage calls by phase/model. General extraction batches also write `llm-usage.jsonl` beside the existing batch ledger. Count reported usage, including retries; treat missing usage as unknown. Do not infer money spent or Codex account usage from these external-provider counters.
 
 A paper can introduce several methods, meaningful variants or reusable components. Preserve those identities when the source distinguishes them. Do not enforce one method per paper. Conversely, a backbone, dataset, baseline or every extracted noun is not automatically an introduced method. Record method, variant, component and background roles using the available source evidence.
 
@@ -41,3 +55,5 @@ Use `literature_review/study_save` with a stable `studyId`, `expectedRevision=0`
 The `study` read builds its map from the current admitted corpus. Do not substitute an unrelated local graph, a static HTML report or a generated SVG for a requested native Web result. Open the PaperNexus Web with `?corpus=<name>&study=<studyId>`, or select **Field studies → Open study**. Check branch selection, Papers/Methods switching, source evidence on arrows, counts and display limits. Exported research data should keep the scope and coverage record with the graph.
 
 Report the actual selected papers, distinct methods/variants, accepted relations and unresolved evidence separately. Link to the native Web view and the review record. Software tests establish interface behavior; source review and search records establish the research result.
+
+Keep synthesis and presentation work on the saved study, cards and reviewed relations. For display-only changes, verify the affected view without another literature search or model extraction. Pass the next stage a short record of scope, artifact locations, changed items and unresolved decisions instead of the full search/extraction history.

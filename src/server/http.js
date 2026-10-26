@@ -1361,8 +1361,7 @@ export async function serveCommand(options = {}) {
     fieldResearchWorkers: { imports: options.enableImports !== false, synchronization: options.enableAuthoritativeSync !== false },
     onImportTaskCreated() { importWorker?.pollNow?.(); fastMdImportWorker?.pollNow?.(); }
   };
-  const fieldResearchRecoveryWorker = options.enableImports !== false
-    ? startFieldResearchRecoveryWorker({ ...fieldResearchOptions, rootPaths }) : null;
+  const fieldResearchRecoveryWorker = startFieldResearchRecoveryWorker({ ...fieldResearchOptions, rootPaths });
   const triggerMineruWarmup = options.warmMineruBackends || warmMineruBackends;
   const triggerDoclingWarmup = options.warmDoclingRuntime || warmDoclingRuntime;
   const shouldWarmDocling = options.enableImports !== false

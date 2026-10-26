@@ -173,6 +173,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/llm/ollama.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/ollama.js) | Ollama implementation. |
 | [`src/core/llm/prompts/research-relations-v1.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/prompts/research-relations-v1.js) | Research Relations V1 implementation. |
 | [`src/core/llm/prompts/semantic-objects-v2.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/prompts/semantic-objects-v2.js) | Semantic Objects V2 implementation. |
+| [`src/core/llm/usage.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/usage.js) | Usage implementation. |
 | [`src/core/materials/agent-materials.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/materials/agent-materials.js) | Agent-facing material pack, paper material view, source discovery plan, and import requisition assembly. |
 | [`src/core/materials/project-overlay.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/materials/project-overlay.js) | Project-level Agent overlay storage for paper roles, evidence carts, and workflow state. |
 | [`src/core/materials/research-controller.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/materials/research-controller.js) | Research Controller implementation. |
@@ -188,6 +189,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/research/field-research.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-research.js) | Field Research implementation. |
 | [`src/core/research/field-studies.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-studies.js) | Field Studies implementation. |
 | [`src/core/research/hypothesis-assessment.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/hypothesis-assessment.js) | Hypothesis Assessment implementation. |
+| [`src/core/research/lineage-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/lineage-evidence.js) | Lineage Evidence implementation. |
 | [`src/core/research/opportunity-memory.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/opportunity-memory.js) | Opportunity Memory implementation. |
 | [`src/core/research/project-evaluation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evaluation.js) | Project Evaluation implementation. |
 | [`src/core/research/project-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evidence.js) | Project Evidence implementation. |
@@ -201,6 +203,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`web/analysis-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/analysis-view.js) | Analysis View implementation. |
 | [`web/app.js`](https://github.com/Iranb/PaperNexus/blob/main/web/app.js) | Single-page browser UI client logic. |
 | [`web/field-evolution-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-evolution-view.js) | Field Evolution View implementation. |
+| [`web/field-lineage-atlas.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-lineage-atlas.js) | Field Lineage Atlas implementation. |
 | [`web/field-research-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-research-view.js) | Field Research View implementation. |
 | [`web/field-studies-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-studies-view.js) | Field Studies View implementation. |
 | [`web/index.html`](https://github.com/Iranb/PaperNexus/blob/main/web/index.html) | Index implementation. |

@@ -73,7 +73,7 @@ test('HTTP and MCP share durable field research, authentication, dry runs, repla
     assert.equal(status.survey.candidateSelection.counts.already_indexed, 1);
     assert.equal(discoveries, 1);
     const mcp = await fetch(url + '/mcp', { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1,
-      method: 'tools/call', params: { name: 'literature_review', arguments: { operation: 'field_research_status', corpus: root, runId: receipt.runId } } }) });
+      method: 'tools/call', params: { name: 'literature_review', arguments: { operation: 'field_research_status', corpus: root, runId: receipt.runId, responseMode: 'full' } } }) });
     const envelope = JSON.parse((await mcp.json()).result.content[0].text);
     assert.equal(envelope.result.status, status.status);
     assert.deepEqual(envelope.result.analysis.result, status.analysis.result);
