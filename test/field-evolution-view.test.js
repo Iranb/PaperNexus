@@ -69,3 +69,13 @@ test('unsafe source URLs are not links and papers outside a family remain absent
   assert.ok(svg.includes('data-field-node="spectral"'));
   assert.ok(!svg.includes('data-field-node="m0"'));
 });
+
+test('timeline relation labels follow arrow direction regardless of node order', () => {
+  const result = buildFieldEvolution(createFieldEvolutionFixture(), { targetDomain: 'Education' });
+  result.methods.reverse();
+  const edge = result.relations[0];
+  const source = result.methods.find(node => node.id === edge.sourceId).name;
+  const target = result.methods.find(node => node.id === edge.targetId).name;
+  const { svg } = renderFieldTimeline(result, { mode: 'methods' });
+  assert.ok(svg.includes(`aria-label="${edge.type.replaceAll('_', ' ')}: ${source} → ${target}"`));
+});

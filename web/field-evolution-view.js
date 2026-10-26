@@ -1,5 +1,6 @@
 import { mountFieldResearch } from './field-research-view.js';
 import { mountFieldStudies } from './field-studies-view.js';
+import { renderLineageAtlas, renderFieldProgression, lineageRelationLabel } from './field-lineage-atlas.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -113,7 +114,7 @@ export function renderFieldTimeline(result, options = {}) {
       const active = emphasis.edges.has(edge.id);
       const isMain = mainline && (mode === 'methods' ? mainIds.has(edge.id) : edge.methodRelationIds.some(id => mainIds.has(id)));
       const dimmed = (selection && !active) || (query && !matched.has(edge.sourceId) && !matched.has(edge.targetId));
-      const names = layout.nodes.filter(n => n.id === edge.sourceId || n.id === edge.targetId).map(n => n.name);
+      const names = [edge.sourceId, edge.targetId].map(id => layout.nodes.find(node => node.id === id)?.name || id);
       return `<g role="button" tabindex="0" data-field-edge="${escape(edge.id)}" aria-label="${escape(label(edge.type) + ': ' + names.join(' → '))}" opacity="${dimmed ? '.18' : '1'}" style="cursor:pointer">
         <title>${escape(label(edge.type))} — select to read source evidence</title>
         <path d="${path(edge)}" fill="none" stroke="transparent" stroke-width="16"/>
@@ -202,24 +203,27 @@ export function renderFieldDetails(result, { mode = 'papers', selection, familyI
 
 export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClose = () => {} }) {
   const workspace = host.closest('.workspace');
-  host.innerHTML = `<header class="field-header"><div><span class="field-kicker">Research lineage</span><h2>Evolution map</h2></div>
-    <button type="button" class="action-button" data-field-action="close">Back to graph</button></header>
+  host.innerHTML = `<header class="field-header"><div><span class="field-kicker">Research lineage</span><h2>领域演化</h2></div>
+    <div class="field-header-actions"><button type="button" class="action-button" data-field-action="controls" aria-expanded="false">研究与检索</button>
+    <button type="button" class="action-button" data-field-action="close">返回图谱</button></div></header>
     <p class="field-scope" role="status" aria-live="polite"></p>
     <section class="field-research-summary" aria-label="Field research progress" aria-live="polite" hidden></section>
     <section class="field-study-summary" aria-label="Saved study scope and coverage" hidden></section>
     <div class="field-toolbar" hidden><div class="field-modes" role="group" aria-label="Timeline view">
-      <button type="button" data-field-mode="papers" aria-pressed="true">Papers</button><button type="button" data-field-mode="methods" aria-pressed="false">Methods</button></div>
+      <button type="button" data-field-mode="progression" aria-pressed="true">研究脉络</button><button type="button" data-field-mode="lineage" aria-pressed="false">方法谱系</button><button type="button" data-field-mode="papers" aria-pressed="false">论文时间轴</button></div>
       <label>Family<select class="field-family" aria-label="Method family"></select></label>
-      <label>Find<input class="field-find" placeholder="Highlight a title…" aria-label="Find in evolution map"/></label>
+      <label>查找<input class="field-find" placeholder="方法名称或研究分支…" aria-label="Find in evolution map"/></label>
       <label class="field-mainline"><input type="checkbox" checked/> Mainline</label>
       <div class="field-zoom" role="group" aria-label="Timeline zoom"><button data-field-action="zoom-out" aria-label="Zoom out timeline">−</button><button data-field-action="fit">Fit</button><button data-field-action="zoom-in" aria-label="Zoom in timeline">+</button></div>
-      <button data-field-action="svg">SVG ↓</button><button data-field-action="json">JSON ↓</button></div>
-    <div class="field-body"><div class="field-map-column"><div class="field-legend" hidden><span><i class="field-line-swatch"></i> Structural mainline</span><span>● Turning-point candidate</span><span>Dashed node: boundary context</span><button data-field-action="clear">Clear selection</button></div>
+      <details class="field-export"><summary>导出 ↓</summary><div><button data-field-action="svg">SVG</button><button data-field-action="json">JSON</button></div></details></div>
+    <div class="field-body"><section class="field-atlas" aria-label="方法演化路线" hidden></section><div class="field-map-column"><div class="field-legend" hidden><span><i class="field-line-swatch"></i> Structural mainline</span><span>● Turning-point candidate</span><span>Dashed node: boundary context</span><button data-field-action="clear">Clear selection</button></div>
       <div class="field-map" tabindex="0" aria-label="Scrollable evolution map"></div>
       <p class="field-map-hint">Scroll to explore years. Select an arrow to read its source evidence.</p></div>
       <aside class="field-details" aria-label="Evolution evidence" aria-live="polite"></aside></div>
     <details class="field-coverage"><summary>Coverage and evidence limits</summary><div></div></details>`;
   const map = host.querySelector('.field-map');
+  const atlas = host.querySelector('.field-atlas');
+  const body = host.querySelector('.field-body');
   const details = host.querySelector('.field-details');
   const status = host.querySelector('.field-scope');
   const toolbar = host.querySelector('.field-toolbar');
@@ -228,7 +232,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   const search = host.querySelector('.field-find');
   let sequence = 0;
   let payload = null;
-  let view = { mode: 'papers', familyId: '', search: '', mainline: true, selection: null };
+  let view = { mode: 'progression', routeId: '', branchFocus: '', familyId: '', search: '', mainline: true, selection: null };
   let scale = 1;
   let drawing = null;
   let corpus = '';
@@ -241,23 +245,53 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   };
   const update = () => {
     if (!payload) return;
-    drawing = renderFieldTimeline(payload.result, view);
-    map.innerHTML = drawing.layout.nodes.length ? drawing.svg : '<div class="field-empty"><h3>No matching evidence</h3><p>Broaden the topic or year range, or choose a corpus containing the relevant papers.</p></div>';
-    details.innerHTML = renderFieldDetails(payload.result, view);
+    const isAtlas = view.mode === 'lineage' || view.mode === 'progression';
+    host.classList.toggle('field-atlas-mode', isAtlas);
+    host.classList.toggle('field-route-focused', view.mode === 'lineage' && Boolean(view.routeId));
+    body.classList.toggle('atlas-view', isAtlas);
+    body.classList.toggle('atlas-with-evidence', isAtlas && Boolean(view.selection));
+    atlas.hidden = !isAtlas;
+    map.closest('.field-map-column').hidden = isAtlas;
+    details.hidden = isAtlas && !view.selection;
+    familySelect.closest('label').hidden = isAtlas;
+    host.querySelector('.field-mainline').hidden = isAtlas;
+    host.querySelector('.field-zoom').hidden = isAtlas;
+    if (isAtlas) {
+      const openDirections = [...atlas.querySelectorAll('.atlas-direction')].map(element => element.open);
+      const renderingProgression = atlas.dataset.view === 'progression';
+      const rendered = (view.mode === 'progression' ? renderFieldProgression : renderLineageAtlas)(payload.result, { ...view, study: payload.study?.study, width: atlas.clientWidth });
+      atlas.innerHTML = rendered.html;
+      if (renderingProgression && view.mode === 'progression' && !view.search) atlas.querySelectorAll('.atlas-direction').forEach((element, index) => { if (index < openDirections.length) element.open = openDirections[index]; });
+      atlas.dataset.view = view.mode;
+      drawing = rendered.drawing;
+      const selectedEdge = payload.result.relations.find(edge => view.selection?.kind === 'edge' && edge.id === view.selection.id);
+      const edgeTitle = selectedEdge ? [selectedEdge.sourceId, selectedEdge.targetId].map(id => payload.result.methods.find(node => node.id === id)?.name || id).join(' → ') : '';
+      details.innerHTML = view.selection ? '<button class="atlas-close-evidence" data-field-action="clear">关闭证据 ×</button>'
+        + (selectedEdge ? `<p class="atlas-evidence-heading">${escape(edgeTitle)}<br/><span>${escape(lineageRelationLabel(selectedEdge.type))}</span></p>` : '')
+        + renderFieldDetails(payload.result, { ...view, mode: 'methods' }) : '';
+    } else {
+      if (!view.timelineWidth) view.timelineWidth = map.clientWidth;
+      drawing = renderFieldTimeline(payload.result, view);
+      map.innerHTML = drawing.layout.nodes.length ? drawing.svg : '<div class="field-empty"><h3>No matching evidence</h3><p>Broaden the topic or year range, or choose a corpus containing the relevant papers.</p></div>';
+      details.innerHTML = renderFieldDetails(payload.result, view);
+    }
+    host.querySelector('[data-field-action="svg"]').hidden = !drawing?.svg;
     familySelect.value = view.familyId;
     host.querySelectorAll('[data-field-mode]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.fieldMode === view.mode)));
-    resizeSvg();
+    if (!isAtlas) resizeSvg();
   };
   const reset = () => {
     research?.pause();
     studies?.pause();
     sequence++; payload = null; drawing = null; corpus = '';
-    host.hidden = true; workspace.classList.remove('field-mode');
+    host.hidden = true; workspace.classList.remove('field-mode', 'field-controls-open');
+    atlas.innerHTML = ''; atlas.hidden = true;
     map.innerHTML = ''; details.innerHTML = ''; toolbar.hidden = true; legend.hidden = true;
   };
   const showAnalysis = (response, selectedCorpus, topic) => {
     payload = response; corpus = selectedCorpus;
-    view = { mode: 'papers', familyId: '', search: '', mainline: true, selection: null, timelineWidth: map.clientWidth };
+    view = { mode: 'progression', routeId: '', branchFocus: '', familyId: '', search: '', mainline: true, selection: null, timelineWidth: 0 };
+    atlas.dataset.view = '';
     search.value = ''; host.querySelector('.field-mainline input').checked = true;
     const result = response.result;
     status.textContent = `${selectedCorpus} · ${topic} · ${result.papers.length} papers · ${result.methods.length} methods · ${result.relations.length} evidence relations${result.scope.truncated ? ' · Coverage limited' : ''}`;
@@ -300,6 +334,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
     const current = ++sequence;
     payload = null; drawing = null; corpus = selectedCorpus;
     host.hidden = false; workspace.classList.add('field-mode');
+    prepareLoading();
     toolbar.hidden = true; legend.hidden = true; details.innerHTML = '';
     host.querySelector('.field-coverage div').textContent = '';
     status.textContent = `Building an evidence map from ${selectedCorpus}…`;
@@ -327,22 +362,47 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
     else return false;
     update(); details.scrollTop = 0; return true;
   };
+  const prepareLoading = () => {
+    atlas.hidden = true; atlas.innerHTML = ''; atlas.dataset.view = '';
+    map.closest('.field-map-column').hidden = false;
+    details.hidden = false;
+    host.classList.remove('field-atlas-mode');
+    body.classList.remove('atlas-view', 'atlas-with-evidence');
+  };
   host.addEventListener('click', event => {
+    const branchTarget = event.target.closest('[data-atlas-branch-route]');
+    if (branchTarget && payload) {
+      view.branchFocus = branchTarget.dataset.atlasBranchRoute; view.routeId = ''; view.mode = 'lineage'; view.selection = null;
+      update(); atlas.scrollTop = 0; return;
+    }
+    const atlasTarget = event.target.closest('[data-atlas-route],[data-atlas-node],[data-atlas-edge]');
+    if (atlasTarget && payload) {
+      if (atlasTarget.hasAttribute('data-atlas-route')) { view.routeId = atlasTarget.dataset.atlasRoute; view.selection = null; atlas.scrollTop = 0; }
+      else view.selection = { kind: atlasTarget.dataset.atlasEdge ? 'edge' : 'node', id: atlasTarget.dataset.atlasEdge || atlasTarget.dataset.atlasNode };
+      update(); details.scrollTop = 0; return;
+    }
     const target = event.target.closest('[data-field-node],[data-field-edge],[data-field-turning],[data-field-family],[data-field-mode],[data-field-action]');
     if (!target) return;
     if (select(target)) return;
-    if (target.dataset.fieldMode) { view.mode = target.dataset.fieldMode; view.selection = null; update(); return; }
+    if (target.dataset.fieldMode) { view.mode = target.dataset.fieldMode; view.selection = null; update(); atlas.scrollTop = 0; return; }
     const action = target.dataset.fieldAction;
+    if (action === 'controls') {
+      const expanded = workspace.classList.toggle('field-controls-open');
+      target.setAttribute('aria-expanded', String(expanded));
+      return;
+    }
     if (action === 'close') { research?.pause(true); studies?.close(); reset(); onClose(); return; }
     if (action === 'retry') { run(); return; }
     if (!payload) return;
     if (action === 'clear') { view.selection = null; update(); }
     if (action === 'fit') { view.timelineWidth = map.clientWidth; scale = 1; update(); map.scrollLeft = 0; }
     if (action === 'zoom-in' || action === 'zoom-out') { scale = Math.max(.15, Math.min(2.5, scale * (action === 'zoom-in' ? 1.25 : .8))); resizeSvg(); }
-    if (action === 'svg') download(drawing.svg, 'image/svg+xml', `papernexus-evolution-${view.mode}.svg`);
+    if (action === 'svg' && drawing?.svg) download(drawing.svg, 'image/svg+xml', `papernexus-evolution-${view.mode}.svg`);
     if (action === 'json') download(JSON.stringify({ corpus, generatedAt: payload.generatedAt, view, result: payload.result, sourceQuality: payload.sourceQuality, research: payload.research, study: payload.study }, null, 2), 'application/json', 'papernexus-evolution.json');
   });
   host.addEventListener('keydown', event => {
+    const atlasTarget = event.target.closest('g[data-atlas-node],g[data-atlas-edge]');
+    if (atlasTarget && ['Enter', ' '].includes(event.key)) { event.preventDefault(); atlasTarget.dispatchEvent(new MouseEvent('click', { bubbles: true })); return; }
     const target = event.target.closest('g[data-field-node],g[data-field-edge]');
     if (!target || !['Enter', ' '].includes(event.key)) return;
     event.preventDefault();
@@ -354,12 +414,15 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   familySelect.addEventListener('change', () => { view.familyId = familySelect.value; view.selection = null; update(); map.scrollTop = 0; });
   search.addEventListener('input', () => { view.search = search.value; update(); });
   host.querySelector('.field-mainline input').addEventListener('change', event => { view.mainline = event.target.checked; update(); });
+  const atlasResize = new ResizeObserver(() => { if (payload && view.mode === 'lineage' && view.routeId) update(); });
+  atlasResize.observe(body);
   document.getElementById('field-build').addEventListener('click', run);
   research = mountFieldResearch({ host, getCorpus, getJson, postJson, readRequest, showAnalysis,
     open: selectedCorpus => {
       studies?.close();
       sequence++; payload = null; drawing = null; corpus = selectedCorpus;
       host.hidden = false; workspace.classList.add('field-mode');
+      prepareLoading();
       toolbar.hidden = true; legend.hidden = true; details.innerHTML = '';
       host.querySelector('.field-coverage div').textContent = '';
       status.textContent = `${selectedCorpus} · Researching the field…`;
@@ -370,6 +433,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
     open: selectedCorpus => {
       research.pause(true); sequence++; payload = null; drawing = null; corpus = selectedCorpus;
       host.hidden = false; workspace.classList.add('field-mode');
+      prepareLoading();
       host.querySelector('.field-research-summary').hidden = true;
       toolbar.hidden = true; legend.hidden = true; details.innerHTML = '';
       status.textContent = `${selectedCorpus} · Loading saved field study…`;
