@@ -16,6 +16,23 @@ function pickNodeProperties(properties = {}) {
     'paperId',
     'paperTitle',
     'paperTitles',
+    'paperIds',
+    'sourcePaperId',
+    'sourcePaperIds',
+    'authors',
+    'publicationDate',
+    'firstPublicationDate',
+    'publicationYear',
+    'year',
+    'introducedYear',
+    'dateBasis',
+    'url',
+    'sourceUrl',
+    'sourcePdfUrl',
+    'methodAliases',
+    'metadataTitleTrusted',
+    'metadataReviewSource',
+    'evidenceOrigin',
     'identifiers',
     'identifierKeys',
     'doi',
@@ -131,12 +148,24 @@ function pickRelationshipProperties(properties = {}) {
     'updatedAt',
     'updatedBy',
     'llmValidated',
-    'llmConfidence'
+    'llmConfidence',
+    'paperId', 'paperTitle', 'targetPaperId', 'targetPaperTitle',
+    'validationStatus', 'status', 'evidenceStatus', 'lineageStatus', 'layerStatus',
+    'methodEvolution', 'methodEvolutionType', 'methodEvolutionProjection',
+    'methodCitationType', 'paperEdgeType', 'dagEdgeType', 'dagDirection', 'relationshipRole',
+    'candidateId', 'citationRelationshipId', 'exactMatch', 'exactQuote', 'evidenceQuote', 'quote', 'sourceQuote',
+    'citationContext', 'sourceSpanId', 'spanId', 'sectionHeading', 'section', 'sectionRole', 'pdfPage',
+    'sourceUrl', 'sourcePdfUrl', 'evidenceOrigin', 'evidenceNormalization',
+    'bottleneck', 'bottleneckDescription', 'bottleneckDimension',
+    'mechanism', 'mechanismDescription', 'mechanismType', 'mechanismDimension',
+    'tradeoff', 'tradeoffDescription', 'tradeoffDimension',
+    'referenceId', 'referenceTitleGuess', 'referenceYear', 'sourceYear', 'targetYear', 'temporalDirection'
   ];
+  const exactFields = new Set(['exactQuote', 'evidenceQuote', 'quote', 'sourceQuote', 'sourceUrl', 'sourcePdfUrl']);
 
   for (const key of keys) {
     if (properties[key] === undefined || properties[key] === null || properties[key] === '') continue;
-    selected[key] = typeof properties[key] === 'string'
+    selected[key] = typeof properties[key] === 'string' && !exactFields.has(key)
       ? truncate(properties[key], 280)
       : properties[key];
   }

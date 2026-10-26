@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readJson, writeJson, withFileLock } from '../../lib/fs.js';
-import { getCorpusPaths } from '../../storage/corpus-store.js';
-import { resolveCorpusForApi, loadCorpusLiteForApi } from '../../server/api.js';
+import { getCorpusPaths, loadCorpusLite } from '../../storage/corpus-store.js';
+import { resolveCorpusForApi } from '../../server/api.js';
 import { loadKnowledgeGraph } from '../graph/graph.js';
+import { buildResearchQualityView } from '../graph/research-quality.js';
 import { buildFieldEvolution } from '../graph/field-evolution.js';
 
 export const FIELD_STUDY_VERSION = 'papernexus-field-study-v1';
@@ -137,7 +138,15 @@ async function readStudy(rootPath, args, options) {
   const selected = included.filter(paper => !args.branchId || paper.branchIds.includes(args.branchId));
   const selectedPaperIds = new Set(selected.map(paper => paper.paperId));
   const selectedMethodIds = new Set(selected.flatMap(paper => paper.methodIds));
-  const { graph, meta, quality } = await loadCorpusLiteForApi(rootPath, options);
+  const loaded = await loadCorpusLite(rootPath);
+  const includedIds = new Set(included.flatMap(paper => [paper.paperId, ...paper.methodIds]));
+  const { graph, report: quality } = buildResearchQualityView(loadKnowledgeGraph({
+    nodes: loaded.graph.nodes.filter(node => includedIds.has(node.id)),
+    relationships: loaded.graph.relationships.filter(edge => includedIds.has(edge.sourceId) && includedIds.has(edge.targetId))
+  }));
+  const meta = { name: loaded.meta.name, indexedAt: loaded.meta.indexedAt,
+    paperCount: quality.paperCount, nodeCount: quality.nodeCount, relationshipCount: quality.relationshipCount,
+    researchQualityVersion: quality.version };
   const missingPapers = included.filter(paper => graph.getNode(paper.paperId)?.type !== 'Paper').map(paper => paper.paperId);
   const missingMethods = [...new Set(included.flatMap(paper => paper.methodIds))].filter(id => graph.getNode(id)?.type !== 'Method');
   const paperLinks = new Set(['CONTAINS', 'USES', 'PROPOSES', 'INTRODUCES', 'DESCRIBES', 'PRESENTS']);
