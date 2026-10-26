@@ -1486,8 +1486,15 @@ select {
 .workspace.field-mode > .right-panel { display: none; }
 .field-panel { position: absolute; inset: 0; z-index: 15; display: flex; flex-direction: column; background: #09141e; border-radius: 22px; overflow: hidden; }
 .field-panel[hidden], .field-panel [hidden] { display: none; }
+.field-header, .field-scope, .field-toolbar, .field-coverage { flex-shrink: 0; }
+.workspace.field-mode #canvas-tooltip { display: none; }
 .field-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 22px 0; }
 .field-header h2 { font-size: 23px; margin: 5px 0 0; font-weight: 600; letter-spacing: -.5px; }
+.field-panel:has(.field-study-summary:not([hidden])) .field-header { padding: 8px 18px 0; }
+.field-panel:has(.field-study-summary:not([hidden])) .field-header .field-kicker { display: none; }
+.field-panel:has(.field-study-summary:not([hidden])) .field-header h2 { font-size: 16px; margin: 0; }
+.field-panel:has(.field-study-summary:not([hidden])) .field-header button { padding: 6px 10px; font-size: 12px; }
+.field-panel:has(.field-study-summary:not([hidden])) .field-scope { margin: 6px 18px 8px; }
 .field-kicker { color: #81cbc3; font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px; }
 .field-scope { color: #9fb1c1; font-size: 12px; margin: 10px 22px 16px; line-height: 1.6; }
 .field-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 18px; background: #0e1c28; border-block: 1px solid #22384a; }
@@ -1502,9 +1509,9 @@ select {
 .field-modes button[aria-pressed="true"] { background: #29484c; color: #c6fff7; }
 .field-toolbar .field-mainline { white-space: nowrap; }
 .field-zoom { display: flex; gap: 3px; }
-.field-body { display: grid; grid-template-columns: minmax(0, 1fr) 290px; flex: 1; min-height: 0; }
+.field-body { display: grid; grid-template-columns: minmax(0, 1fr) 290px; flex: 1; min-height: 220px; }
 .field-map-column { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.field-map { flex: 1; overflow: auto; min-height: 200px; overscroll-behavior: contain; }
+.field-map { flex: 1; overflow: auto; min-height: 0; overscroll-behavior: contain; }
 .field-map svg { display: block; max-width: none; }
 .field-map g[role="button"]:focus { outline: none; }
 .field-map g[role="button"]:focus rect { stroke: #fff1b2; stroke-width: 3px; }
@@ -1555,16 +1562,16 @@ select {
 .field-research-summary details { margin-top: 10px; }
 .field-study-picker { display: grid; gap: 6px; margin-bottom: 10px; color: #9fb1c1; font-size: 12px; }
 .field-study-picker select { width: 100%; padding: 8px; color: inherit; background: #10212d; border: 1px solid #294753; border-radius: 7px; }
-.field-study-summary { margin: 0 18px 12px; padding: 14px 18px; background: #10212d; border: 1px solid #294753; border-radius: 10px; color: #c1d1dc; font-size: 12px; max-height: 260px; overflow: auto; flex-shrink: 0; }
+.field-study-summary { margin: 0 18px 12px; padding: 8px 16px; background: #10212d; border: 1px solid #294753; border-radius: 10px; color: #c1d1dc; font-size: 12px; max-height: 140px; min-height: 80px; overflow: auto; flex: 0 1 auto; }
 .field-study-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-.field-study-heading h3 { margin: 4px 0; color: #e6f4f4; font-size: 19px; }
+.field-study-heading h3 { margin: 4px 0; color: #e6f4f4; font-size: 16px; }
 .field-study-status { color: #8dd8cc; }
 .field-study-summary p { margin: 7px 0; line-height: 1.6; }
 .field-study-summary details { margin-top: 10px; }
 .field-study-summary li { margin: 6px 0; overflow-wrap: anywhere; }
 .field-study-summary a { color: #8dd8cc; }
-.field-study-branches { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
-.field-study-branches .action-button { padding: 6px 10px; font-size: 11px; }
+.field-study-branches { display: flex; gap: 7px; margin-top: 8px; overflow-x: auto; }
+.field-study-branches .action-button { padding: 6px 10px; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 .field-study-branches [aria-pressed="true"] { background: #214b50; color: #d7fff7; border-color: #68b7ab; }
 .field-study-review article { border-bottom: 1px solid #294753; padding: 8px 0; }
 .field-study-review h4 { margin: 4px 0; }
