@@ -1,0 +1,6 @@
+{
+  "corpus": "/absolute/server/path/mechanism-example",
+  "project": "mechanism-example",
+  "operation": "evidence_view",
+  "responseMode": "full"
+}

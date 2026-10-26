@@ -1,3 +1,4 @@
+import { assessMechanismTest, buildMechanismAnalysis } from './mechanism-analysis.js';
 import { readDecisionState } from './decision-store.js';
 import { inspectEvidence, changedEvidence, inspectComparisonReferences } from './decision-evidence.js';
 import { buildProjectEvidence } from './project-evidence.js';
@@ -15,6 +16,8 @@ export function evaluateProjectAction(state, view, args) {
   const actions = state?.actions.filter(a => a.action_id === args.actionId) || [];
   const action = args.actionVersion ? actions.find(a => a.version === args.actionVersion) : actions.at(-1);
   const reasons = [];
+  const mechanismTest = action ? assessMechanismTest(action, buildMechanismAnalysis(state, {
+    hypothesisVersions: action.hypothesis_versions, staleSourceKeys: view.evidence_freshness?.stale_dependencies || [] })) : null;
   if (!state) reasons.push('project_not_initialized');
   if (!action) reasons.push('registered_action_not_found');
   if (action) {
@@ -28,6 +31,7 @@ export function evaluateProjectAction(state, view, args) {
     if (!action.validity_checks?.length) reasons.push('validity_checks_missing');
     if (!action.prediction_ids?.length) reasons.push('measurable_predictions_missing');
     if (args.purpose === 'mechanism_diagnosis') {
+      reasons.push(...(mechanismTest?.reason_codes || []));
       if (!action.intervention || !action.held_constant?.length || hypotheses.some(h => !h.control)) reasons.push('intervention_or_control_missing');
       if (!hypotheses.some(h => h.alternative_hypothesis_ids?.length)) reasons.push('competing_explanation_missing');
     } else {
@@ -43,7 +47,7 @@ export function evaluateProjectAction(state, view, args) {
   const status = observations.at(-1)?.comparisons.status || 'not_assessed';
   return { purpose: args.purpose, action_id: args.actionId, action_version: action?.version || args.actionVersion || null,
     task_gate: { status: reasons.length ? 'needs_input' : 'ready_for_design', reason_codes: [...new Set(reasons)], evidence_refs: action?.evidence_keys || [] },
-    novelty_claim_allowed: false, performance_claim_status: status, project_evidence: view,
+    mechanism_test: mechanismTest, novelty_claim_allowed: false, performance_claim_status: status, project_evidence: view,
     next_step: reasons.length ? 'Resolve the named design or evidence gaps in a new registered action version.' : 'Use research_decision/recommend_next to select among registered actions; the external executor owns execution authorization.',
     execution_authority: 'Design readiness does not authorize execution.',
     limitations: ['This task gate does not perform a novelty audit or establish semantic equivalence with prior work.'] };

@@ -42,6 +42,7 @@ export async function inspectEvidence(rootPath, refs) {
         source_version: sourceVersion, quality_version: view.paper.source_admission.version,
         reasons: view.paper.source_admission.reasons, paper_id: view.paper.paper_id, source_metadata: sourceMetadata,
         graph_readiness: view.paper.graph_readiness,
+        mechanism_context: view.mechanism_context || null,
         ...(ref.artifact_path ? { extraction_artifact: await artifactMetadata(path.resolve(rootPath, ref.artifact_path)) } : {}),
         verification: 'source_admission_only' };
     }

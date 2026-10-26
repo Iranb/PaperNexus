@@ -4,7 +4,7 @@ Feature-detect `research_decision` before using it. Read the advertised operatio
 
 Use one project ID per research decision scope. Initialize the objective, goal phase and resource budget. Register competing hypotheses and their observable predictions, then concrete actions with controls, protocol, precision, estimated cost, analysis/stopping rules and outcome branches. Missing details remain draft. Retain exact immutable versions and registration receipts.
 
-Call `recommend_next` to select the next bounded action. It can instead ask to assess a completed result, await a running attempt, reconcile unknown state, supply a missing input or stop. Read gates and alternatives. The recommendation does not authorize execution or advance AutoResearch state.
+Call `recommend_next` to select the next bounded action. It can instead return `reuse_evidence` for an equivalent assessed design, or ask to assess a completed result, await a running attempt, reconcile unknown state, supply a missing input or stop. Read gates and alternatives. The recommendation does not authorize execution or advance AutoResearch state.
 
 External executors return native attempt identities, cumulative costs, protocol and raw artifact references via `record_run`. For measured runs, stage a readable JSON manifest on the server and retain its source version. A correction supersedes a prior record; independent seeds or restarts have distinct attempt IDs. Never turn missing cost into zero or discard failed-run usage.
 
@@ -19,6 +19,12 @@ For `idea_generation/evaluate`, default `purpose=novelty_audit` still needs quer
 Freeze original/control/paper references and primary/guardrail/diagnostic outcomes in action.evaluation_plan. Bind predictions and the analysis primary outcome to comparison_id. Each run.comparisons item retains its reference and measurements; it is not another physical run or another charge. Difference values are candidate minus reference with explicit value_unit and unit. A gain over a weaker control below the original baseline remains partial recovery.
 
 Separate planned max_interval_width from anticipated_interval_width and admitted basis_refs. Missing achievable precision can require a diagnostic; bounded exploration must be explicit. Fixed-model image intervals do not establish training-procedure stability. The latter requires actual independent run references and appropriate analysis.
+
+Policy `discriminating-action-v3` requires a prediction's own `basis` (kind, quantitative rationale and evidence_refs) for confirmatory mechanism conclusions. `assumption` or missing grounds keep interval comparisons exploratory. A precision basis does not replace prediction grounds. Old assessments remain stored; current views can require reassessment.
+
+Use `mechanism_analysis` and `mechanism_test` to inspect source-backed paths, observations and concrete gaps. Bind actual graph IDs when known; retain link evidence status. Declare required_controls on links and controlled_components/check on actions. The check must appear in validity_checks and pass in the external run. These paths are proposed explanations, not causal proof.
+
+Use information_targets to bind a diagnostic to a particular prediction_basis, precision, path or control gap at an exact hypothesis version. Only matching current gaps receive priority. `reuse_evidence` points to current equivalent results; `replicate` remains independent. Full request examples are in `examples/mechanism-selection/`.
 
 Code observations use code_inspected and saved versioned artifacts. Mechanism paths retain code_observed, measured_association and hypothesized status; compound interventions remain explicit. Paper graph_readiness distinguishes readable sources, nodes and source-anchored relations. Use the returned existing import/task handoff only when that operation is authorized.
 

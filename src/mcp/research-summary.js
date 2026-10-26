@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 // This is a display budget, never a new authority for scientific or queue state.
 export const RESEARCH_SUMMARY_MAX_BYTES = 32768;
 const bytes = value => Buffer.byteLength(JSON.stringify(value, null, 2));
-const important = /^(status|final_status|input_status|paper|paper_id|id|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked|purpose|task_gate|comparison_summary|inference_target|evidence_freshness|outstanding_runs|budget|source_readiness|performance_claim_status)$/;
+const important = /^(status|final_status|input_status|paper|paper_id|id|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked|purpose|task_gate|decision|mechanism_test|selection_basis|policy_version|comparison_summary|inference_target|evidence_freshness|outstanding_runs|budget|source_readiness|performance_claim_status)$/;
 
 export function summarizeResearchEnvelope(envelope, args = {}) {
   const decisionTool = envelope.tool === 'research_decision';
@@ -51,14 +51,21 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
   const gates = {};
   let gateBudget = 8000;
   for (const key of ['evidence_sufficiency', 'source_admission', 'assessment_gate', 'budget_gate', 'execution_authority', 'based_on_revision',
-    'purpose', 'task_gate', 'performance_claim_status', 'comparison_summary', 'evidence_freshness', 'outstanding_runs', 'budget', 'source_readiness', 'graph_readiness']) {
-    const value = envelope.result?.[key] ?? envelope.result?.paper?.[key] ?? envelope.result?.project_evidence?.[key];
+    'purpose', 'task_gate', 'mechanism_test', 'policy_version', 'performance_claim_status', 'comparison_summary', 'evidence_freshness', 'outstanding_runs', 'budget', 'source_readiness', 'graph_readiness']) {
+    const value = envelope.result?.[key] ?? envelope.result?.paper?.[key] ?? envelope.result?.project_evidence?.[key] ?? envelope.result?.decision?.[key];
     if (value !== undefined) {
       gates[key] = bytes(value) <= Math.min(2400, gateBudget) ? value : { status: 'read_full_required', complete: false };
       gateBudget -= bytes(gates[key]);
     }
   }
-  if (result && typeof result === 'object') Object.assign(result, gates);
+  const decision = envelope.result?.decision;
+  if (decision) {
+    const { kind, action_id, action_version, reason, run_record_ids, next_step } = decision;
+    const core = { kind, action_id, action_version, reason, run_record_ids, next_step };
+    gates.decision = bytes(core) <= 2400 ? core : { kind, status: 'read_full_required', complete: false };
+    if (result?.decision) Object.assign(result.decision, gates.decision);
+  }
+  if (result && typeof result === 'object') Object.assign(result, Object.fromEntries(Object.entries(gates).filter(([key]) => key !== 'decision')));
   const summary = {
     mode: 'summary', max_bytes: RESEARCH_SUMMARY_MAX_BYTES,
     full_result_bytes: Buffer.byteLength(serialized),

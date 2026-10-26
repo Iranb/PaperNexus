@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { assessMechanismTest, predictionBasis } from './mechanism-analysis.js';
 import { predictionRange } from './decision-contracts.js';
 import { latestRuns } from './decision-store.js';
 import { selectComparisonMeasurement, inferenceValidity } from './comparison-assessment.js';
@@ -22,7 +23,10 @@ export function comparisonLabel(run, protocol) {
     ? 'vs matched reproduced baseline' : run.comparison ? 'vs reproduced baseline' : 'paper-report comparison not established';
 }
 
-export function assessObservation(hypothesis, action, run, runs = []) {
+export function assessObservation(hypothesis, action, run, runs = [], { mechanismAnalysis, evidenceSnapshots = [] } = {}) {
+  const mechanismTest = mechanismAnalysis ? assessMechanismTest({ ...action,
+    hypothesis_versions: [{ hypothesis_id: hypothesis.hypothesis_id, version: hypothesis.version }] }, mechanismAnalysis, { run })
+    : { status: 'needs_input', reason_codes: ['mechanism_analysis_unavailable'] };
   const protocol = compareProtocol(action, run);
   const reasons = [];
   if (run.status !== 'completed') reasons.push('run_not_completed');
@@ -50,6 +54,8 @@ export function assessObservation(hypothesis, action, run, runs = []) {
   const predictions = hypothesis.predictions.filter(p => action.measurements?.includes(p.quantity));
   return predictions.map(prediction => {
     const rowReasons = [...reasons];
+    const basis = predictionBasis(prediction, evidenceSnapshots);
+    const mechanismReady = basis.status === 'documented' && mechanismTest.status === 'ready';
     for (const [field, value] of Object.entries(prediction.conditions || {})) {
       if (!isDeepStrictEqual(run.protocol?.[field], value)) rowReasons.push(`prediction_condition_mismatch:${field}`);
     }
@@ -79,12 +85,12 @@ export function assessObservation(hypothesis, action, run, runs = []) {
       && (!run.comparisons || analysis.primary_comparison_id === selected.comparison?.comparison_id);
     const adjusted = analysis?.multiplicity === 'adjusted' && (!run.comparisons
       || analysis.family?.some(f => f.comparison_id === selected.comparison?.comparison_id && f.quantity === prediction.quantity));
-    const confirmatory = valid && verified && prospectivity === 'registered_before_run' && plannedAnalysis
+    const confirmatory = mechanismReady && valid && verified && prospectivity === 'registered_before_run' && plannedAnalysis
       && action.prediction_ids?.includes(prediction.prediction_id)
       && (primary || adjusted) && uncertaintyReviewed && precisionSufficient && (!target || inference.status === 'supported');
     const necessary = hypothesis.falsification_rule?.necessary_prediction_ids?.includes(prediction.prediction_id) === true;
     let status = !valid ? 'unassessable' : relation === 'compatible' ? 'compatible' : 'inconclusive';
-    if (relation === 'inconsistent' && valid && verified && uncertaintyReviewed) status = confirmatory && necessary ? 'excluded_in_scope' : 'weakened_in_scope';
+    if (relation === 'inconsistent' && mechanismReady && valid && verified && uncertaintyReviewed) status = confirmatory && necessary ? 'excluded_in_scope' : 'weakened_in_scope';
     return {
       hypothesis_id: hypothesis.hypothesis_id, hypothesis_version: hypothesis.version,
       prediction_id: prediction.prediction_id, quantity: prediction.quantity, unit: prediction.unit,
@@ -92,14 +98,14 @@ export function assessObservation(hypothesis, action, run, runs = []) {
       run_record_id: run.record_id, action_id: action.action_id, action_version: action.version,
       evidence_origin: run.evidence_origin,
       independent_group: measurement?.independent_group || run.independent_group || JSON.stringify([run.executor_id, run.run_id, run.attempt_id]),
-      relation, status, measurement: measurement || null,
+      relation, status: !mechanismReady && valid ? 'inconclusive' : status, measurement: measurement || null,
       comparison: selected.comparison?.label || comparisonLabel(run, protocol), comparison_id: selected.comparison?.comparison_id || null,
       inference, baseline_shortfall: run.baseline?.shortfall ?? null,
-      assessment_gate: { valid, confirmatory: Boolean(confirmatory), necessary_prediction: necessary,
+      assessment_gate: { valid, mechanism_test: mechanismTest, prediction_basis: basis, confirmatory: Boolean(confirmatory), necessary_prediction: necessary,
         protocol, prospectivity, uncertainty_reviewed: uncertaintyReviewed, precision_sufficient: Boolean(precisionSufficient),
         analysis_matches_plan: Boolean(analysisMatches), analysis_rule_valid: Boolean(plannedAnalysis),
         provenance: run.verification, reason_codes: rowReasons,
-        limitations: [!verified && 'provided_measurements_unverified', prospectivity !== 'registered_before_run' && prospectivity,
+        limitations: [...mechanismTest.reason_codes, basis.status !== 'documented' && `prediction_basis_${basis.status}`, !verified && 'provided_measurements_unverified', prospectivity !== 'registered_before_run' && prospectivity,
           ...inference.reason_codes, !uncertaintyReviewed && 'uncertainty_not_reviewed', !precisionSufficient && 'insufficient_precision', !plannedAnalysis && 'exploratory_or_unverified_analysis',
           run.comparisons && !primary && !adjusted && 'secondary_comparison_not_confirmatory'].filter(Boolean)
       }
@@ -142,7 +148,17 @@ export function scientificState(state, staleSourceKeys = []) {
   const uniqueRows = new Map();
   for (const assessment of state.assessments) {
     if (assessmentValidity(assessment, state, staleSourceKeys).status !== 'current') continue;
-    for (const row of assessment.rows) uniqueRows.set(JSON.stringify([row.run_record_id, row.hypothesis_id, row.hypothesis_version, row.prediction_id]), row);
+    for (const row of assessment.rows) {
+      const hypothesis = state.hypotheses.find(h => h.hypothesis_id === row.hypothesis_id && h.version === row.hypothesis_version);
+      const prediction = hypothesis?.predictions.find(p => p.prediction_id === row.prediction_id);
+      const basis = prediction && predictionBasis(prediction, state.evidence_snapshots, staleSourceKeys);
+      const current = basis?.status === 'documented' && row.assessment_gate.mechanism_test?.status === 'ready';
+      const derived = current ? row : { ...row, status: row.assessment_gate.valid ? 'inconclusive' : 'unassessable', distinguished_from: [],
+        conclusion: 'The observation remains available; mechanism assessment requires current prediction grounds and control checks.',
+        assessment_gate: { ...row.assessment_gate, confirmatory: false, limitations: [...new Set([...(row.assessment_gate.limitations || []),
+          basis?.status !== 'documented' ? `prediction_basis_${basis?.status || 'missing'}` : 'mechanism_reassessment_required'])] } };
+      uniqueRows.set(JSON.stringify([row.run_record_id, row.hypothesis_id, row.hypothesis_version, row.prediction_id]), derived);
+    }
   }
   const groups = new Map();
   for (const row of uniqueRows.values()) {
@@ -152,7 +168,7 @@ export function scientificState(state, staleSourceKeys = []) {
   }
   return [...groups.values()].map(rows => {
     const conflict = rows.some(a => rows.some(b => a.prediction_id === b.prediction_id && a.run_record_id !== b.run_record_id
-      && [a, b].every(r => r.assessment_gate.valid && r.assessment_gate.uncertainty_reviewed
+      && [a, b].every(r => r.assessment_gate.mechanism_test?.status === 'ready' && r.assessment_gate.prediction_basis?.status === 'documented' && r.assessment_gate.valid && r.assessment_gate.uncertainty_reviewed
         && ['manifest_verified', 'synthetic_fixture'].includes(r.assessment_gate.provenance?.status))
       && a.relation === 'compatible' && b.relation === 'inconsistent'));
     const statuses = rows.map(row => row.status);

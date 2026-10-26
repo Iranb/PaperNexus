@@ -187,6 +187,8 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/research/field-research-scope.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-research-scope.js) | Field Research Scope implementation. |
 | [`src/core/research/field-research.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-research.js) | Field Research implementation. |
 | [`src/core/research/hypothesis-assessment.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/hypothesis-assessment.js) | Hypothesis Assessment implementation. |
+| [`src/core/research/mechanism-analysis.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/mechanism-analysis.js) | Mechanism Analysis implementation. |
+| [`src/core/research/mechanism-graph.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/mechanism-graph.js) | Mechanism Graph implementation. |
 | [`src/core/research/opportunity-memory.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/opportunity-memory.js) | Opportunity Memory implementation. |
 | [`src/core/research/project-evaluation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evaluation.js) | Project Evaluation implementation. |
 | [`src/core/research/project-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evidence.js) | Project Evidence implementation. |

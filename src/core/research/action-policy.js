@@ -1,3 +1,4 @@
+import { buildMechanismAnalysis, assessMechanismTest, predictionBasis, findReusableEvidence } from './mechanism-analysis.js';
 import { POLICY_VERSION, predictionRange, EXPERIMENT_TYPES } from './decision-contracts.js';
 import { isDeepStrictEqual } from 'node:util';
 import { attemptKey, latestRuns, latestVersions } from './decision-store.js';
@@ -91,8 +92,9 @@ export function actionDiscrimination(action, hypotheses, conclusions, evidenceSn
       const target = action.precision?.inference_target;
       const scopeMatches = (!action.evaluation_plan?.inference_target || action.evaluation_plan.inference_target === target)
         && [p, q].every(prediction => !prediction.inference_target || prediction.inference_target === target);
-      const achievable = grounded && anticipated !== undefined && scopeMatches;
-      const entry = { hypotheses: [a.hypothesis_id, b.hypothesis_id], quantity: p.quantity, comparison_id: p.comparison_id || null,
+      const predictionGrounds = [p, q].map(prediction => ({ prediction_id: prediction.prediction_id, ...predictionBasis(prediction, evidenceSnapshots) }));
+      const achievable = grounded && anticipated !== undefined && scopeMatches && predictionGrounds.every(b => b.status === 'documented');
+      const entry = { hypotheses: [a.hypothesis_id, b.hypothesis_id], quantity: p.quantity, unit: p.unit, conditions: [p.conditions || {}, q.conditions || {}], prediction_basis: predictionGrounds, comparison_id: p.comparison_id || null,
         predictions: [p.prediction_id, q.prediction_id], separation: Number.isFinite(gap) ? Math.max(0, gap) : null,
         required_interval_width: gap > 0 && Number.isFinite(gap) ? gap : null,
         planned_max_interval_width: action.precision?.max_interval_width ?? null, anticipated_interval_width: anticipated ?? null,
@@ -110,11 +112,13 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
   const conclusions = scientificState(state, staleSourceKeys);
   const selected = latestVersions(state.actions, 'action_id').filter(a => !actionIds || actionIds.includes(a.action_id));
   const ids = new Set(selected.map(a => a.action_id));
+  const mechanismAnalysis = buildMechanismAnalysis(state, { staleSourceKeys, conclusions,
+    hypothesisVersions: selected.flatMap(a => a.hypothesis_versions || []) });
   const allRuns = latestRuns(state.runs);
   const runs = allRuns.filter(r => ids.has(r.action_id));
   const base = { policy_version: POLICY_VERSION, based_on_revision: state.revision, goal_phase: state.goal_phase,
     execution_authority: 'Recommendation only. The external executor owns admission, authorization and job state.',
-    budget: ledger, scientific_state: conclusions, alternatives: [], blocked_actions: [],
+    budget: ledger, scientific_state: conclusions, mechanism_analysis: mechanismAnalysis, alternatives: [], blocked_actions: [],
     unmodeled_explanation: conclusions.length > 0 && conclusions.every(c => ['excluded_in_scope', 'weakened_in_scope'].includes(c.status)) };
   const unknown = runs.filter(r => r.status === 'unknown_after_timeout');
   if (unknown.length) return { ...base, decision: { kind: 'reconcile_run', run_record_ids: unknown.map(r => r.record_id), reason: 'Reconcile existing attempts with their executor before another submission.' } };
@@ -128,12 +132,16 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
   });
   if (unassessed.length) return { ...base, decision: { kind: 'assess_results', run_record_ids: unassessed.map(r => r.record_id), reason: 'Assess the available result before choosing another experiment.' } };
   const candidates = [];
-  const diagnosticHypotheses = new Set([
-    ...selected.filter(a => a.type === 'controlled_experiment' && !a.exploration && !actionDiscrimination(a, state.hypotheses, conclusions, state.evidence_snapshots).distinguishes.length)
-      .flatMap(a => a.hypothesis_versions || []).map(h => h.hypothesis_id),
-    ...runs.filter(r => r.status === 'failed').flatMap(r => state.actions.find(a => a.action_id === r.action_id && a.version === r.action_version).hypothesis_versions || []).map(h => h.hypothesis_id),
-    ...conclusions.filter(c => ['unassessable', 'conflicted'].includes(c.status)).map(h => h.hypothesis_id)
-  ]);
+  const designs = new Map(selected.map(action => [action.action_id, assessMechanismTest(action, mechanismAnalysis)]));
+  const activeGaps = [...mechanismAnalysis.evidence_gaps, ...[...designs.values()].flatMap(d => d.evidence_gaps)];
+  for (const action of selected.filter(a => EXPERIMENT_TYPES.includes(a.type))) {
+    const discrimination = actionDiscrimination(action, state.hypotheses, conclusions, state.evidence_snapshots);
+    for (const pair of discrimination.potentially_discriminating) for (const ref of action.hypothesis_versions || []) {
+      const h = state.hypotheses.find(h => h.hypothesis_id === ref.hypothesis_id && h.version === ref.version);
+      for (const p of h.predictions.filter(p => pair.predictions.includes(p.prediction_id))) activeGaps.push({
+        hypothesis_id: h.hypothesis_id, hypothesis_version: h.version, kind: 'precision', prediction_id: p.prediction_id, reason: 'precision_or_measurement_unresolved' });
+    }
+  }
   for (const action of selected) {
     const blocked = [...action.missing_fields.map(k => `missing:${k}`)];
     const bound = (action.hypothesis_versions || []).map(ref => state.hypotheses.find(h => h.hypothesis_id === ref.hypothesis_id && h.version === ref.version));
@@ -153,29 +161,44 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
     }
     const opportunity = state.opportunities.find(o => o.candidate_id === action.candidate_id);
     if (opportunity && opportunity.status !== 'active') blocked.push(`opportunity_${opportunity.status}`);
+    const mechanismTest = designs.get(action.action_id);
+    const reusable = mechanismTest.status === 'ready' ? findReusableEvidence(action, state, conclusions) : [];
     const budgetGate = actionBudgetGate(action, state, ledger);
-    blocked.push(...budgetGate.reason_codes);
-    const discrimination = actionDiscrimination(action, state.hypotheses, conclusions, state.evidence_snapshots);
+    if (!reusable.length) blocked.push(...budgetGate.reason_codes);
+    const rawDiscrimination = actionDiscrimination(action, state.hypotheses, conclusions, state.evidence_snapshots);
+    const discrimination = mechanismTest.status === 'ready' ? rawDiscrimination : { distinguishes: [],
+      potentially_discriminating: [...rawDiscrimination.potentially_discriminating, ...rawDiscrimination.distinguishes.map(pair => ({ ...pair, mechanism_gaps: mechanismTest.reason_codes }))] };
     const diagnostic = ['read_source', 'search_literature', 'inspect_code', 'profile_cost', 'repair_baseline', 'diagnostic'].includes(action.type);
+    if (EXPERIMENT_TYPES.includes(action.type) && !action.exploration) blocked.push(...mechanismTest.reason_codes);
+    const matchedTargets = (action.information_targets || []).filter(target => activeGaps.some(g =>
+      g.hypothesis_id === target.hypothesis_id && g.hypothesis_version === target.hypothesis_version && g.kind === target.kind
+      && g.prediction_id === target.prediction_id && g.component_id === target.component_id));
     if (base.unmodeled_explanation && !diagnostic) blocked.push('unmodeled_explanation_requires_revision');
     if (action.type === 'scale_test' && !bound.some(h => conclusions.some(c => c.hypothesis_id === h.hypothesis_id && c.version === h.version && c.status === 'supported_in_scope'))) blocked.push('mechanism_not_supported');
-    if (state.goal_phase === 'mechanism_validation' && EXPERIMENT_TYPES.includes(action.type) && action.type !== 'replicate'
+    if (!reusable.length && state.goal_phase === 'mechanism_validation' && EXPERIMENT_TYPES.includes(action.type) && action.type !== 'replicate'
       && !discrimination.distinguishes.length && !discrimination.potentially_discriminating.length && action.type !== 'scale_test') blocked.push('does_not_distinguish_explanations');
-    if (action.type === 'controlled_experiment' && state.goal_phase === 'mechanism_validation' && !action.exploration
+    if (!reusable.length && action.type === 'controlled_experiment' && state.goal_phase === 'mechanism_validation' && !action.exploration
       && !discrimination.distinguishes.length && discrimination.potentially_discriminating.length) blocked.push('needs_precision_evidence_or_different_measurement');
-    if (blocked.length) { base.blocked_actions.push({ action_id: action.action_id, reason_codes: [...new Set(blocked)], budget_gate: budgetGate }); continue; }
-    const priority = diagnostic && bound.some(h => diagnosticHypotheses.has(h.hypothesis_id)) ? 0 : discrimination.distinguishes.length ? 1
+    if (blocked.length) { base.blocked_actions.push({ action_id: action.action_id, reason_codes: [...new Set(blocked)], mechanism_test: mechanismTest, budget_gate: budgetGate }); continue; }
+    const priority = diagnostic && matchedTargets.length ? 0 : reusable.length || discrimination.distinguishes.length ? 1
       : action.type === 'replicate' && bound.some(h => conclusions.some(c => c.hypothesis_id === h.hypothesis_id && c.version === h.version && ['supported_in_scope', 'conflicted'].includes(c.status))) ? 1
       : discrimination.potentially_discriminating.length ? 2 : diagnostic ? 3 : 4;
-    candidates.push({ action, priority, ...discrimination, budget_gate: budgetGate, costs: resourceAmounts(action.estimated_cost.upper) });
+    candidates.push({ action, priority, ...discrimination, mechanism_test: mechanismTest, reusable_evidence: reusable,
+      selection_basis: { matched_information_targets: matchedTargets, rule: 'Address declared evidence gaps, then compare discrimination and resource upper bounds.' }, budget_gate: budgetGate, costs: resourceAmounts(action.estimated_cost.upper) });
   }
   for (const candidate of candidates) {
     candidate.dominated_by = candidates.filter(other => other !== candidate && other.priority <= candidate.priority
       && other.action.type === candidate.action.type
       && isDeepStrictEqual(other.action.prerequisites || [], candidate.action.prerequisites || [])
       && isDeepStrictEqual(other.action.hypothesis_versions, candidate.action.hypothesis_versions)
-      && candidate.distinguishes.every(pair => other.distinguishes.some(p => JSON.stringify(p.hypotheses) === JSON.stringify(pair.hypotheses) && p.quantity === pair.quantity))
-      && candidate.potentially_discriminating.every(pair => [...other.distinguishes, ...other.potentially_discriminating].some(p => JSON.stringify(p.hypotheses) === JSON.stringify(pair.hypotheses) && p.quantity === pair.quantity))
+      && isDeepStrictEqual(other.action.protocol, candidate.action.protocol)
+      && isDeepStrictEqual(other.action.controlled_components || [], candidate.action.controlled_components || [])
+      && isDeepStrictEqual(other.action.intervention_components || [], candidate.action.intervention_components || [])
+      && isDeepStrictEqual(other.action.information_targets || [], candidate.action.information_targets || [])
+      && isDeepStrictEqual(other.action.evaluation_plan, candidate.action.evaluation_plan)
+      && isDeepStrictEqual(other.action.precision?.inference_target, candidate.action.precision?.inference_target)
+      && candidate.distinguishes.every(pair => other.distinguishes.some(p => JSON.stringify(p.hypotheses) === JSON.stringify(pair.hypotheses) && p.quantity === pair.quantity && p.unit === pair.unit && p.comparison_id === pair.comparison_id && isDeepStrictEqual(p.conditions, pair.conditions)))
+      && candidate.potentially_discriminating.every(pair => [...other.distinguishes, ...other.potentially_discriminating].some(p => JSON.stringify(p.hypotheses) === JSON.stringify(pair.hypotheses) && p.quantity === pair.quantity && p.unit === pair.unit && p.comparison_id === pair.comparison_id && isDeepStrictEqual(p.conditions, pair.conditions)))
       && JSON.stringify(Object.keys(candidate.costs).sort()) === JSON.stringify(Object.keys(other.costs).sort())
       && Object.keys(candidate.costs).every(k => other.costs[k] <= candidate.costs[k])
       && (other.priority < candidate.priority || Object.keys(candidate.costs).some(k => other.costs[k] < candidate.costs[k])))
@@ -183,20 +206,24 @@ export function recommendNextAction(state, { actionIds, staleSourceKeys = [] } =
   }
   const eligible = candidates.filter(c => !c.dominated_by.length).sort((a, b) => a.priority - b.priority || a.action.action_id.localeCompare(b.action.action_id));
   const chosen = eligible[0];
-  if (!chosen) return { ...base, decision: { kind: base.blocked_actions.some(a => a.reason_codes.some(r => /unknown|missing|stale|needs_evidence|needs_precision|draft|uncertain/.test(r))) ? 'needs_input' : 'stop',
+  if (!chosen) return { ...base, decision: { kind: base.blocked_actions.some(a => a.reason_codes.some(r => /unknown|missing|stale|needs_evidence|needs_precision|draft|uncertain|prediction_basis|control_|path_/.test(r))) ? 'needs_input' : 'stop',
     reason: base.unmodeled_explanation ? 'Revise explanations or measurements; none of the registered explanations accounts for the valid results.' : 'No registered action meets the evidence, design and budget conditions.',
     next_step: base.blocked_actions.some(a => a.reason_codes.some(r => r.startsWith('unknown_cost'))) ? 'Register a bounded profile_cost action.'
       : base.blocked_actions.some(a => a.reason_codes.includes('needs_precision_evidence_or_different_measurement')) ? 'Register a low-cost precision diagnostic for the same predictions, supply an anticipated interval width with evidence, or register bounded exploration.' : 'Resolve the listed gaps or park this direction.' } };
+  if (chosen.reusable_evidence.length) return { ...base, decision: { kind: 'reuse_evidence', action_id: chosen.action.action_id, action_version: chosen.action.version,
+    reusable_evidence: chosen.reusable_evidence, mechanism_test: chosen.mechanism_test, selection_basis: chosen.selection_basis,
+    reason: 'Current assessed results cover the same registered design. Register replicate to request independent replication.' } };
   return { ...base, decision: { kind: 'execute_action', action_id: chosen.action.action_id, action_version: chosen.action.version,
     hypothesis_ids: chosen.action.hypothesis_versions.map(ref => ref.hypothesis_id),
-    reason: chosen.distinguishes.length ? 'The cited precision estimate is sufficient to separate the registered prediction intervals; the observed result may still be inconclusive.'
+    reason: chosen.selection_basis.matched_information_targets.length ? 'This diagnostic targets the listed unresolved evidence or control requirements.'
+      : chosen.distinguishes.length ? 'The cited precision estimate is sufficient to separate the registered prediction intervals; the observed result may still be inconclusive.'
       : chosen.action.exploration ? 'This bounded exploration gathers evidence; it does not establish sufficient precision to distinguish explanations.'
       : chosen.potentially_discriminating.length ? 'This action gathers evidence for the unresolved precision or measurement requirement.' : `The ${chosen.action.type} action addresses the current prerequisites.`,
-    action: chosen.action, distinguishes: chosen.distinguishes, potentially_discriminating: chosen.potentially_discriminating,
+    action: chosen.action, mechanism_test: chosen.mechanism_test, selection_basis: chosen.selection_basis, distinguishes: chosen.distinguishes, potentially_discriminating: chosen.potentially_discriminating,
     result_branches: chosen.action.result_branches, stopping_rule: chosen.action.stopping_rule },
     budget_gate: chosen.budget_gate,
     recommendation_ref: { project: state.project, revision: state.revision, policy_version: POLICY_VERSION, goal_phase: state.goal_phase,
       action_id: chosen.action.action_id, action_version: chosen.action.version, scope_action_ids: actionIds || selected.map(a => a.action_id) },
-    alternatives: candidates.filter(c => c !== chosen).map(c => ({ action_id: c.action.action_id, dominated_by: c.dominated_by, estimated_upper: c.action.estimated_cost.upper, distinguishes: c.distinguishes,
+    alternatives: candidates.filter(c => c !== chosen).map(c => ({ action_id: c.action.action_id, dominated_by: c.dominated_by, estimated_upper: c.action.estimated_cost.upper, mechanism_test: c.mechanism_test, selection_basis: c.selection_basis, distinguishes: c.distinguishes,
       reason: c.dominated_by.length ? 'Same prerequisites and discrimination needs are covered at no greater cost.' : 'A feasible alternative; resource dimensions are not converted into an invented utility.' })) };
 }

@@ -1,0 +1,159 @@
+{
+  "corpus": "/absolute/server/path/mechanism-example",
+  "project": "mechanism-example",
+  "operation": "register_actions",
+  "requestId": "mechanism-actions-1",
+  "expectedRevision": 2,
+  "payload": {
+    "actions": [
+      {
+        "action_id": "E1",
+        "version": 1,
+        "type": "controlled_experiment",
+        "title": "Matched-count control",
+        "hypothesis_versions": [
+          {
+            "hypothesis_id": "Hq",
+            "version": 1
+          },
+          {
+            "hypothesis_id": "Hn",
+            "version": 1
+          }
+        ],
+        "prediction_ids": [
+          "Pq",
+          "Pn"
+        ],
+        "protocol": {
+          "protocol_id": "matched-v1",
+          "dataset": "synthetic-gcd-v1",
+          "split": "fixed-test",
+          "labels": "training-only",
+          "backbone": "fixed-small-model",
+          "preprocessing": "fixed-v1",
+          "augmentation": "none",
+          "steps": 100,
+          "tuning_budget": 0,
+          "checkpoint_selection": "final",
+          "metric_code": "fixture-v1",
+          "metric_direction": "higher",
+          "code_source": "synthetic_fixture",
+          "command": "fixture-only",
+          "environment": "offline",
+          "independent_unit": "seed",
+          "sample_count": 100
+        },
+        "required_protocol_fields": [
+          "protocol_id",
+          "dataset",
+          "split",
+          "labels",
+          "backbone",
+          "preprocessing",
+          "augmentation",
+          "steps",
+          "tuning_budget",
+          "checkpoint_selection",
+          "metric_code",
+          "metric_direction",
+          "code_source",
+          "command",
+          "environment",
+          "independent_unit",
+          "sample_count"
+        ],
+        "intervention": "Apply mechanism-based selection and random selection at matched count.",
+        "held_constant": [
+          "sample count",
+          "training steps",
+          "split"
+        ],
+        "measurements": [
+          "novel_accuracy_quality_minus_matched_count"
+        ],
+        "validity_checks": [
+          "selection implemented and counts matched"
+        ],
+        "precision": {
+          "max_interval_width": 0.7,
+          "anticipated_interval_width": 0.4,
+          "basis_refs": [
+            {
+              "evidence_origin": "synthetic_fixture",
+              "source_id": "source:quality",
+              "source_version": "1",
+              "locator": "claims/quality",
+              "artifact_path": "/absolute/server/path/mechanism-example/quality.json"
+            }
+          ]
+        },
+        "analysis": {
+          "analysis_set_id": "fixed-E1",
+          "primary_outcome": "novel_accuracy_quality_minus_matched_count",
+          "look_policy": "fixed_final",
+          "multiplicity": "single_primary",
+          "stopping_rule": "five independent seeds; final endpoint only"
+        },
+        "estimated_cost": {
+          "upper": {
+            "gpu_hours": [
+              {
+                "resource": "fixture-gpu",
+                "amount": 1.5
+              }
+            ],
+            "provider_calls": 0
+          }
+        },
+        "stopping_rule": "Stop at the fixed endpoint; do not select the best seed.",
+        "result_branches": [
+          {
+            "when": "contrast at least one point",
+            "next": "replicate quality mechanism"
+          },
+          {
+            "when": "contrast inside half a point",
+            "next": "replicate count explanation"
+          },
+          {
+            "when": "uncertainty overlaps both",
+            "next": "improve precision"
+          }
+        ],
+        "intervention_components": [
+          {
+            "hypothesis_id": "Hq",
+            "hypothesis_version": 1,
+            "component_id": "selection",
+            "held_constant": [
+              "count"
+            ]
+          },
+          {
+            "hypothesis_id": "Hn",
+            "hypothesis_version": 1,
+            "component_id": "selection",
+            "held_constant": [
+              "count"
+            ]
+          }
+        ],
+        "controlled_components": [
+          {
+            "hypothesis_id": "Hq",
+            "hypothesis_version": 1,
+            "component_id": "count",
+            "check": "selection implemented and counts matched"
+          },
+          {
+            "hypothesis_id": "Hn",
+            "hypothesis_version": 1,
+            "component_id": "count",
+            "check": "selection implemented and counts matched"
+          }
+        ]
+      }
+    ]
+  }
+}

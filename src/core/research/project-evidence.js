@@ -1,3 +1,4 @@
+import { buildMechanismAnalysis } from './mechanism-analysis.js';
 import { latestRuns, latestVersions } from './decision-store.js';
 import { assessmentValidity, scientificState } from './hypothesis-assessment.js';
 import { budgetLedger } from './action-policy.js';
@@ -7,6 +8,7 @@ import { evidenceKey } from './decision-evidence.js';
 
 export function buildProjectEvidence(state, { query, limit = 10, includeHistory = false, staleSourceKeys = [], currentEvidence = [] } = {}) {
   const currentRuns = latestRuns(state.runs);
+  const open = scientificState(state, staleSourceKeys);
   const currentIds = new Set(currentRuns.map(r => r.record_id));
   const validity = state.assessments.map(a => ({ assessment_id: a.assessment_id, ...assessmentValidity(a, state, staleSourceKeys) }));
   const validAssessments = state.assessments.filter(a => validity.find(v => v.assessment_id === a.assessment_id).status === 'current');
@@ -35,7 +37,7 @@ export function buildProjectEvidence(state, { query, limit = 10, includeHistory 
       source_revision: run.source_revision, status, execution_status: run.status, action_id: run.action_id, action_version: run.action_version,
       scope: run.protocol, evidence_origin: run.evidence_origin, measurements: run.measurements || [], comparisons: comparison,
       assessment_refs: assessments.map(a => a.assessment_id), prediction_refs: action?.prediction_ids || [],
-      conclusions: stale ? [] : assessments.flatMap(a => a.rows.filter(r => r.run_record_id === run.record_id)),
+      conclusions: stale ? [] : open.flatMap(h => h.rows.filter(r => r.run_record_id === run.record_id)),
       evidence_refs: dependencies.flatMap(collectEntityEvidence), source_refs: run.artifact_refs || [],
       query_match: matches(run) || actionMatches(action) };
   });
@@ -92,7 +94,6 @@ export function buildProjectEvidence(state, { query, limit = 10, includeHistory 
   const snapshots = currentEvidence.length ? currentEvidence : state.evidence_snapshots;
   const sourceReadiness = snapshots.filter(s => s.ref.evidence_origin === 'paper_reported').map(s => ({ source_id: s.ref.source_id,
     source_version: s.source_version, admitted: s.admitted, graph_readiness: s.graph_readiness || null, status: staleSourceKeys.includes(s.key) ? 'stale' : 'current' }));
-  const open = scientificState(state, staleSourceKeys);
   const explanations = visibleHypotheses.map(h => ({ hypothesis_id: h.hypothesis_id, version: h.version, statement: h.statement, scope: h.scope,
     candidate_refs: h.candidate_refs || [], evidence_refs: collectEntityEvidence(h),
     ...(open.find(c => c.hypothesis_id === h.hypothesis_id && c.version === h.version) || { status: 'unassessed', rows: [] }) }));
@@ -101,6 +102,8 @@ export function buildProjectEvidence(state, { query, limit = 10, includeHistory 
   return { status: 'ready', project: state.project, based_on_revision: state.revision,
     evidence_freshness: { status: staleSourceKeys.length ? 'stale' : 'current', stale_dependencies: staleSourceKeys, next_step: staleSourceKeys.length ? 'refresh_evidence' : null },
     observations, comparison_summary: observations.map(o => o.comparisons), open_explanations: explanations,
+    mechanism_analysis: buildMechanismAnalysis(state, { currentEvidence: snapshots, staleSourceKeys, conclusions: open,
+      hypothesisVersions: visibleHypotheses.map(h => ({ hypothesis_id: h.hypothesis_id, version: h.version })) }),
     mechanism_paths: mechanismPaths, compound_interventions: compound, source_readiness: sourceReadiness,
     evidence_requests: [...staleSourceKeys.map(key => ({ reason: 'changed_source', key, next_step: 'refresh_evidence' })),
       ...sourceReadiness.filter(s => s.graph_readiness?.status === 'source_only').map(s => ({ source_id: s.source_id, reason: 'semantic_node_missing', next_step: s.graph_readiness.next_step }))],
@@ -131,7 +134,7 @@ export function attachProjectEvidence(result, view) {
     for (const key of ['result', 'packetBundle', 'packet_bundle', 'innovation_packet', 'interdisciplinary_ranking']) if (annotated[key]) annotated[key] = annotate(annotated[key]);
     return annotated;
   };
-  return { ...annotate(output), project_evidence: view,
+  return { ...annotate(output), project_evidence: view, mechanism_guidance: view.mechanism_analysis || null,
     research_focus: explanations.filter(h => h.rows?.length).map(h => ({ hypothesis_id: h.hypothesis_id, version: h.version, status: h.status, scope: h.scope,
       run_record_ids: [...new Set(h.rows.map(r => r.run_record_id))], prediction_ids: [...new Set(h.rows.map(r => r.prediction_id))],
       next_step: ['excluded_in_scope', 'weakened_in_scope'].includes(h.status) ? 'Revise the intervention or test a remaining explanation in this scope.' : 'Resolve remaining alternatives or obtain independent replication.' })),
