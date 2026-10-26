@@ -2399,6 +2399,7 @@ async function requestOpenAiGenerate(config, prompt) {
 
   if (isDeepSeekProvider(config)) {
     requestBody.max_tokens = config.maxTokens;
+    requestBody.thinking = { type: 'disabled' };
   } else {
     requestBody.max_completion_tokens = config.maxTokens;
   }
