@@ -596,7 +596,8 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
   ].join('\n');
 }
 
-function buildSemanticExtractionBatchPrompt(entries) {
+function buildSemanticExtractionBatchPrompt(entries, options = {}) {
+  const fullText = isLongContextFirstBatchMode(options);
   const importantRoles = new Set([
     'abstract',
     'introduction',
@@ -613,15 +614,15 @@ function buildSemanticExtractionBatchPrompt(entries) {
     return {
       id: String(entry.id || parsedPaper.paperId || semanticPaper.paperId || `paper-${index + 1}`),
       title: cleanText(parsedPaper.title || semanticPaper.paperTitle || '', 240),
-      abstract: cleanText(semanticPaper.abstract || parsedPaper.abstract || '', 900),
+      abstract: cleanText(semanticPaper.abstract || parsedPaper.abstract || '', fullText ? Infinity : 900),
       heuristicCandidates: collectEntitySnapshot(semanticPaper).slice(0, 20),
       sections: (parsedPaper.sections || [])
-        .filter((section) => importantRoles.has(section.role))
-        .slice(0, 8)
+        .filter((section) => fullText || importantRoles.has(section.role))
+        .slice(0, fullText ? undefined : 8)
         .map((section) => ({
           heading: cleanText(section.heading || section.role || 'Section', 120),
           role: cleanText(section.role || 'body', 32),
-          excerpt: cleanText(section.text, 700)
+          excerpt: cleanText(section.text, fullText ? Infinity : 700)
         }))
     };
   });
@@ -818,21 +819,22 @@ function buildChunkResearchSemanticsBatchPrompt(entries) {
   ].join('\n');
 }
 
-function buildResearchSemanticsBatchPrompt(entries) {
+function buildResearchSemanticsBatchPrompt(entries, options = {}) {
+  const fullText = isLongContextFirstBatchMode(options);
   const papers = entries.map((entry, index) => {
     const parsedPaper = entry.parsedPaper || {};
     const semanticPaper = entry.semanticPaper || {};
     return {
       id: String(entry.id || parsedPaper.paperId || semanticPaper.paperId || `paper-${index + 1}`),
       title: cleanText(parsedPaper.title || semanticPaper.paperTitle || '', 240),
-      abstract: cleanText(semanticPaper.abstract || parsedPaper.abstract || '', 800),
+      abstract: cleanText(semanticPaper.abstract || parsedPaper.abstract || '', fullText ? Infinity : 800),
       candidateEntities: collectEntitySnapshot(semanticPaper).slice(0, 20),
       excerpts: (parsedPaper.sections || [])
-        .slice(0, 6)
+        .slice(0, fullText ? undefined : 6)
         .map((section) => ({
           heading: cleanText(section.heading || section.role || 'Section', 120),
           role: cleanText(section.role || 'body', 32),
-          excerpt: cleanText(section.text, 420)
+          excerpt: cleanText(section.text, fullText ? Infinity : 420)
         }))
     };
   });
@@ -2900,7 +2902,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
   }));
   const batches = partitionEntriesByPromptBudget(
     normalizedEntries,
-    buildSemanticExtractionBatchPrompt,
+    batch => buildSemanticExtractionBatchPrompt(batch, options),
     options,
     batchSize
   );
@@ -2915,7 +2917,7 @@ export async function inferPaperSemanticObjectsBatch(entries, options = {}) {
     const batch = batches[batchIndex];
     let completedAfterBatch = Math.max(...batch.map((entry) => entry.__batchIndex)) + 1;
     let stopAfterCurrentBatch = false;
-    const prompt = buildSemanticExtractionBatchPrompt(batch);
+    const prompt = buildSemanticExtractionBatchPrompt(batch, options);
     const promptChars = String(prompt).length;
     const batchId = llmBatchId(ledger, batch, prompt);
     const cachedBatch = completedLedgerBatches.get(batchId);
@@ -4344,7 +4346,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
     }));
   const batches = partitionEntriesByPromptBudget(
     normalizedEntries,
-    buildResearchSemanticsBatchPrompt,
+    batch => buildResearchSemanticsBatchPrompt(batch, options),
     options,
     batchSize
   );
@@ -4359,7 +4361,7 @@ export async function inferPaperResearchSemanticsBatch(entries, options = {}) {
     const batch = batches[batchIndex];
     let completedAfterBatch = Math.max(...batch.map((entry) => entry.__batchIndex)) + 1;
     let stopAfterCurrentBatch = false;
-    const prompt = buildResearchSemanticsBatchPrompt(batch);
+    const prompt = buildResearchSemanticsBatchPrompt(batch, options);
     const promptChars = String(prompt).length;
     const batchId = llmBatchId(ledger, batch, prompt);
     const cachedBatch = completedLedgerBatches.get(batchId);
