@@ -53,6 +53,7 @@ import { startIsolatedFastMdImportWorker } from '../core/imports/fast-md-lane-wo
 import { startLiteratureDiscoveryRecoveryWorker } from '../mcp/tool-literature-discovery.js';
 import { startImportWorkflowRecoveryWorker } from '../mcp/tool-import-workflow.js';
 import { executeFieldResearchOperation, startFieldResearchRecoveryWorker } from '../core/research/field-research.js';
+import { executeFieldStudyOperation } from '../core/research/field-studies.js';
 import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 import { startRegistryReconcileWorker } from '../storage/registry-reconcile.js';
 
@@ -1671,6 +1672,22 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const body = await readJsonBody(request, options);
         sendJson(response, 200, await fieldEvolutionPayload(name, body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/field-studies') {
+        const name = url.searchParams.get('name') || undefined;
+        const studyId = url.searchParams.get('studyId');
+        const args = studyId ? { studyId } : {};
+        if (studyId && url.searchParams.get('branchId')) args.branchId = url.searchParams.get('branchId');
+        sendJson(response, 200, await executeFieldStudyOperation(name, studyId ? 'read' : 'list', args, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/field-studies') {
+        const name = url.searchParams.get('name') || undefined;
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await executeFieldStudyOperation(name, 'save', body, apiOptions));
         return;
       }
 

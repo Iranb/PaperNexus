@@ -6,6 +6,7 @@ import { resolveCorpusForApi } from '../server/api.js';
 import { RESEARCH_DECISION_TOOL } from './tool-research-decision.js';
 import { OPERATIONS as DECISION_OPERATIONS, DECISION_VERSION } from '../core/research/decision-contracts.js';
 import { executeFieldResearchOperation } from '../core/research/field-research.js';
+import { executeFieldStudyOperation, FIELD_STUDY_SCHEMA } from '../core/research/field-studies.js';
 import { readProjectEvidence, evaluateProject } from '../core/research/project-evaluation.js';
 import { attachProjectEvidence } from '../core/research/project-evidence.js';
 
@@ -54,6 +55,10 @@ const FIELDS = {
   discoveryMode: { type: 'string', enum: ['search', 'resolve', 'run'], description: 'search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically.' },
   providers: strings('Optional discovery provider names.'),
   maxPapers: count(100, 'Maximum discovery papers; default 20.'),
+  studyId: { ...text('Saved field study identifier.'), maxLength: 100, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$' },
+  branchId: { ...text('Optional branch within a saved field study.'), maxLength: 100 },
+  expectedRevision: { type: 'integer', minimum: 0, maximum: 1000000, description: 'Read-back study revision; use 0 to create.' },
+  study: { ...FIELD_STUDY_SCHEMA, description: 'Field scope, branch reviews, search records and paper/method selection. Saving does not mutate graph evidence.' },
   dryRun: { type: 'boolean', description: 'Preview field research scope and worker readiness without searching, downloading, importing or creating a run.' },
   runId: { ...text('Existing literature discovery run id.'), maxLength: 200, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$' },
   serverFilePath: text('Already staged server-side PDF/Markdown file to import.'),
@@ -90,6 +95,9 @@ export const RESEARCH_ROUTES = {
     survey: read('agent_materials', 'research_material_pack', materialFields, ['query']),
     field_research: { ...read('field_research', 'start', ['query', 'targetDomain', 'fromYear', 'toYear', 'maxDepth', 'maxNodes', 'maxEdges', 'maxPapers', 'providers', 'idempotencyKey', 'dryRun'], [], ['query', 'targetDomain']), effect: 'field_research_submit' },
     field_research_status: { ...read('field_research', 'status', ['runId']), effect: 'field_research_read' },
+    study_save: { ...read('field_study', 'save', ['studyId', 'expectedRevision', 'study'], ['studyId', 'expectedRevision', 'study']), effect: 'study_write' },
+    study: { ...read('field_study', 'read', ['studyId', 'branchId', 'maxNodes', 'maxEdges'], ['studyId']), effect: 'study_read' },
+    studies: { ...read('field_study', 'list', []), effect: 'study_read' },
     discover: { ...read('literature_discovery', 'submit', ['query', 'discoveryMode', 'providers', 'maxPapers'], ['query']), effect: 'discovery_submit' },
     discovery_status: { ...read('literature_discovery_progress', null, ['runId', 'limit']), effect: 'discovery_read' },
     discovery_report: { ...read('literature_discovery', 'report', ['runId'], ['runId']), effect: 'discovery_read' },
@@ -117,7 +125,7 @@ export const RESEARCH_ROUTES = {
 };
 
 const DESCRIPTIONS = {
-  literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts bounded discovery, missing-paper import and configured extraction for an evolution map (idempotencyKey required unless dryRun); field_research_status reads progress and the ready map. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
+  literature_review: 'capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts one bounded discovery/import/extraction batch (idempotencyKey required unless dryRun); field_research_status reports batch completion separately from field coverage. study_save saves a reviewed field scope, branches, searches and paper/method selections; study reads its current graph and coverage; studies lists saved studies for the Web. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.',
   lineage_analysis: 'Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
   idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains.'
 };
@@ -180,7 +188,13 @@ function validValue(value, schema) {
   if (schema.type === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const entries = Object.entries(value);
-    if (entries.length > schema.maxProperties || !entries.every(([, item]) => validValue(item, schema.additionalProperties))) return false;
+    if (entries.length > (schema.maxProperties ?? Infinity)) return false;
+    if ((schema.required || []).some(key => value[key] === undefined)) return false;
+    if (!entries.every(([key, item]) => {
+      const child = schema.properties?.[key];
+      if (child) return validValue(item, child);
+      return schema.additionalProperties === true || (schema.additionalProperties && validValue(item, schema.additionalProperties));
+    })) return false;
   }
   if (schema.type === 'string' && (typeof value !== 'string' || !value.trim() || value.length > (schema.maxLength || Infinity))) return false;
   if (schema.type === 'array' && (!Array.isArray(value) || value.length > schema.maxItems || !value.every((item) => validValue(item, schema.items)))) return false;
@@ -354,6 +368,9 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
     : call.backend === 'field_research'
     ? await executeFieldResearchOperation(call.args.corpus, call.args.operation,
         Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
+    : call.backend === 'field_study'
+    ? await executeFieldStudyOperation(call.args.corpus, call.args.operation,
+        Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
     : call.backend === 'project_evaluation'
     ? await evaluateProject(await resolveCorpusForApi(args.corpus, options), call.args)
     : decodeResult(await invoke(call.backend, call.args, options));
@@ -369,6 +386,8 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
       ? { tool: null, component: 'submitDiscoveryImports', operation: 'saved_source_import' }
       : call.backend === 'field_research'
       ? { tool: null, component: 'executeFieldResearchOperation', operation: call.args.operation }
+      : call.backend === 'field_study'
+      ? { tool: null, component: 'executeFieldStudyOperation', operation: call.args.operation }
       : { tool: call.backend, operation: call.args.operation || null },
     result,
     evidenceBoundary: {

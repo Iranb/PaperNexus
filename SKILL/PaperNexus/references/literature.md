@@ -1,5 +1,7 @@
 # Literature: reuse, select, then read
 
+For a field's historical method lineage or a native Web evolution map, use [Field lineage](field-lineage.md). `field_research` processes one bounded discovery/import batch; its terminal status does not complete the field survey. Retain each run and review coverage across branches in a saved study.
+
 1. Resolve corpus if unknown. Use `literature_review/status` and `sources` only when coverage/source state matters; do not fetch them before every query.
 2. Search committed evidence with `search`. Resolve exact DOI/arXiv identity before downloading or importing another version. Use `paper` with paperId/identifier and a bounded chunkLimit to read selected sources.
 3. Use `survey` when grouped roles are useful. Record closest prior, baseline/protocol, method source and negative evidence. Do not confuse automatic role assignment with actual reading.

@@ -12,7 +12,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 
 | Tool | Description |
 | --- | --- |
-| [literature_review](#tool-literature_review) | capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts bounded discovery, missing-paper import and configured extraction for an evolution map (idempotencyKey required unless dryRun); field_research_status reads progress and the ready map. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
+| [literature_review](#tool-literature_review) | capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts one bounded discovery/import/extraction batch (idempotencyKey required unless dryRun); field_research_status reports batch completion separately from field coverage. study_save saves a reviewed field scope, branches, searches and paper/method selections; study reads its current graph and coverage; studies lists saved studies for the Web. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete. |
 | [lineage_analysis](#tool-lineage_analysis) | Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals. |
 | [idea_generation](#tool-idea_generation) | Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains. |
 | [research_decision](#tool-research_decision) | Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve project feedback with evidence_view, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId). |
@@ -55,7 +55,7 @@ Each tool section lists the tool purpose first, followed by every currently expo
 
 ### Function
 
-capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts bounded discovery, missing-paper import and configured extraction for an evolution map (idempotencyKey required unless dryRun); field_research_status reads progress and the ready map. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.
+capabilities reports supported contracts and operations. Find and read papers, assemble a source-backed survey, and explicitly discover/import missing papers. corpora/status/sources inspect coverage; search reads the committed graph; paper reads source material; survey groups relevant evidence. field_research starts one bounded discovery/import/extraction batch (idempotencyKey required unless dryRun); field_research_status reports batch completion separately from field coverage. study_save saves a reviewed field scope, branches, searches and paper/method selections; study reads its current graph and coverage; studies lists saved studies for the Web. discover submits a network job, discovery_status/report inspect it, import explicitly queues a staged file or resolved run, import_status tracks jobs/tasks. Discovery is not graph evidence until import and authoritative sync complete.
 
 ### Operation Routing
 
@@ -70,6 +70,9 @@ capabilities reports supported contracts and operations. Find and read papers, a
 | survey | corpus, responseMode, query, targetDomain, constraints, limit | query | committed_read |
 | field_research | corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun | one of: query, targetDomain | field_research_submit |
 | field_research_status | corpus, responseMode, runId | None | field_research_read |
+| study_save | corpus, responseMode, studyId, expectedRevision, study | studyId; expectedRevision; study | study_write |
+| study | corpus, responseMode, studyId, branchId, maxNodes, maxEdges | studyId | study_read |
+| studies | corpus, responseMode | None | study_read |
 | discover | corpus, responseMode, query, discoveryMode, providers, maxPapers | query | discovery_submit |
 | discovery_status | corpus, responseMode, runId, limit | None | discovery_read |
 | discovery_report | corpus, responseMode, runId | runId | discovery_read |
@@ -80,7 +83,7 @@ capabilities reports supported contracts and operations. Find and read papers, a
 
 | Field | Required | Type | Description |
 | --- | --- | --- | --- |
-| `operation` | required | string (capabilities, corpora, status, sources, search, paper, survey, field_research, field_research_status, discover, discovery_status, discovery_report, import, import_status) | capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; field_research: corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun; field_research_status: corpus, responseMode, runId; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds Allowed values: `capabilities`, `corpora`, `status`, `sources`, `search`, `paper`, `survey`, `field_research`, `field_research_status`, `discover`, `discovery_status`, `discovery_report`, `import`, `import_status`. |
+| `operation` | required | string (capabilities, corpora, status, sources, search, paper, survey, field_research, field_research_status, study_save, study, studies, discover, discovery_status, discovery_report, import, import_status) | capabilities: corpus, responseMode; corpora: corpus, responseMode; status: corpus, responseMode; sources: corpus, responseMode; search: corpus, responseMode, query, limit, layers, sortBy; paper: corpus, responseMode, query, paperId, identifier, chunkLimit; survey: corpus, responseMode, query, targetDomain, constraints, limit; field_research: corpus, responseMode, query, targetDomain, fromYear, toYear, maxDepth, maxNodes, maxEdges, maxPapers, providers, idempotencyKey, dryRun; field_research_status: corpus, responseMode, runId; study_save: corpus, responseMode, studyId, expectedRevision, study; study: corpus, responseMode, studyId, branchId, maxNodes, maxEdges; studies: corpus, responseMode; discover: corpus, responseMode, query, discoveryMode, providers, maxPapers; discovery_status: corpus, responseMode, runId, limit; discovery_report: corpus, responseMode, runId; import: corpus, responseMode, serverFilePath, runId, doi, arxivId, idempotencyKey; import_status: corpus, responseMode, jobId, taskId, taskIds Allowed values: `capabilities`, `corpora`, `status`, `sources`, `search`, `paper`, `survey`, `field_research`, `field_research_status`, `study_save`, `study`, `studies`, `discover`, `discovery_status`, `discovery_report`, `import`, `import_status`. |
 | `corpus` | optional | string | Corpus name or indexed root. Use literature_review/corpora when unknown. |
 | `responseMode` | optional | string (full, summary) | full preserves backend output (default); summary gives a bounded preview with evidence gates and full-read instructions. Allowed values: `full`, `summary`. |
 | `query` | optional | string | Research topic, question, or exact node anchor. |
@@ -102,6 +105,44 @@ capabilities reports supported contracts and operations. Find and read papers, a
 | `idempotencyKey` | optional | string | Stable id for an import submission; reuse to avoid duplicate async jobs. |
 | `dryRun` | optional | boolean | Preview field research scope and worker readiness without searching, downloading, importing or creating a run. |
 | `runId` | optional | string | Existing literature discovery run id. |
+| `studyId` | optional | string | Saved field study identifier. |
+| `expectedRevision` | optional | integer | Read-back study revision; use 0 to create. |
+| `study` | optional | object | Field scope, branch reviews, search records and paper/method selection. Saving does not mutate graph evidence. |
+| `study.title` | required in parent | string |  |
+| `study.query` | required in parent | string |  |
+| `study.scope` | required in parent | string |  |
+| `study.fromYear` | optional | integer |  |
+| `study.toYear` | optional | integer |  |
+| `study.branches` | required in parent | array&lt;object&gt; |  |
+| `study.branches[].id` | required in parent | string |  |
+| `study.branches[].label` | required in parent | string |  |
+| `study.branches[].description` | required in parent | string |  |
+| `study.branches[].reviewStatus` | required in parent | string (pending, reviewed, limited) | Allowed values: `pending`, `reviewed`, `limited`. |
+| `study.branches[].reviewSummary` | required in parent | string |  |
+| `study.branches[].gaps` | required in parent | array&lt;string&gt; |  |
+| `study.searches` | required in parent | array&lt;object&gt; |  |
+| `study.searches[].id` | required in parent | string |  |
+| `study.searches[].query` | required in parent | string |  |
+| `study.searches[].branchIds` | required in parent | array&lt;string&gt; |  |
+| `study.searches[].source` | required in parent | string |  |
+| `study.searches[].reference` | required in parent | string |  |
+| `study.searches[].retrievedAt` | required in parent | string |  |
+| `study.searches[].candidateCount` | required in parent | integer |  |
+| `study.searches[].notes` | optional | string |  |
+| `study.papers` | required in parent | array&lt;object&gt; |  |
+| `study.papers[].paperId` | required in parent | string |  |
+| `study.papers[].role` | required in parent | string (method, context, excluded) | Allowed values: `method`, `context`, `excluded`. |
+| `study.papers[].branchIds` | required in parent | array&lt;string&gt; |  |
+| `study.papers[].methodIds` | required in parent | array&lt;string&gt; |  |
+| `study.papers[].reason` | required in parent | string |  |
+| `study.papers[].evidenceRefs` | required in parent | array&lt;string&gt; |  |
+| `study.papers[].sourceKey` | optional | string |  |
+| `study.coverage` | required in parent | object |  |
+| `study.coverage.status` | required in parent | string (in_progress, reviewed) | Allowed values: `in_progress`, `reviewed`. |
+| `study.coverage.summary` | required in parent | string |  |
+| `study.coverage.gaps` | required in parent | array&lt;string&gt; |  |
+| `study.coverage.nextActions` | required in parent | array&lt;string&gt; |  |
+| `branchId` | optional | string | Optional branch within a saved field study. |
 | `discoveryMode` | optional | string (search, resolve, run) | search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically. Allowed values: `search`, `resolve`, `run`. |
 | `serverFilePath` | optional | string | Already staged server-side PDF/Markdown file to import. |
 | `doi` | optional | string | Optional DOI for an imported source. |

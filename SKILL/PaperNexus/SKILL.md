@@ -1,6 +1,6 @@
 ---
 name: papernexus
-description: Discover and read literature with PaperNexus, trace source-backed methods and problems, and generate and audit hypotheses. Use for research evidence, not corpus maintenance or experiment execution.
+description: Discover and read literature with PaperNexus, build field method lineages with coverage review and native Web maps, trace methods and problems, and audit hypotheses. Use for research evidence, not experiment execution.
 ---
 
 # PaperNexus Research
@@ -27,6 +27,7 @@ Depth controls work budget, not claim truth. Missing evidence limits the conclus
 |---|---|---|
 | Find, select, read or compare papers | [Literature](references/literature.md) | `literature_review` |
 | Explain methods, assumptions, evidence or evolution | [Analysis](references/analysis.md) | `lineage_analysis` |
+| Build or rebuild a field's method lineage, fill literature gaps, and publish a native Web map | [Field lineage](references/field-lineage.md) | `literature_review`, `lineage_analysis`, saved studies |
 | Generate, contrast or reject a hypothesis | [Ideation](references/ideation.md) | `idea_generation` |
 | Register predictions, assess results and choose the next action | [Decision loop](references/research-decision.md) | `research_decision` |
 | Action-driven proposals and AutoResearch handoff | [Advanced](references/advanced.md), [adapter](references/autoresearch-adapter.md) | feature-detected `agent_materials` |

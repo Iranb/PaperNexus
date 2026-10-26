@@ -2,7 +2,7 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const stages = { queued: 'Queued', discovery: 'Searching literature', full_text: 'Resolving full text',
   import_submission: 'Submitting papers', evidence: 'Waiting for evidence', importing: 'Importing papers',
-  extracting: 'Extracting relation evidence', synchronizing: 'Synchronizing the graph', needs_attention: 'Needs attention', map: 'Evolution map ready' };
+  extracting: 'Extracting relation evidence', synchronizing: 'Synchronizing the graph', needs_attention: 'Needs attention', map: 'Batch processed · map ready' };
 
 export function mountFieldResearch({ host, getCorpus, getJson, postJson, readRequest, open, showAnalysis }) {
   const startButton = document.getElementById('field-research');
@@ -34,10 +34,11 @@ export function mountFieldResearch({ host, getCorpus, getJson, postJson, readReq
     const selection = response.survey?.candidateSelection;
     const sources = response.survey?.sources || [];
     const status = response.status === 'failed' ? 'Research failed'
-      : response.status === 'partial' ? 'Map ready · coverage gaps' : stages[response.stage] || response.status;
+      : response.status === 'partial' ? 'Batch finished · unresolved work' : stages[response.stage] || response.status;
     summary.hidden = false;
     summary.innerHTML = `<div class="field-research-heading"><strong>${escape(status)}</strong><span>${escape(response.runId || '')}</span></div>
       <p>Literature search → full text → relation evidence → graph synchronization → evolution map</p>
+      <p>Field coverage: ${escape(response.coverageAssessment?.status === 'not_assessed' ? 'not yet reviewed' : 'separate review required')}. Batch completion does not establish field coverage.</p>
       ${counts ? `<p>${counts.ready}/${counts.total} imports ready · ${counts.queued + counts.importing} importing · ${counts.extracting} extracting · ${counts.syncing} synchronizing · ${counts.failed} failed · ${counts.unknown} unconfirmed</p>` : '<p>The task continues on the server. You can leave this view and resume it later.</p>'}
       ${selection ? `<p>${selection.reviewedCount} candidates reviewed · ${selection.selectedCount} selected · ${selection.counts.already_indexed || 0} already indexed · ${selection.counts.budget_omitted || 0} outside the paper budget</p>` : ''}
       ${sources.length ? `<p>${sources.filter(source => source.resolutionStatus === 'fulltext_ready').length}/${sources.length} selected papers have available full text.</p>` : ''}

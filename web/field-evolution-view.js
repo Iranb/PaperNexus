@@ -1,4 +1,5 @@
 import { mountFieldResearch } from './field-research-view.js';
+import { mountFieldStudies } from './field-studies-view.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -205,6 +206,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
     <button type="button" class="action-button" data-field-action="close">Back to graph</button></header>
     <p class="field-scope" role="status" aria-live="polite"></p>
     <section class="field-research-summary" aria-label="Field research progress" aria-live="polite" hidden></section>
+    <section class="field-study-summary" aria-label="Saved study scope and coverage" hidden></section>
     <div class="field-toolbar" hidden><div class="field-modes" role="group" aria-label="Timeline view">
       <button type="button" data-field-mode="papers" aria-pressed="true">Papers</button><button type="button" data-field-mode="methods" aria-pressed="false">Methods</button></div>
       <label>Family<select class="field-family" aria-label="Method family"></select></label>
@@ -231,6 +233,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   let drawing = null;
   let corpus = '';
   let research;
+  let studies;
 
   const resizeSvg = () => {
     const svg = map.querySelector('svg');
@@ -247,6 +250,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   };
   const reset = () => {
     research?.pause();
+    studies?.pause();
     sequence++; payload = null; drawing = null; corpus = '';
     host.hidden = true; workspace.classList.remove('field-mode');
     map.innerHTML = ''; details.innerHTML = ''; toolbar.hidden = true; legend.hidden = true;
@@ -291,6 +295,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
     if (!request) return;
     const { query, targetDomain } = request;
     research?.pause(true);
+    studies?.close();
     host.querySelector(".field-research-summary").hidden = true;
     const current = ++sequence;
     payload = null; drawing = null; corpus = selectedCorpus;
@@ -328,14 +333,14 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
     if (select(target)) return;
     if (target.dataset.fieldMode) { view.mode = target.dataset.fieldMode; view.selection = null; update(); return; }
     const action = target.dataset.fieldAction;
-    if (action === 'close') { research?.pause(true); reset(); onClose(); return; }
+    if (action === 'close') { research?.pause(true); studies?.close(); reset(); onClose(); return; }
     if (action === 'retry') { run(); return; }
     if (!payload) return;
     if (action === 'clear') { view.selection = null; update(); }
     if (action === 'fit') { view.timelineWidth = map.clientWidth; scale = 1; update(); map.scrollLeft = 0; }
     if (action === 'zoom-in' || action === 'zoom-out') { scale = Math.max(.15, Math.min(2.5, scale * (action === 'zoom-in' ? 1.25 : .8))); resizeSvg(); }
     if (action === 'svg') download(drawing.svg, 'image/svg+xml', `papernexus-evolution-${view.mode}.svg`);
-    if (action === 'json') download(JSON.stringify({ corpus, generatedAt: payload.generatedAt, view, result: payload.result, sourceQuality: payload.sourceQuality, research: payload.research }, null, 2), 'application/json', 'papernexus-evolution.json');
+    if (action === 'json') download(JSON.stringify({ corpus, generatedAt: payload.generatedAt, view, result: payload.result, sourceQuality: payload.sourceQuality, research: payload.research, study: payload.study }, null, 2), 'application/json', 'papernexus-evolution.json');
   });
   host.addEventListener('keydown', event => {
     const target = event.target.closest('g[data-field-node],g[data-field-edge]');
@@ -352,6 +357,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   document.getElementById('field-build').addEventListener('click', run);
   research = mountFieldResearch({ host, getCorpus, getJson, postJson, readRequest, showAnalysis,
     open: selectedCorpus => {
+      studies?.close();
       sequence++; payload = null; drawing = null; corpus = selectedCorpus;
       host.hidden = false; workspace.classList.add('field-mode');
       toolbar.hidden = true; legend.hidden = true; details.innerHTML = '';
@@ -360,5 +366,15 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
       map.innerHTML = '<div class="field-empty"><h3>Building the evidence base</h3><p>The map will appear after imports, extraction and graph synchronization finish.</p></div>';
     }
   });
-  return { reset, run, restoreResearch: research.restore, isOpen: () => !host.hidden };
+  studies = mountFieldStudies({ host, getCorpus, getJson, showAnalysis,
+    open: selectedCorpus => {
+      research.pause(true); sequence++; payload = null; drawing = null; corpus = selectedCorpus;
+      host.hidden = false; workspace.classList.add('field-mode');
+      host.querySelector('.field-research-summary').hidden = true;
+      toolbar.hidden = true; legend.hidden = true; details.innerHTML = '';
+      status.textContent = `${selectedCorpus} · Loading saved field study…`;
+      map.innerHTML = '<div class="field-empty"><h3>Reading study evidence</h3><p>Loading the selected papers and methods from the current graph.</p></div>';
+    }
+  });
+  return { reset, run, restoreResearch: async () => { if (!await studies.restore()) research.restore(); }, isOpen: () => !host.hidden };
 }

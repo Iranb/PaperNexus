@@ -68,6 +68,10 @@
       <main class="workspace">
         <aside class="panel left-panel">
           <section class="panel-section topic-section">
+            <div class="section-header"><h2>Field studies</h2></div>
+            <label class="field-study-picker">Saved research<select id="field-study-select" aria-label="Saved field study"><option value="">Choose a saved study</option></select></label>
+            <button class="action-button field-build" id="field-study-open" type="button" disabled>Open study →</button>
+            <p id="field-study-status" class="analysis-muted" role="status">Load a corpus to view saved studies.</p>
             <div class="section-header"><h2>Topic analysis</h2></div>
             <form id="topic-form" class="topic-form">
               <label>Topic<input id="topic-query" required placeholder="e.g. sparse feedback calibration" /></label>

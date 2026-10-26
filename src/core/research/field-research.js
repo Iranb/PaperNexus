@@ -192,7 +192,9 @@ async function fieldResearchStatus(rootPath, runId, options) {
   if (!record) return { contractVersion: FIELD_RESEARCH_VERSION, status: 'not_found', terminal: true, runId: runId || null };
   const base = { contractVersion: FIELD_RESEARCH_VERSION, runId: record.runId, request: record.request,
     execution: record.execution, createdAt: record.createdAt, updatedAt: record.updatedAt,
-    progress: record.progress || null, discoveryRunId: record.discoveryRunId, terminal: false };
+    progress: record.progress || null, discoveryRunId: record.discoveryRunId, terminal: false,
+    coverageAssessment: { status: 'not_assessed',
+      basis: 'This run processes one bounded paper batch. Field coverage requires a separate branch and citation review in a saved study.' } };
   const discovery = await loadDiscoveryRun(rootPath, record.discoveryRunId);
   const selection = discovery?.candidateSelection || null;
   const candidates = discovery?.candidates || [];
