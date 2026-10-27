@@ -3,9 +3,10 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { writeJson, writeText } from '../../lib/fs.js';
 import { loadSourceManifest } from '../../storage/corpus-store.js';
-import { DECISION_VERSION, MUTATIONS, decisionError, validateDecisionRequest, validateHypothesisSet, validateActionPlan, collectEntityEvidence, measurementReferences } from './decision-contracts.js';
+import { POLICY_VERSION, DECISION_VERSION, MUTATIONS, decisionError, validateDecisionRequest, validateHypothesisSet, validateActionPlan, collectEntityEvidence, measurementReferences } from './decision-contracts.js';
 import { decisionPaths, readDecisionState, mutateDecisionState, findRequestReceipt, latestRuns, latestVersions, attemptKey } from './decision-store.js';
 import { inspectEvidence, evidenceKey, changedEvidence, mergeEvidenceSnapshots, verifyRunManifest, inspectComparisonReferences } from './decision-evidence.js';
+import { buildMechanismAnalysis } from './mechanism-analysis.js';
 import { assessObservation, compareExplanations, scientificState, assessmentValidity } from './hypothesis-assessment.js';
 import { budgetLedger, recommendNextAction } from './action-policy.js';
 import { mergeOpportunities, updateOpportunities, evaluateRevisitTriggers, evidenceRequests } from './opportunity-memory.js';
@@ -121,21 +122,28 @@ export function decisionStatus(state, args = {}) {
 }
 
 export function decisionMarkdown(state, assessment, staleSourceKeys = []) {
-  const scientific = assessment && assessmentValidity(assessment, state, staleSourceKeys).status === 'current' ? assessment.hypotheses : scientificState(state, staleSourceKeys);
+  const scientific = scientificState(state, staleSourceKeys).filter(h => !assessment || assessment.hypothesis_versions.some(ref => ref.hypothesis_id === h.hypothesis_id && ref.version === h.version));
   const lines = [`# Research decision: ${state.project}`, '', state.objective, '', `Revision: ${state.revision}`, `Goal: ${state.goal_phase}`, '',
     '## Explanations', '', ...scientific.map(h => `- ${h.hypothesis_id} v${h.version}: ${h.status}. Scope: ${JSON.stringify(h.scope)}. Evidence groups: ${(h.evidence_groups || []).join(', ')}`),
     '', '## Observations', ''];
-  for (const h of scientific) for (const row of h.rows || []) lines.push(`- ${row.run_record_id} / ${row.prediction_id}: ${row.relation}; ${row.comparison}. Origin: ${row.evidence_origin}. Gate: ${JSON.stringify(row.assessment_gate)}.`);
+  for (const h of scientific) for (const row of h.rows || []) lines.push(`- ${row.run_record_id} / ${row.prediction_id}: ${row.relation}; ${row.comparison}. Evidence role: ${row.evidence_role}. Origin: ${row.evidence_origin}. Gate: ${JSON.stringify(row.assessment_gate)}.`);
   lines.push('', '## Comparisons', '');
   const view = buildProjectEvidence(state, { limit: Number.MAX_SAFE_INTEGER, staleSourceKeys });
   for (const run of latestRuns(state.runs)) {
     const action = state.actions.find(a => a.action_id === run.action_id && a.version === run.action_version);
     const comparison = view.comparison_summary.find(c => c.run_record_id === run.record_id);
     if (!comparison.comparisons.length) continue;
-    lines.push(`- ${run.record_id}: ${comparison.status}; inference: ${comparison.inference_target || 'unknown'}.`);
-    for (const row of comparison.comparisons) lines.push(`  - ${row.comparison_id} / ${row.quantity}: ${row.measurement?.estimate ?? 'unknown'} ${row.unit}; ${row.label}; ${row.result} (${row.outcome_role}).`);
+    lines.push(`- ${run.record_id}: ${comparison.status}; performance claim: ${comparison.performance_claim.status}; inference: ${comparison.inference_target || 'unknown'}.`);
+    for (const row of comparison.comparisons) lines.push(`  - ${row.comparison_id} / ${row.quantity}: ${row.measurement?.estimate ?? 'unknown'} ${row.unit}; ${row.label}; ${row.result} (${row.outcome_role}, ${row.evidence_role}).`);
+    lines.push(`  - Performance evidence: ${comparison.performance_claim.reason_codes.join(', ') || 'registered target comparisons'}.`);
     lines.push(`  - Limitations: ${comparison.limitations.join(', ')}.`);
   }
+  lines.push('', '## Mechanism evidence', '', `Policy: ${POLICY_VERSION}`, '',
+    ...view.mechanism_analysis.evidence_gaps.map(g => `- ${g.hypothesis_id}@${g.hypothesis_version}/${g.prediction_id || g.component_id}: ${g.reason}. ${g.next_step}`),
+    ...view.mechanism_analysis.limitations.map(l => `- ${l}`));
+  lines.push('', '## Evidence chain', '',
+    ...view.mechanism_analysis.hypotheses.map(h => `- ${h.hypothesis_id}@${h.version}: target ${h.evidence_chain.target_status}. ${h.evidence_chain.boundary}`),
+    ...view.mechanism_analysis.research_gaps.map(g => `- ${g.hypothesis_id}@${g.hypothesis_version}/${g.prediction_id}: ${g.reason}. ${g.next_step}`));
   lines.push('', '## Budget', '', '| Resource | Limit | Spent | Committed | Remaining |', '| --- | ---: | ---: | ---: | ---: |');
   for (const [key, b] of Object.entries(budgetLedger(state).dimensions)) lines.push(`| ${key} | ${b.limit ?? 'unspecified'} | ${b.spent} | ${b.committed} | ${b.remaining ?? 'unknown'} |`);
   lines.push('', '## Opportunities', '', ...state.opportunities.map(o => `- ${o.candidate_id}: ${o.status}. ${o.reason}`), '', '## Evidence requests', '', ...evidenceRequests(state).map(r => `- ${r.candidate_id}: ${r.reason}`), '',
@@ -167,7 +175,8 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
     const assessment = args.assessmentId ? initial.assessments.find(a => a.assessment_id === args.assessmentId) : null;
     if (args.assessmentId && !assessment) throw decisionError('invalid_reference', 'Unknown assessmentId');
     const result = { status: 'exported', based_on_revision: initial.revision,
-      json: assessment ? { ...assessment, validity: assessmentValidity(assessment, initial, stale) } : { ...decisionStatus(initial),
+      json: assessment ? { ...assessment, validity: assessmentValidity(assessment, initial, stale), current_policy_version: POLICY_VERSION,
+        current_scientific_state: scientificState(initial, stale).filter(h => assessment.hypothesis_versions.some(ref => ref.hypothesis_id === h.hypothesis_id && ref.version === h.version)) } : { ...decisionStatus(initial),
         project_evidence: buildProjectEvidence(initial, { limit: Number.MAX_SAFE_INTEGER, staleSourceKeys: stale, currentEvidence: current }) },
       markdown: decisionMarkdown(initial, assessment, stale) };
     if (args.outputDir && !args.dryRun) {
@@ -256,11 +265,12 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
       const hypotheses = selectHypotheses(state, payload.hypothesis_versions);
       const missing = snapshots.filter(s => !s.admitted);
       if (missing.length) return { status: 'needs_input', assessment_gate: { allowed: false, reason_codes: ['source_not_admitted'], sources: missing }, next_step: 'Supply or repair the specific source references.' };
+      const mechanismAnalysis = buildMechanismAnalysis(state, { currentEvidence: snapshots, hypothesisVersions: payload.hypothesis_versions });
       const rows = compareExplanations(runs.flatMap(run => {
         const action = state.actions.find(a => a.action_id === run.action_id && a.version === run.action_version);
-        return hypotheses.flatMap(h => assessObservation(h, action, run, state.runs));
+        return hypotheses.flatMap(h => assessObservation(h, action, run, state.runs, { mechanismAnalysis, evidenceSnapshots: snapshots }));
       }), hypotheses);
-      const assessment = { assessment_id: `assessment:${revision}`, created_at: now, based_on_revision: state.revision,
+      const assessment = { policy_version: POLICY_VERSION, assessment_id: `assessment:${revision}`, created_at: now, based_on_revision: state.revision,
         run_record_ids: runs.map(r => r.record_id), hypothesis_versions: payload.hypothesis_versions,
         reference_record_ids: [...hypotheses.flatMap(h => h.run_record_ids || []), ...runs.flatMap(r => (r.comparisons || []).filter(c => c.reference.kind === 'run_record').map(c => c.reference.record_id))],
         comparison_summary: runs.map(r => assessComparisons(state.actions.find(a => a.action_id === r.action_id && a.version === r.action_version), r, state.runs)),
@@ -271,7 +281,7 @@ export async function executeResearchDecisionOperation(rootPath, args, options =
       return { status: rows.length ? 'assessed' : 'unassessable', assessment,
         assessment_gate: { allowed: rows.some(r => r.assessment_gate.valid), confirmatory: rows.some(r => r.assessment_gate.confirmatory),
           reason_codes: rows.length ? [...new Set(rows.flatMap(r => r.assessment_gate.reason_codes))] : ['no_matching_measurements'] },
-        unmodeled_explanation: rows.length > 0 && rows.every(r => r.relation === 'inconsistent'),
+        unmodeled_explanation: rows.length > 0 && rows.every(r => r.assessment_gate.confirmatory && r.relation === 'inconsistent'),
         revisit_events: evaluateRevisitTriggers(state) };
     }
     if (args.operation === 'update_opportunities') updateOpportunities(state, payload.changes);

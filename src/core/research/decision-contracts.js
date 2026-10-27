@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 export const DECISION_VERSION = 'papernexus-research-decision-v1';
-export const POLICY_VERSION = 'discriminating-action-v2';
+export const POLICY_VERSION = 'discriminating-action-v4';
 export const MUTATIONS = ['init', 'register_hypotheses', 'register_actions', 'record_run', 'assess_results', 'update_opportunities', 'refresh_evidence'];
 export const OPERATIONS = [...MUTATIONS, 'status', 'recommend_next', 'export', 'evidence_view'];
 export const ACTION_TYPES = ['read_source', 'search_literature', 'inspect_code', 'profile_cost', 'repair_baseline', 'diagnostic', 'controlled_experiment', 'replicate', 'scale_test'];
@@ -22,6 +22,7 @@ export const EVIDENCE_REF_SCHEMA = object({
 }, ['evidence_origin', 'source_id', 'source_version', 'locator']);
 const refs = array(EVIDENCE_REF_SCHEMA);
 const inferenceTarget = choice(['fixed_model', 'training_procedure']);
+const evidenceRole = choice(['observation', 'proxy', 'target']);
 const reference = { oneOf: [
   object({ kind: { const: 'run_record' }, record_id: text }, ['kind', 'record_id']),
   object({ kind: choice(['external_manifest', 'paper_report']), source_ref: EVIDENCE_REF_SCHEMA,
@@ -31,6 +32,7 @@ const evaluationPlan = object({
   comparators: array(object({ comparison_id: text, role: choice(['original', 'control', 'paper']), reference,
     required_protocol_fields: array(text, 1) }, ['comparison_id', 'role', 'reference', 'required_protocol_fields']), 1),
   outcomes: array(object({ quantity: text, unit: text, direction: choice(['higher', 'lower']), role: choice(['primary', 'guardrail', 'diagnostic']),
+    evidence_role: evidenceRole,
     minimum_effect: { type: 'number', minimum: 0 }, max_regression: { type: 'number', minimum: 0 }, comparison_ids: array(text, 1)
   }, ['quantity', 'unit', 'direction', 'role', 'comparison_ids']), 1), inference_target: inferenceTarget
 }, ['comparators', 'outcomes']);
@@ -41,7 +43,9 @@ const expected = { oneOf: [
 ] };
 const prediction = object({
   prediction_id: text, quantity: text, unit: text, expected, minimum_meaningful_effect: { type: 'number', minimum: 0 },
-  conditions: record, competing_hypothesis_ids: strings, comparison_id: text, inference_target: inferenceTarget
+  basis: object({ kind: choice(['empirical', 'derivation', 'assumption']), rationale: text, evidence_refs: refs }, ['kind', 'rationale', 'evidence_refs']),
+  conditions: record, competing_hypothesis_ids: strings, comparison_id: text, inference_target: inferenceTarget,
+  evidence_role: evidenceRole, proxy_for: strings
 }, ['prediction_id', 'quantity', 'unit', 'expected', 'minimum_meaningful_effect']);
 const hypothesis = object({
   hypothesis_id: text, version: positive, statement: text, mechanism: text, scope: record,
@@ -49,9 +53,10 @@ const hypothesis = object({
   alternative_hypothesis_ids: strings, predictions: array(prediction),
   mechanism_evidence: object({
     components: array(object({ id: text, kind: choice(['source_claim', 'code_component', 'sample_population', 'loss_term', 'observable']),
-      statement: text, evidence_refs: refs }, ['id', 'kind', 'statement', 'evidence_refs'])),
+      statement: text, evidence_refs: refs, graph_node_id: text, quantity: text, unit: text }, ['id', 'kind', 'statement', 'evidence_refs'])),
     links: array(object({ from: text, to: text, relation: choice(['implements', 'changes_population', 'proposes_effect', 'observed_with']),
-      status: choice(['source_supported', 'code_observed', 'measured_association', 'hypothesized']), evidence_refs: refs
+      status: choice(['source_supported', 'code_observed', 'measured_association', 'hypothesized']), evidence_refs: refs,
+      graph_relation_ids: strings, required_controls: strings
     }, ['from', 'to', 'relation', 'status', 'evidence_refs']))
   }, ['components', 'links']),
   falsification_rule: object({ necessary_prediction_ids: strings, requires_confirmatory_analysis: { type: 'boolean' } }, ['necessary_prediction_ids'])
@@ -82,6 +87,11 @@ const action = object({
   evaluation_plan: evaluationPlan,
   intervention_components: array(object({ component_id: text, hypothesis_id: text, hypothesis_version: positive, held_constant: strings },
     ['component_id', 'hypothesis_id', 'hypothesis_version', 'held_constant'])),
+  controlled_components: array(object({ component_id: text, hypothesis_id: text, hypothesis_version: positive, check: text },
+    ['component_id', 'hypothesis_id', 'hypothesis_version', 'check'])),
+  information_targets: array(object({ hypothesis_id: text, hypothesis_version: positive,
+    kind: choice(['prediction_basis', 'precision', 'path', 'control', 'proxy_bridge', 'target_measurement']), prediction_id: text, component_id: text },
+    ['hypothesis_id', 'hypothesis_version', 'kind'])),
   analysis, estimated_cost: object({ lower: cost, upper: cost }, ['upper']),
   stopping_rule: text, result_branches: array(object({ when: text, next: text }, ['when', 'next'])),
   prerequisites: array(object({ hypothesis_id: text, hypothesis_version: positive, status: choice(['supported_in_scope', 'excluded_in_scope', 'weakened_in_scope', 'inconclusive', 'conflicted']), action_id: text })),
@@ -243,12 +253,23 @@ export function validateHypothesisSet(hypotheses, existing = [], measurementIds 
     const predictions = h.predictions || [];
     if (new Set(predictions.map(p => p.prediction_id)).size !== predictions.length) throw decisionError('invalid_input', 'duplicate prediction_id');
     for (const p of predictions) if (predictionRange(p)[0] > predictionRange(p)[1]) throw decisionError('invalid_input', 'reversed prediction interval');
+    for (const p of predictions) {
+      if (p.proxy_for?.length && p.evidence_role !== 'proxy') throw decisionError('invalid_input', 'proxy_for requires a proxy prediction');
+      if (new Set(p.proxy_for || []).size !== (p.proxy_for || []).length) throw decisionError('invalid_input', 'duplicate proxy target');
+      for (const id of p.proxy_for || []) if (!predictions.some(target => target.prediction_id === id && target.evidence_role === 'target')) {
+        throw decisionError('invalid_reference', `proxy target ${id} must name a target prediction in the same hypothesis`);
+      }
+    }
     for (const id of h.falsification_rule?.necessary_prediction_ids || []) if (!predictions.some(p => p.prediction_id === id)) throw decisionError('invalid_reference', `necessary prediction ${id}`);
     const components = h.mechanism_evidence?.components || [];
     if (new Set(components.map(c => c.id)).size !== components.length) throw decisionError('invalid_input', 'duplicate mechanism component');
+    if (components.some(c => predictions.some(p => p.prediction_id === c.id) || measurementIds.includes(c.id))) throw decisionError('invalid_input', 'mechanism component identity overlaps a prediction or measurement');
+    for (const c of components) if (Boolean(c.quantity) !== Boolean(c.unit)) throw decisionError('invalid_input', 'observable quantity and unit must be supplied together');
     const endpoints = new Set([...components.map(c => c.id), ...predictions.map(p => p.prediction_id), ...measurementIds]);
     for (const link of h.mechanism_evidence?.links || []) {
       if (!endpoints.has(link.from) || !endpoints.has(link.to)) throw decisionError('invalid_reference', 'mechanism link endpoint');
+      if (link.from === link.to) throw decisionError('invalid_input', 'mechanism link cannot reference itself');
+      for (const id of link.required_controls || []) if (!components.some(c => c.id === id)) throw decisionError('invalid_reference', `required control ${id}`);
       if (link.status !== 'hypothesized' && !link.evidence_refs.length) throw decisionError('invalid_input', 'observed mechanism links require evidence');
     }
     collectEntityEvidence(h).forEach(validateCodeReference);
@@ -279,6 +300,28 @@ export function validateActionPlan(action, hypotheses) {
     const h = bound.find(h => h.hypothesis_id === item.hypothesis_id && h.version === item.hypothesis_version);
     if (!h?.mechanism_evidence?.components.some(c => c.id === item.component_id)) throw decisionError('invalid_reference', `intervention component ${item.component_id}`);
   }
+  const controls = new Set();
+  for (const item of action.controlled_components || []) {
+    const h = bound.find(h => h.hypothesis_id === item.hypothesis_id && h.version === item.hypothesis_version);
+    if (!h?.mechanism_evidence?.components.some(c => c.id === item.component_id)) throw decisionError('invalid_reference', `controlled component ${item.component_id}`);
+    const key = JSON.stringify([item.hypothesis_id, item.hypothesis_version, item.component_id]);
+    if (controls.has(key)) throw decisionError('invalid_input', 'duplicate controlled component');
+    controls.add(key);
+    if (!action.validity_checks?.includes(item.check)) throw decisionError('invalid_reference', `control check ${item.check}`);
+    if (action.intervention_components?.some(c => c.hypothesis_id === item.hypothesis_id && c.hypothesis_version === item.hypothesis_version && c.component_id === item.component_id)) throw decisionError('invalid_input', 'a component cannot be both changed and held constant');
+  }
+  for (const target of action.information_targets || []) {
+    const h = bound.find(h => h.hypothesis_id === target.hypothesis_id && h.version === target.hypothesis_version);
+    if (!h) throw decisionError('invalid_reference', 'information target hypothesis');
+    if (target.kind === 'control') {
+      if (target.prediction_id || !h.mechanism_evidence?.components.some(c => c.id === target.component_id)) throw decisionError('invalid_reference', 'information target control');
+    } else {
+      const prediction = h.predictions.find(p => p.prediction_id === target.prediction_id);
+      if (target.component_id || !prediction) throw decisionError('invalid_reference', 'information target prediction');
+      if (target.kind === 'proxy_bridge' && !prediction.proxy_for?.length) throw decisionError('invalid_reference', 'information target requires a declared proxy link');
+      if (target.kind === 'target_measurement' && prediction.evidence_role !== 'target') throw decisionError('invalid_reference', 'information target requires a target prediction');
+    }
+  }
   const plan = action.evaluation_plan;
   if (plan) {
     const ids = plan.comparators.map(c => c.comparison_id);
@@ -293,6 +336,8 @@ export function validateActionPlan(action, hypotheses) {
     if (!ids.includes(action.analysis?.primary_comparison_id)) missing.push('analysis.primary_comparison_id');
     for (const item of action.analysis?.family || []) if (!plan.outcomes.some(o => o.quantity === item.quantity && o.comparison_ids.includes(item.comparison_id))) throw decisionError('invalid_reference', 'analysis family outside evaluation plan');
     for (const p of bound.flatMap(h => h.predictions).filter(p => action.prediction_ids?.includes(p.prediction_id))) {
+      const outcomes = plan.outcomes.filter(o => o.quantity === p.quantity && o.unit === p.unit && (!p.comparison_id || o.comparison_ids.includes(p.comparison_id)));
+      if (p.evidence_role && outcomes.some(o => o.evidence_role && o.evidence_role !== p.evidence_role)) throw decisionError('invalid_input', 'prediction and outcome evidence roles differ');
       if (p.comparison_id && !ids.includes(p.comparison_id)) throw decisionError('invalid_reference', `prediction comparison ${p.comparison_id}`);
       if (!p.comparison_id && plan.outcomes.filter(o => o.quantity === p.quantity).flatMap(o => o.comparison_ids).length !== 1) missing.push(`prediction_comparison:${p.prediction_id}`);
     }
@@ -316,6 +361,7 @@ export function validateActionPlan(action, hypotheses) {
 
 export function collectEntityEvidence(entity) {
   return [...(entity.evidence_refs || []), ...(entity.artifact_refs || []), ...(entity.precision?.basis_refs || []),
+    ...(entity.predictions || []).flatMap(p => p.basis?.evidence_refs || []),
     ...(entity.mechanism_evidence?.components || []).flatMap(c => c.evidence_refs || []),
     ...(entity.mechanism_evidence?.links || []).flatMap(c => c.evidence_refs || []),
     ...(entity.evaluation_plan?.comparators || []).flatMap(c => c.reference?.source_ref ? [c.reference.source_ref] : []),

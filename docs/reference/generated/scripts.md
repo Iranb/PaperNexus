@@ -42,6 +42,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/diagnose-graph-identity.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/diagnose-graph-identity.mjs) | Diagnose Graph Identity implementation. |
 | [`scripts/docling_to_markdown.py`](https://github.com/Iranb/PaperNexus/blob/main/scripts/docling_to_markdown.py) | Docling To Markdown implementation. |
 | [`scripts/evaluate-graph-link-prediction.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/evaluate-graph-link-prediction.mjs) | Evaluate Graph Link Prediction implementation. |
+| [`scripts/evaluate-mechanism-selection.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/evaluate-mechanism-selection.mjs) | Evaluate Mechanism Selection implementation. |
 | [`scripts/evaluate-research-decisions.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/evaluate-research-decisions.mjs) | Evaluate Research Decisions implementation. |
 | [`scripts/evaluate-research-feedback.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/evaluate-research-feedback.mjs) | Evaluate Research Feedback implementation. |
 | [`scripts/generate-docs-reference.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/generate-docs-reference.mjs) | Generate VitePress reference pages from code, config, and repository structure. |

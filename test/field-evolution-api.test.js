@@ -31,10 +31,10 @@ test('landscape HTTP/MCP share admitted evidence, retain source quality and neve
     assert.ok(direct.sourceQuality.quarantinedPapers.some(p => p.id === 'excluded'));
     const legacy = await executeTool('research_lookup', { operation: 'field_evolution', corpus: root, ...request });
     assert.deepEqual(legacy.result, direct.result);
-    const envelope = await executeTool('lineage_analysis', { operation: 'landscape', corpus: root, ...request });
+    const envelope = await executeTool('lineage_analysis', { operation: 'landscape', corpus: root, ...request, responseMode: 'full' });
     assert.deepEqual(envelope.result.result, direct.result);
     const summary = await executeTool('lineage_analysis', { operation: 'landscape', corpus: root, ...request, responseMode: 'summary' });
-    assert.ok(Buffer.byteLength(JSON.stringify(summary, null, 2)) <= 32768);
+    assert.ok(Buffer.byteLength(JSON.stringify(summary, null, 2)) <= 12288);
     assert.equal(summary.presentation.read_more.arguments.operation, 'landscape');
     assert.equal(summary.presentation.read_more.arguments.responseMode, 'full');
     const probe = net.createServer();
@@ -54,7 +54,7 @@ test('landscape HTTP/MCP share admitted evidence, retain source quality and neve
     const mcp = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
       method: 'POST', headers: { authorization: 'Bearer field-fixture-token', 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
-        name: 'lineage_analysis', arguments: { operation: 'landscape', corpus: root, ...request }
+        name: 'lineage_analysis', arguments: { operation: 'landscape', corpus: root, ...request, responseMode: 'full' }
       } })
     });
     assert.deepEqual(JSON.parse((await mcp.json()).result.content[0].text).result.result, direct.result);

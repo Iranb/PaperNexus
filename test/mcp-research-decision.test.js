@@ -10,7 +10,7 @@ import { executeTool } from '../src/mcp/core.js';
 import { handleMcpHttpRequest } from '../src/mcp/http.js';
 import { RESEARCH_DECISION_TOOL } from '../src/mcp/tool-research-decision.js';
 import { RESEARCH_SUMMARY_MAX_BYTES } from '../src/mcp/research-summary.js';
-import { createDecisionFixture } from './fixtures/research-decision/scenarios.js';
+import { createMechanismFixture as createDecisionFixture } from './fixtures/research-decision/mechanisms.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -55,6 +55,8 @@ async function exerciseLoop(rpc, f, project) {
   await call('register_actions', { actions: f.input.actions }, true);
   const first = await call('recommend_next');
   assert.equal(first.result.decision.action_id, 'E1');
+  assert.equal(first.result.decision.mechanism_test.status, 'ready');
+  assert.equal(first.result.decision.mechanism_test.control_requirements.length, 2);
   const run = f.run('negative', { registration_receipt: `${project}-3`, recommendation_ref: first.result.recommendation_ref });
   await call('record_run', { run }, true);
   const assessed = await call('assess_results', { run_record_ids: ['record-1'], hypothesis_versions: [{ hypothesis_id: 'Hq', version: 1 }, { hypothesis_id: 'Hn', version: 1 }] }, true);
@@ -63,6 +65,7 @@ async function exerciseLoop(rpc, f, project) {
   const evidence = await call('evidence_view');
   assert.equal(evidence.result.observations[0].record_id, 'record-1');
   assert.equal(evidence.result.coverage.returned, 1);
+  assert.equal(evidence.result.mechanism_analysis.hypotheses[0].paths[0].status, 'source_backed_hypothesis');
   assert.match((await call('export')).result.markdown, /excluded_in_scope/);
   return call;
 }
@@ -91,6 +94,7 @@ test('A13 real HTTP MCP completes a loop and the canonical Python client uses th
   });
   assert.equal(JSON.parse(stdout).result.budget.dimensions['gpu_hours:fixture-gpu'].spent, 1.2);
   assert.equal(JSON.parse(stdout).result.observations[0].record_id, 'record-1');
+  assert.equal(JSON.parse(stdout).result.mechanism_analysis.hypotheses[0].predictions[0].basis.status, 'documented');
 });
 
 test('A13 real stdio MCP completes the same loop', { timeout: 30000 }, async t => {

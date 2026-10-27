@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 // This is a display budget, never a new authority for scientific or queue state.
 export const RESEARCH_SUMMARY_MAX_BYTES = 12288;
 const bytes = value => Buffer.byteLength(JSON.stringify(value, null, 2));
-const important = /^(status|terminal|counts|usage|coverageAssessment|evidenceBoundary|reviewStatus|freshness|usableForReview|final_status|input_status|paper|paper_id|id|studyId|revision|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked|purpose|task_gate|comparison_summary|inference_target|evidence_freshness|outstanding_runs|budget|source_readiness|performance_claim_status)$/;
+const important = /^(status|terminal|counts|usage|coverageAssessment|evidenceBoundary|reviewStatus|freshness|usableForReview|final_status|input_status|paper|paper_id|id|studyId|revision|title|name|operation|runId|run_id|jobId|taskId|source_admission|evidence_sufficiency|reason_codes|next_action|novelty_claim_allowed|experiment_planning_allowed|semantic_equivalence_checked|purpose|task_gate|decision|mechanism_test|selection_basis|policy_version|comparison_summary|inference_target|evidence_freshness|outstanding_runs|budget|source_readiness|performance_claim_status)$/;
 
 export function summarizeResearchEnvelope(envelope, args = {}) {
   const decisionTool = envelope.tool === 'research_decision';
@@ -64,9 +64,10 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
   const gates = {};
   let gateBudget = 3500;
   for (const key of ['evidence_sufficiency', 'source_admission', 'assessment_gate', 'budget_gate', 'execution_authority', 'based_on_revision',
-    'purpose', 'task_gate', 'performance_claim_status', 'comparison_summary', 'evidence_freshness', 'outstanding_runs', 'budget', 'source_readiness', 'graph_readiness',
+    'purpose', 'task_gate', 'performance_claim_status', 'performance_claim', 'blocked_actions', 'mechanism_test', 'policy_version', 'comparison_summary', 'evidence_freshness', 'outstanding_runs', 'budget', 'source_readiness', 'graph_readiness',
     'coverageAssessment', 'evidenceBoundary', 'freshness', 'usableForReview']) {
-    const value = envelope.result?.[key] ?? envelope.result?.paper?.[key] ?? envelope.result?.project_evidence?.[key];
+    const original = envelope.result?.[key] ?? envelope.result?.paper?.[key] ?? envelope.result?.project_evidence?.[key] ?? envelope.result?.decision?.[key];
+    const value = key === 'blocked_actions' && Array.isArray(original) ? original.map(({ action_id, reason_codes }) => ({ action_id, reason_codes })) : original;
     if (value !== undefined) {
       gates[key] = bytes(value) <= Math.min(2400, gateBudget) ? value : key === 'coverageAssessment'
         ? { status: value.status, complete: false, read_full_required: true,
@@ -76,7 +77,14 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
       gateBudget -= bytes(gates[key]);
     }
   }
-  if (result && typeof result === 'object') Object.assign(result, gates);
+  const decision = envelope.result?.decision;
+  if (decision) {
+    const { kind, action_id, action_version, reason, run_record_ids, next_step } = decision;
+    const core = { kind, action_id, action_version, reason, run_record_ids, next_step };
+    gates.decision = bytes(core) <= 2400 ? core : { kind, status: 'read_full_required', complete: false };
+    if (result?.decision) Object.assign(result.decision, gates.decision);
+  }
+  if (result && typeof result === 'object') Object.assign(result, Object.fromEntries(Object.entries(gates).filter(([key]) => key !== 'decision')));
   const summary = {
     mode: 'summary', max_bytes: RESEARCH_SUMMARY_MAX_BYTES,
     full_result_bytes: Buffer.byteLength(serialized),
@@ -89,7 +97,7 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
   const output = { ...envelope, result, presentation: summary };
   // Large caller constraints/queries and next actions also count toward the wire budget.
   if (bytes(output) > RESEARCH_SUMMARY_MAX_BYTES - 1024) {
-    output.result = { omitted: true, reason: 'Result exceeds summary presentation budget; read the full response.' };
+    output.result = { ...gates, omitted: true, reason: 'Result exceeds summary presentation budget; read the full response.' };
     output.nextActions = [];
     summary.complete = false;
     summary.omitted_paths = ['result'];
@@ -100,6 +108,8 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
   if (bytes(output) > RESEARCH_SUMMARY_MAX_BYTES) {
     summary.read_more = { tool: envelope.tool, operation: decisionWrite ? 'status' : envelope.operation,
       instruction: decisionWrite ? 'Read status with the original corpus, project and requestId. Do not replay the mutation.' : 'Repeat the original read with responseMode=full.' };
+    output.result = { omitted: true, ...(gates.decision ? { decision: gates.decision } : {}),
+      reason: 'Read exact evidence gates in presentation.evidence_gates and expand the full response for details.' };
   }
   return output;
 }

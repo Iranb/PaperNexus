@@ -1,0 +1,33 @@
+{
+  "corpus": "/absolute/server/path/mechanism-example",
+  "project": "mechanism-example",
+  "operation": "init",
+  "requestId": "mechanism-init-1",
+  "payload": {
+    "objective": "Separate quality filtering from sample-count explanations.",
+    "goal_phase": "mechanism_validation",
+    "budget": {
+      "gpu_hours": [
+        {
+          "resource": "fixture-gpu",
+          "limit": 6
+        }
+      ],
+      "provider_calls": {
+        "limit": 0
+      }
+    },
+    "exploration_limit": {
+      "max_actions": 1,
+      "gpu_hours": [
+        {
+          "resource": "fixture-gpu",
+          "limit": 1
+        }
+      ],
+      "provider_calls": {
+        "limit": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "corpus": "/absolute/server/path/mechanism-example",
+  "project": "mechanism-example",
+  "operation": "recommend_next",
+  "payload": {
+    "action_ids": [
+      "E1"
+    ]
+  }
+}

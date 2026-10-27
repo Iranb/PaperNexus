@@ -1,0 +1,268 @@
+{
+  "corpus": "/absolute/server/path/mechanism-example",
+  "project": "mechanism-example",
+  "operation": "register_hypotheses",
+  "requestId": "mechanism-hypotheses-1",
+  "expectedRevision": 1,
+  "payload": {
+    "hypotheses": [
+      {
+        "hypothesis_id": "Hq",
+        "version": 1,
+        "statement": "Quality filtering adds at least one point after matching sample count.",
+        "mechanism": "Removing incorrect pseudo-labels reduces training noise.",
+        "scope": {
+          "protocol_id": "matched-v1",
+          "dataset": "synthetic-gcd-v1"
+        },
+        "intervention": "mechanism-based selection",
+        "control": "random selection of the same count",
+        "candidate_refs": [
+          "near"
+        ],
+        "assumptions": [
+          "same count, steps and split"
+        ],
+        "alternative_hypothesis_ids": [
+          "Hn"
+        ],
+        "predictions": [
+          {
+            "prediction_id": "Pq",
+            "quantity": "novel_accuracy_quality_minus_matched_count",
+            "unit": "percentage_points",
+            "expected": {
+              "kind": "lower_bound",
+              "value": 1
+            },
+            "minimum_meaningful_effect": 1,
+            "basis": {
+              "kind": "derivation",
+              "rationale": "Synthetic fixture defines these intervals as its test oracle; no real research effect is asserted.",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:quality",
+                  "source_version": "1",
+                  "locator": "claims/quality",
+                  "artifact_path": "/absolute/server/path/mechanism-example/quality.json"
+                }
+              ]
+            }
+          },
+          {
+            "prediction_id": "Pq-headline",
+            "quantity": "headline_accuracy_change",
+            "unit": "percentage_points",
+            "expected": {
+              "kind": "lower_bound",
+              "value": 0
+            },
+            "minimum_meaningful_effect": 0.5,
+            "basis": {
+              "kind": "derivation",
+              "rationale": "Synthetic fixture defines these intervals as its test oracle; no real research effect is asserted.",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:quality",
+                  "source_version": "1",
+                  "locator": "claims/quality",
+                  "artifact_path": "/absolute/server/path/mechanism-example/quality.json"
+                }
+              ]
+            }
+          }
+        ],
+        "falsification_rule": {
+          "necessary_prediction_ids": [
+            "Pq"
+          ],
+          "requires_confirmatory_analysis": true
+        },
+        "evidence_refs": [
+          {
+            "evidence_origin": "synthetic_fixture",
+            "source_id": "source:quality",
+            "source_version": "1",
+            "locator": "claims/quality",
+            "artifact_path": "/absolute/server/path/mechanism-example/quality.json"
+          }
+        ],
+        "mechanism_evidence": {
+          "components": [
+            {
+              "id": "selection",
+              "kind": "code_component",
+              "statement": "Removing incorrect pseudo-labels reduces training noise.",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:quality",
+                  "source_version": "1",
+                  "locator": "claims/quality",
+                  "artifact_path": "/absolute/server/path/mechanism-example/quality.json"
+                }
+              ]
+            },
+            {
+              "id": "count",
+              "kind": "sample_population",
+              "statement": "Number of selected items",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:quality",
+                  "source_version": "1",
+                  "locator": "claims/quality",
+                  "artifact_path": "/absolute/server/path/mechanism-example/quality.json"
+                }
+              ]
+            }
+          ],
+          "links": [
+            {
+              "from": "selection",
+              "to": "Pq",
+              "relation": "proposes_effect",
+              "status": "hypothesized",
+              "evidence_refs": [],
+              "required_controls": [
+                "count"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "hypothesis_id": "Hn",
+        "version": 1,
+        "statement": "Count alone explains the improvement; the matched contrast is at most half a point.",
+        "mechanism": "Changing the number of selected samples changes the result.",
+        "scope": {
+          "protocol_id": "matched-v1",
+          "dataset": "synthetic-gcd-v1"
+        },
+        "intervention": "mechanism-based selection",
+        "control": "random selection of the same count",
+        "candidate_refs": [
+          "target"
+        ],
+        "assumptions": [
+          "same count, steps and split"
+        ],
+        "alternative_hypothesis_ids": [
+          "Hq"
+        ],
+        "predictions": [
+          {
+            "prediction_id": "Pn",
+            "quantity": "novel_accuracy_quality_minus_matched_count",
+            "unit": "percentage_points",
+            "expected": {
+              "kind": "interval",
+              "lower": -0.5,
+              "upper": 0.5
+            },
+            "minimum_meaningful_effect": 0.5,
+            "basis": {
+              "kind": "derivation",
+              "rationale": "Synthetic fixture defines these intervals as its test oracle; no real research effect is asserted.",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:count",
+                  "source_version": "1",
+                  "locator": "claims/count",
+                  "artifact_path": "/absolute/server/path/mechanism-example/count.json"
+                }
+              ]
+            }
+          },
+          {
+            "prediction_id": "Pn-headline",
+            "quantity": "headline_accuracy_change",
+            "unit": "percentage_points",
+            "expected": {
+              "kind": "lower_bound",
+              "value": 0
+            },
+            "minimum_meaningful_effect": 0.5,
+            "basis": {
+              "kind": "derivation",
+              "rationale": "Synthetic fixture defines these intervals as its test oracle; no real research effect is asserted.",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:count",
+                  "source_version": "1",
+                  "locator": "claims/count",
+                  "artifact_path": "/absolute/server/path/mechanism-example/count.json"
+                }
+              ]
+            }
+          }
+        ],
+        "falsification_rule": {
+          "necessary_prediction_ids": [
+            "Pn"
+          ],
+          "requires_confirmatory_analysis": true
+        },
+        "evidence_refs": [
+          {
+            "evidence_origin": "synthetic_fixture",
+            "source_id": "source:count",
+            "source_version": "1",
+            "locator": "claims/count",
+            "artifact_path": "/absolute/server/path/mechanism-example/count.json"
+          }
+        ],
+        "mechanism_evidence": {
+          "components": [
+            {
+              "id": "selection",
+              "kind": "code_component",
+              "statement": "Changing the number of selected samples changes the result.",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:count",
+                  "source_version": "1",
+                  "locator": "claims/count",
+                  "artifact_path": "/absolute/server/path/mechanism-example/count.json"
+                }
+              ]
+            },
+            {
+              "id": "count",
+              "kind": "sample_population",
+              "statement": "Number of selected items",
+              "evidence_refs": [
+                {
+                  "evidence_origin": "synthetic_fixture",
+                  "source_id": "source:count",
+                  "source_version": "1",
+                  "locator": "claims/count",
+                  "artifact_path": "/absolute/server/path/mechanism-example/count.json"
+                }
+              ]
+            }
+          ],
+          "links": [
+            {
+              "from": "selection",
+              "to": "Pn",
+              "relation": "proposes_effect",
+              "status": "hypothesized",
+              "evidence_refs": [],
+              "required_controls": [
+                "count"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

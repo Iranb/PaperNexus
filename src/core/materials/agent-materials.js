@@ -52,6 +52,7 @@ import {
 } from '../../storage/corpus-store.js';
 import { NODE_TYPES } from '../graph/schema.js';
 import { assessResearchPaper, buildResearchQualityView, RESEARCH_QUALITY_VERSION } from '../graph/research-quality.js';
+import { buildPaperMechanismContext } from '../research/mechanism-graph.js';
 
 const require = createRequire(import.meta.url);
 let jsonrepair = null;
@@ -867,6 +868,7 @@ export async function buildPaperMaterialView(args = {}, options = {}) {
     sources,
     overlay_roles: overlayRolesForPaper(projectOverlay.roles, { paper_id: paperId, title, sources }),
     graph_context: graphContextForPaper(context.graph, paperNode, 12, selectedSource),
+    mechanism_context: buildPaperMechanismContext(context.graph, paperNode, selectedSource, readable),
     materials: {
       abstract: rawPaper?.properties?.abstract || representative.abstract || null,
       chunks,
