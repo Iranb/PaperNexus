@@ -1,4 +1,5 @@
-import { getCorpusPaths, loadCorpusMeta, loadSourceManifest } from '../../storage/corpus-store.js';
+import { getCorpusPaths, loadCorpusMeta, loadSourceManifest, loadSemanticPaperSnapshot } from '../../storage/corpus-store.js';
+import { summarizeSemanticSnapshot } from '../ingestion/semantic-status.js';
 import {
   appendImportDagEvent,
   appendImportTaskLog,
@@ -3208,6 +3209,47 @@ async function processImportTaskBatch(rootPath, batch, options = {}) {
   };
 }
 
+async function settleImportSemanticEnrichmentJob(rootPath, job, task, result, options = {}) {
+  const required = options.semanticExtraction !== 'heuristic-only';
+  const requireRelations = resolveBooleanOption(
+    options.llmRelations ?? process.env.PAPERNEXUS_LLM_RELATIONS
+      ?? options.ollamaRelations ?? process.env.PAPERNEXUS_OLLAMA_RELATIONS,
+    false
+  );
+  const papers = required ? await Promise.all(result.changedSourceKeys.map(async sourceKey => ({
+    ...summarizeSemanticSnapshot(await loadSemanticPaperSnapshot(rootPath, sourceKey), { requireRelations }),
+    sourceKey
+  }))) : [];
+  const complete = !required || (papers.length > 0 && papers.every(paper => paper.complete));
+  result.semanticCompletion = { required, requireRelations, complete, papers };
+  const status = complete ? 'completed' : 'failed';
+  const error = complete ? null : new Error(`Semantic enrichment incomplete: ${papers
+    .filter(paper => !paper.complete)
+    .map(paper => `${paper.paperId || paper.sourceKey}: ${paper.issues.join(', ')}${paper.error ? ` (${paper.error})` : ''}`)
+    .join('; ')}`);
+  if (complete) {
+    await completeImportSemanticEnrichmentJob(rootPath, job.id, result);
+  } else {
+    await failImportSemanticEnrichmentJob(rootPath, job.id, error, { ...options, retry: false, result });
+  }
+  const message = complete
+    ? `completed background semantic enrichment job ${job.id}`
+    : error.message;
+  await updateImportTaskSemanticLifecycle(rootPath, task.id, status, {
+    jobId: job.id, result, error,
+    throughputMetrics: {
+      semanticEnrichmentLatencyMs: result.metrics.importPerformance.stageTimingsMs.total,
+      semanticEnrichmentJobId: job.id,
+      ...(result.semanticEnrichmentBatchId ? { semanticEnrichmentBatchId: result.semanticEnrichmentBatchId } : {})
+    },
+    message
+  });
+  await appendSemanticEnrichmentDagNodeEvent(rootPath, task.id, job, status, {
+    result, error, message, ...(complete ? {} : { retryable: false, level: 'error' })
+  });
+  return result;
+}
+
 async function processImportSemanticEnrichmentJob(rootPath, job, options = {}) {
   const task = await loadImportTask(rootPath, job.taskId);
   if (!task?.id) {
@@ -3351,22 +3393,7 @@ async function processImportSemanticEnrichmentJob(rootPath, job, options = {}) {
     }
   };
 
-  await completeImportSemanticEnrichmentJob(rootPath, job.id, result);
-  await updateImportTaskSemanticLifecycle(rootPath, task.id, 'completed', {
-    jobId: job.id,
-    result,
-    throughputMetrics: {
-      semanticEnrichmentLatencyMs: roundMs(totalMs),
-      semanticEnrichmentJobId: job.id
-    },
-    message: `completed background semantic enrichment job ${job.id}`
-  });
-  await appendSemanticEnrichmentDagNodeEvent(rootPath, task.id, job, 'completed', {
-    result,
-    message: `completed background semantic enrichment job ${job.id}`
-  });
-
-  return result;
+  return settleImportSemanticEnrichmentJob(rootPath, job, task, result, sharedOptions);
 }
 
 async function processImportSemanticEnrichmentJobBatch(rootPath, jobs = [], options = {}) {
@@ -3570,22 +3597,7 @@ async function processImportSemanticEnrichmentJobBatch(rootPath, jobs = [], opti
       }
     };
 
-    await completeImportSemanticEnrichmentJob(rootPath, job.id, result);
-    await updateImportTaskSemanticLifecycle(rootPath, task.id, 'completed', {
-      jobId: job.id,
-      result,
-      throughputMetrics: {
-        semanticEnrichmentLatencyMs: roundMs(totalMs),
-        semanticEnrichmentJobId: job.id,
-        semanticEnrichmentBatchId
-      },
-      message: `completed background semantic enrichment batch ${semanticEnrichmentBatchId}`
-    });
-    await appendSemanticEnrichmentDagNodeEvent(rootPath, task.id, job, 'completed', {
-      result,
-      message: `completed background semantic enrichment batch ${semanticEnrichmentBatchId}`
-    });
-    results.push(result);
+    results.push(await settleImportSemanticEnrichmentJob(rootPath, job, task, result, sharedOptions));
   }
 
   return {
@@ -3627,9 +3639,14 @@ export async function runImportSemanticEnrichmentQueueOnce(rootPath, options = {
 
       try {
         const batchResult = await processImportSemanticEnrichmentJobBatch(rootPath, reservedJobs, options);
+        const failedJobIds = batchResult.results.filter(result => !result.semanticCompletion.complete).map(result => result.jobId);
+        const completedJobIds = batchResult.results.filter(result => result.semanticCompletion.complete).map(result => result.jobId);
         return {
           processed: true,
-          failed: false,
+          failed: failedJobIds.length > 0,
+          retryable: false,
+          failedJobIds,
+          completedJobIds,
           semanticEnrichment: true,
           jobId: batchResult.jobId,
           jobIds: batchResult.jobIds,
@@ -3708,11 +3725,11 @@ export async function runImportSemanticEnrichmentQueueUntilIdle(rootPath, option
     const result = await runImportSemanticEnrichmentQueueOnce(rootPath, options);
     if (result.summary) lastSummary = result.summary;
     if (!result.processed) break;
-    if (!result.failed) {
-      const jobIds = result.jobIds?.length ? result.jobIds : (result.jobId ? [result.jobId] : []);
-      completedJobIds.push(...jobIds);
-    }
-    if (result.failed && result.retryable !== true) failedCount += 1;
+    const finished = result.completedJobIds || (!result.failed
+      ? result.jobIds?.length ? result.jobIds : (result.jobId ? [result.jobId] : [])
+      : []);
+    completedJobIds.push(...finished);
+    if (result.failed && result.retryable !== true) failedCount += result.failedJobIds?.length || result.jobIds?.length || 1;
   }
 
   return {

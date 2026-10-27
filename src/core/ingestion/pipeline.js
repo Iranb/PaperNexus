@@ -1,6 +1,9 @@
+import { assessResearchRelation } from '../graph/relation-admission.js';
 import { assessLimitationRecord } from './source-quality.js';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import { countResearchObjects } from './semantic-status.js';
+import { mergeResearchProvenance, normalizeResearchProvenance, researchRecordKey } from '../graph/research-provenance.js';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -810,21 +813,19 @@ export function applySemanticAdmissionPolicy(semanticPaper) {
 }
 
 function dedupeSlots(items, limit = 6) {
-  const seen = new Set();
-  const deduped = [];
-
+  const byKey = new Map();
   for (const item of [...items].sort((left, right) => {
     return (right.confidence || 0) - (left.confidence || 0)
       || (right.name || right.text || '').length - (left.name || left.text || '').length;
   })) {
-    const key = normalizeText(item.normalized || item.name || item.text);
-    if (!key || seen.has(key) || isGenericCandidate(key)) continue;
-    seen.add(key);
-    deduped.push(item);
-    if (deduped.length >= limit) break;
+    const name = normalizeText(item.normalized || item.name || item.text);
+    if (!name || isGenericCandidate(name)) continue;
+    const key = researchRecordKey({ ...item, normalized: name });
+    const existing = byKey.get(key);
+    if (existing) byKey.set(key, { ...existing, ...mergeResearchProvenance(existing, item) });
+    else if (byKey.size < limit) byKey.set(key, item);
   }
-
-  return deduped;
+  return [...byKey.values()];
 }
 
 function sectionHeading(section) {
@@ -1604,24 +1605,7 @@ function mergeSemanticSlotsByMode(primary, secondary, limit = 8, mode = 'heurist
 }
 
 function countSemanticObjectEntries(payload = {}) {
-  return [
-    payload.problems,
-    payload.methods,
-    payload.claims,
-    payload.findings,
-    payload.researchGoals,
-    payload.researchQuestions,
-    payload.openChallenges,
-    payload.takeaways,
-    payload.ideaFragments,
-    payload.limitations,
-    payload.assumptions,
-    payload.evidences,
-    payload.futureDirections,
-    payload.benchmarks,
-    payload.datasets,
-    payload.metrics
-  ].reduce((total, entries) => total + (Array.isArray(entries) ? entries.length : 0), 0);
+  return countResearchObjects(payload);
 }
 
 function summarizePaperSemanticExtraction(paper, fallbackRequestedMode = 'heuristic-only') {
@@ -1632,9 +1616,7 @@ function summarizePaperSemanticExtraction(paper, fallbackRequestedMode = 'heuris
     || semanticObjects.requestedMode
     || fallbackRequestedMode
   );
-  const objectCount = Number.isFinite(Number(llm.semanticObjectCount))
-    ? Number(llm.semanticObjectCount)
-    : countSemanticObjectEntries(semanticObjects);
+  const objectCount = countSemanticObjectEntries(semanticObjects);
   const provider = semanticObjects.provider && semanticObjects.provider !== 'disabled'
     ? semanticObjects.provider
     : (llm.provider && llm.provider !== 'disabled' ? llm.provider : 'disabled');
@@ -1645,14 +1627,15 @@ function summarizePaperSemanticExtraction(paper, fallbackRequestedMode = 'heuris
   const explicitParticipated = typeof semanticObjects.participated === 'boolean'
     ? semanticObjects.participated
     : (typeof llm.semanticExtractionParticipated === 'boolean' ? llm.semanticExtractionParticipated : null);
-  const participated = explicitParticipated ?? Boolean((provider && provider !== 'disabled') || objectCount > 0);
+  const participated = objectCount > 0 && explicitParticipated !== false;
   const effectiveMode = normalizeSemanticExtractionMode(
     llm.semanticExtractionModeEffective
     || semanticObjects.effectiveMode
     || semanticObjects.mode
     || (participated ? (requestedMode === 'auto' ? 'llm-assisted' : requestedMode) : 'heuristic-only')
   );
-  const reason = llm.semanticExtractionParticipationReason
+  const reason = (!objectCount && explicitParticipated === true ? 'empty-semantic-result' : null)
+    || llm.semanticExtractionParticipationReason
     || semanticObjects.reason
     || (participated ? null : requestedMode === 'heuristic-only' ? 'mode-disabled' : attempted ? 'request-failed' : 'llm-unconfigured');
 
@@ -1738,7 +1721,8 @@ function serializeSnapshotSlotEntries(entries = []) {
       evidenceText: String(entry?.evidenceText || entry?.text || '').trim(),
       sectionHeading: String(entry?.sectionHeading || '').trim(),
       sectionRole: String(entry?.sectionRole || '').trim(),
-      confidence: Number.isFinite(Number(entry?.confidence)) ? Number(entry.confidence) : null
+      confidence: Number.isFinite(Number(entry?.confidence)) ? Number(entry.confidence) : null,
+      ...normalizeResearchProvenance(entry)
     }))
     .filter((entry) => entry.name || entry.evidenceText)
     .sort((left, right) => `${left.name}:${left.evidenceText}`.localeCompare(`${right.name}:${right.evidenceText}`));
@@ -1751,7 +1735,8 @@ function serializeSnapshotQuestionEntries(entries = []) {
       domainSpecificText: String(entry?.domainSpecificText || '').trim(),
       domainAgnosticText: String(entry?.domainAgnosticText || '').trim(),
       relatedProblems: Array.isArray(entry?.relatedProblems) ? [...entry.relatedProblems].sort() : [],
-      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : []
+      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : [],
+      ...normalizeResearchProvenance(entry)
     }))
     .filter((entry) => entry.name)
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -1764,7 +1749,8 @@ function serializeSnapshotChallengeEntries(entries = []) {
       domainSpecificText: String(entry?.domainSpecificText || '').trim(),
       domainAgnosticText: String(entry?.domainAgnosticText || '').trim(),
       challengeType: String(entry?.challengeType || '').trim(),
-      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : []
+      relatedMechanisms: Array.isArray(entry?.relatedMechanisms) ? [...entry.relatedMechanisms].sort() : [],
+      ...normalizeResearchProvenance(entry)
     }))
     .filter((entry) => entry.name)
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -1785,6 +1771,7 @@ function serializeSnapshotSnippetEntries(entries = []) {
 function serializeSnapshotTakeawayEntries(entries = []) {
   return (entries || [])
     .map((entry) => ({
+      ...normalizeResearchProvenance(entry),
       name: String(entry?.name || '').trim(),
       text: String(entry?.text || '').trim(),
       sourceDomains: Array.isArray(entry?.sourceDomains) ? [...entry.sourceDomains].sort() : [],
@@ -1799,6 +1786,7 @@ function serializeSnapshotTakeawayEntries(entries = []) {
 function serializeSnapshotIdeaFragmentEntries(entries = []) {
   return (entries || [])
     .map((entry) => ({
+      ...normalizeResearchProvenance(entry),
       name: String(entry?.name || '').trim(),
       text: String(entry?.text || '').trim(),
       targetDomain: String(entry?.targetDomain || '').trim(),
@@ -1820,7 +1808,8 @@ function serializeSnapshotRelations(relations = []) {
       sourceName: String(relation?.sourceName || '').trim(),
       targetType: String(relation?.targetType || '').trim(),
       targetName: String(relation?.targetName || '').trim(),
-      evidenceText: String(relation?.evidenceText || '').trim()
+      evidenceText: String(relation?.evidenceText || '').trim(),
+      ...normalizeResearchProvenance(relation)
     }))
     .filter((relation) => relation.type && relation.sourceName && relation.targetName)
     .sort((left, right) => (
@@ -1865,6 +1854,7 @@ function createSemanticPaperSnapshotStateSignature(semanticPaper = {}) {
     semanticConfigSignature: semanticPaper.llmSemanticObjects?.configSignature || semanticPaper.llm?.semanticConfigSignature || null,
     relationConfigSignature: semanticPaper.llm?.relationConfigSignature || null,
     semanticObjects: {
+      abstractMechanismObjects: semanticPaper.abstractMechanismObjects || [],
       problems: serializeSnapshotSlotEntries(semanticPaper.problems),
       methods: serializeSnapshotSlotEntries(semanticPaper.methods),
       claims: serializeSnapshotSlotEntries(semanticPaper.claims),
@@ -1948,6 +1938,7 @@ function summarizeLlmRefreshState(snapshot, options = {}, maxRetries = 3) {
     'request-failed',
     'llm-unconfigured',
     'empty-response',
+    'empty-semantic-result',
     'missing-result',
     'invalid-json',
     'provider-network',
@@ -3416,11 +3407,12 @@ function enrichChunkSemanticRecordWithEvidence(result, chunk) {
     sourceChunkOrders: unique([...(item.sourceChunkOrders || []), ...sourceChunkOrders]),
     sectionHeading: item.sectionHeading || chunk?.sectionHeading || '',
     sectionRole: item.sectionRole || chunk?.sectionRole || '',
-    evidenceText: item.evidenceText || item.text || chunk?.text || ''
+    evidenceText: item.evidenceText || ''
   });
 
   return {
     ...result,
+    abstractMechanismObjects: (result.abstractMechanismObjects || []).map(attach),
     problems: (result.problems || []).map(attach),
     methods: (result.methods || []).map(attach),
     claims: (result.claims || []).map(attach),
@@ -3434,7 +3426,7 @@ function enrichChunkSemanticRecordWithEvidence(result, chunk) {
     datasets: (result.datasets || []).map(attach),
     metrics: (result.metrics || []).map(attach),
     researchQuestions: (result.researchQuestions || []).map((item) => ({
-      ...item,
+      ...attach(item),
       sourceChunkIds,
       sourceChunkOrders,
       supportingSnippets: (item.supportingSnippets || []).map((snippet) => ({
@@ -3446,12 +3438,12 @@ function enrichChunkSemanticRecordWithEvidence(result, chunk) {
       }))
     })),
     openChallenges: (result.openChallenges || []).map((item) => ({
-      ...item,
+      ...attach(item),
       sourceChunkIds,
       sourceChunkOrders
     })),
     takeaways: (result.takeaways || []).map((item) => ({
-      ...item,
+      ...attach(item),
       sourceChunkIds,
       sourceChunkOrders,
       supportingSnippets: (item.supportingSnippets || []).map((snippet) => ({
@@ -3463,7 +3455,7 @@ function enrichChunkSemanticRecordWithEvidence(result, chunk) {
       }))
     })),
     ideaFragments: (result.ideaFragments || []).map((item) => ({
-      ...item,
+      ...attach(item),
       sourceChunkIds,
       sourceChunkOrders,
       supportingSnippets: (item.supportingSnippets || []).map((snippet) => ({
@@ -5007,7 +4999,10 @@ async function runStage2LlmOptimization(rootPath, manifest, records, options = {
 
   if (longContextFallbackRecords.size) {
     const fallbackRecords = [...longContextFallbackRecords.values()]
-      .filter((record) => !record.sourceState.llmRefreshState?.scopedOut);
+      .filter((record) => !record.sourceState.llmRefreshState?.scopedOut
+        && !/\b402\b|insufficient[ _-]balance/i.test(String(
+          record.semanticPaper.llmSemanticObjects?.error || record.semanticPaper.llm?.error || ''
+        )));
     if (fallbackRecords.length) {
       const structuralFallbackRecords = fallbackRecords
         .filter((record) => shouldUseStructuralSemanticFallback(record, options));
@@ -5723,6 +5718,7 @@ function resolveNodeReferenceWithFallback(registries, type, name) {
 function addOllamaRelations(graph, registries, paper, relations) {
   const relationProvider = paper.llm?.provider || 'llm';
   for (const relation of relations || []) {
+    if (!assessResearchRelation(relation).admitted) continue;
     const sourceNode = resolveNodeReferenceWithFallback(registries, relation.sourceType, relation.sourceName);
     const targetNode = resolveNodeReferenceWithFallback(registries, relation.targetType, relation.targetName);
     if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) continue;
@@ -5734,7 +5730,8 @@ function addOllamaRelations(graph, registries, paper, relations) {
       evidenceText: relation.evidenceText || '',
       rationale: relation.rationale || '',
       explicitOrInferred: relation.explicitOrInferred || 'inferred',
-      relationSource: relationProvider
+      relationSource: relationProvider,
+      ...normalizeResearchProvenance(relation)
     };
 
     if (relation.type === EDGE_TYPES.COMBINES_WITH || relation.type === EDGE_TYPES.COMPATIBLE_WITH || relation.type === EDGE_TYPES.RELATED_TO || relation.type === EDGE_TYPES.SIMILAR_TO || relation.type === EDGE_TYPES.CONTRADICTS) {

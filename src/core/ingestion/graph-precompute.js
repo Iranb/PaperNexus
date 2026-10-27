@@ -1,3 +1,5 @@
+import { normalizeResearchProvenance } from '../graph/research-provenance.js';
+import { qualifyPaperRelation } from '../graph/relation-admission.js';
 import os from 'node:os';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { EDGE_TYPES, getNodeLayer, NODE_TYPES } from '../graph/schema.js';
@@ -342,7 +344,8 @@ function buildEvidenceProperties(record, paper, overrides = {}) {
   return {
     sourcePaperId: paper.paperId,
     sourcePaperTitle: paper.paperTitle,
-    evidenceText: record.evidenceText || record.text || record.name || '',
+    evidenceText: normalizeResearchProvenance(record).evidenceText || '',
+    ...normalizeResearchProvenance(record),
     section: record.sectionHeading || record.section || '',
     sectionRole: record.sectionRole || record.role || '',
     confidence: record.confidence ?? 0.65,
@@ -474,19 +477,24 @@ function createGlobalContribution(type, paper, record, paperRelationType, option
     addressesChallenges: options.addressesChallenges
   });
 
+  const admission = qualifyPaperRelation(paperRelationType, record);
   return {
     node,
     aliases: uniqueTextList([record.text, record.name, ...(options.aliases || [])]),
     paperRelationship: createRelationship(
       paper.paperId,
       node.id,
-      paperRelationType,
-      buildEvidenceProperties(record, paper, options.relationshipOverrides || {})
+      admission.type,
+      buildEvidenceProperties(record, paper, {
+        ...(options.relationshipOverrides || {}),
+        ...(admission.reason ? { originalRelationType: admission.originalType, admissionReason: admission.reason } : {})
+      })
     )
   };
 }
 
 function createScopedContribution(node, paperRelationshipType, record, paper, aliases = [], extraRelationships = []) {
+  node.properties = { ...node.properties, ...normalizeResearchProvenance(record) };
   return {
     node,
     aliases: uniqueTextList([record?.text, record?.name, ...aliases]),

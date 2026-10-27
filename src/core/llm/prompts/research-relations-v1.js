@@ -1,4 +1,4 @@
-export const PROMPT_VERSION = 'research-relations-v1';
+export const PROMPT_VERSION = 'research-relations-v2-provenance';
 
 function normalizeFallbackConfig(fallback = null) {
   if (!fallback) return null;

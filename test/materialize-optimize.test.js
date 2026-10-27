@@ -1778,7 +1778,7 @@ The recovered semantic object should still allow paper-level relation extraction
     assert.equal(snapshot.llm.semanticExtractionParticipated, true);
     assert.equal(snapshot.llm.longContext.fallbackUsed, true);
     assert.equal(snapshot.llm.longContext.fallbackReason, 'empty-response');
-    assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v1');
+    assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v2-provenance');
     assert.ok(snapshot.findings.some((finding) => finding.name === 'paper-level relation after semantic fallback'));
     assert.equal(snapshot.llm.chunkPipeline.relationChunkCount || 0, 0);
   } finally {
@@ -2299,14 +2299,14 @@ The chunk fallback should recover the concrete quality guard problem.
     assert.equal(snapshot.llm.chunkPipeline.enabled, true);
     assert.equal(snapshot.llm.longContext.enabled, true);
     assert.equal(snapshot.llm.longContext.fallbackUsed, true);
-    assert.equal(snapshot.llm.longContext.fallbackReason, 'semantic-quality-guard');
+    assert.equal(snapshot.llm.longContext.fallbackReason, 'empty-semantic-result');
     assert.equal(snapshot.llm.longContext.callCount, 1);
     assert.equal(snapshot.llm.longContext.validationStatus, 'fallback');
-    assert.equal(snapshot.llm.longContext.validationDetails.reason, 'semantic-quality-guard');
+    assert.equal(snapshot.llm.longContext.validationDetails.reason, 'empty-semantic-result');
     assert.equal(snapshot.llm.longContext.validationDetails.attempted, true);
-    assert.equal(snapshot.llm.longContext.validationDetails.participated, true);
+    assert.equal(snapshot.llm.longContext.validationDetails.participated, false);
     assert.equal(snapshot.llm.longContext.validationDetails.semanticObjectCount, 0);
-    assert.equal(snapshot.llmSemanticObjects.longContext.validationDetails.reason, 'semantic-quality-guard');
+    assert.equal(snapshot.llmSemanticObjects.longContext.validationDetails.reason, 'empty-semantic-result');
   } finally {
     globalThis.fetch = originalFetch;
     if (previousHome === undefined) delete process.env.PAPERNEXUS_HOME;
@@ -3586,20 +3586,20 @@ We study manifest-level cache reuse for paper A.
     const manifest = await corpusStore.loadSourceManifest(tempCorpusRoot);
     assert.ok(manifest.llmOptimization);
     assert.deepEqual(manifest.llmOptimization.promptVersions, {
-      semanticObjects: 'semantic-objects-v3-quality',
-      researchRelations: 'research-relations-v1',
-      chunkSemanticObjects: 'chunk-semantic-objects-v2-quality',
-      chunkResearchRelations: 'chunk-research-relations-v1'
+      semanticObjects: 'semantic-objects-v4-provenance',
+      researchRelations: 'research-relations-v2-provenance',
+      chunkSemanticObjects: 'chunk-semantic-objects-v3-provenance',
+      chunkResearchRelations: 'chunk-research-relations-v2-provenance'
     });
     assert.ok(manifest.llmOptimization.chunkPipelineConfigSignature);
-    assert.equal(JSON.parse(manifest.llmOptimization.semanticConfigSignature).promptVersion, 'semantic-objects-v3-quality');
-    assert.equal(JSON.parse(manifest.llmOptimization.relationConfigSignature).promptVersion, 'research-relations-v1');
+    assert.equal(JSON.parse(manifest.llmOptimization.semanticConfigSignature).promptVersion, 'semantic-objects-v4-provenance');
+    assert.equal(JSON.parse(manifest.llmOptimization.relationConfigSignature).promptVersion, 'research-relations-v2-provenance');
 
     const firstSource = manifest.sources[0];
     const snapshot = await corpusStore.loadSemanticPaperSnapshot(tempCorpusRoot, firstSource.sourceKey);
-    assert.equal(snapshot.llmSemanticObjects.promptVersion, 'semantic-objects-v3-quality');
-    assert.equal(snapshot.llm.semanticPromptVersion, 'semantic-objects-v3-quality');
-    assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v1');
+    assert.equal(snapshot.llmSemanticObjects.promptVersion, 'semantic-objects-v4-provenance');
+    assert.equal(snapshot.llm.semanticPromptVersion, 'semantic-objects-v4-provenance');
+    assert.equal(snapshot.llm.relationPromptVersion, 'research-relations-v2-provenance');
     assert.equal(snapshot.llm.chunkPipeline.enabled, true);
     assert.equal(snapshot.llm.chunkPipeline.configSignature, manifest.llmOptimization.chunkPipelineConfigSignature);
     assert.equal(snapshot.llmSemanticObjects.chunkPipeline.enabled, true);

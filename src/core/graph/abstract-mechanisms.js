@@ -1,6 +1,7 @@
 import { stableHash, slugify } from '../../lib/utils.js';
 import { normalizeFieldOfStudy } from './domain-taxonomy.js';
 import { getNodeLayer, NODE_TYPES } from './schema.js';
+import { mergeResearchProvenance, normalizeResearchProvenance, researchContextsConflict } from './research-provenance.js';
 
 export const ABSTRACT_MECHANISM_SUPPORT_VERSION = 'idea-catalyst-mechanism-support-v1';
 
@@ -72,7 +73,8 @@ function mergeMechanismRecords(primary, secondary) {
     mechanismType,
     mechanismCategory,
     description,
-    aliases: uniqueMechanismStrings(names)
+    aliases: uniqueMechanismStrings(names),
+    ...mergeResearchProvenance(primary, secondary)
   };
 }
 
@@ -124,7 +126,8 @@ export function normalizeAbstractMechanismRecord(value) {
     mechanismType: normalizeMechanismType(value.mechanismType || value.type || value.kind),
     mechanismCategory: normalizeMechanismCategory(value.mechanismCategory || value.category || value.classification),
     description: cleanMechanismText(value.description || value.summary || preferredName, 320) || preferredName,
-    aliases
+    aliases,
+    ...normalizeResearchProvenance(value)
   };
 }
 
@@ -134,7 +137,7 @@ export function normalizeAbstractMechanismRecords(values = []) {
     const record = normalizeAbstractMechanismRecord(value);
     if (!record) continue;
 
-    const existingIndex = records.findIndex((entry) => (
+    const existingIndex = records.findIndex((entry) => !researchContextsConflict(entry, record) && (
       entry.canonicalId === record.canonicalId
       || entry.aliases.includes(record.name)
       || record.aliases.includes(entry.name)
@@ -174,6 +177,7 @@ export function buildAbstractMechanismNode(value, properties = {}) {
       mechanismCategory: merged.mechanismCategory,
       category: merged.mechanismCategory,
       description: merged.description,
+      ...normalizeResearchProvenance(merged),
       aliases: merged.aliases,
       domainCount: Number(properties.domainCount || 0),
       instanceCount: Number(properties.instanceCount || 0),

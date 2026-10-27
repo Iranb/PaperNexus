@@ -1596,7 +1596,7 @@ test('inferPaperSemanticObjectsBatch forces DeepSeek requests to single-item bat
   assert.deepEqual(requestPaperCounts, [1, 1, 1]);
   assert.equal(batchEvents.length, 3);
   assert.equal(batchEvents.every((event) => event.batchSize === 1), true);
-  assert.equal(results.every((result) => result.provider === 'deepseek' && result.participated), true);
+  assert.equal(results.every((result) => result.provider === 'deepseek' && !result.participated && result.reason === 'empty-semantic-result'), true);
 });
 
 test('inferPaperSemanticObjectsBatch writes and resumes optional batch ledger', async () => {
@@ -1642,7 +1642,7 @@ test('inferPaperSemanticObjectsBatch writes and resumes optional batch ledger', 
       llmBatchRunId: 'ledger-test'
     });
     assert.equal(fetchCount, 1);
-    assert.equal(first.every((result) => result.participated), true);
+    assert.equal(first.every((result) => !result.participated && result.reason === 'empty-semantic-result'), true);
 
     const batches = await fs.readFile(path.join(tempDir, 'llm-batches.jsonl'), 'utf8');
     const results = await fs.readFile(path.join(tempDir, 'llm-results.jsonl'), 'utf8');
@@ -1661,7 +1661,7 @@ test('inferPaperSemanticObjectsBatch writes and resumes optional batch ledger', 
       llmBatchResume: true
     });
     assert.equal(fetchCount, 1);
-    assert.equal(second.every((result) => result.participated), true);
+    assert.equal(second.every((result) => !result.participated && result.reason === 'empty-semantic-result'), true);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -1905,7 +1905,7 @@ test('inferChunkSemanticObjectsBatch splits oversized prompts by prompt budget',
   assert.equal(results.length, 3);
   assert.ok(fetchCount > 1);
   assert.equal(batchEvents.length, fetchCount);
-  assert.equal(results.every((result) => result.participated), true);
+  assert.equal(results.every((result) => !result.participated && result.reason === 'empty-semantic-result'), true);
 });
 
 test('inferPaperSemanticObjectsBatch retries malformed batch output with smaller batches', async () => {
@@ -1971,7 +1971,7 @@ test('inferPaperSemanticObjectsBatch retries malformed batch output with smaller
 
   assert.equal(fetchCount, 3);
   assert.equal(results.length, 4);
-  assert.equal(results.every((result) => result.participated), true);
+  assert.equal(results.every((result) => !result.participated && result.reason === 'empty-semantic-result'), true);
   assert.equal(retryEvents.length, 1);
   assert.equal(retryEvents[0].batchSize, 4);
   assert.equal(retryEvents[0].retryBatchSize, 2);
@@ -2051,7 +2051,7 @@ test('inferPaperSemanticObjectsBatch retries empty provider batch output with sm
 
   assert.equal(fetchCount, 3);
   assert.equal(results.length, 2);
-  assert.equal(results.every((result) => result.participated), true);
+  assert.equal(results.every((result) => !result.participated && result.reason === 'empty-semantic-result'), true);
   assert.equal(retryEvents.length, 1);
   assert.equal(retryEvents[0].batchSize, 2);
   assert.equal(retryEvents[0].retryBatchSize, 1);
@@ -2396,7 +2396,7 @@ test('inferChunkSemanticObjectsBatch retries transient per-chunk batch failures 
 
   assert.equal(fetchCount, 3);
   assert.equal(results.length, 2);
-  assert.equal(results.every((result) => result.participated), true);
+  assert.equal(results.every((result) => !result.participated && result.reason === 'empty-semantic-result'), true);
   assert.equal(retryEvents.length, 1);
   assert.equal(retryEvents[0].phase, 'chunk-semantic-extraction');
   assert.equal(retryEvents[0].batchSize, 2);

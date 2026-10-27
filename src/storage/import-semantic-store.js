@@ -571,6 +571,7 @@ export async function failImportSemanticEnrichmentJob(rootPath, jobId, error, op
     job.error = {
       message: String(error?.message || error || 'Semantic enrichment job failed')
     };
+    if (options.result !== undefined) job.result = options.result;
     job.progress = normalizeSemanticJobProgress(job, {
       status: job.status,
       stage: job.stage,

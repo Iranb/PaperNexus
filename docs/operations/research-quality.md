@@ -19,6 +19,10 @@ A limitation needs a stated failure, dependency, scope boundary, or missing vali
 
 The runtime view also applies this check to old nodes, retaining review decisions and original provenance. Reclassified findings lose invalid constraint edges. This conservative lexical check is not a substitute for human semantic review or verification of source attribution.
 
+## Extraction evidence
+
+See [Research extraction quality](/operations/extraction-quality) for evidence, ownership, uncertainty and experiment fields, graph admission, semantic completion, and offline snapshot review.
+
 ## Existing corpus audit
 
 Duplicates are coalesced on strong identities, never titles alone. The representative retains `paperVersions`; affected records/relations retain original paper IDs and endpoints. Shared nodes supported by eligible papers remain. Excluded papers, nodes supported only by those papers, and their relations are isolated. Cached corpus overlays referencing the raw graph are invalidated.

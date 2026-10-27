@@ -1,9 +1,13 @@
+import { assessResearchRelation } from '../graph/relation-admission.js';
 import { execFile as nodeExecFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { EDGE_TYPES, NODE_TYPES } from '../graph/schema.js';
+import { countResearchObjects } from '../ingestion/semantic-status.js';
+import { dedupeResearchRecords, normalizeResearchProvenance } from '../graph/research-provenance.js';
+import { METHOD_RELATION_CONTRACT, RESEARCH_QUALITY_CONTRACT } from './prompts/research-quality-contract.js';
 import {
   normalizeAbstractMechanismNames,
   normalizeAbstractMechanismRecords
@@ -59,8 +63,8 @@ const ANTHROPIC_VERSION = '2023-06-01';
 const TRANSIENT_LLM_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const llmRateLimitCooldowns = new Map();
 const execFileAsync = promisify(nodeExecFile);
-export const CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION = 'chunk-semantic-objects-v2-quality';
-export const CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION = 'chunk-research-relations-v1';
+export const CHUNK_SEMANTIC_OBJECTS_PROMPT_VERSION = 'chunk-semantic-objects-v3-provenance';
+export const CHUNK_RESEARCH_RELATIONS_PROMPT_VERSION = 'chunk-research-relations-v2-provenance';
 
 function pickDefined(...values) {
   for (const value of values) {
@@ -116,11 +120,12 @@ function sanitizeStringList(values, maxLength = 80) {
 
 function sanitizeSemanticMetadata(raw) {
   const abstractMechanismObjects = normalizeAbstractMechanismRecords(
-    raw?.abstractMechanisms
-    || raw?.abstractMechanismObjects
-    || raw?.mechanismHints
-    || raw?.mechanisms
-    || []
+    [
+      ...(Array.isArray(raw?.abstractMechanismObjects) ? raw.abstractMechanismObjects : []),
+      ...(Array.isArray(raw?.abstractMechanisms) ? raw.abstractMechanisms : []),
+      ...(Array.isArray(raw?.mechanismHints) ? raw.mechanismHints : []),
+      ...(Array.isArray(raw?.mechanisms) ? raw.mechanisms : [])
+    ]
   );
 
   return {
@@ -140,7 +145,8 @@ function sanitizeResearchQuestionRecord(record) {
     domainSpecificText: normalized.domainSpecificText,
     domainAgnosticText: normalized.domainAgnosticText,
     relatedProblems: normalized.relatedProblems,
-    relatedMechanisms: normalized.relatedMechanisms
+    relatedMechanisms: normalized.relatedMechanisms,
+    ...normalizeResearchProvenance(normalized)
   };
 }
 
@@ -152,7 +158,8 @@ function sanitizeChallengeRecord(record) {
     domainSpecificText: normalized.domainSpecificText,
     domainAgnosticText: normalized.domainAgnosticText,
     challengeType: normalized.challengeType,
-    relatedMechanisms: normalized.relatedMechanisms
+    relatedMechanisms: normalized.relatedMechanisms,
+    ...normalizeResearchProvenance(normalized)
   };
 }
 
@@ -160,6 +167,7 @@ function sanitizeTakeawayRecord(record) {
   const normalized = normalizeTakeawayRecord(record);
   if (!normalized) return null;
   return {
+    ...normalizeResearchProvenance(normalized),
     name: normalized.name,
     text: normalized.text,
     sourceDomains: normalized.sourceDomains,
@@ -173,6 +181,7 @@ function sanitizeIdeaFragmentRecord(record) {
   const normalized = normalizeIdeaFragmentRecord(record);
   if (!normalized) return null;
   return {
+    ...normalizeResearchProvenance(normalized),
     name: normalized.name,
     text: normalized.text,
     targetDomain: normalized.targetDomain,
@@ -194,13 +203,14 @@ function sanitizeEntityRecord(record, fallbackType) {
     text: name,
     type,
     normalized: normalizeText(name),
-    evidenceText: cleanText(record?.evidenceText || record?.evidence || name, 280),
+    evidenceText: normalizeResearchProvenance(record).evidenceText || '',
     sectionHeading: cleanText(record?.sectionHeading || record?.section || '', 80),
     sectionRole: cleanText(record?.sectionRole || record?.role || '', 32),
     confidence: Number.isFinite(Number(record?.confidence)) ? Number(record.confidence) : 0.62,
     explicitOrInferred: String(record?.explicitOrInferred || 'inferred').toLowerCase() === 'explicit'
       ? 'explicit'
-      : 'inferred'
+      : 'inferred',
+    ...normalizeResearchProvenance(record)
   };
 }
 
@@ -419,12 +429,14 @@ function sanitizeRelationRecord(record) {
     targetType,
     targetName,
     type,
+    graphAdmission: assessResearchRelation({ ...normalizeResearchProvenance(record), type }),
     confidence: Number.isFinite(Number(record?.confidence)) ? Number(record.confidence) : 0.64,
-    evidenceText: cleanText(record?.evidenceText || record?.evidence || '', 280),
+    evidenceText: normalizeResearchProvenance(record).evidenceText || '',
     rationale: cleanText(record?.rationale || '', 220),
     explicitOrInferred: String(record?.explicitOrInferred || 'inferred').toLowerCase() === 'explicit'
       ? 'explicit'
-      : 'inferred'
+      : 'inferred',
+    ...normalizeResearchProvenance(record)
   };
 }
 
@@ -447,8 +459,9 @@ function collectEntitySnapshot(semanticPaper) {
     return (semanticPaper[key] || []).map((entry) => ({
       type,
       name: cleanText(entry.name || entry.text || '', 160),
-      evidenceText: cleanText(entry.evidenceText || entry.text || entry.name || '', 220),
-      confidence: entry.confidence ?? 0.6
+      evidenceText: normalizeResearchProvenance(entry).evidenceText || '',
+      confidence: entry.confidence ?? 0.6,
+      ...normalizeResearchProvenance(entry)
     })).filter((entry) => entry.name);
   });
 }
@@ -459,12 +472,14 @@ function buildPrompt(parsedPaper, semanticPaper) {
     .map((section) => `${section.heading || section.role || 'Section'}: ${cleanText(section.text, 420)}`)
     .join('\n\n');
   const entities = collectEntitySnapshot(semanticPaper)
-    .map((entity) => `- ${entity.type}: ${entity.name} | evidence: ${entity.evidenceText}`)
+    .map((entity) => JSON.stringify(entity))
     .join('\n');
 
   return [
     'You are building a multi-layer research knowledge graph from a paper.',
     'Return strict JSON only.',
+    ...RESEARCH_QUALITY_CONTRACT,
+    ...METHOD_RELATION_CONTRACT,
     'Do not invent entities that are unsupported by the paper.',
     'Focus on relations that help research topic selection, assumption tracking, method transfer, and innovation composition.',
     '',
@@ -537,6 +552,7 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
   return [
     'You are extracting structured research objects from a paper for a knowledge graph.',
     'Return strict JSON only.',
+    ...RESEARCH_QUALITY_CONTRACT,
     'Do not invent unsupported entities.',
     'Prefer short canonical names for Problem and Method nodes.',
     'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the paper text.',
@@ -569,10 +585,7 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
     '  "fieldOfStudy": "Computer Science",',
     '  "fieldCandidates": ["Computer Science", "Psychology"],',
     '  "domainTags": ["Computer Science", "Psychology"],',
-    '  "abstractMechanisms": [',
-    '    "memory preservation",',
-    '    {"name":"metacontrol policy", "type":"control-policy", "category":"adaptive-control", "description":"adaptive trade-off between persistence and flexibility", "aliases":["cognitive control trade-off"]}',
-    '  ]',
+    '  "abstractMechanismObjects": [{"name":"...", "description":"operation, target and conditions", "aliases":["..."], "evidenceText":"...", "sectionHeading":"...", "sectionRole":"..."}],',
     '  "researchQuestions": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "relatedProblems":["..."], "relatedMechanisms":["..."]}],',
     '  "openChallenges": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "challengeType":"mixed", "relatedMechanisms":["..."]}],',
     '  "takeaways": [{"name":"...", "text":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "relatedChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}],',
@@ -588,8 +601,7 @@ function buildSemanticExtractionPrompt(parsedPaper, semanticPaper) {
     '- Limitations and assumptions: keep them specific and falsifiable.',
     '- Evidence: extract compact evidence units, not the entire paragraph.',
     '- If a category is unsupported, return an empty list.',
-    '- `abstractMechanisms` may mix strings and structured objects.',
-    '- Prefer the object form when you can infer mechanism type, category, description, or aliases confidently.',
+    '- Use structured abstractMechanismObjects with a substantive description and source evidence.',
     '- `researchQuestions` should decompose the paper problem into reusable research questions.',
     '- `openChallenges` should capture unresolved obstacles and provide both domain-specific and domain-agnostic wording when possible.',
     '- `takeaways` should capture reusable insights grounded in the paper text and linked to challenges or mechanisms when possible.',
@@ -631,6 +643,7 @@ function buildSemanticExtractionBatchPrompt(entries, options = {}) {
   return [
     'You are extracting structured research objects from multiple papers for a knowledge graph.',
     'Return strict JSON only.',
+    ...RESEARCH_QUALITY_CONTRACT,
     'Do not invent unsupported entities.',
     'Prefer short canonical names for Problem and Method nodes.',
     'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the paper text.',
@@ -657,10 +670,7 @@ function buildSemanticExtractionBatchPrompt(entries, options = {}) {
     '      "fieldOfStudy": "Computer Science",',
     '      "fieldCandidates": ["Computer Science", "Psychology"],',
     '      "domainTags": ["Computer Science", "Psychology"],',
-    '      "abstractMechanisms": [',
-    '        "memory preservation",',
-    '        {"name":"metacontrol policy", "type":"control-policy", "category":"adaptive-control", "description":"adaptive trade-off between persistence and flexibility", "aliases":["cognitive control trade-off"]}',
-    '      ]',
+    '      "abstractMechanismObjects": [{"name":"...", "description":"operation, target and conditions", "aliases":["..."], "evidenceText":"...", "sectionHeading":"...", "sectionRole":"..."}],',
     '      "researchQuestions": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "relatedProblems":["..."], "relatedMechanisms":["..."]}],',
     '      "openChallenges": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "challengeType":"mixed", "relatedMechanisms":["..."]}],',
     '      "takeaways": [{"name":"...", "text":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "relatedChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}],',
@@ -678,8 +688,7 @@ function buildSemanticExtractionBatchPrompt(entries, options = {}) {
     '- Limitations and assumptions: keep them specific and falsifiable.',
     '- Evidence: extract compact evidence units, not the entire paragraph.',
     '- If a category is unsupported, return an empty list.',
-    '- `abstractMechanisms` may mix strings and structured objects.',
-    '- Prefer the object form when you can infer mechanism type, category, description, or aliases confidently.',
+    '- Use structured abstractMechanismObjects with a substantive description and source evidence.',
     '- `researchQuestions` should decompose the paper problem into reusable research questions.',
     '- `openChallenges` should capture unresolved obstacles and provide both domain-specific and domain-agnostic wording when possible.',
     '- `takeaways` should capture reusable insights grounded in the paper text and linked to challenges or mechanisms when possible.',
@@ -702,7 +711,7 @@ function buildChunkSemanticExtractionBatchPrompt(entries) {
       sectionHeading: cleanText(entry.sectionHeading || chunk.sectionHeading || '', 120),
       sectionRole: cleanText(entry.sectionRole || chunk.sectionRole || '', 32),
       chunkOrder: Number(entry.chunkOrder || chunk.chunkOrder || 0),
-      text: cleanText(entry.text || chunk.text || '', 900),
+      text: String(entry.text || chunk.text || '').trim(),
       heuristicCandidates: collectEntitySnapshot(semanticPaper).slice(0, 16)
     };
   });
@@ -710,6 +719,7 @@ function buildChunkSemanticExtractionBatchPrompt(entries) {
   return [
     'You are extracting structured research objects from paper chunks for a knowledge graph.',
     'Return strict JSON only.',
+    ...RESEARCH_QUALITY_CONTRACT,
     'Do not invent unsupported entities.',
     'Prefer short canonical names for Problem and Method nodes.',
     'Keep Claim, Limitation, Assumption, Evidence, and FutureDirection entries tightly grounded in the chunk text.',
@@ -736,7 +746,7 @@ function buildChunkSemanticExtractionBatchPrompt(entries) {
     '      "fieldOfStudy": "Computer Science",',
     '      "fieldCandidates": ["Computer Science", "Psychology"],',
     '      "domainTags": ["Computer Science", "Psychology"],',
-    '      "abstractMechanisms": ["memory preservation"],',
+    '      "abstractMechanismObjects": [{"name":"...", "description":"operation, target and conditions", "aliases":["..."], "evidenceText":"...", "sectionHeading":"...", "sectionRole":"..."}],',
     '      "researchQuestions": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "relatedProblems":["..."], "relatedMechanisms":["..."]}],',
     '      "openChallenges": [{"name":"...", "domainSpecificText":"...", "domainAgnosticText":"...", "challengeType":"mixed", "relatedMechanisms":["..."]}],',
     '      "takeaways": [{"name":"...", "text":"...", "sourceDomains":["..."], "relatedMechanisms":["..."], "relatedChallenges":["..."], "supportingSnippets":[{"text":"...", "sectionHeading":"...", "sectionRole":"..."}]}],',
@@ -754,8 +764,7 @@ function buildChunkSemanticExtractionBatchPrompt(entries) {
     '- Limitations and assumptions: keep them specific and falsifiable.',
     '- Evidence: extract compact evidence units, not the entire paragraph.',
     '- If a category is unsupported, return an empty list.',
-    '- `abstractMechanisms` may be a list of strings.',
-    '- Prefer the object form when you can infer mechanism type, category, description, or aliases confidently.',
+    '- Use structured abstractMechanismObjects with a substantive description and source evidence.',
     '- `researchQuestions` should decompose the paper problem into reusable research questions.',
     '- `openChallenges` should capture unresolved obstacles and provide both domain-specific and domain-agnostic wording when possible.',
     '- `takeaways` should capture reusable insights grounded in the chunk text and linked to challenges or mechanisms when possible.',
@@ -778,7 +787,7 @@ function buildChunkResearchSemanticsBatchPrompt(entries) {
       sectionHeading: cleanText(entry.sectionHeading || chunk.sectionHeading || '', 120),
       sectionRole: cleanText(entry.sectionRole || chunk.sectionRole || '', 32),
       chunkOrder: Number(entry.chunkOrder || chunk.chunkOrder || 0),
-      text: cleanText(entry.text || chunk.text || '', 900),
+      text: String(entry.text || chunk.text || '').trim(),
       candidateEntities: collectEntitySnapshot(semanticPaper).slice(0, 16)
     };
   });
@@ -786,6 +795,8 @@ function buildChunkResearchSemanticsBatchPrompt(entries) {
   return [
     'You are building a multi-layer research knowledge graph from paper chunks.',
     'Return strict JSON only.',
+    ...RESEARCH_QUALITY_CONTRACT,
+    ...METHOD_RELATION_CONTRACT,
     'Do not invent entities or relations that are unsupported by the chunk text.',
     'Focus on relations that help research topic selection, assumption tracking, method transfer, and innovation composition.',
     '',
@@ -843,6 +854,8 @@ function buildResearchSemanticsBatchPrompt(entries, options = {}) {
   return [
     'You are building a multi-layer research knowledge graph from multiple papers.',
     'Return strict JSON only.',
+    ...RESEARCH_QUALITY_CONTRACT,
+    ...METHOD_RELATION_CONTRACT,
     'Do not invent entities or relations that are unsupported by the paper text.',
     'Focus on relations that help research topic selection, assumption tracking, method transfer, and innovation composition.',
     '',
@@ -1502,7 +1515,7 @@ function createSemanticObjectInferenceResult({
   ideaFragments = [],
   rateLimitCooldownUntil = null
 } = {}) {
-  return {
+  const result = {
     provider,
     mode: effectiveMode,
     requestedMode,
@@ -1541,6 +1554,13 @@ function createSemanticObjectInferenceResult({
     chunkOrder,
     textHash
   };
+  if (participated && countResearchObjects(result) === 0) {
+    result.participated = false;
+    result.reason = 'empty-semantic-result';
+    result.mode = 'heuristic-only';
+    result.effectiveMode = 'heuristic-only';
+  }
+  return result;
 }
 
 function getRateLimitCooldownUntil(error) {
@@ -2681,21 +2701,21 @@ function parseJsonText(text) {
 }
 
 function sanitizeEntityGroup(raw, key, fallbackType) {
-  return (raw?.[key] || [])
+  return dedupeResearchRecords((raw?.[key] || [])
     .map((record) => sanitizeEntityRecord(record, fallbackType))
-    .filter(Boolean);
+    .filter(Boolean));
 }
 
 function sanitizeResearchQuestionGroup(raw, key = 'researchQuestions') {
-  return (raw?.[key] || [])
+  return dedupeResearchRecords((raw?.[key] || [])
     .map((record) => sanitizeResearchQuestionRecord(record))
-    .filter(Boolean);
+    .filter(Boolean));
 }
 
 function sanitizeChallengeGroup(raw, key = 'openChallenges') {
-  return (raw?.[key] || [])
+  return dedupeResearchRecords((raw?.[key] || [])
     .map((record) => sanitizeChallengeRecord(record))
-    .filter(Boolean);
+    .filter(Boolean));
 }
 
 function sanitizeTakeawayGroup(raw, key = 'takeaways') {

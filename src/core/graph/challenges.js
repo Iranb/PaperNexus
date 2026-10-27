@@ -1,6 +1,7 @@
 import { normalizeText, slugify, stableHash, unique } from '../../lib/utils.js';
 import { normalizeAbstractMechanismNames } from './abstract-mechanisms.js';
 import { getNodeLayer, NODE_TYPES } from './schema.js';
+import { normalizeResearchProvenance } from './research-provenance.js';
 
 function cleanChallengeText(value, maxLength = 360) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
@@ -50,7 +51,8 @@ export function normalizeChallengeRecord(value, defaults = {}) {
     domainAgnosticText,
     relatedMechanisms,
     fieldOfStudy: cleanChallengeText(defaults.fieldOfStudy || value.fieldOfStudy, 96) || null,
-    domainTags
+    domainTags,
+    ...normalizeResearchProvenance(value)
   };
 }
 
@@ -106,7 +108,8 @@ export function buildChallengeNode(record) {
       fieldOfStudy: record.fieldOfStudy,
       domainTags: record.domainTags,
       bridgeRetrievalText: record.bridgeRetrievalText,
-      analogyText: record.analogyText
+      analogyText: record.analogyText,
+      ...normalizeResearchProvenance(record)
     }
   };
 }

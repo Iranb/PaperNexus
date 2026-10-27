@@ -1,5 +1,6 @@
 import { normalizeText, slugify, stableHash, unique } from '../../lib/utils.js';
 import { getNodeLayer, NODE_TYPES } from './schema.js';
+import { dedupeResearchRecords, normalizeResearchProvenance } from './research-provenance.js';
 
 function cleanQuestionText(value, maxLength = 320) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
@@ -50,21 +51,14 @@ export function normalizeResearchQuestionRecord(value, defaults = {}) {
     fieldOfStudy: cleanQuestionText(defaults.fieldOfStudy || value.fieldOfStudy, 96) || null,
     domainTags,
     retrievalText: unique([name, domainSpecificText, domainAgnosticText].filter(Boolean)).join(' '),
-    analogyText: domainAgnosticText || domainSpecificText || name
+    analogyText: domainAgnosticText || domainSpecificText || name,
+    ...normalizeResearchProvenance(value)
   };
 }
 
 export function normalizeResearchQuestionRecords(values = [], defaults = {}) {
-  const records = [];
-  const seen = new Set();
-  for (const value of Array.isArray(values) ? values : [values]) {
-    const record = normalizeResearchQuestionRecord(value, defaults);
-    if (!record) continue;
-    if (seen.has(record.normalizedName)) continue;
-    seen.add(record.normalizedName);
-    records.push(record);
-  }
-  return records;
+  return dedupeResearchRecords((Array.isArray(values) ? values : [values])
+    .map(value => normalizeResearchQuestionRecord(value, defaults)).filter(Boolean));
 }
 
 export function buildResearchQuestionNode(record) {
@@ -86,7 +80,8 @@ export function buildResearchQuestionNode(record) {
       fieldOfStudy: normalized.fieldOfStudy,
       domainTags: normalized.domainTags,
       retrievalText: normalized.retrievalText,
-      analogyText: normalized.analogyText
+      analogyText: normalized.analogyText,
+      ...normalizeResearchProvenance(normalized)
     }
   };
 }

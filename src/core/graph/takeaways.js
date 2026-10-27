@@ -1,3 +1,4 @@
+import { normalizeResearchProvenance } from './research-provenance.js';
 import { normalizeText, slugify, stableHash, unique } from '../../lib/utils.js';
 import { normalizeAbstractMechanismNames } from './abstract-mechanisms.js';
 import { getNodeLayer, NODE_TYPES } from './schema.js';
@@ -9,10 +10,11 @@ function cleanText(value, maxLength = 360) {
 
 export function normalizeEvidenceSnippetRecord(value) {
   if (!value) return null;
-  const text = cleanText(value.text || value.evidenceText || value.name);
+  const text = String(value.text || value.evidenceText || '').replace(/\s+/g, ' ').trim();
   if (!text) return null;
 
   return {
+    ...normalizeResearchProvenance(value),
     name: cleanText(value.name || text, 160) || text,
     text,
     sectionHeading: cleanText(value.sectionHeading || value.section || '', 120),
@@ -41,6 +43,7 @@ export function normalizeTakeawayRecord(value, defaults = {}) {
   );
 
   return {
+    ...normalizeResearchProvenance(value),
     name,
     normalizedName: normalizeText(name),
     canonicalId: slugify(name),
@@ -72,6 +75,7 @@ export function normalizeIdeaFragmentRecord(value, defaults = {}) {
   );
 
   return {
+    ...normalizeResearchProvenance(value),
     name,
     normalizedName: normalizeText(name),
     canonicalId: slugify(name),

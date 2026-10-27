@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "Q1",
+      "key": "old-RanPAC",
+      "sourceUrl": "https://arxiv.org/abs/2307.02251",
+      "pointer": "llmSemanticObjects.assumptions[1]",
+      "finding": "将原文讨论并否定的旧 CP 方法各向同性高斯假设，提取为未限定归属的 Assumption。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "replace",
+      "field": "assumptions",
+      "index": 1,
+      "expectedName": "Raw class means follow Gaussian distribution with isotropic covariance",
+      "sourceLines": [
+        296,
+        298
+      ],
+      "replacements": [
+        {
+          "name": "Original CP isotropic covariance assumption is invalid for pretrained features",
+          "evidenceText": "CP methods that use raw ¯cy for CL assume a Gaussian distribution with isotropic covariance. Empirically, we have found that when used with pre-trained models this assumption is invalid (Figure 2).",
+          "attribution": {
+            "subject": "Original class-prototype methods using raw class means",
+            "role": "baseline"
+          },
+          "epistemicStatus": "refuted",
+          "sectionHeading": "4.2 Detailed overview and intuition for Random Projections"
+        }
+      ]
+    },
+    {
+      "id": "Q2",
+      "key": "SimSiam",
+      "sourceUrl": "https://arxiv.org/abs/2011.10566v1",
+      "pointer": "llmRelations[6]",
+      "finding": "Prediction MLP --USES_COMPONENT_METHOD--> SwAV 把组件与算法的方向写反，并把添加预测器的负向消融误当成采用关系。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "qualify-relation",
+      "field": "llmRelations",
+      "index": 6,
+      "expectedSource": "Prediction MLP",
+      "expectedTarget": "SwAV",
+      "sourceLines": [
+        703,
+        722
+      ],
+      "qualification": {
+        "relationContext": "ablation",
+        "epistemicStatus": "observed",
+        "attribution": {
+          "subject": "SwAV reproduction with prediction MLP",
+          "role": "experiment"
+        },
+        "evidenceText": "We study the effect of the prediction MLP  $h$  and stop-gradient on SwAV. Note that SwAV applies stop-gradient on the SK transform, so we ablate by removing it. Here is the comparison on our SwAV reproduction:",
+        "supportingSnippets": [
+          {
+            "text": "Adding the predictor does not help either.",
+            "sectionHeading": "Relation to SwAV"
+          }
+        ]
+      },
+      "appendFinding": {
+        "name": "Adding a predictor lowers SwAV reproduction accuracy from 66.5 to 65.2",
+        "evidenceText": "Adding the predictor does not help either.",
+        "sectionHeading": "Relation to SwAV",
+        "sectionRole": "analysis",
+        "epistemicStatus": "observed",
+        "relationContext": "ablation",
+        "attribution": {
+          "subject": "SwAV reproduction with predictor",
+          "role": "experiment"
+        },
+        "experimentContext": {
+          "metric": "reported accuracy",
+          "value": 65.2,
+          "baseline": "authors’ SwAV reproduction (66.5)",
+          "comparison": "with predictor versus without predictor",
+          "variant": "extra prediction MLP",
+          "sourceLocation": "Relation to SwAV ablation table"
+        }
+      }
+    },
+    {
+      "id": "Q3",
+      "key": "old-C-Flat-Turbo",
+      "sourceUrl": "https://arxiv.org/abs/2604.11064",
+      "pointer": "llmSemanticObjects.findings[5]",
+      "finding": "将 MEMO 的额外约 15% 提速与 EASE 相对 C-Flat 的约 30% 提速，合并成 scheduler 带来的两项额外提速。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "replace",
+      "field": "findings",
+      "index": 5,
+      "expectedName": "Scheduler yields additional ~15% (MEMO) and ~30% (EASE) speedup",
+      "sourceLines": [
+        1162,
+        1176
+      ],
+      "replacements": [
+        {
+          "name": "MEMO gains approximately 15% additional speedup with the C-Flat Turbo scheduler",
+          "evidenceText": "MEMO expands its architecture for each new task, which increases both the number of parameters and the computa- tional cost, thereby prolonging training. The figure shows that C-Flat Turbo, with or without the scheduler consistently outperforms vanilla C-Flat in accuracy. In terms of speed, both variants are faster, and the scheduler yields an addi- tional speedup of approximately 15%. In contrast, EASE",
+          "sectionHeading": "4.6 Discussion on Scheduler Choices",
+          "epistemicStatus": "observed",
+          "attribution": {
+            "subject": "MEMO with C-Flat Turbo scheduler",
+            "role": "experiment"
+          },
+          "experimentContext": {
+            "metric": "training speedup",
+            "value": 15,
+            "unit": "% (approximately)",
+            "baseline": "C-Flat Turbo without scheduler (fixed k=5)",
+            "variant": "MEMO with linear scheduler",
+            "sourceLocation": "Section 4.6 / Figure 6"
+          }
+        },
+        {
+          "name": "EASE with scheduled C-Flat Turbo is roughly 30% faster than C-Flat",
+          "evidenceText": "tional speedup of approximately 15%. In contrast, EASE reuses frozen adapters, which keeps the training cost stable. As 𝑘increases, the scheduler provides roughly a 30% faster over C-Flat while maintaining comparable accuracy.",
+          "sectionHeading": "4.6 Discussion on Scheduler Choices",
+          "epistemicStatus": "observed",
+          "attribution": {
+            "subject": "EASE with C-Flat Turbo scheduler",
+            "role": "experiment"
+          },
+          "experimentContext": {
+            "metric": "training speedup",
+            "value": 30,
+            "unit": "% (approximately)",
+            "baseline": "C-Flat",
+            "variant": "EASE with scheduler",
+            "sourceLocation": "Section 4.6 / Figure 6"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Q4",
+      "key": "old-SLCA",
+      "sourceUrl": "https://arxiv.org/abs/2303.05118",
+      "pointer": "llmSemanticObjects.findings[4]",
+      "finding": "名称将作者对 MoCo v3 的可能解释改写为确定性结论，并标记 explicit。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "replace",
+      "field": "findings",
+      "index": 4,
+      "expectedName": "MoCo v3 representations require smaller updates to learn all tasks well",
+      "sourceLines": [
+        319,
+        328
+      ],
+      "replacements": [
+        {
+          "name": "Authors suggest smaller required MoCo v3 updates may explain its stronger sequential learning",
+          "evidenceText": "This is possi- bly because the pre-trained representations of MoCo v3 [4] require remarkably smaller updates to learn all tasks well (Fig. 4, left Y-axis), thus alleviating the progressive overfit- ting problem.",
+          "sectionHeading": "PDF page 4 / Figure 4 discussion",
+          "epistemicStatus": "hypothesis",
+          "attribution": {
+            "subject": "Authors’ explanation of MoCo v3 results",
+            "role": "experiment"
+          }
+        }
+      ]
+    },
+    {
+      "id": "Q5",
+      "key": "ICT",
+      "sourceUrl": "https://arxiv.org/abs/1903.03825v5",
+      "pointer": "llmSemanticObjects.participated and semantic arrays",
+      "finding": "participated=true，但所有研究语义对象数组和自动关系均为空；仅有学科标签。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "diagnose",
+      "resolution": "classify as empty_result; do not count the participation flag as content"
+    },
+    {
+      "id": "Q6",
+      "key": "old-RanPAC",
+      "sourceUrl": "https://arxiv.org/abs/2307.02251",
+      "pointer": "llmSemanticObjects.evidences[1]",
+      "finding": "77.9% 数值有原文支持，但记录没有将结果绑定到完整的任务划分、预训练与评测协议。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "diagnose",
+      "resolution": "new experimentContext preserves known fields; historical 77.9 result still needs protocol completion before cross-paper comparisons"
+    },
+    {
+      "id": "Q7",
+      "key": null,
+      "sourceUrl": null,
+      "pointer": "researchQuestions/openChallenges/abstractMechanismObjects",
+      "finding": "519 条对象记录没有直接或嵌套原文引句；其中 511 条也没有 sourceChunkIds。278 个机制对象中，161 个的 description 只是重复名称。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "diagnose",
+      "resolution": "preserve supplied provenance; missing old evidence requires source review or re-extraction"
+    },
+    {
+      "id": "Q8",
+      "key": "GCD",
+      "sourceUrl": "https://arxiv.org/abs/2201.02609v2",
+      "pointer": "llmSemanticObjects.researchQuestions/openChallenges/methods",
+      "finding": "同一研究问题及同一挑战各出现两次；方法名称以多个近义表述重复出现，多个位置被标成 Front Matter。",
+      "verification": "reviewed against saved paper text; no new model run",
+      "action": "diagnose",
+      "resolution": "collapse exact same-context duplicates and flag incomplete chunks; repair source reading order before semantic alias review"
+    },
+    {
+      "id": "positive-c010",
+      "key": "c010",
+      "sourceUrl": "https://arxiv.org/abs/2609.29777",
+      "action": "preserve",
+      "resolution": "Keep ALMA negative sample-weighting ablation as a finding.",
+      "verification": "reviewed source case; no numerical performance claim"
+    },
+    {
+      "id": "positive-c346",
+      "key": "c346",
+      "sourceUrl": "https://arxiv.org/abs/2403.12559",
+      "action": "preserve",
+      "resolution": "Keep CSC buffer budget and task conditions with observations.",
+      "verification": "reviewed source case; no numerical performance claim"
+    },
+    {
+      "id": "positive-old-iCaRL",
+      "key": "old-iCaRL",
+      "sourceUrl": "https://arxiv.org/abs/1611.07725",
+      "action": "preserve",
+      "resolution": "Keep raw-image storage requirement and gap to joint training.",
+      "verification": "reviewed source case; no numerical performance claim"
+    },
+    {
+      "id": "positive-c616",
+      "key": "c616",
+      "sourceUrl": "https://arxiv.org/abs/2410.20242",
+      "action": "preserve",
+      "resolution": "Keep MLHAT efficiency limits and negative findings.",
+      "verification": "reviewed source case; no numerical performance claim"
+    }
+  ]
+}
