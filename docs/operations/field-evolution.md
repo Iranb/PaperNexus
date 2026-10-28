@@ -100,3 +100,60 @@ node scripts/verify-field-research-browser.mjs /tmp/papernexus-field-research-ac
 ```
 
 It exercises actual authenticated HTTP routes and import storage with fictional discovery sources. Import completion and graph publication are supplied fixtures; this check does not verify a live provider or a paid extraction model.
+
+## Refine and publish lineage evidence
+
+Open a saved study or an existing field map, then expand **完善谱系证据**. The workflow extracts source-versioned evidence cards, reviews each candidate against the complete child and available predecessor sources, and records supported, rejected and uncertain decisions. Use **预览发布** to inspect the supported subset, then **发布到图谱** to publish it. **预览撤回** withdraws the selected publication. Reloading the page reads the saved task without starting another model call.
+
+For a saved study, refinement selects from all included branches. For an ordinary map, it selects up to the first 100 displayed papers. `maxPapers` limits processing and favors papers without recorded method relations. The response reports omitted papers. Missing connections remain evidence gaps; they do not establish independent origin or research novelty.
+
+The `literature_review` MCP tool exposes three operations:
+
+```json
+{
+  "operation": "lineage_refine",
+  "corpus": "my-field",
+  "papers": [{"paperId": "paper:child"}],
+  "idempotencyKey": "review-batch-1",
+  "maxPapers": 20,
+  "maxQueries": 0,
+  "maxNewPapers": 0,
+  "maxRounds": 1
+}
+```
+
+Use `studyId` instead of `papers` to select a saved study. Use `dryRun: true` to inspect selection and effects without creating a task. Source text must be available as full Markdown or text. If multiple active sources exist for a paper, include its exact `sourceKey`. Evidence cards v2 retain separate bottleneck or adoption reason, mechanism, and tradeoff quotations with attribution and epistemic status. Missing explanations remain unknown. Old cards remain readable but require v2 extraction before this review flow.
+
+```json
+{"operation":"lineage_refine_status","corpus":"my-field","runId":"refine-review-batch-1","responseMode":"full"}
+```
+
+Status is read-only. `completed` means the bounded processing finished; it does not mean every relation was accepted or the field is covered. Each relation retains the model decision, reason, deterministic blockers and explanation gaps. Authentication, provider and source failures remain visible. Reuse the same request key for reconciliation. Use `retryFailed: true` on the original start request to retry failed or pending work; successful extraction and review caches, including valid saved model responses, remain reusable. Retrying a fully completed run does not start new work. A new selection or configured model requires a new key.
+
+External supplementation is disabled by default. Set both `maxQueries` (1–8) and `maxNewPapers` (1–20) to enable it. `maxRounds` permits 1–3 supplementation rounds, followed by review. Budgets are cumulative across rounds and recovery, and reserved selections consume the import budget even if import fails. Each planned query searches one configured provider, with citation expansion disabled. Markdown sources use `fast-md-structural`; other supported sources use `full`. Import workers and authoritative graph synchronization must be enabled. A source is reviewed only after the existing import task confirms graph visibility and synchronization. Failed searches, unavailable full text, import failures and exhausted budgets remain in the result.
+
+```json
+{"operation":"lineage_publish","corpus":"my-field","runId":"refine-review-batch-1","requestId":"publication-1","apply":false}
+```
+
+Publication defaults to preview. Repeat with `apply: true` to publish. Only terminal refinement runs are eligible; partial runs can publish their successfully reviewed subset. The API accepts saved run and request IDs, never caller-supplied graph operations. Unsupported, ambiguous, unmatched or stale evidence is excluded. Component adoption retains its distinct relationship type. Missing bottleneck evidence does not invalidate an otherwise supported relationship.
+
+Publication responses include the actual relationship readback. Receipts bind source content and paper identity and preserve previous graph values. They are replayed by full and lite graph reads, so a graph rebuild does not discard valid published relations. Source changes, deactivation or deletion stop the affected publication from being treated as current evidence. Subsequent graph edits produce conflicts instead of being overwritten. Saved-study views include valid published methods and direct predecessor context in `analysis.result.scope.study.publishedContext`; the saved membership, revision and coverage review remain unchanged.
+
+To preview withdrawal, send the same `runId` and `requestId` with `revoke: true`; add `apply: true` to execute it. Withdrawal restores or removes only the publication's owned changes, preserving unrelated edits. An old request ID cannot republish a revoked receipt; use a new explicit publication request.
+
+HTTP uses the same service and authentication:
+
+| Request | Behavior |
+| --- | --- |
+| `POST /api/lineage-refinement?name=<corpus>` | Start or preview refinement |
+| `GET /api/lineage-refinement?name=<corpus>&runId=<id>` | Read saved state and decisions |
+| `POST /api/lineage-publication?name=<corpus>` | Preview, apply or revoke publication |
+
+Both model stages use the configured research model. A second model call is a review step, not independent scientific validation. Published evidence is marked `model_reviewed`, with `scientificValidation: false`. No experimental performance or novelty claim follows from publication.
+
+The browser acceptance uses temporary corpora and fixed model responses:
+
+```sh
+node scripts/verify-lineage-refinement-browser.mjs /tmp/papernexus-lineage-refinement
+```

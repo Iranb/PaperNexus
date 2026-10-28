@@ -138,8 +138,25 @@ async function readStudy(rootPath, args, options) {
   const selected = included.filter(paper => !args.branchId || paper.branchIds.includes(args.branchId));
   const selectedPaperIds = new Set(selected.map(paper => paper.paperId));
   const selectedMethodIds = new Set(selected.flatMap(paper => paper.methodIds));
+  const declaredSelectedMethodCount = selectedMethodIds.size;
   const loaded = await loadCorpusLite(rootPath);
   const includedIds = new Set(included.flatMap(paper => [paper.paperId, ...paper.methodIds]));
+  const publishedContext = { paperIds: [], methodIds: [], edgeIds: [], basis: 'current_model_reviewed_publications' };
+  const excludedPaperIds = new Set(study.papers.filter(paper => paper.role === 'excluded').map(paper => paper.paperId));
+  for (const edge of loaded.graph.relationships) {
+    if (!edge.properties?.lineagePublicationId || edge.properties.validationStatus !== 'accepted'
+      || !selectedPaperIds.has(edge.properties.sourcePaperId) || excludedPaperIds.has(edge.properties.targetPaperId)) continue;
+    publishedContext.edgeIds.push(edge.id);
+    for (const id of [edge.sourceId, edge.targetId]) {
+      if (!selectedMethodIds.has(id)) publishedContext.methodIds.push(id);
+      includedIds.add(id); selectedMethodIds.add(id);
+    }
+    const parentId = edge.properties.targetPaperId;
+    if (parentId && !selectedPaperIds.has(parentId)) publishedContext.paperIds.push(parentId);
+    if (parentId) includedIds.add(parentId);
+  }
+  publishedContext.paperIds = [...new Set(publishedContext.paperIds)];
+  publishedContext.paperIds.forEach(id => selectedPaperIds.add(id));
   const { graph, report: quality } = buildResearchQualityView(loadKnowledgeGraph({
     nodes: loaded.graph.nodes.filter(node => includedIds.has(node.id)),
     relationships: loaded.graph.relationships.filter(edge => includedIds.has(edge.sourceId) && includedIds.has(edge.targetId))
@@ -176,7 +193,8 @@ async function readStudy(rootPath, args, options) {
     result.status = 'partial';
   }
   result.scope.study = { studyId: record.studyId, revision: record.revision, branchId: args.branchId || null,
-    includedPaperCount: included.length, selectedPaperCount: selected.length, selectedMethodCount: selectedMethodIds.size,
+    includedPaperCount: included.length, selectedPaperCount: selected.length, selectedMethodCount: declaredSelectedMethodCount,
+    publishedContext,
     selectionBasis: 'Reviewed study membership and all selected method variants; no one-method-per-paper restriction.' };
   const gaps = [...study.coverage.gaps, ...study.branches.flatMap(branch => branch.gaps)];
   if (missingPapers.length) gaps.push(`${missingPapers.length} included papers are absent from the current admitted graph.`);

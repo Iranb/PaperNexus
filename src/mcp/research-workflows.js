@@ -8,6 +8,8 @@ import { OPERATIONS as DECISION_OPERATIONS, DECISION_VERSION } from '../core/res
 import { executeFieldResearchOperation } from '../core/research/field-research.js';
 import { executeFieldStudyOperation, FIELD_STUDY_SCHEMA } from '../core/research/field-studies.js';
 import { executeLineageEvidenceOperation, LINEAGE_CARD_VERSION } from '../core/research/lineage-evidence.js';
+import { executeLineageRefinementOperation, LINEAGE_REFINEMENT_VERSION } from '../core/research/lineage-refinement.js';
+import { executeLineagePublication } from '../core/research/lineage-publication.js';
 import { readProjectEvidence, evaluateProject } from '../core/research/project-evaluation.js';
 import { attachProjectEvidence } from '../core/research/project-evidence.js';
 
@@ -62,6 +64,12 @@ const FIELDS = {
   discoveryMode: { type: 'string', enum: ['search', 'resolve', 'run'], description: 'search finds metadata; resolve/run can fetch full text. Submitted asynchronously; never imports automatically.' },
   providers: strings('Optional discovery provider names.'),
   maxPapers: count(100, 'Maximum discovery papers; default 20.'),
+  maxQueries: { type: 'integer', minimum: 0, maximum: 8, description: 'Cumulative gap search budget; default 0. Each query uses one configured provider.' },
+  maxNewPapers: { type: 'integer', minimum: 0, maximum: 20, description: 'Cumulative new paper import budget; default 0. Set with maxQueries to enable supplementation.' },
+  maxRounds: count(3, 'Maximum supplementation rounds; default 1.'),
+  requestId: { ...text('Stable publication request id. Reuse it to reconcile publication or revocation.'), maxLength: 160 },
+  apply: { type: 'boolean', description: 'Publish or revoke the reviewed relationships. False by default: read-only preview.' },
+  revoke: { type: 'boolean', description: 'Revoke the publication identified by runId and requestId; requires apply=true to change the graph.' },
   studyId: { ...text('Saved field study identifier.'), maxLength: 100, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$' },
   branchId: { ...text('Optional branch within a saved field study.'), maxLength: 100 },
   expectedRevision: { type: 'integer', minimum: 0, maximum: 1000000, description: 'Read-back study revision; use 0 to create.' },
@@ -104,6 +112,9 @@ export const RESEARCH_ROUTES = {
     lineage_extract: { ...read('lineage_evidence', 'extract', ['papers', 'idempotencyKey', 'retryFailed', 'dryRun'], ['papers', 'idempotencyKey']), effect: 'lineage_extract_submit' },
     lineage_status: { ...read('lineage_evidence', 'status', ['runId'], ['runId']), effect: 'lineage_extract_read' },
     lineage_card: { ...read('lineage_evidence', 'card', ['cardId'], ['cardId']), effect: 'lineage_card_read' },
+    lineage_refine: { ...read('lineage_refinement', 'start', ['papers', 'studyId', 'idempotencyKey', 'maxPapers', 'maxQueries', 'maxNewPapers', 'maxRounds', 'retryFailed', 'dryRun'], ['idempotencyKey'], ['papers', 'studyId']), effect: 'lineage_refine_submit' },
+    lineage_refine_status: { ...read('lineage_refinement', 'status', ['runId'], ['runId']), effect: 'lineage_refine_read' },
+    lineage_publish: { ...read('lineage_publication', 'publish', ['runId', 'requestId', 'apply', 'revoke'], ['runId', 'requestId']), effect: 'lineage_publish_write' },
     survey: read('agent_materials', 'research_material_pack', materialFields, ['query']),
     field_research: { ...read('field_research', 'start', ['query', 'targetDomain', 'fromYear', 'toYear', 'maxDepth', 'maxNodes', 'maxEdges', 'maxPapers', 'providers', 'idempotencyKey', 'dryRun'], [], ['query', 'targetDomain']), effect: 'field_research_submit' },
     field_research_status: { ...read('field_research', 'status', ['runId']), effect: 'field_research_read' },
@@ -137,7 +148,7 @@ export const RESEARCH_ROUTES = {
 };
 
 const DESCRIPTIONS = {
-  literature_review: 'Find and read papers, survey sources, and explicitly discover/import missing papers. capabilities lists contracts; corpora/status/sources inspect coverage; search queries the graph; paper reads source evidence. For method genealogy, lineage_extract reads each selected full text once and caches methods, variants and relation candidates by source version; lineage_status reads progress and token usage; lineage_card reads exact evidence and freshness. Model candidates require source review before graph writeback. discover/import submit jobs; their status/report operations reconcile existing jobs. Use fast-md-structural imports for materialized Markdown before lineage_extract. field_research runs bounded discovery plus general semantic extraction; batch completion is separate from field coverage. study_save/study/studies manage reviewed scopes and native Web maps. Batch and overview responses default to compact summaries; exact evidence reads retain full detail.',
+  literature_review: 'Find and read papers, survey sources, and explicitly discover/import missing papers. capabilities lists contracts; corpora/status/sources inspect coverage; search queries the graph; paper reads source evidence. For method genealogy, lineage_extract reads each selected full text once and caches methods, variants and relation candidates by source version; lineage_status reads progress and token usage; lineage_card reads exact evidence and freshness. lineage_refine independently reviews candidates and can supplement missing sources within explicit cumulative budgets; lineage_refine_status is read-only. lineage_publish previews by default and writes supported current relations only with apply=true; revoke withdraws that publication. Model review does not establish scientific validity. discover/import submit jobs; their status/report operations reconcile existing jobs. Use fast-md-structural imports for materialized Markdown before lineage_extract. field_research runs bounded discovery plus general semantic extraction; batch completion is separate from field coverage. study_save/study/studies manage reviewed scopes and native Web maps. Batch and overview responses default to compact summaries; exact evidence reads retain full detail.',
   lineage_analysis: 'Analyze research evolution from committed evidence: landscape builds a field timeline of papers and methods, connected families, structural mainlines and turning-point candidates with source evidence and coverage limits; overview maps a bounded topic graph; problem gives dated problem observations; method traces validated method lineage; evidence checks method-edge quotes; path/context/impact inspect graph connections. A graph path is not causal proof, and bounded endpoints are not global frontiers. Use literature_review for missing papers and idea_generation for proposals.',
   idea_generation: 'Generate and evaluate research hypotheses from committed sources: generate returns graph candidates (cross-domain catalyst if targetDomain is given), with scoped experimental feedback when project is supplied. diverge/converge explore or focus; gaps separates structural gaps. evaluate defaults to novelty_audit with query/candidateMechanism; mechanism_diagnosis and performance_validation require project/actionId and read a registered action. Design readiness is not execution authorization. experiment_materials returns evidence/cost anchors. No live discovery, graph writeback, or controller execution. Candidates and novelty audits do not prove novelty or gains.'
 };
@@ -328,6 +339,13 @@ function nextActions(call, args, result) {
   if (call.backend === 'project_evaluation') return [next('research_decision', result.task_gate.status === 'ready_for_design' ? 'recommend_next' : 'evidence_view', { project: args.project })];
   if (call.tool === 'idea_generation' && args.project) return [next('research_decision', 'evidence_view', { project: args.project })];
   const runId = result?.runId || result?.run_id || args.runId;
+  if (call.backend === 'lineage_refinement') {
+    if (result?.dryRun) return [];
+    if (!result?.terminal) return [next('literature_review', 'lineage_refine_status', { runId })];
+    return [next('literature_review', 'lineage_publish', { runId, requestId: runId.slice(7), apply: false })];
+  }
+  if (call.backend === 'lineage_publication') return [next('literature_review', 'lineage_publish', {
+    runId, requestId: args.requestId, apply: false, ...(args.revoke ? { revoke: true } : {}) })];
   if (call.backend === 'lineage_evidence') {
     if (result?.dryRun || call.args.operation === 'card') return [];
     if (call.args.operation === 'extract' || !result?.terminal) return [next('literature_review', 'lineage_status', { runId })];
@@ -400,6 +418,12 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
     : call.backend === 'lineage_evidence'
     ? await executeLineageEvidenceOperation(call.args.corpus, call.args.operation,
         Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
+    : call.backend === 'lineage_refinement'
+    ? await executeLineageRefinementOperation(call.args.corpus, call.args.operation,
+        Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
+    : call.backend === 'lineage_publication'
+    ? await executeLineagePublication(call.args.corpus,
+        Object.fromEntries(Object.entries(call.args).filter(([key]) => !['corpus', 'operation'].includes(key))), options)
     : call.backend === 'project_evaluation'
     ? await evaluateProject(await resolveCorpusForApi(args.corpus, options), call.args)
     : decodeResult(await invoke(call.backend, call.args, options));
@@ -419,10 +443,15 @@ export async function executeResearchWorkflow(name, args, options, invoke) {
       ? { tool: null, component: 'executeFieldStudyOperation', operation: call.args.operation }
       : call.backend === 'lineage_evidence'
       ? { tool: null, component: 'executeLineageEvidenceOperation', operation: call.args.operation }
+      : call.backend === 'lineage_refinement'
+      ? { tool: null, component: 'executeLineageRefinementOperation', operation: call.args.operation }
+      : call.backend === 'lineage_publication'
+      ? { tool: null, component: 'executeLineagePublication', operation: call.args.operation }
       : { tool: call.backend, operation: call.args.operation || null },
     result,
     evidenceBoundary: {
-      basis: result?.dryRun && ['field_research', 'lineage_evidence'].includes(call.backend) ? 'dry_run' : call.effect,
+      basis: result?.dryRun && ['field_research', 'lineage_evidence', 'lineage_refinement'].includes(call.backend) ? 'dry_run'
+        : call.backend === 'lineage_publication' && !args.apply ? 'lineage_publish_preview' : call.effect,
       statusAuthority: 'The backend result and original discovery/import/graph-sync records; this envelope creates no completion state.',
       limitation: name === 'idea_generation'
         ? 'Candidate hypotheses and bounded prior-art evidence do not prove novelty, causal transfer, or experimental gains.'
@@ -448,6 +477,11 @@ export function researchCapabilities(options = {}) {
     lineageEvidence: { contractVersion: LINEAGE_CARD_VERSION, extraction: 'one_fulltext_pass_per_source_version',
       cache: 'paper_source_version_model_contract', retries: 'explicit_failed_only', graphWriteback: false,
       usage: 'provider_reported_by_phase', statusOperation: 'lineage_status', cardOperation: 'lineage_card' },
+    lineageRefinement: { contractVersion: LINEAGE_REFINEMENT_VERSION, startOperation: 'lineage_refine',
+      statusOperation: 'lineage_refine_status', publishOperation: 'lineage_publish',
+      statusReadOnly: true, review: 'full_source_model_review_with_identity_and_quote_checks',
+      externalBudgetsDefault: 0, publicationDefault: 'preview', publicationRequires: ['terminal runId', 'requestId', 'apply=true'],
+      persistence: 'source_bound_publications_replayed_on_graph_load', scientificValidation: false },
     advanced: { tool: 'agent_materials', operations: ['proposal_graph_session', 'research_controller'],
       profileHint: 'Legacy names remain callable; clients needing schema discovery can use the all or legacy profile.',
       proposalExecution: 'caller_supplied_actions', proposalRequiredInput: 'proposalActions or proposalSlates',

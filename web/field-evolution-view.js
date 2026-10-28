@@ -1,5 +1,6 @@
 import { mountFieldResearch } from './field-research-view.js';
 import { mountFieldStudies } from './field-studies-view.js';
+import { mountLineageRefinement } from './lineage-refinement-view.js';
 import { renderLineageAtlas, renderFieldProgression, lineageRelationLabel } from './field-lineage-atlas.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
@@ -155,10 +156,14 @@ function evidenceDetails(relation, result) {
   const paper = result.papers.find(p => p.id === e.evidence.paperId);
   return `<article class="field-evidence"><span class="field-kicker">${escape(label(relation.type))}</span>
     <blockquote>${escape(e.evidence.quote)}</blockquote>
+    ${e.evidence.reviewStatus ? `<p>模型原文审查 · ${escape(e.evidence.attribution)} · ${escape(e.evidence.epistemicStatus)}。科学结论尚需独立验证。</p>` : ''}
     <p>${escape(paper?.name || e.evidence.paperTitle || e.evidence.paperId || 'Source paper not resolved')}${paper ? ' · ' + (paper.year || 'Undated') : ''}</p>
     ${paper ? paperLink(paper) : ''}
-    <dl>${[['Bottleneck', e.bottleneck.description], ['Mechanism', e.mechanism.description], ['Tradeoff', e.tradeoff.description]]
-      .map(([key, value]) => `<dt>${key}</dt><dd>${escape(value || 'Not recorded in this evidence')}</dd>`).join('')}</dl>
+    <dl>${[['Bottleneck', 'bottleneck', e.bottleneck.description], ['Mechanism', 'mechanism', e.mechanism.description], ['Tradeoff', 'tradeoff', e.tradeoff.description]]
+      .map(([title, field, value]) => {
+        const explanation = e.evidence.explanations?.[field];
+        return `<dt>${title}</dt><dd>${escape(value || 'Not recorded in this evidence')}${explanation ? `<p>${escape(explanation.attribution)} · ${escape(explanation.epistemicStatus)}</p><blockquote>${escape(explanation.exactQuote)}</blockquote>` : ''}</dd>`;
+      }).join('')}</dl>
     <details><summary>Source location</summary><p>${escape(e.evidence.sectionHeading || 'Section unavailable')}</p>
     <p class="field-id">${escape(e.evidence.sourceSpanId || 'Source span unavailable')}</p>
     <p class="field-id">${escape(relation.graphEdgeIds.join(' · '))}</p></details></article>`;
@@ -209,6 +214,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
     <p class="field-scope" role="status" aria-live="polite"></p>
     <section class="field-research-summary" aria-label="Field research progress" aria-live="polite" hidden></section>
     <section class="field-study-summary" aria-label="Saved study scope and coverage" hidden></section>
+    <details class="lineage-refinement"></details>
     <div class="field-toolbar" hidden><div class="field-modes" role="group" aria-label="Timeline view">
       <button type="button" data-field-mode="progression" aria-pressed="true">研究脉络</button><button type="button" data-field-mode="lineage" aria-pressed="false">方法谱系</button><button type="button" data-field-mode="papers" aria-pressed="false">论文时间轴</button></div>
       <label>Family<select class="field-family" aria-label="Method family"></select></label>
@@ -238,6 +244,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   let corpus = '';
   let research;
   let studies;
+  let refinement;
 
   const resizeSvg = () => {
     const svg = map.querySelector('svg');
@@ -283,6 +290,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   const reset = () => {
     research?.pause();
     studies?.pause();
+    refinement?.pause();
     sequence++; payload = null; drawing = null; corpus = '';
     host.hidden = true; workspace.classList.remove('field-mode', 'field-controls-open');
     atlas.innerHTML = ''; atlas.hidden = true;
@@ -290,6 +298,7 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
   };
   const showAnalysis = (response, selectedCorpus, topic) => {
     payload = response; corpus = selectedCorpus;
+    refinement?.restore();
     view = { mode: 'progression', routeId: '', branchFocus: '', familyId: '', search: '', mainline: true, selection: null, timelineWidth: 0 };
     atlas.dataset.view = '';
     search.value = ''; host.querySelector('.field-mainline input').checked = true;
@@ -438,6 +447,21 @@ export function mountFieldEvolution({ host, getCorpus, getJson, postJson, onClos
       toolbar.hidden = true; legend.hidden = true; details.innerHTML = '';
       status.textContent = `${selectedCorpus} · Loading saved field study…`;
       map.innerHTML = '<div class="field-empty"><h3>Reading study evidence</h3><p>Loading the selected papers and methods from the current graph.</p></div>';
+    }
+  });
+  refinement = mountLineageRefinement({ host, getCorpus, getJson, postJson,
+    getSelection: () => payload?.study?.studyId ? { studyId: payload.study.studyId }
+      : { papers: (payload?.result.papers || []).slice(0, 100).map(paper => ({ paperId: paper.id })) },
+    onPublished: async () => {
+      const selectedCorpus = getCorpus();
+      if (!payload || selectedCorpus !== corpus) return;
+      if (payload.study?.studyId) {
+        const response = await getJson('/api/field-studies?name=' + encodeURIComponent(corpus) + '&studyId=' + encodeURIComponent(payload.study.studyId));
+        if (getCorpus() === selectedCorpus) showAnalysis({ ...response.analysis, study: { ...response, analysis: undefined } }, selectedCorpus, response.study.title);
+      } else {
+        const response = await postJson('/api/field-evolution?name=' + encodeURIComponent(corpus), { seedNodeIds: payload.result.papers.map(paper => paper.id).slice(0, 500), maxNodes: 500, maxEdges: 1000 });
+        if (getCorpus() === selectedCorpus) showAnalysis(response, selectedCorpus, '已审查谱系');
+      }
     }
   });
   return { reset, run, restoreResearch: async () => { if (!await studies.restore()) research.restore(); }, isOpen: () => !host.hidden };

@@ -35,6 +35,9 @@ This page is generated from route declarations in [`src/server/http.js`](https:/
 | `POST` | `/api/field-studies` |
 | `POST` | `/api/field-research` |
 | `GET` | `/api/field-research` |
+| `POST` | `/api/lineage-refinement` |
+| `GET` | `/api/lineage-refinement` |
+| `POST` | `/api/lineage-publication` |
 | `POST` | `/api/method-lineage` |
 | `POST` | `/api/method-evidence` |
 | `POST` | `/api/reflection-chain` |

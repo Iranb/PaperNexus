@@ -68,7 +68,7 @@ test('default four research tools preserve the three source workflows and legacy
 
 test('every public operation has one reviewed route and preserves backend evidence', async () => {
   const localOperations = ['capabilities', 'field_research', 'field_research_status', 'study_save', 'study', 'studies',
-    'lineage_extract', 'lineage_status', 'lineage_card'];
+    'lineage_extract', 'lineage_status', 'lineage_card', 'lineage_refine', 'lineage_refine_status', 'lineage_publish'];
   assert.deepEqual(new Set(Object.entries(RESEARCH_ROUTES).flatMap(([tool, routes]) => Object.keys(routes).map(operation => `${tool}/${operation}`))),
     new Set([...CASES.map(([tool, operation]) => `${tool}/${operation}`), ...localOperations.map(operation => `literature_review/${operation}`)]));
   for (const [tool, operation, fields, backend, backendOperation] of CASES) {

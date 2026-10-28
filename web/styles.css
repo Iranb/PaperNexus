@@ -1691,3 +1691,12 @@ select {
   .field-find { width: 150px; }
   .field-coverage { padding: 8px 12px; }
 }
+
+.lineage-refinement { margin: 0 0 14px; padding: 12px 16px; border: 1px solid #294354; border-radius: 10px; background: #101f2b; flex-shrink: 0; max-height: 58vh; overflow: auto; }
+.lineage-refinement > summary { cursor: pointer; font-weight: 650; }
+.lineage-refinement-budget, .lineage-refinement-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+.lineage-refinement-budget label { display: flex; gap: 8px; align-items: center; }
+.lineage-refinement-budget input { width: 72px; border: 1px solid #355268; border-radius: 6px; padding: 6px 8px; background: #152c3a; color: #edf4f8; }
+.lineage-refinement-status { overflow-wrap: anywhere; }
+.lineage-refinement-status article { margin: 12px 0; }
+.lineage-publication-preview:empty { display: none; }

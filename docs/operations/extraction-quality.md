@@ -69,3 +69,11 @@ For other corpora, pass `--reviewed-cases /path/to/reviews.json`. Use `{"cases":
 ## Limitations
 
 Offline replay verifies field preservation and graph behavior, not real-model extraction accuracy. Missing historical evidence and experiment protocols still require source review or re-extraction. Broken PDF reading order, semantic aliases, and unsupported scientific claims are not repaired by exact deduplication. Cross-paper performance comparisons require verified protocol alignment in addition to these fields.
+
+## Source-grounded lineage refinement
+
+Lineage cards v2 separate a relation's supporting quotation from the bottleneck or adoption reason, concrete mechanism and tradeoff. Each explanation retains its own quotation, claim owner and epistemic status. Repeated bottleneck/mechanism text and unmatched explanation quotes are reported as gaps. Unknown fields are not filled with method names or the relation's mechanism.
+
+`literature_review/lineage_refine` performs a separate model review of methods and relationships. Exact quote checks, parent-paper resolution, method ownership, relation context and direction determine whether a supported model decision can be published. Comparison, negative ablation, refuted hypotheses and unresolved identities remain visible without being eligible for publication. The model's judgment and the program's blockers are separate fields.
+
+`lineage_publish` consumes saved current reviews and defaults to read-only preview. Published evidence retains source versions, original quotations, attribution and epistemic status through native method-evidence and landscape reads. A changed source requires new review. See [refinement and publication](./field-evolution.md#refine-and-publish-lineage-evidence) for budgets, recovery and withdrawal.

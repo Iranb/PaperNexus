@@ -12,6 +12,7 @@ import { configuredWorkerCoveragePayload, loadCorpusLiteForApi, resolveCorpusFor
 import { buildFieldEvolution } from '../graph/field-evolution.js';
 import { matchFieldResearchPaper, selectFieldResearchCandidates, summarizeFieldResearchImports } from './field-research-scope.js';
 import { recoverLineageExtractions } from './lineage-evidence.js';
+import { recoverLineageRefinements } from './lineage-refinement.js';
 
 export const FIELD_RESEARCH_VERSION = 'papernexus-field-research-v1';
 const activeRuns = new Map();
@@ -275,6 +276,7 @@ export function startFieldResearchRecoveryWorker(options = {}) {
     try {
       for (const rootPath of options.rootPaths || options.workerRootPaths || []) {
         await recoverLineageExtractions(rootPath, options);
+        await recoverLineageRefinements(rootPath, options);
         if (options.fieldResearchWorkers?.imports === false) continue;
         const runs = await fs.readdir(fieldResearchPaths(rootPath).runs).catch(error => {
           if (error.code === 'ENOENT') return [];

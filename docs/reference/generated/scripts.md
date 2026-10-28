@@ -35,6 +35,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusResearchChains/scripts/pn_graph_query.py) | Skill wrapper for graph query, context, impact, ideas, and brainstorm lookup. |
 | [`SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py`](https://github.com/Iranb/PaperNexus/blob/main/SKILL/PaperNexusResearchChains/scripts/pn_research_chains.py) | Skill wrapper for path traces, evidence chains, reflection chains, and brief retrieval. |
 | [`scripts/apply-ingestion-graph-mutations.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/apply-ingestion-graph-mutations.mjs) | Apply Ingestion Graph Mutations implementation. |
+| [`scripts/audit-extraction-quality.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/audit-extraction-quality.mjs) | Audit Extraction Quality implementation. |
 | [`scripts/audit-graph-provenance.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/audit-graph-provenance.mjs) | Audit Graph Provenance implementation. |
 | [`scripts/audit-research-quality.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/audit-research-quality.mjs) | Audit Research Quality implementation. |
 | [`scripts/benchmark-graph-ranking-ablation.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/benchmark-graph-ranking-ablation.mjs) | Benchmark Graph Ranking Ablation implementation. |
@@ -107,6 +108,7 @@ This page is generated from the top-level `scripts/` directory plus skill-local 
 | [`scripts/test-pdf-to-markdown.js`](https://github.com/Iranb/PaperNexus/blob/main/scripts/test-pdf-to-markdown.js) | Test Pdf To Markdown implementation. |
 | [`scripts/verify-field-evolution-browser.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/verify-field-evolution-browser.mjs) | Verify Field Evolution Browser implementation. |
 | [`scripts/verify-field-research-browser.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/verify-field-research-browser.mjs) | Verify Field Research Browser implementation. |
+| [`scripts/verify-lineage-refinement-browser.mjs`](https://github.com/Iranb/PaperNexus/blob/main/scripts/verify-lineage-refinement-browser.mjs) | Verify Lineage Refinement Browser implementation. |
 
 ## Skill Wrapper Examples
 

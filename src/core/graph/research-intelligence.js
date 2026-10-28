@@ -1160,7 +1160,12 @@ export function buildMethodEvidenceRecord(graph, relationship) {
       ...base.evidence,
       exactQuote: base.evidence.quote,
       citationContext: props.citationContext || '',
-      exactMatch: props.exactMatch !== false
+      exactMatch: props.exactMatch !== false,
+      ...(props.lineageReviewId ? { reviewId: props.lineageReviewId, publicationId: props.lineagePublicationId,
+        reviewStatus: props.reviewStatus, scientificValidation: false, attribution: props.attribution,
+        epistemicStatus: props.epistemicStatus, relationContext: props.relationContext,
+        sourceBindings: props.lineageSourceBindings,
+        explanations: { bottleneck: props.bottleneck, mechanism: props.mechanism, tradeoff: props.tradeoff } } : {})
     },
     sourcePaper: {
       paperId: props.sourcePaperId || props.paperId || null,

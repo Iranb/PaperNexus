@@ -52,6 +52,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/storage/import-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/import-store.js) | Queued import task persistence, logs, progress, and queue snapshots. |
 | [`src/storage/kuzu-commit-receipt-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/kuzu-commit-receipt-store.js) | Kuzu Commit Receipt Store implementation. |
 | [`src/storage/kuzu-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/kuzu-store.js) | Kuzu Store implementation. |
+| [`src/storage/lineage-publications.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/lineage-publications.js) | Lineage Publications implementation. |
 | [`src/storage/lite-view.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/lite-view.js) | Incremental lite-graph materialized view and token index maintenance. |
 | [`src/storage/llm-rate-limit-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/llm-rate-limit-store.js) | LLM Rate Limit Store implementation. |
 | [`src/storage/long-context-artifact-store.js`](https://github.com/Iranb/PaperNexus/blob/main/src/storage/long-context-artifact-store.js) | Long Context Artifact Store implementation. |
@@ -136,7 +137,9 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/graph/proposal-controller.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/proposal-controller.js) | Proposal Controller implementation. |
 | [`src/core/graph/proposal-graph.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/proposal-graph.js) | Proposal Graph implementation. |
 | [`src/core/graph/proposal-synthesis.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/proposal-synthesis.js) | Proposal Synthesis implementation. |
+| [`src/core/graph/relation-admission.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/relation-admission.js) | Relation Admission implementation. |
 | [`src/core/graph/research-intelligence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/research-intelligence.js) | Research Intelligence implementation. |
+| [`src/core/graph/research-provenance.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/research-provenance.js) | Research Provenance implementation. |
 | [`src/core/graph/research-quality.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/research-quality.js) | Research Quality implementation. |
 | [`src/core/graph/research-questions.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/research-questions.js) | Research question normalization and graph projection helpers. |
 | [`src/core/graph/reviewer-simulation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/graph/reviewer-simulation.js) | Reviewer Simulation implementation. |
@@ -168,9 +171,11 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/ingestion/pdf-parser.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pdf-parser.js) | PDF-to-markdown parser integration layer for MarkItDown, Docling, Marker, MinerU, and related helpers. |
 | [`src/core/ingestion/pipeline.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/pipeline.js) | Main staged build pipeline from sources to graph commit. |
 | [`src/core/ingestion/s2orc.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/s2orc.js) | S2orc implementation. |
+| [`src/core/ingestion/semantic-status.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/semantic-status.js) | Semantic Status implementation. |
 | [`src/core/ingestion/source-quality.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/ingestion/source-quality.js) | Source Quality implementation. |
 | [`src/core/llm/batch-worker-pool.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/batch-worker-pool.js) | Batch Worker Pool implementation. |
 | [`src/core/llm/ollama.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/ollama.js) | Ollama implementation. |
+| [`src/core/llm/prompts/research-quality-contract.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/prompts/research-quality-contract.js) | Research Quality Contract implementation. |
 | [`src/core/llm/prompts/research-relations-v1.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/prompts/research-relations-v1.js) | Research Relations V1 implementation. |
 | [`src/core/llm/prompts/semantic-objects-v2.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/prompts/semantic-objects-v2.js) | Semantic Objects V2 implementation. |
 | [`src/core/llm/usage.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/llm/usage.js) | Usage implementation. |
@@ -190,6 +195,9 @@ This page is generated from the repository file tree. It is intended as a system
 | [`src/core/research/field-studies.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/field-studies.js) | Field Studies implementation. |
 | [`src/core/research/hypothesis-assessment.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/hypothesis-assessment.js) | Hypothesis Assessment implementation. |
 | [`src/core/research/lineage-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/lineage-evidence.js) | Lineage Evidence implementation. |
+| [`src/core/research/lineage-publication.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/lineage-publication.js) | Lineage Publication implementation. |
+| [`src/core/research/lineage-refinement.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/lineage-refinement.js) | Lineage Refinement implementation. |
+| [`src/core/research/lineage-review.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/lineage-review.js) | Lineage Review implementation. |
 | [`src/core/research/opportunity-memory.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/opportunity-memory.js) | Opportunity Memory implementation. |
 | [`src/core/research/project-evaluation.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evaluation.js) | Project Evaluation implementation. |
 | [`src/core/research/project-evidence.js`](https://github.com/Iranb/PaperNexus/blob/main/src/core/research/project-evidence.js) | Project Evidence implementation. |
@@ -207,6 +215,7 @@ This page is generated from the repository file tree. It is intended as a system
 | [`web/field-research-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-research-view.js) | Field Research View implementation. |
 | [`web/field-studies-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/field-studies-view.js) | Field Studies View implementation. |
 | [`web/index.html`](https://github.com/Iranb/PaperNexus/blob/main/web/index.html) | Index implementation. |
+| [`web/lineage-refinement-view.js`](https://github.com/Iranb/PaperNexus/blob/main/web/lineage-refinement-view.js) | Lineage Refinement View implementation. |
 | [`web/login.css`](https://github.com/Iranb/PaperNexus/blob/main/web/login.css) | Login implementation. |
 | [`web/login.html`](https://github.com/Iranb/PaperNexus/blob/main/web/login.html) | Login implementation. |
 | [`web/login.js`](https://github.com/Iranb/PaperNexus/blob/main/web/login.js) | Login implementation. |

@@ -12,9 +12,9 @@ export function summarizeResearchEnvelope(envelope, args = {}) {
     operation: 'status', ...(args.corpus ? { corpus: args.corpus } : {}), project: args.project,
     ...(decisionWrite && !args.dryRun ? { requestId: args.requestId } : {}), responseMode: 'full'
   } };
-  const submitted = ['discovery_submit', 'import_submit', 'field_research_submit', 'lineage_extract_submit', 'study_write'].includes(envelope.evidenceBoundary?.basis);
+  const submitted = ['discovery_submit', 'import_submit', 'field_research_submit', 'lineage_extract_submit', 'lineage_refine_submit', 'lineage_publish_write', 'study_write'].includes(envelope.evidenceBoundary?.basis);
   const reconcile = (envelope.nextActions || []).find(action =>
-    action.tool === 'literature_review' && ['discovery_status', 'discovery_report', 'import_status', 'field_research_status', 'lineage_status', 'study'].includes(action.arguments?.operation));
+    action.tool === 'literature_review' && ['discovery_status', 'discovery_report', 'import_status', 'field_research_status', 'lineage_status', 'lineage_refine_status', 'lineage_publish', 'study'].includes(action.arguments?.operation));
   const readMore = decisionWrite ? decisionReadMore : decisionTool && envelope.operation === 'export'
     ? { tool: 'research_decision', arguments: { operation: 'export', ...(args.corpus ? { corpus: args.corpus } : {}), project: args.project, ...(args.assessmentId ? { assessmentId: args.assessmentId } : {}), responseMode: 'full' } }
     : submitted

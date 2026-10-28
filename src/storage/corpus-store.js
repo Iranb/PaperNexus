@@ -10,6 +10,7 @@ import { slugify, stableHash } from '../lib/utils.js';
 import { loadRegistry, unregisterCorpus } from './registry.js';
 import { applyLiteDeltaCommit, saveLiteGraphMaterializedView } from './lite-view.js';
 import { enqueueAuthoritativeSyncJob } from './authoritative-sync-store.js';
+import { projectLineagePublications } from './lineage-publications.js';
 import {
   hasKuzuGraphStore,
   loadKnowledgeGraphFromKuzu,
@@ -283,7 +284,7 @@ export async function loadCorpus(rootPath) {
 
   return {
     rootPath,
-    graph,
+    ...await projectLineagePublications(rootPath, graph),
     meta
   };
 }
@@ -302,7 +303,7 @@ export async function loadCorpusLite(rootPath) {
   if (graphData) {
     return {
       rootPath,
-      graph: loadKnowledgeGraph(graphData),
+      ...await projectLineagePublications(rootPath, loadKnowledgeGraph(graphData), null, { lite: true }),
       meta
     };
   }
@@ -314,7 +315,7 @@ export async function loadCorpusLite(rootPath) {
 
   return {
     rootPath,
-    graph: fallbackGraph,
+    ...await projectLineagePublications(rootPath, fallbackGraph),
     meta
   };
 }

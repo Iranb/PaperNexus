@@ -30,6 +30,7 @@ import {
   normalizePaperIdentifiers
 } from '../lib/paper-identifiers.js';
 import { getCorpusPaths } from '../storage/corpus-store.js';
+import { hasLineagePublications } from '../storage/lineage-publications.js';
 import { getRegistryPath, loadRegistry } from '../storage/registry.js';
 import { getEnhancementPaths, getPaperEnhancementPath, loadPaperEnhancement, summarizeEnhancements } from '../storage/enhancement-store.js';
 import {
@@ -475,7 +476,7 @@ export async function corpusPayload(candidate, options = {}) {
       }
     }, options);
   };
-  if (!options.cache?.corpusByRoot) return buildPayload();
+  if (!options.cache?.corpusByRoot || await hasLineagePublications(rootPath)) return buildPayload();
   return resolveCachedPayload(options.cache.corpusByRoot, rootPath, stamp, buildPayload);
 }
 
@@ -493,7 +494,7 @@ export async function loadCorpusLiteForApi(rootPath, options = {}) {
       researchQualityVersion: report.version
     } };
   };
-  if (!cache?.corpusLiteByRoot) return loadResearchView();
+  if (!cache?.corpusLiteByRoot || await hasLineagePublications(rootPath)) return loadResearchView();
   return resolveCachedPayload(cache.corpusLiteByRoot, rootPath, stamp, loadResearchView);
 }
 

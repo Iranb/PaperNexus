@@ -54,6 +54,9 @@ import { startLiteratureDiscoveryRecoveryWorker } from '../mcp/tool-literature-d
 import { startImportWorkflowRecoveryWorker } from '../mcp/tool-import-workflow.js';
 import { executeFieldResearchOperation, startFieldResearchRecoveryWorker } from '../core/research/field-research.js';
 import { executeFieldStudyOperation } from '../core/research/field-studies.js';
+import { executeLineageRefinementOperation } from '../core/research/lineage-refinement.js';
+import { executeLineagePublication } from '../core/research/lineage-publication.js';
+import { lineageModelOptions } from '../core/research/lineage-evidence.js';
 import { warmDoclingRuntime, warmMineruHttpEndpoint } from '../core/ingestion/pdf-parser.js';
 import { startRegistryReconcileWorker } from '../storage/registry-reconcile.js';
 
@@ -1356,8 +1359,11 @@ export async function serveCommand(options = {}) {
     workerLogger
   );
   const fieldResearchOptions = {
+    ...lineageModelOptions(options),
     config: options.config || {}, configBaseDir: options.configBaseDir || process.cwd(), logger: workerLogger,
     workerRootPaths: rootPaths, fieldResearchDependencies: options.fieldResearchDependencies,
+    lineageEvidenceDependencies: options.lineageEvidenceDependencies,
+    lineageRefinementDependencies: options.lineageRefinementDependencies,
     fieldResearchWorkers: { imports: options.enableImports !== false, synchronization: options.enableAuthoritativeSync !== false },
     onImportTaskCreated() { importWorker?.pollNow?.(); fastMdImportWorker?.pollNow?.(); }
   };
@@ -1701,6 +1707,24 @@ export async function serveCommand(options = {}) {
         const name = url.searchParams.get('name') || undefined;
         const runId = url.searchParams.get('runId') || undefined;
         sendJson(response, 200, await executeFieldResearchOperation(name, 'status', { runId }, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/lineage-refinement') {
+        const body = await readJsonBody(request, options);
+        sendJson(response, body.dryRun ? 200 : 202, await executeLineageRefinementOperation(url.searchParams.get('name') || undefined, 'start', body, apiOptions));
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/lineage-refinement') {
+        sendJson(response, 200, await executeLineageRefinementOperation(url.searchParams.get('name') || undefined, 'status',
+          { runId: url.searchParams.get('runId') || undefined }, apiOptions));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/lineage-publication') {
+        const body = await readJsonBody(request, options);
+        sendJson(response, 200, await executeLineagePublication(url.searchParams.get('name') || undefined, body, apiOptions));
         return;
       }
 
