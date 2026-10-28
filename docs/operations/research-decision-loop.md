@@ -20,6 +20,28 @@ The full error and recovery acceptance suite is:
 node --test test/research-decision-*.test.js test/mcp-research-decision.test.js
 ```
 
+## Mechanism selection example
+
+Run the mechanism behavior cases and measured historical replay locally:
+
+```sh
+node scripts/evaluate-mechanism-selection.mjs --output /tmp/pn-mechanism-selection
+```
+
+The output contains full input entities, source artifacts, per-case traces and state, an evaluation report, and historical source copies. Repeating a completed output returns its saved result; use a fresh directory to rerun revised code. The cases cover missing quantitative grounds, missing controls, graph links preserved only as text, source changes, duplicate designs, replication, different protocols/comparators and a retrieval example. Historical GPU costs are reported separately from current local CPU/time. No experiment or model is launched.
+
+`ablation/common-facts.json` freezes the same facts and time cutoff for a future text/graph/graph-with-selection evaluation. No model comparison has been run. The deterministic text-only case verifies the requirement for explicit relation bindings; it does not establish that graphs reason better than text.
+
+Complete request files and source artifacts are in `SKILL/PaperNexus/examples/mechanism-selection/`. Set their corpus and artifact paths to server-readable locations, then send init, hypothesis registration and action registration in order. The example marks its quantities and sources as synthetic. `recommend-next.json` should select `E1` with a ready mechanism test and two planned count checks. `evidence-view.json` exposes the paths and numerical rationale.
+
+When the tool reports `prediction_basis_missing`, supply a justified quantitative prediction in a new hypothesis version or explicitly register bounded exploration. When it reports `required_control_missing`, register the named control and its operational check in a new action version. A `diagnostic` with a matching `information_targets` entry can gather the missing evidence. Do not invent a numerical bound to clear the gate.
+
+Read `reuse_evidence` records before launching a renamed copy of a completed design. Use an explicit `replicate` action when the intended question needs independent data. After recording results, confirm that the listed controls actually passed and inspect both interval relations and mechanism gates.
+
+For a chain such as relation quality → gradient alignment → final accuracy, register the quantities as `observation`, `proxy` and `target` through `evidence_role`. On the gradient prediction, set `proxy_for` to the accuracy prediction ID. Declare the same roles on matching evaluation outcomes. A primary gradient endpoint is still a proxy. Inspect `evidence_chain.target_status` and `comparison_summary[].performance_claim` before drawing performance conclusions. A negative proxy test can revise the mechanism explanation while the final target remains unmeasured.
+
+Register a bounded diagnostic with `information_targets=[{hypothesis_id,hypothesis_version,kind:"proxy_bridge",prediction_id}]` to test the proxy link, or use `kind:"target_measurement"` for a missing target. The recommendation identifies the matching research gap. Existing budget and execution authorization still apply. Jointly observing the proxy and target does not by itself validate the relationship.
+
 ## AutoResearch handoff
 
 Retrieve feedback without resending outcomes:

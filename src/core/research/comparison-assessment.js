@@ -108,9 +108,35 @@ export function confirmatoryAnalysis(action, run, comparisonId, quantity) {
       : analysis.multiplicity === 'adjusted' && analysis.adjustment_ref && analysis.family?.some(f => f.comparison_id === comparisonId && f.quantity === quantity)));
 }
 
+export function assessPerformanceClaim(rows) {
+  const targets = rows.filter(r => r.evidence_role === 'target' && r.outcome_role !== 'diagnostic');
+  const primary = targets.filter(r => r.outcome_role === 'primary');
+  const original = primary.filter(r => r.role === 'original');
+  const guards = rows.filter(r => r.outcome_role === 'guardrail');
+  const reasons = [];
+  if (!primary.length) reasons.push('target_outcome_not_registered');
+  else if (primary.some(p => !original.some(o => o.quantity === p.quantity && o.unit === p.unit))) reasons.push('original_target_comparison_missing');
+  if (original.some(r => !r.measurement)) reasons.push('target_outcome_not_measured');
+  if ([...original, ...guards].some(r => !r.confirmatory)) reasons.push('target_evidence_not_confirmatory');
+  const partial = original.some(o => o.result === 'below_target' && primary.some(c => c.role === 'control'
+    && c.quantity === o.quantity && c.unit === o.unit && c.result === 'meets_target'));
+  const required = [...original, ...guards];
+  const gains = required.filter(r => r.confirmatory && r.measurement?.value_kind === 'difference'
+    && r.measurement.estimate * (r.direction === 'higher' ? 1 : -1) > 0 && r.result === 'meets_target');
+  const losses = required.filter(r => r.result === 'below_target');
+  const tradeoff = losses.some(l => gains.some(g => g.quantity !== l.quantity || g.unit !== l.unit));
+  const status = reasons.length ? 'not_established' : tradeoff ? 'tradeoff' : partial ? 'partial_recovery'
+    : required.every(r => r.result === 'meets_target') ? 'improved_in_scope'
+    : original.some(r => r.result === 'below_target') ? 'below_target_in_scope' : 'inconclusive';
+  return { status, reason_codes: reasons,
+    claim_basis: [...new Set([...targets, ...guards].filter(r => r.confirmatory).map(r => r.measurement_id))],
+    boundary: 'Only explicitly declared target outcomes support performance claims, within their verified comparison and inference scope.' };
+}
+
 export function assessComparisons(action, run, runs = []) {
   const plan = action.evaluation_plan;
-  if (!plan || !run.comparisons) return { status: 'not_assessed', run_record_id: run.record_id, comparisons: [], limitations: ['no_multi_comparison_plan'] };
+  if (!plan || !run.comparisons) return { status: 'not_assessed', run_record_id: run.record_id, comparisons: [],
+    performance_claim: { ...assessPerformanceClaim([]), reason_codes: ['no_multi_comparison_plan'] }, limitations: ['no_multi_comparison_plan'] };
   const views = comparisonViews(run, action);
   const rows = plan.outcomes.flatMap(outcome => outcome.comparison_ids.map(comparisonId => {
     const comparison = views.find(c => c.comparison_id === comparisonId);
@@ -133,7 +159,7 @@ export function assessComparisons(action, run, runs = []) {
       && interval.upper - interval.lower <= action.precision?.max_interval_width
       && confirmatoryAnalysis(action, run, comparisonId, outcome.quantity);
     return { comparison_id: comparisonId, role: comparison?.role || plan.comparators.find(c => c.comparison_id === comparisonId)?.role,
-      quantity: outcome.quantity, unit: outcome.unit, outcome_role: outcome.role, direction: outcome.direction,
+      quantity: outcome.quantity, unit: outcome.unit, outcome_role: outcome.role, evidence_role: outcome.evidence_role || 'unspecified', direction: outcome.direction,
       measurement_id: `${run.record_id}/${comparisonId}/${outcome.quantity}/${outcome.unit}`, measurement: m || null,
       descriptive_result: estimate === null ? 'unknown' : estimate >= threshold ? 'meets_target' : 'below_target',
       result: !supported ? 'inconclusive' : lower >= threshold ? 'meets_target' : upper < threshold ? 'below_target' : 'inconclusive',
@@ -149,6 +175,7 @@ export function assessComparisons(action, run, runs = []) {
   const tradeoff = guards.some(r => r.result === 'below_target') || losses.some(l => gains.some(g => l.quantity !== g.quantity));
   const improved = original.length > 0 && original.every(r => r.result === 'meets_target') && guards.every(r => r.result === 'meets_target');
   return { status: tradeoff ? 'tradeoff' : partial ? 'partial_recovery' : improved ? 'improved_in_scope' : 'inconclusive',
+    performance_claim: assessPerformanceClaim(rows),
     run_record_id: run.record_id, comparisons: rows, partial_recovery: partial,
     claim_basis: rows.filter(r => r.outcome_role !== 'diagnostic').map(r => r.measurement_id),
     inference_target: plan.inference_target || null,

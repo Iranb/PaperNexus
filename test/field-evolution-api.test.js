@@ -34,7 +34,7 @@ test('landscape HTTP/MCP share admitted evidence, retain source quality and neve
     const envelope = await executeTool('lineage_analysis', { operation: 'landscape', corpus: root, ...request, responseMode: 'full' });
     assert.deepEqual(envelope.result.result, direct.result);
     const summary = await executeTool('lineage_analysis', { operation: 'landscape', corpus: root, ...request, responseMode: 'summary' });
-    assert.ok(Buffer.byteLength(JSON.stringify(summary, null, 2)) <= 32768);
+    assert.ok(Buffer.byteLength(JSON.stringify(summary, null, 2)) <= 12288);
     assert.equal(summary.presentation.read_more.arguments.operation, 'landscape');
     assert.equal(summary.presentation.read_more.arguments.responseMode, 'full');
     const probe = net.createServer();

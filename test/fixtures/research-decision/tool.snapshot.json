@@ -1,6 +1,6 @@
 {
   "name": "research_decision",
-  "description": "Maintain a project research decision loop: register competing hypotheses and planned predictions, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve project feedback with evidence_view, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId).",
+  "description": "Maintain a project research decision loop: register competing hypotheses, quantitative prediction grounds and mechanism controls, record external attempts and original/control/paper comparisons, assess scoped explanations, retrieve source-backed paths with evidence_view, reuse equivalent assessed designs, and recommend actions under evidence and resource limits. init/register/record/assess/update/refresh write only project state; status/recommend/evidence_view read; export writes reports only with outputDir. No training, provider calls, resource reservations or execution authorization. Use requestId and expectedRevision for mutations; recover lost responses with status(requestId).",
   "annotations": {
     "readOnlyHint": false,
     "destructiveHint": false,
@@ -540,6 +540,112 @@
                               "type": "number",
                               "minimum": 0
                             },
+                            "basis": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "empirical",
+                                    "derivation",
+                                    "assumption"
+                                  ]
+                                },
+                                "rationale": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 8000
+                                },
+                                "evidence_refs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "evidence_origin": {
+                                        "type": "string",
+                                        "enum": [
+                                          "paper_reported",
+                                          "external_measured",
+                                          "code_inspected",
+                                          "agent_inferred",
+                                          "search_absence",
+                                          "synthetic_fixture"
+                                        ]
+                                      },
+                                      "source_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "source_version": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "locator": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "paper_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "source_key": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "artifact_path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "repository": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "code_revision": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "file_path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "symbol": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      },
+                                      "observation": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 8000
+                                      }
+                                    },
+                                    "required": [
+                                      "evidence_origin",
+                                      "source_id",
+                                      "source_version",
+                                      "locator"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "minItems": 0
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "rationale",
+                                "evidence_refs"
+                              ],
+                              "additionalProperties": false
+                            },
                             "conditions": {
                               "type": "object",
                               "additionalProperties": true
@@ -564,6 +670,23 @@
                                 "fixed_model",
                                 "training_procedure"
                               ]
+                            },
+                            "evidence_role": {
+                              "type": "string",
+                              "enum": [
+                                "observation",
+                                "proxy",
+                                "target"
+                              ]
+                            },
+                            "proxy_for": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 8000
+                              },
+                              "minItems": 0
                             }
                           },
                           "required": [
@@ -686,6 +809,21 @@
                                     "additionalProperties": false
                                   },
                                   "minItems": 0
+                                },
+                                "graph_node_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 8000
+                                },
+                                "quantity": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 8000
+                                },
+                                "unit": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 8000
                                 }
                               },
                               "required": [
@@ -810,6 +948,24 @@
                                       "locator"
                                     ],
                                     "additionalProperties": false
+                                  },
+                                  "minItems": 0
+                                },
+                                "graph_relation_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 8000
+                                  },
+                                  "minItems": 0
+                                },
+                                "required_controls": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 8000
                                   },
                                   "minItems": 0
                                 }
@@ -1310,6 +1466,14 @@
                                     "diagnostic"
                                   ]
                                 },
+                                "evidence_role": {
+                                  "type": "string",
+                                  "enum": [
+                                    "observation",
+                                    "proxy",
+                                    "target"
+                                  ]
+                                },
                                 "minimum_effect": {
                                   "type": "number",
                                   "minimum": 0
@@ -1387,6 +1551,86 @@
                             "hypothesis_id",
                             "hypothesis_version",
                             "held_constant"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "minItems": 0
+                      },
+                      "controlled_components": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "component_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            },
+                            "hypothesis_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            },
+                            "hypothesis_version": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "check": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            }
+                          },
+                          "required": [
+                            "component_id",
+                            "hypothesis_id",
+                            "hypothesis_version",
+                            "check"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "minItems": 0
+                      },
+                      "information_targets": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "hypothesis_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            },
+                            "hypothesis_version": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "prediction_basis",
+                                "precision",
+                                "path",
+                                "control",
+                                "proxy_bridge",
+                                "target_measurement"
+                              ]
+                            },
+                            "prediction_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            },
+                            "component_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            }
+                          },
+                          "required": [
+                            "hypothesis_id",
+                            "hypothesis_version",
+                            "kind"
                           ],
                           "additionalProperties": false
                         },

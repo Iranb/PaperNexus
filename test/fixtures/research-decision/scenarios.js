@@ -92,6 +92,8 @@ export async function createDecisionFixture(t, options = {}) {
   }
   input.hypotheses[0].evidence_refs = [refs[0]];
   input.hypotheses[1].evidence_refs = [refs[1]];
+  for (const h of input.hypotheses) for (const p of h.predictions) p.basis = { kind: 'derivation',
+    rationale: 'Synthetic fixture defines these intervals as its test oracle; no real research effect is asserted.', evidence_refs: h.evidence_refs };
   for (const action of input.actions) Object.assign(action.precision, { anticipated_interval_width: 0.4, basis_refs: [refs[0]] });
   input.candidates = [
     { candidate_id: 'target', source_domain: 'target', mechanism: 'count', subproblem: 'confounding', evidence_cluster: 'count', evidence_refs: [refs[1]], bridge_evidence: true },

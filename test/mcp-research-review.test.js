@@ -8,7 +8,7 @@ import { executeResearchWorkflow, RESEARCH_TOOLS } from '../src/mcp/research-wor
 import { createTopicFixture } from './fixtures/topic-analysis-fixture.js';
 import { getCorpusPaths } from '../src/storage/corpus-store.js';
 
-test('default lineage workflow preserves structured transfer conditions end to end', async () => {
+test('full lineage workflow preserves structured transfer conditions end to end', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pn-review-conditions-'));
   const paths = getCorpusPaths(root);
   const original = JSON.stringify(createTopicFixture().toJSON());
@@ -17,7 +17,7 @@ test('default lineage workflow preserves structured transfer conditions end to e
   await fs.writeFile(paths.liteGraphPath, original);
   try {
     const result = await executeTool('lineage_analysis', {
-      operation:'overview', corpus:root, query:'feedback', maxDepth:4,
+      operation:'overview', corpus:root, query:'feedback', maxDepth:4, responseMode:'full',
       constraints:{labelsAvailable:false, maxLatencyMs:40}
     });
     const analysis = result.result.result;

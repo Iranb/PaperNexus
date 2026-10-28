@@ -16,11 +16,11 @@ test('F01/F14/F16 project-only reads retrieve persisted evidence and update expl
   assert.ok(view.result.nodes.some(n => n.type === 'source'));
   assert.equal(view.result.based_on_revision, before.revision);
   const original = { result: { ideas: [{ candidate_id: 'near' }, { candidate_id: 'unrelated', title: 'quality filtering' }] } };
-  const output = await executeResearchWorkflow('idea_generation', { operation: 'generate', project: 'quality-vs-count', corpus: f.root, query: 'quality filtering' }, {}, async () => original);
+  const output = await executeResearchWorkflow('idea_generation', { operation: 'generate', project: 'quality-vs-count', corpus: f.root, query: 'quality filtering', responseMode: 'full' }, {}, async () => original);
   assert.equal(output.result.result.ideas[0].project_assessment.status, 'tested_in_scope');
   assert.equal(output.result.result.ideas[1].project_assessment.status, 'unlinked');
   assert.ok(output.result.research_focus.some(h => h.run_record_ids.includes('record-1')));
-  const legacy = await executeResearchWorkflow('idea_generation', { operation: 'generate', query: 'quality' }, {}, async () => original);
+  const legacy = await executeResearchWorkflow('idea_generation', { operation: 'generate', query: 'quality', responseMode: 'full' }, {}, async () => original);
   assert.deepEqual(legacy.result, original);
   assert.equal((await f.call('status')).revision, before.revision);
 });
